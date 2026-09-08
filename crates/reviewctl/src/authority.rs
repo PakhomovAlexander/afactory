@@ -410,12 +410,18 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
             "budgets": loaded.budgets(),
             "reservations": reservations,
             "max_simultaneous_reservation": crate::project::max_simultaneous_reservation(loaded)?,
+            "max_parallel": loaded.max_parallel(),
+            "scatter_fanout": loaded
+                .slicing()
+                .values()
+                .map(|policy| (policy.scatter.clone(), policy.max_fanout))
+                .collect::<BTreeMap<_, _>>(),
             "inputs_fit": input_sizes.iter().all(|size| size.fits),
             "convergence": {
                 "mode": options.mode.as_str(),
                 "clean_rounds": convergence.clean_rounds,
                 "max_rounds": convergence.max_rounds,
-                "gate": format!("{:?}", convergence.gate).to_lowercase(),
+                "gate": serde_name(&convergence.gate),
             },
         },
         "providers": providers,
@@ -1080,7 +1086,7 @@ fn open_new(
         convergence: CampaignConvergenceV1 {
             clean_rounds: convergence.clean_rounds,
             max_rounds: convergence.max_rounds,
-            gate: format!("{:?}", convergence.gate).to_lowercase(),
+            gate: serde_name(&convergence.gate),
         },
         reviewer_timeout_seconds: options
             .timeout
@@ -1291,7 +1297,7 @@ fn validate_manifest_authority(
     let convergence = selected_convergence(mode, loaded.convergence());
     if manifest.convergence.clean_rounds != convergence.clean_rounds
         || manifest.convergence.max_rounds != convergence.max_rounds
-        || manifest.convergence.gate != format!("{:?}", convergence.gate).to_lowercase()
+        || manifest.convergence.gate != serde_name(&convergence.gate)
     {
         return Err(format!(
             "CampaignManifest convergence differs from requested {} mode; resume with the mode that opened this Campaign",
@@ -1710,19 +1716,19 @@ fn start_integrated_round(
     if manifest.content_digest() != snapshot.content_digest {
         return Err("derived Snapshot Manifest contradicts its content digest".into());
     }
-    let prior_findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
-    let prior_count = prior_findings.as_array().map_or(0, Vec::len);
-    let prior_finding_set = serde_json::json!({
-        "subject_id": committed.derived_subject_id,
-        "round": round,
-        "prior_findings": prior_findings,
-    });
+    let prior_findings = prior_rows(ledger_projection.ledger());
+    let prior_count = prior_findings.len();
+    let prior_finding_set =
+        prior_finding_set_document(&committed.derived_subject_id, round, prior_findings);
+    // Measured on the document this Round persists — the union and its two identity keys, and
+    // nothing else. Nothing per-reviewer is stored here, so the ceiling bounds the prior
+    // Findings themselves rather than any bookkeeping added beside them.
     let prior_bytes = serde_json::to_string_pretty(&prior_finding_set)
         .map_err(|error| error.to_string())?
         .len();
     if prior_bytes > MAX_PRIOR_FINDINGS_BYTES {
         return Err(format!(
-            "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes and partitioning is required"
+            "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes: the Round-wide union of open prior Findings is over the ceiling — reject, group, or fix Findings before starting another Round"
         ));
     }
     let prior_finding_set_id = cas
@@ -2006,19 +2012,17 @@ fn capture_round(
         .put_json(&serde_json::to_value(&subject).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())?;
 
-    let prior_findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
-    let prior_count = prior_findings.as_array().map_or(0, Vec::len);
-    let prior_finding_set = serde_json::json!({
-        "subject_id": subject_id,
-        "round": round,
-        "prior_findings": prior_findings,
-    });
+    let prior_findings = prior_rows(ledger_projection.ledger());
+    let prior_count = prior_findings.len();
+    let prior_finding_set = prior_finding_set_document(&subject_id, round, prior_findings);
+    // Measured on the document this Round persists — the union and its two identity keys, and
+    // nothing else (see `prior_finding_set_document`).
     let prior_bytes = serde_json::to_string_pretty(&prior_finding_set)
         .map_err(|error| error.to_string())?
         .len();
     if prior_bytes > MAX_PRIOR_FINDINGS_BYTES {
         return Err(format!(
-            "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes and partitioning is required"
+            "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes: the Round-wide union of open prior Findings is over the ceiling — reject, group, or fix Findings before starting another Round"
         ));
     }
     let prior_finding_set_id = cas
@@ -2285,7 +2289,15 @@ fn validate_round_set(
         .as_object()
         .ok_or_else(|| format!("Round {items_field} set is not an object"))?;
     let expected = BTreeSet::from(["subject_id", "round", items_field]);
-    let actual: BTreeSet<&str> = object.keys().map(String::as_str).collect();
+    // Exactly the frozen key set, the one `v0.7.1` also builds. The single tolerance is an
+    // `assignments` key on a prior-Finding document: no released binary ever wrote one, only an
+    // unreleased dev build of this branch did, and such a Round resumes here by ignoring it —
+    // per-reviewer scoping is derived at delivery time now, never read back from the document.
+    let actual: BTreeSet<&str> = object
+        .keys()
+        .map(String::as_str)
+        .filter(|key| !(items_field == "prior_findings" && *key == "assignments"))
+        .collect();
     if actual != expected
         || value["subject_id"].as_str() != Some(subject_id)
         || value["round"].as_u64() != Some(u64::from(round))
@@ -2341,6 +2353,39 @@ fn latest_demand_set_id(
     Ok(genesis_id.to_string())
 }
 
+/// The persisted spelling of a serde enum value: its serde name, never Rust `Debug`. A variant
+/// rename then changes a schema-pinned string (which schema parity catches) instead of silently
+/// changing Campaign manifests, Worker input rows, and JSON documents.
+pub(crate) fn serde_name<T: serde::Serialize>(value: &T) -> String {
+    match serde_json::to_value(value).expect("a serde enum serializes") {
+        serde_json::Value::String(name) => name,
+        other => other.to_string(),
+    }
+}
+
+/// The Round's prior-Finding assignment as one document, in exactly the three keys every
+/// released reader knows: `subject_id`, `round`, and the union of open prior Findings. It is a
+/// versioned persisted contract — `v0.7.1`'s `validate_round_set` builds
+/// `expected = {"subject_id", "round", "prior_findings"}` and refuses any other key set — so a
+/// Round this binary starts must stay byte-identical to one the released binary starts, or a
+/// consumer that rolls back finds the Round permanently unresumable.
+///
+/// Per-reviewer scoping therefore lives nowhere in this document. Which reviewer owes a
+/// disposition for which row is derived by the kernel at delivery time from each row's `source`
+/// and the pinned pipeline's receiving reviewer nodes — data that is already present on both
+/// sides — so the split costs no persisted key and moves no artifact digest.
+pub(crate) fn prior_finding_set_document(
+    subject_id: &str,
+    round: u32,
+    prior_findings: Vec<serde_json::Value>,
+) -> serde_json::Value {
+    serde_json::json!({
+        "subject_id": subject_id,
+        "round": round,
+        "prior_findings": prior_findings,
+    })
+}
+
 fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
     ledger
         .finding_views()
@@ -2350,10 +2395,10 @@ fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
                 && !matches!(finding.status, Status::Rejected | Status::Wontfix)
         })
         .map(|finding| {
-            let severity = format!("{:?}", finding.severity).to_lowercase();
+            let severity = serde_name(&finding.severity);
             let effective_severity = finding
                 .convergence_severity
-                .map(|effective| format!("{effective:?}").to_lowercase());
+                .map(|effective| serde_name(&effective));
             let scope = finding.convergence_scope_label();
             let mut row = serde_json::json!({
                 "key": finding.key,
@@ -2600,6 +2645,72 @@ fn authority_path(repo: &Path, pipeline: &Path) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use review_core::{IntegrationCommittedPayloadV1, RoundStartedPayloadV1};
+
+    /// The Round's prior-Finding document is a versioned persisted contract with frozen
+    /// readers in shipped releases: exactly `subject_id`, `round`, `prior_findings`, and no
+    /// fourth key, whatever the pipeline's reviewer count. `v0.7.1` builds
+    /// `expected = {"subject_id", "round", "prior_findings"}` and refuses anything else, so a
+    /// consumer that runs one Round with this binary and rolls back must still resume it.
+    #[test]
+    fn prior_finding_set_document_keeps_the_released_three_key_shape() {
+        use serde_json::json;
+        let subject = format!("sha256:{}", "a".repeat(64));
+
+        // One reviewer, where any partition buys nothing at all.
+        let single = vec![json!({"key": "a", "source": "correctness"})];
+        let document = super::prior_finding_set_document(&subject, 2, single.clone());
+        assert_eq!(
+            document,
+            json!({"subject_id": subject, "round": 2, "prior_findings": single}),
+            "the single-reviewer document is the released one, byte for byte"
+        );
+
+        // Several reviewers plus a Scatter shard and an imported row: still three keys.
+        let many = vec![
+            json!({"key": "a", "source": "architecture"}),
+            json!({"key": "b", "source": "performance"}),
+            json!({"key": "c", "source": "scatter#slice:1:0123456789abcdef"}),
+            json!({"key": "d", "source": "legacy-import"}),
+        ];
+        let document = super::prior_finding_set_document(&subject, 3, many.clone());
+        assert_eq!(
+            document,
+            json!({"subject_id": subject, "round": 3, "prior_findings": many}),
+            "the multi-reviewer document is the released one, byte for byte"
+        );
+        assert_eq!(
+            document
+                .as_object()
+                .expect("the document is an object")
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["subject_id", "round", "prior_findings"],
+            "no fourth key: the frozen reader in v0.7.1 refuses one"
+        );
+    }
+
+    /// Campaign manifests, Worker prior-Finding rows, and the JSON documents used to spell a
+    /// Severity as its lowercased Rust `Debug` name. The serde name replaces it and must be
+    /// byte-identical, or every pinned `CampaignManifest@1` gate and every measured Worker
+    /// input would change under a refactor.
+    #[test]
+    fn serde_names_match_the_lowercased_debug_spellings_they_replace() {
+        use review_core::Severity;
+        for (severity, legacy) in [
+            (Severity::Minor, "minor"),
+            (Severity::Major, "major"),
+            (Severity::Blocker, "blocker"),
+        ] {
+            assert_eq!(super::serde_name(&severity), legacy);
+        }
+        assert_eq!(super::serde_name(&Some(Severity::Major)), "major");
+        assert_eq!(super::serde_name(&None::<Severity>), "null");
+        assert_eq!(
+            super::serde_name(&review_core::RunSuppressionReasonV2::GateBlocked),
+            "gate_blocked"
+        );
+    }
 
     fn attempt_event(
         sequence: u64,

@@ -233,7 +233,9 @@ impl std::fmt::Display for PlanError {
                 accepted,
             } => write!(
                 f,
-                "edge {edge} has incompatible cardinality {produced:?} -> {accepted:?}"
+                "edge {edge} has incompatible cardinality {} -> {}",
+                produced.as_str(),
+                accepted.as_str()
             ),
             PlanError::SnapshotAffinityMismatch {
                 edge,
@@ -241,7 +243,9 @@ impl std::fmt::Display for PlanError {
                 accepted,
             } => write!(
                 f,
-                "edge {edge} has incompatible snapshot affinity {produced:?} -> {accepted:?}"
+                "edge {edge} has incompatible snapshot affinity {} -> {}",
+                produced.as_str(),
+                accepted.as_str()
             ),
             PlanError::OptionalityMismatch { edge } => write!(
                 f,

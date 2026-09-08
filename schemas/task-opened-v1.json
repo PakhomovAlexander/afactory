@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:task-opened:1",
+  "title": "af/task-opened@1 payload",
+  "description": "Referenced by TaskOpened@1: the Task's resolved authority, pinned before any Worker runs. Every ID names an artifact already durable in the CAS.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "kind",
+    "goal_artifact_id",
+    "source_snapshot_id",
+    "pipeline_artifact_id",
+    "lock_artifact_id",
+    "project_artifact_id",
+    "workers"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-opened@1"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^task-[0-9a-f]{20}$"
+    },
+    "kind": {
+      "const": "implement"
+    },
+    "goal_artifact_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "source_snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "pipeline_artifact_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "lock_artifact_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "project_artifact_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "workers": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {
+        "$ref": "#/$defs/worker_authority"
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "worker_authority": {
+      "description": "One digest-pinned Worker package resolved from the Authority Snapshot's lock and published to the CAS before any Worker runs.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "role",
+        "name",
+        "version",
+        "digest",
+        "package_artifact_id"
+      ],
+      "properties": {
+        "role": {
+          "enum": [
+            "implementer",
+            "evaluator"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "package_artifact_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}

@@ -26,8 +26,8 @@ credential is written into a project, pipeline, reviewer package, or release art
 ## Legacy `.review/` policies
 
 Consumers that onboarded before `.af/` existed carried `.review/pipelines/*.toml`,
-`.review/review.lock`, and `.review/reviewers/`. Since `v0.8.0` that layout is no longer read for
-new Campaigns ([ADR-0043](adr/0043-drop-legacy-review-authority-in-v0-8-0.md), executed by
+`.review/review.lock`, and `.review/reviewers/`. From `v0.8.0` on (unreleased at this commit) that
+layout is no longer read for new Campaigns ([ADR-0043](adr/0043-drop-legacy-review-authority-in-v0-8-0.md), executed by
 [ADR-0045](adr/0045-one-release-train-and-a-pin-that-binds-bytes.md)); `af review plan|run` refuse
 a `.review/…` pipeline path and name the command that moves the policy. Stored Campaigns whose
 manifests recorded `.review/…` paths stay replayable.

@@ -1,8 +1,9 @@
 //! One real `codex exec` through the whole stack: digest-verified package, kernel sandbox,
 //! supervised process, JSONL parse, cost receipt. Spends real tokens (roughly 15k, mostly the
 //! CLI's own preamble), needs the operator's codex credentials, and therefore is `#[ignore]`d
-//! everywhere except `make review-kernel-codex-smoke` — where, as with the container probes,
-//! a missing provider is a hard failure rather than a skip.
+//! everywhere except `AF_ACK_PAID_SMOKE=1 make review-kernel-codex-smoke` — the explicit paid
+//! run, where, as with the container probes, a missing acknowledgement, CLI, or provider is a
+//! hard failure rather than a skip.
 
 use std::time::Duration;
 

@@ -26,6 +26,8 @@ use review_core::{
 };
 use review_pipeline::RoundAuthority;
 use review_store::{Cas, EventStore, NewEvent};
+
+use crate::authority::serde_name;
 use sha2::{Digest, Sha256};
 
 #[cfg(unix)]
@@ -1497,8 +1499,10 @@ pub fn admit(
             ProviderOperationStateV1::Failed => {
                 if !previous.retry_permitted {
                     return Err(format!(
-                        "provider operation `{operation_id}` is terminal for this Round: {:?}; next action: {:?}; circuit_open={}; rerun with --restart-round after correction",
-                        previous.failure_class, previous.next_action, previous.circuit_open
+                        "provider operation `{operation_id}` is terminal for this Round: {}; next action: {}; circuit_open={}; rerun with --restart-round after correction",
+                        serde_name(&previous.failure_class),
+                        serde_name(&previous.next_action),
+                        previous.circuit_open
                     ));
                 }
                 let supplied = resumes.remove(&operation_id).ok_or_else(|| {
@@ -1608,11 +1612,15 @@ pub fn admit(
             }
             Err(failure) => {
                 let elapsed = elapsed_ms(started);
+                // Stored transitions may carry the fingerprint an earlier release derived from
+                // the class's Rust `Debug` spelling; a continuation must still recognize them.
                 let repeated = history
                     .iter()
                     .filter(|transition| {
-                        transition.failure_fingerprint.as_deref()
-                            == Some(failure.fingerprint.as_str())
+                        transition
+                            .failure_fingerprint
+                            .as_deref()
+                            .is_some_and(|recorded| failure.matches_recorded(recorded))
                     })
                     .count()
                     >= 1;
@@ -1666,11 +1674,15 @@ pub fn admit(
                 settle_provider_budget(budget, &reservation, charged_tokens);
                 return Err(if circuit_open {
                     format!(
-                        "provider operation `{operation_id}` opened its circuit after {failure_class:?}; next action: {next_action:?}; restart the Round after correction"
+                        "provider operation `{operation_id}` opened its circuit after {}; next action: {}; restart the Round after correction",
+                        serde_name(&failure_class),
+                        serde_name(&next_action)
                     )
                 } else {
                     format!(
-                        "provider operation `{operation_id}` failed preflight: {failure_class:?}; next action: {next_action:?}; restart the Round after correction"
+                        "provider operation `{operation_id}` failed preflight: {}; next action: {}; restart the Round after correction",
+                        serde_name(&failure_class),
+                        serde_name(&next_action)
                     )
                 });
             }
@@ -1681,7 +1693,13 @@ pub fn admit(
 #[derive(Clone)]
 struct ProviderFailure {
     class: ProviderFailureClassV1,
+    /// `sha256(serde name of the class, normalized code)`: the fingerprint new transitions
+    /// persist and continuations match on.
     fingerprint: String,
+    /// The fingerprint releases before this one persisted, derived from the class's Rust
+    /// `Debug` spelling. Never written again; accepted when matching stored transitions so an
+    /// operation that started under the old spelling still fences its repeats.
+    legacy_fingerprint: String,
     retryable: bool,
     next_action: ProviderNextActionV1,
     charged_tokens: u64,
@@ -1695,14 +1713,37 @@ impl ProviderFailure {
         next_action: ProviderNextActionV1,
         charged_tokens: u64,
     ) -> Self {
-        let fingerprint = digest_parts([format!("{class:?}").as_str(), code]);
+        let fingerprint = digest_parts([serde_name(&class).as_str(), code]);
+        let legacy_fingerprint = digest_parts([legacy_failure_class_spelling(class), code]);
         Self {
             class,
             fingerprint,
+            legacy_fingerprint,
             retryable,
             next_action,
             charged_tokens,
         }
+    }
+
+    /// Whether a fingerprint persisted by an earlier transition names this failure, under
+    /// either the current or the legacy spelling.
+    fn matches_recorded(&self, recorded: &str) -> bool {
+        recorded == self.fingerprint || recorded == self.legacy_fingerprint
+    }
+}
+
+/// The frozen `Debug` spellings that fingerprints persisted before the serde-name fingerprint
+/// were derived from. This table is what keeps those stored fingerprints matchable; it must
+/// never follow a variant rename.
+fn legacy_failure_class_spelling(class: ProviderFailureClassV1) -> &'static str {
+    match class {
+        ProviderFailureClassV1::InvalidOrExpiredAuthentication => "InvalidOrExpiredAuthentication",
+        ProviderFailureClassV1::InteractiveLoginRequired => "InteractiveLoginRequired",
+        ProviderFailureClassV1::TransientTransportFailure => "TransientTransportFailure",
+        ProviderFailureClassV1::RateLimitOrQuotaExhaustion => "RateLimitOrQuotaExhaustion",
+        ProviderFailureClassV1::UnavailableModelOrCapability => "UnavailableModelOrCapability",
+        ProviderFailureClassV1::SmokeTimeout => "SmokeTimeout",
+        ProviderFailureClassV1::UnknownProviderFailure => "UnknownProviderFailure",
     }
 }
 
@@ -2281,6 +2322,29 @@ mod provider_operation_tests {
         );
         assert!(assessment.acknowledged);
         assert_eq!(assessment.cost_tokens, 33);
+    }
+
+    /// The fingerprint is derived from the class's serde name. Transitions persisted before
+    /// that change carry the `Debug`-derived one; a continuation must still recognize them,
+    /// and only the serde form is ever written again.
+    #[test]
+    fn failure_fingerprints_recognize_the_frozen_legacy_spelling() {
+        let failure = ProviderFailure::new(
+            ProviderFailureClassV1::InvalidOrExpiredAuthentication,
+            "smoke_exit",
+            false,
+            ProviderNextActionV1::RefreshAuthentication,
+            0,
+        );
+        assert_eq!(
+            failure.fingerprint,
+            digest_parts(["invalid_or_expired_authentication", "smoke_exit"])
+        );
+        let legacy = digest_parts(["InvalidOrExpiredAuthentication", "smoke_exit"]);
+        assert_ne!(failure.fingerprint, legacy);
+        assert!(failure.matches_recorded(&failure.fingerprint));
+        assert!(failure.matches_recorded(&legacy));
+        assert!(!failure.matches_recorded(&digest_parts(["smoke_timeout", "smoke_exit"])));
     }
 
     #[test]

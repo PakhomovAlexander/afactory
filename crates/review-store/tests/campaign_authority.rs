@@ -728,6 +728,10 @@ provider = "trusted_local"
 required_isolation = "none"
 mode = "ephemeral-write"
 [[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[nodes]]
 id = "reviewer"
 kind = "reviewer"
 outputs = [{ name = "out", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
@@ -1023,6 +1027,10 @@ mode = "ephemeral-write"
 name = "gate"
 program = "/bin/true"
 [[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[nodes]]
 id = "reviewer"
 kind = "reviewer"
 inputs = []
@@ -1202,4 +1210,92 @@ execution = { credential_mode = "brokered", operations = [{ name = "model_infere
         )
         .expect("terminal broker state accepts only a revoked acknowledgement");
     }
+}
+
+fn workspace_root() -> std::path::PathBuf {
+    std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+}
+
+/// Every checked-in review pipeline, pinned as a Campaign's pipeline authority, replays: the
+/// store reads it through the shape it shares with the loader (`review_core::PipelineDefinition`),
+/// so a NodeInvocation@1 for one of its root nodes is judged against the pinned contract and
+/// admitted. Pinned bytes the shape refuses — here a Task pipeline, which is not a review
+/// pipeline — are refused as invalid authority the moment replay needs the plan, never misread
+/// into an empty one.
+#[test]
+fn every_checked_in_pipeline_replays_as_pinned_authority() {
+    let root = workspace_root();
+    let invoke_root = |relative: &str, bytes: &[u8], node: &str| -> Result<(), StoreError> {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+        let ids = authority_with_pipeline(&cas, relative, bytes);
+        let round = opened_round(&mut store, &cas, "run", &ids);
+        store
+            .append(
+                "run",
+                &cas,
+                NewEvent::new(
+                    EventType::NodeInvocationV1,
+                    serde_json::to_value(NodeInvocationPayloadV1 {
+                        node: node.into(),
+                        inputs: vec![],
+                    })
+                    .unwrap(),
+                )
+                .node(node)
+                .caused_by(round.event_id),
+            )
+            .map(|_| ())
+    };
+
+    for relative in [
+        ".af/pipelines/review.toml",
+        ".af/pipelines/audit.toml",
+        "fixtures/consumers/hub/.af/pipelines/review.toml",
+        "crates/reviewctl/tests/fixtures/legacy-hub/.review/pipelines/heavy.toml",
+    ] {
+        let bytes = std::fs::read(root.join(relative)).unwrap();
+        let definition =
+            review_core::PipelineDefinition::from_toml(std::str::from_utf8(&bytes).unwrap())
+                .unwrap_or_else(|error| panic!("{relative}: {error}"));
+        let root_node = definition
+            .nodes
+            .iter()
+            .find(|node| node.inputs.is_empty())
+            .map(|node| node.id.clone())
+            .unwrap_or_else(|| panic!("{relative}: no root node to invoke"));
+        invoke_root(relative, &bytes, &root_node)
+            .unwrap_or_else(|error| panic!("{relative}: pinned authority did not replay: {error}"));
+    }
+
+    // Opening a Campaign is where the pinned bytes are first read as a plan, so that is where
+    // invalid authority is refused: nothing is appended, and no Round can follow.
+    let task_pipeline = std::fs::read(root.join(".af/pipelines/implement.toml")).unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let ids = authority_with_pipeline(&cas, "task", &task_pipeline);
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::CampaignOpenedV1,
+                serde_json::to_value(CampaignOpenedPayloadV1 {
+                    campaign_manifest_id: ids.manifest.clone(),
+                    authority_snapshot_id: ids.authority.clone(),
+                })
+                .unwrap(),
+            )
+            .referencing(vec![ids.authority.clone(), ids.manifest.clone()]),
+        )
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("pinned pipeline is invalid"),
+        "{error}"
+    );
+    assert!(store.replay("run").unwrap().is_empty());
 }

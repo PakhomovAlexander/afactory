@@ -47,6 +47,8 @@ nix = { version = "0.30.1", default-features = false, features = ["fs", "signal"
 portable-pty = { version = "0.9.0", default-features = false }
 
 [dev-dependencies]
+# The Task log contract tests validate every persisted Task record against `schemas/`.
+jsonschema = { version = "0.26.1", default-features = false }
 # Signs test releases the way the release job signs real ones, so signature verification is
 # exercised end to end without a key on disk.
 minisign = "0.9.1"

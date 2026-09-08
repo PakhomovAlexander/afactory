@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:task-implement-input:1",
+  "title": "af/implement-input@1 Worker input",
+  "description": "The exact, role-scoped input the implementer receives for one implement Task (ADR-0028, ADR-0046). Worker Input, not a log record: no Task event references it, but it is durable in the CAS and named by `af/worker-evidence@1`'s context manifest.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "goal",
+    "source_snapshot_id",
+    "constraints",
+    "budget"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/implement-input@1"
+    },
+    "task_id": {
+      "type": "string",
+      "pattern": "^task-[0-9a-f]{20}$"
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "source_snapshot_id": {
+      "description": "The Snapshot materialized as the implementer's writable sandbox.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "constraints": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "budget": {
+      "$ref": "urn:review-kernel:schema:task-evaluate-input:2#/$defs/budget"
+    }
+  }
+}

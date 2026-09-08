@@ -1,0 +1,13 @@
+{
+  "schema": "af/derived-snapshot@1",
+  "snapshot_id": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "mutations": {
+    "added": [
+      "implemented.txt"
+    ],
+    "modified": [
+      "src/lib.rs"
+    ],
+    "deleted": []
+  }
+}

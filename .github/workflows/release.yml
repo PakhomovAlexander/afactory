@@ -2,12 +2,15 @@
 #
 #   scripts/release.sh X.Y.Z   →  a "release: vX.Y.Z" PR (version bump + CHANGELOG section)
 #   merge it                   →  this run tags vX.Y.Z, checks the tagged commit on Linux and
-#                                 macOS, builds every target, plans the consumer fixtures with
-#                                 each built binary, signs SHA256SUMS, and publishes the release.
+#                                 macOS, builds every target, proves each archive, plans the
+#                                 consumer fixtures with each built binary, signs SHA256SUMS
+#                                 (archives and the installer), and publishes the release.
 #
 # A manually pushed vX.Y.Z tag takes the same path from the tag onward. Nothing is published
-# unless `make check` passed on the tagged commit on both operating systems and every archive
-# planned the consumer fixtures; nothing is published unsigned.
+# unless `make check` passed on the tagged commit on both operating systems, every archive was
+# extracted and executed after packaging, and every archive planned the consumer fixtures;
+# nothing is published unsigned, and the signing program is fetched by version and digest
+# (scripts/fetch-minisign.sh) and proven before the signing key is in reach.
 name: Release
 
 on:
@@ -87,6 +90,18 @@ jobs:
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
       - name: Check the tagged commit
         run: make check
+      # The publishing job is Linux, so nothing else ever runs fetch-minisign.sh's Darwin branch
+      # and its pinned digest could rot unnoticed until a release needed it. This job already
+      # exists on macOS, so exercising the pin here — and the signature path with the binary it
+      # yields — costs one step and fails the release before anything is published.
+      - name: Fetch the pinned minisign (macOS branch) and run the signature path
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          minisign="$(scripts/fetch-minisign.sh "$RUNNER_TEMP/minisign")"
+          [[ -x "$minisign" ]] || { echo "no verified minisign at '$minisign'"; exit 1; }
+          MINISIGN="$minisign" make installer-test-signed
 
   build:
     name: build ${{ matrix.target }}
@@ -137,14 +152,18 @@ jobs:
           tag="${{ needs.resolve.outputs.tag }}"
           target="${{ matrix.target }}"
           bin="$PWD/target/$target/release/af"
-          # How this runner executes the built binary: directly, or through user-mode qemu.
+          # How this runner executes a binary built for the target: directly, or through
+          # user-mode qemu. `wrapper <binary> <path>` writes such a launcher.
+          wrapper() {
+            if [[ "${{ matrix.cross }}" == "zig-qemu" ]]; then
+              printf '#!/bin/sh\nexec qemu-aarch64-static "%s" "$@"\n' "$1" > "$2"
+            else
+              printf '#!/bin/sh\nexec "%s" "$@"\n' "$1" > "$2"
+            fi
+            chmod +x "$2"
+          }
           run="$RUNNER_TEMP/run-af"
-          if [[ "${{ matrix.cross }}" == "zig-qemu" ]]; then
-            printf '#!/bin/sh\nexec qemu-aarch64-static "%s" "$@"\n' "$bin" > "$run"
-          else
-            printf '#!/bin/sh\nexec "%s" "$@"\n' "$bin" > "$run"
-          fi
-          chmod +x "$run"
+          wrapper "$bin" "$run"
           reported="$("$run" --version)"
           [[ "$reported" == "af ${tag#v}" ]] || { echo "built binary reports '$reported', expected 'af ${tag#v}'"; exit 1; }
           "$run" --version --json | tee version.json
@@ -159,6 +178,27 @@ jobs:
           done
           "$run" self man dist/man
           tar -czf "af-$tag-$target.tar.gz" -C dist af completions man
+          # Prove the archive, not just the binary it was made from: extract it into a fresh
+          # directory, check the layout and the executable bit, and run the extracted af the
+          # same way. A packaging regression fails here, before anything is uploaded.
+          extracted="$RUNNER_TEMP/extracted"
+          rm -rf "$extracted" && mkdir -p "$extracted"
+          tar -xzf "af-$tag-$target.tar.gz" -C "$extracted"
+          entries="$(cd "$extracted" && find . -mindepth 1 -maxdepth 1 | sed 's|^\./||' | sort | tr '\n' ' ')"
+          [[ "$entries" == "af completions man " ]] \
+            || { echo "the archive root is not exactly af, completions, man: $entries"; exit 1; }
+          [[ -f "$extracted/af" && -x "$extracted/af" ]] || { echo "the archive's af is missing or not executable"; exit 1; }
+          cmp -s "$bin" "$extracted/af" || { echo "the archive's af is not the built binary"; exit 1; }
+          for shell in bash zsh fish elvish powershell; do
+            [[ -s "$extracted/completions/af.$shell" ]] || { echo "the archive lacks completions/af.$shell"; exit 1; }
+          done
+          for page in af.1 af-self.1 af-review-run.1 af-onboard.1 af-exit-codes.7; do
+            [[ -s "$extracted/man/$page" ]] || { echo "the archive lacks man/$page"; exit 1; }
+          done
+          run_extracted="$RUNNER_TEMP/run-extracted-af"
+          wrapper "$extracted/af" "$run_extracted"
+          reported="$("$run_extracted" --version)"
+          [[ "$reported" == "af ${tag#v}" ]] || { echo "the extracted binary reports '$reported', expected 'af ${tag#v}'"; exit 1; }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: af-${{ needs.resolve.outputs.tag }}-${{ matrix.target }}
@@ -181,23 +221,34 @@ jobs:
           pattern: af-*
           path: dist
           merge-multiple: true
+      - name: Fetch the pinned minisign
+        # Its own step, so the signing secret is not in the environment of anything that
+        # downloads: the binary is proven (pinned digest, then upstream's own signature) here.
+        id: minisign
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "bin=$(scripts/fetch-minisign.sh "$RUNNER_TEMP/minisign")" >> "$GITHUB_OUTPUT"
       - name: Checksum and sign
         shell: bash
         env:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          MINISIGN: ${{ steps.minisign.outputs.bin }}
         run: |
           set -euo pipefail
           [[ -f crates/reviewctl/keys/release.pub ]] || { echo "crates/reviewctl/keys/release.pub is missing; see crates/reviewctl/keys/README.md"; exit 1; }
           [[ -n "$MINISIGN_SECRET_KEY" ]] || { echo "the MINISIGN_SECRET_KEY secret is not set; see crates/reviewctl/keys/README.md"; exit 1; }
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends minisign
-          (cd dist && sha256sum ./*.tar.gz) | sed 's| \./| |' > SHA256SUMS
+          [[ -x "$MINISIGN" ]] || { echo "no verified minisign at '$MINISIGN'"; exit 1; }
+          # The installer is release-bound: the copy at the tagged commit joins the signed set,
+          # so `gh release download <tag> --pattern install.sh` fetches exactly what was signed.
+          cp install.sh dist/install.sh
+          (cd dist && sha256sum ./*.tar.gz install.sh) | sed 's| \./| |' > SHA256SUMS
           key="$RUNNER_TEMP/minisign.key"
           umask 077
           printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
-          minisign -S -W -s "$key" -m SHA256SUMS -t "af ${{ needs.resolve.outputs.tag }}"
+          "$MINISIGN" -S -W -s "$key" -m SHA256SUMS -t "af ${{ needs.resolve.outputs.tag }}"
           rm -f "$key"
-          minisign -V -q -m SHA256SUMS -p crates/reviewctl/keys/release.pub
+          "$MINISIGN" -V -q -m SHA256SUMS -p crates/reviewctl/keys/release.pub
           cat SHA256SUMS
       - name: Release notes from CHANGELOG.md
         shell: bash
@@ -220,6 +271,6 @@ jobs:
           tag="${{ needs.resolve.outputs.tag }}"
           flags=(--verify-tag --title "$tag" --notes-file notes.md --draft)
           [[ "${{ needs.resolve.outputs.prerelease }}" == "true" ]] && flags+=(--prerelease)
-          gh release create "$tag" "${flags[@]}" dist/*.tar.gz SHA256SUMS SHA256SUMS.minisig install.sh
+          gh release create "$tag" "${flags[@]}" dist/*.tar.gz dist/install.sh SHA256SUMS SHA256SUMS.minisig
           gh release edit "$tag" --draft=false
           echo "published $tag"

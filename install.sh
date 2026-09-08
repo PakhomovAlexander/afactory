@@ -5,11 +5,37 @@
 # private. Never stores a token. Re-running is idempotent; `af self` takes over from here: the
 # installed binary records the activation, so `af self rollback` works from the first update on.
 #
-#   gh api repos/PakhomovAlexander/afactory/contents/install.sh -H 'Accept: application/vnd.github.raw' | sh
+# This script is a release asset, listed in the release's signed SHA256SUMS beside the archives;
+# fetch it from a release, never from a branch:
 #
-# Verification: the archive digest against the release's SHA256SUMS, and — when `minisign` is on
-# PATH and AF_RELEASE_KEY names the release public key file — that file's signature too. The
-# installed `af` carries the key itself and verifies every later install.
+#   gh release download --repo PakhomovAlexander/afactory --pattern install.sh --output - | sh
+#
+# That one-liner is convenience, not verification: it pipes whatever arrives straight into sh,
+# checking neither the digest nor the signature this script is listed under. To use the property
+# the release actually provides, verify this file's line in the signed SHA256SUMS first and only
+# then run it. Every step gates the next, so a failed signature or a digest that does not match
+# this file's line stops before anything runs. AF_RELEASE_KEY names the release public key file
+# (crates/reviewctl/keys/release.pub in a checkout); scripts/installer-test.sh runs these exact
+# lines against a fake release, so they cannot rot:
+#
+# >>> verified install
+#   tag=vX.Y.Z
+#   repo=PakhomovAlexander/afactory
+#   if command -v sha256sum >/dev/null 2>&1; then check="sha256sum -c"; else check="shasum -a 256 -c"; fi
+#   tmp="$(mktemp -d)" &&
+#   gh release download "$tag" --repo "$repo" --pattern SHA256SUMS --dir "$tmp" &&
+#   gh release download "$tag" --repo "$repo" --pattern SHA256SUMS.minisig --dir "$tmp" &&
+#   gh release download "$tag" --repo "$repo" --pattern install.sh --dir "$tmp" &&
+#   minisign -V -q -m "$tmp/SHA256SUMS" -x "$tmp/SHA256SUMS.minisig" -p "$AF_RELEASE_KEY" &&
+#   ( cd "$tmp" && grep ' install.sh$' SHA256SUMS > install.sh.sha256 && $check install.sh.sha256 ) &&
+#   sh "$tmp/install.sh"
+# <<< verified install
+#
+# What this script itself verifies once running: the archive digest against the release's
+# SHA256SUMS, and — when `minisign` is on PATH and AF_RELEASE_KEY names the release public key
+# file — that file's signature too. The installed `af` carries the key itself and verifies every
+# later install. `make installer-test` (scripts/installer-test.sh) drives this script end to end
+# against a local fake release.
 set -eu
 
 REPO="${AF_REPO:-PakhomovAlexander/afactory}"
@@ -18,12 +44,17 @@ BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
 # The first release with `af self`. Older releases cannot activate themselves or update back.
 FLOOR="0.7.1"
 
-case "$(uname -s):$(uname -m)" in
-  Darwin:arm64) host="aarch64-apple-darwin" ;;
-  Linux:x86_64) host="x86_64-unknown-linux-musl" ;;
-  Linux:aarch64|Linux:arm64) host="aarch64-unknown-linux-musl" ;;
-  Darwin:x86_64) echo "af: no release is built for x86_64-apple-darwin — fix: build from source (cargo install --path crates/reviewctl --locked)" >&2; exit 1 ;;
-  *) echo "af: unsupported platform $(uname -s)/$(uname -m)" >&2; exit 1 ;;
+# AF_INSTALL_TARGET names the target to install when it is not the one this host maps to —
+# a build for another libc, or a test harness installing a locally built binary. It chooses
+# which asset is fetched and nothing else: the archive must still be listed in SHA256SUMS and
+# match its digest (and its signature, from 0.8.0 on), exactly as the mapped target must.
+case "${AF_INSTALL_TARGET:+named}:$(uname -s):$(uname -m)" in
+  named:*) host="$AF_INSTALL_TARGET" ;;
+  :Darwin:arm64) host="aarch64-apple-darwin" ;;
+  :Linux:x86_64) host="x86_64-unknown-linux-musl" ;;
+  :Linux:aarch64|:Linux:arm64) host="aarch64-unknown-linux-musl" ;;
+  :Darwin:x86_64) echo "af: no release is built for x86_64-apple-darwin — fix: build from source (cargo install --path crates/reviewctl --locked)" >&2; exit 1 ;;
+  *) echo "af: unsupported platform $(uname -s)/$(uname -m) — fix: name the target with AF_INSTALL_TARGET" >&2; exit 1 ;;
 esac
 
 command -v gh >/dev/null 2>&1 || { echo "af: the GitHub CLI is required — fix: install gh, then gh auth login" >&2; exit 1; }

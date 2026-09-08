@@ -1,0 +1,126 @@
+{
+  "schema": "af/task-outcome@1",
+  "candidate": {
+    "version": "0.7.1",
+    "executable": "/usr/local/bin/af",
+    "binary_sha256": "sha256:7777777777777777777777777777777777777777777777777777777777777777"
+  },
+  "task_id": "task-0123456789abcdef0123",
+  "kind": "implement",
+  "goal_artifact_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "source_snapshot_id": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "derived_snapshot_id": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "authority": {
+    "pipeline_artifact_id": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "lock_artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+    "project_artifact_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+    "workers": [
+      {
+        "role": "implementer",
+        "name": "implementer",
+        "version": "1.0.0",
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "package_artifact_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      {
+        "role": "evaluator",
+        "name": "evaluator",
+        "version": "1.0.0",
+        "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        "package_artifact_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      }
+    ]
+  },
+  "workers": [
+    {
+      "role": "implementer",
+      "package_artifact_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "raw_artifact": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "usage": {
+        "input_tokens": 900,
+        "output_tokens": 120,
+        "chargeable_tokens": 1020
+      },
+      "context_manifest": {
+        "entries": [
+          {
+            "name": "worker_instructions",
+            "required_by": "digest-pinned Worker package",
+            "artifact_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "artifact_type": "af/worker-package@1",
+            "rendered_bytes": 412,
+            "estimated_tokens": 103
+          },
+          {
+            "name": "task_input",
+            "required_by": "role-scoped typed input",
+            "artifact_id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "artifact_type": "af/implement-input@1",
+            "rendered_bytes": 780,
+            "estimated_tokens": 195
+          }
+        ],
+        "rendered_bytes": 1192,
+        "estimated_tokens": 298
+      }
+    },
+    {
+      "role": "evaluator",
+      "package_artifact_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+      "raw_artifact": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "usage": {
+        "input_tokens": 900,
+        "output_tokens": 120,
+        "chargeable_tokens": 1020
+      },
+      "context_manifest": {
+        "entries": [
+          {
+            "name": "worker_instructions",
+            "required_by": "digest-pinned Worker package",
+            "artifact_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            "artifact_type": "af/worker-package@1",
+            "rendered_bytes": 412,
+            "estimated_tokens": 103
+          },
+          {
+            "name": "task_input",
+            "required_by": "role-scoped typed input",
+            "artifact_id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "artifact_type": "af/evaluate-input@1",
+            "rendered_bytes": 780,
+            "estimated_tokens": 195
+          }
+        ],
+        "rendered_bytes": 1192,
+        "estimated_tokens": 298
+      }
+    }
+  ],
+  "gates": [
+    {
+      "name": "acceptance",
+      "status": "passed",
+      "result_artifact": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "totals": {
+    "context": {
+      "rendered_bytes": 2384,
+      "estimated_tokens": 596
+    },
+    "usage": {
+      "input_tokens": 1800,
+      "output_tokens": 240,
+      "chargeable_tokens": 2040
+    }
+  },
+  "delivery": {
+    "kind": "none",
+    "reason": "v2 ends at an internal Snapshot"
+  },
+  "outcome": {
+    "kind": "verified",
+    "snapshot_id": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  }
+}

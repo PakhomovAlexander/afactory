@@ -1,0 +1,26 @@
+{
+  "schema": "af/task-opened@1",
+  "task_id": "task-0123456789abcdef0123",
+  "kind": "implement",
+  "goal_artifact_id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "source_snapshot_id": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "pipeline_artifact_id": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "lock_artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+  "project_artifact_id": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+  "workers": [
+    {
+      "role": "implementer",
+      "name": "implementer",
+      "version": "1.0.0",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "package_artifact_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    },
+    {
+      "role": "evaluator",
+      "name": "evaluator",
+      "version": "1.0.0",
+      "digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+      "package_artifact_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222"
+    }
+  ]
+}

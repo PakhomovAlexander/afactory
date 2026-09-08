@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:task-worker-evidence:1",
+  "title": "af/worker-evidence@1 payload",
+  "description": "Referenced by WorkerCompleted@1: what one Worker Attempt cost and exactly what it was shown. The context manifest is the least-sufficient-context proof (ADR-0028): every injected artifact is named with its size, and nothing else reached the prompt.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "role",
+    "package_artifact_id",
+    "raw_artifact",
+    "usage",
+    "context_manifest"
+  ],
+  "properties": {
+    "schema": {
+      "description": "Marker the current writer always emits. Not required: `af` v0.7.1 wrote this record without one, and those rows are still in Task state.",
+      "const": "af/worker-evidence@1"
+    },
+    "role": {
+      "enum": [
+        "implementer",
+        "evaluator"
+      ]
+    },
+    "package_artifact_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "raw_artifact": {
+      "description": "The redacted raw stdout of the Worker process, stored before anything was parsed.",
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "usage": {
+      "$ref": "#/$defs/token_usage"
+    },
+    "context_manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entries",
+        "rendered_bytes",
+        "estimated_tokens"
+      ],
+      "properties": {
+        "entries": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "required_by",
+              "rendered_bytes",
+              "estimated_tokens"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "required_by": {
+                "type": "string",
+                "minLength": 1
+              },
+              "artifact_id": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "artifact_type": {
+                "description": "The injected artifact's own `schema` marker, so the manifest's claim about what the Worker was shown is checkable against that artifact.",
+                "type": "string",
+                "pattern": "^af/[a-z0-9-]+@[0-9]+$"
+              },
+              "rendered_bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "estimated_tokens": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            }
+          }
+        },
+        "rendered_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "estimated_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "token_usage": {
+      "description": "Provider usage as the adapter reported it, per token kind. An absent kind is one the Provider did not expose, never zero; `chargeable_tokens` is what the budget charged.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "chargeable_tokens"
+      ],
+      "properties": {
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "output_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cache_read_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cache_write_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "reasoning_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "chargeable_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  }
+}

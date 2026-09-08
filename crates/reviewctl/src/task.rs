@@ -1,5 +1,10 @@
 //! Local Tasks: v2 seals one independently verified internal Snapshot; the first v3 slice may
 //! deliver that exact result only to a new local branch and linked worktree.
+//!
+//! This is the CLI side of `af task`: argument parsing, state resolution, authority loading from
+//! the captured source Snapshot, the SQLite Task log, and presentation. The Task itself — the
+//! implementer sandbox, the sealed derived Snapshot, acceptance Gates, the independent evaluator,
+//! and every Task event — is composed by `review_pipeline::task::TaskKernel` (ADR-0046).
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -8,12 +13,16 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use review_check::{CheckDefinition, CheckResult, CheckRunner, CheckStatus};
+use review_check::CheckDefinition;
 use review_config::lock::{Lockfile, Registry};
+use review_core::event::{TaskEventType, task_artifact};
 use review_core::{Arg, Command, SubjectKind};
+use review_pipeline::task::{
+    SnapshotReceipt, TaskAuthority, TaskCandidate, TaskInputs, TaskKernel, TaskLog,
+    TaskPipelineSpec, TaskReport, TaskSource, admit_task_artifact, load_manifest, load_snapshot,
+    publish_worker, put_manifest, verify_snapshot,
+};
 use review_process::{ExitPolicy, SupervisedOutput, run_supervised_with_policy};
-use review_runner::{ContextManifest, ModelRunner, ResolvedReviewer, TokenUsage, extract_result};
-use review_sandbox::{Mode, Sandbox};
 use review_source_git::{
     Capture, Entry, EntryKind, Manifest, PathEncoding, Repo, decode_path, digest_bytes,
 };
@@ -22,7 +31,10 @@ use rusqlite::{Connection, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use super::{candidate_identity, normalize_absolute, resolve_filesystem_path, xdg_state_root};
+use super::{
+    candidate_identity, normalize_absolute, repository_state_id, resolve_filesystem_path,
+    xdg_state_root,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct TaskOptions {
@@ -214,90 +226,48 @@ impl TaskPipeline {
         Ok(())
     }
 
-    fn check_definitions(&self) -> Vec<CheckDefinition> {
-        self.checks
-            .iter()
-            .map(|check| {
-                CheckDefinition::new(
-                    &check.name,
-                    Command::new(
-                        &check.program,
-                        check
-                            .args
-                            .iter()
-                            .map(|argument| Arg::literal(&argument.value))
-                            .collect(),
-                    ),
-                )
-            })
-            .collect()
+    fn spec(&self) -> TaskPipelineSpec {
+        TaskPipelineSpec {
+            worker_timeout: Duration::from_secs(self.timeout_seconds),
+            check_timeout: Duration::from_secs(self.check_timeout_seconds),
+            attempt_tokens: self.attempt_tokens,
+            run_tokens: self.run_tokens,
+            checks: self
+                .checks
+                .iter()
+                .map(|check| {
+                    CheckDefinition::new(
+                        &check.name,
+                        Command::new(
+                            &check.program,
+                            check
+                                .args
+                                .iter()
+                                .map(|argument| Arg::literal(&argument.value))
+                                .collect(),
+                        ),
+                    )
+                })
+                .collect(),
+        }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SnapshotReceipt {
-    schema: String,
-    kind: String,
-    content_digest: String,
-    manifest_artifact_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    parent_snapshot_id: Option<String>,
-    repository_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_revision: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(deny_unknown_fields)]
-struct WorkerAuthority {
-    role: String,
-    name: String,
-    version: String,
-    digest: String,
-    package_artifact_id: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(deny_unknown_fields)]
-struct WorkerEvidence {
-    role: String,
-    package_artifact_id: String,
-    raw_artifact: String,
-    usage: TokenUsage,
-    context_manifest: ContextManifest,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(deny_unknown_fields)]
-struct GateEvidence {
-    name: String,
-    status: CheckStatus,
-    result_artifact: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Evaluation {
-    verdict: EvaluationVerdict,
-    summary: String,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-enum EvaluationVerdict {
-    Approve,
-    Reject,
-}
-
+/// The Task log: one SQLite table, one dense sequence per Task, and every row naming exactly one
+/// artifact the CAS already holds (ADR-0046). It is deliberately not the Campaign `EventStore`:
+/// a Task event has no inline payload, no node or Attempt lineage, and no Ledger to project.
 struct TaskStore {
     connection: Connection,
 }
 
+/// One row of the Task log, and the only serialized form of it: `af task show --json` emits
+/// these as `history[]`. It carries `task_id` because `schemas/task-event-v1.json` requires it —
+/// the emitted row must be the envelope the schema describes, not a subset of it.
 #[derive(Debug, Clone, Serialize)]
 struct TaskEvent {
+    task_id: String,
     sequence: u64,
-    event_type: String,
+    event_type: TaskEventType,
     artifact_id: String,
 }
 
@@ -320,13 +290,17 @@ impl TaskStore {
         Ok(Self { connection })
     }
 
+    /// Append one event. Admission runs before the publication barrier, in the order
+    /// `EventStore::append` fixes for a Campaign event: the artifact is re-verified and scheduled,
+    /// the CAS is flushed, then the row lands in one FULL-synchronous transaction.
     fn append(
         &mut self,
         cas: &Cas,
         task_id: &str,
-        event_type: &str,
+        event_type: TaskEventType,
         artifact_id: &str,
     ) -> Result<(), String> {
+        admit_task_artifact(cas, event_type, artifact_id)?;
         cas.flush().map_err(|error| error.to_string())?;
         let transaction = self
             .connection
@@ -343,7 +317,7 @@ impl TaskStore {
             .execute(
                 "INSERT INTO task_events(task_id, sequence, event_type, artifact_id)
                  VALUES (?1, ?2, ?3, ?4)",
-                params![task_id, sequence, event_type, artifact_id],
+                params![task_id, sequence, event_type.as_str(), artifact_id],
             )
             .map_err(|error| error.to_string())?;
         transaction.commit().map_err(|error| error.to_string())
@@ -359,15 +333,25 @@ impl TaskStore {
             .map_err(|error| error.to_string())?;
         let rows = statement
             .query_map([task_id], |row| {
-                Ok(TaskEvent {
-                    sequence: row.get(0)?,
-                    event_type: row.get(1)?,
-                    artifact_id: row.get(2)?,
-                })
+                Ok((
+                    row.get::<_, u64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
             })
             .map_err(|error| error.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())
+        rows.map(|row| {
+            let (sequence, event_type, artifact_id) = row.map_err(|error| error.to_string())?;
+            Ok(TaskEvent {
+                task_id: task_id.to_string(),
+                sequence,
+                event_type: event_type
+                    .parse()
+                    .map_err(|error| format!("Task `{task_id}` log: {error}"))?,
+                artifact_id,
+            })
+        })
+        .collect()
     }
 
     fn task_ids(&self) -> Result<Vec<String>, String> {
@@ -383,6 +367,18 @@ impl TaskStore {
             .map_err(|error| error.to_string())?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(|error| error.to_string())
+    }
+}
+
+impl TaskLog for TaskStore {
+    fn append(
+        &mut self,
+        cas: &Cas,
+        task_id: &str,
+        event_type: TaskEventType,
+        artifact_id: &str,
+    ) -> Result<(), String> {
+        TaskStore::append(self, cas, task_id, event_type, artifact_id)
     }
 }
 
@@ -635,7 +631,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
         worktree: worktree_text,
     };
     let prepared = DeliveryPrepared {
-        schema: "af/task-delivery-prepared@1".into(),
+        schema: task_artifact::TASK_DELIVERY_PREPARED_V1.into(),
         delivery_id: delivery_id(
             &options.task_id,
             &assets.source_snapshot_id,
@@ -653,7 +649,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     let git = DeliveryGit::new(&repository, &git_home);
     validate_branch(&git, &prepared.target.branch)?;
 
-    if let Some(receipt) = latest_delivery_receipt(&cas, &events, "TaskDelivered@1")? {
+    if let Some(receipt) = latest_delivery_receipt(&cas, &events, TaskEventType::TaskDeliveredV1)? {
         ensure_same_delivery(&prepared, &receipt)?;
         verify_sealed_delivery_identity(&git, &git_home, &prepared)?;
         print_delivery(&options, &receipt)?;
@@ -670,7 +666,12 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
                     &assets.derived_manifest,
                 )?;
                 let receipt = delivered_receipt(&existing, ignored_paths);
-                append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
+                append_delivery_receipt(
+                    &mut store,
+                    &cas,
+                    &receipt,
+                    TaskEventType::TaskDeliveredV1,
+                )?;
                 print_delivery(&options, &receipt)?;
                 return Ok(());
             }
@@ -686,7 +687,12 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
                         "delivery recovery preserved the unsealed branch/worktree because it could not prove the content was delivery-owned: verification failed: {verification}; rollback refused: {rollback}"
                     );
                     let receipt = failed_receipt(&existing, &reason);
-                    append_delivery_receipt(&mut store, &cas, &receipt, "TaskDeliveryFailed@1")?;
+                    append_delivery_receipt(
+                        &mut store,
+                        &cas,
+                        &receipt,
+                        TaskEventType::TaskDeliveryFailedV1,
+                    )?;
                     return Err(format!(
                         "delivery recovery stopped and preserved branch `{}` at `{}`; retry this Task with a new absent branch and worktree (or remove the preserved target with normal Git controls before reusing it): {rollback}",
                         existing.target.branch, existing.target.worktree
@@ -706,14 +712,14 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     store.append(
         &cas,
         &options.task_id,
-        "TaskDeliveryPrepared@1",
+        TaskEventType::TaskDeliveryPreparedV1,
         &prepared_artifact,
     )?;
 
     match execute_delivery(&git, &git_home, &cas, &assets, &prepared) {
         Ok(ignored_paths) => {
             let receipt = delivered_receipt(&prepared, ignored_paths);
-            append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
+            append_delivery_receipt(&mut store, &cas, &receipt, TaskEventType::TaskDeliveredV1)?;
             print_delivery(&options, &receipt)
         }
         Err(reason) => match rollback_owned_delivery(
@@ -724,7 +730,12 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
         ) {
             Ok(()) => {
                 let receipt = failed_receipt(&prepared, &reason);
-                append_delivery_receipt(&mut store, &cas, &receipt, "TaskDeliveryFailed@1")?;
+                append_delivery_receipt(
+                    &mut store,
+                    &cas,
+                    &receipt,
+                    TaskEventType::TaskDeliveryFailedV1,
+                )?;
                 Err(format!("delivery failed and was rolled back: {reason}"))
             }
             Err(rollback) => Err(format!(
@@ -746,7 +757,7 @@ pub(super) fn list(options: InspectOptions) -> Result<(), String> {
     let mut tasks = Vec::new();
     for task_id in store.task_ids()? {
         let events = store.events(&task_id)?;
-        let outcome = latest_event_json(&cas, &events, "TaskCompleted@1")?;
+        let outcome = latest_event_json(&cas, &events, TaskEventType::TaskCompletedV1)?;
         let delivery = latest_delivery_value(&cas, &events)?;
         tasks.push(serde_json::json!({
             "task_id": task_id,
@@ -773,7 +784,7 @@ pub(super) fn show(options: InspectOptions) -> Result<(), String> {
     if events.is_empty() {
         return Err(format!("Task `{task_id}` was not found"));
     }
-    let outcome = latest_event_json(&cas, &events, "TaskCompleted@1")?;
+    let outcome = latest_event_json(&cas, &events, TaskEventType::TaskCompletedV1)?;
     let delivery = latest_delivery_value(&cas, &events)?;
     let view = serde_json::json!({
         "schema": "af/task-inspection@1",
@@ -861,9 +872,11 @@ fn utf8_path(path: &Path, kind: &str) -> Result<String, String> {
 }
 
 fn load_delivery_assets(cas: &Cas, events: &[TaskEvent]) -> Result<DeliveryAssets, String> {
-    let outcome = latest_event_json(cas, events, "TaskCompleted@1")?
+    let outcome = latest_event_json(cas, events, TaskEventType::TaskCompletedV1)?
         .ok_or("Task has no completed outcome")?;
-    if outcome.get("schema").and_then(serde_json::Value::as_str) != Some("af/task-outcome@1") {
+    if outcome.get("schema").and_then(serde_json::Value::as_str)
+        != Some(task_artifact::TASK_OUTCOME_V1)
+    {
         return Err("Task completed artifact has an unsupported schema".into());
     }
     if outcome
@@ -892,10 +905,10 @@ fn load_delivery_assets(cas: &Cas, events: &[TaskEvent]) -> Result<DeliveryAsset
     }
     let source = load_snapshot(cas, &source_snapshot_id)?;
     let derived = load_snapshot(cas, &derived_snapshot_id)?;
-    if source.schema != "af/snapshot@1" || source.kind != "source" {
+    if source.schema != task_artifact::SNAPSHOT_V1 || source.kind != "source" {
         return Err("Task source Snapshot has an unsupported contract".into());
     }
-    if derived.schema != "af/snapshot@1"
+    if derived.schema != task_artifact::SNAPSHOT_V1
         || derived.kind != "derived"
         || derived.parent_snapshot_id.as_deref() != Some(source_snapshot_id.as_str())
         || derived.repository_id != source.repository_id
@@ -923,24 +936,6 @@ fn load_delivery_assets(cas: &Cas, events: &[TaskEvent]) -> Result<DeliveryAsset
         derived,
         derived_manifest,
     })
-}
-
-fn load_snapshot(cas: &Cas, snapshot_id: &str) -> Result<SnapshotReceipt, String> {
-    serde_json::from_value(
-        cas.get_json(snapshot_id)
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| format!("reading Snapshot {snapshot_id}: {error}"))
-}
-
-fn load_manifest(cas: &Cas, snapshot: &SnapshotReceipt) -> Result<Manifest, String> {
-    let manifest: Manifest = serde_json::from_value(
-        cas.get_json(&snapshot.manifest_artifact_id)
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| format!("reading Snapshot Manifest: {error}"))?;
-    manifest.validate().map_err(|error| error.to_string())?;
-    Ok(manifest)
 }
 
 fn ensure_no_git_admin_paths(manifest: &Manifest) -> Result<(), String> {
@@ -1001,7 +996,7 @@ fn validate_branch(git: &DeliveryGit, branch: &str) -> Result<(), String> {
 fn latest_event_json(
     cas: &Cas,
     events: &[TaskEvent],
-    event_type: &str,
+    event_type: TaskEventType,
 ) -> Result<Option<serde_json::Value>, String> {
     events
         .iter()
@@ -1017,7 +1012,7 @@ fn latest_event_json(
 fn latest_delivery_receipt(
     cas: &Cas,
     events: &[TaskEvent],
-    event_type: &str,
+    event_type: TaskEventType,
 ) -> Result<Option<DeliveryReceipt>, String> {
     latest_event_json(cas, events, event_type)?
         .map(|value| serde_json::from_value(value).map_err(|error| error.to_string()))
@@ -1030,14 +1025,16 @@ fn latest_delivery_transition(
 ) -> Result<Option<DeliveryPrepared>, String> {
     let latest = events.iter().rev().find(|event| {
         matches!(
-            event.event_type.as_str(),
-            "TaskDeliveryPrepared@1" | "TaskDelivered@1" | "TaskDeliveryFailed@1"
+            event.event_type,
+            TaskEventType::TaskDeliveryPreparedV1
+                | TaskEventType::TaskDeliveredV1
+                | TaskEventType::TaskDeliveryFailedV1
         )
     });
     let Some(event) = latest else {
         return Ok(None);
     };
-    if event.event_type != "TaskDeliveryPrepared@1" {
+    if event.event_type != TaskEventType::TaskDeliveryPreparedV1 {
         return Ok(None);
     }
     serde_json::from_value(
@@ -1054,11 +1051,15 @@ fn latest_terminal_delivery_failure(
 ) -> Result<Option<DeliveryReceipt>, String> {
     let latest = events.iter().rev().find(|event| {
         matches!(
-            event.event_type.as_str(),
-            "TaskDeliveryPrepared@1" | "TaskDelivered@1" | "TaskDeliveryFailed@1"
+            event.event_type,
+            TaskEventType::TaskDeliveryPreparedV1
+                | TaskEventType::TaskDeliveredV1
+                | TaskEventType::TaskDeliveryFailedV1
         )
     });
-    let Some(event) = latest.filter(|event| event.event_type == "TaskDeliveryFailed@1") else {
+    let Some(event) =
+        latest.filter(|event| event.event_type == TaskEventType::TaskDeliveryFailedV1)
+    else {
         return Ok(None);
     };
     let receipt: DeliveryReceipt = serde_json::from_value(
@@ -1105,8 +1106,10 @@ fn latest_delivery_value(
         .rev()
         .find(|event| {
             matches!(
-                event.event_type.as_str(),
-                "TaskDeliveryPrepared@1" | "TaskDelivered@1" | "TaskDeliveryFailed@1"
+                event.event_type,
+                TaskEventType::TaskDeliveryPreparedV1
+                    | TaskEventType::TaskDeliveredV1
+                    | TaskEventType::TaskDeliveryFailedV1
             )
         })
         .map(|event| {
@@ -1120,7 +1123,7 @@ fn ensure_same_delivery(
     requested: &DeliveryPrepared,
     existing: &DeliveryReceipt,
 ) -> Result<(), String> {
-    if existing.schema != "af/task-delivery@1"
+    if existing.schema != task_artifact::TASK_DELIVERY_V1
         || existing.delivery_id != requested.delivery_id
         || existing.task_id != requested.task_id
         || existing.source_snapshot_id != requested.source_snapshot_id
@@ -1561,7 +1564,7 @@ fn git_common_dir(git: &DeliveryGit) -> Result<PathBuf, String> {
 
 fn delivered_receipt(prepared: &DeliveryPrepared, ignored_paths: Vec<String>) -> DeliveryReceipt {
     DeliveryReceipt {
-        schema: "af/task-delivery@1".into(),
+        schema: task_artifact::TASK_DELIVERY_V1.into(),
         delivery_id: prepared.delivery_id.clone(),
         task_id: prepared.task_id.clone(),
         source_snapshot_id: prepared.source_snapshot_id.clone(),
@@ -1586,7 +1589,7 @@ fn append_delivery_receipt(
     store: &mut TaskStore,
     cas: &Cas,
     receipt: &DeliveryReceipt,
-    event_type: &str,
+    event_type: TaskEventType,
 ) -> Result<(), String> {
     let artifact = cas
         .put_json(&serde_json::to_value(receipt).map_err(|error| error.to_string())?)
@@ -1754,17 +1757,6 @@ fn is_executable(_metadata: &std::fs::Metadata) -> bool {
     false
 }
 
-struct LoadedAuthority {
-    pipeline: TaskPipeline,
-    pipeline_artifact_id: String,
-    lock_artifact_id: String,
-    project_artifact_id: String,
-    implementer: ResolvedReviewer,
-    evaluator: ResolvedReviewer,
-    implementer_authority: WorkerAuthority,
-    evaluator_authority: WorkerAuthority,
-}
-
 pub(super) fn start(options: TaskOptions) -> Result<bool, String> {
     let repo_path = std::fs::canonicalize(&options.repo)
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
@@ -1791,7 +1783,7 @@ pub(super) fn start(options: TaskOptions) -> Result<bool, String> {
     let source_snapshot_id = cas
         .put_json(
             &serde_json::to_value(SnapshotReceipt {
-                schema: "af/snapshot@1".into(),
+                schema: task_artifact::SNAPSHOT_V1.into(),
                 kind: "source".into(),
                 content_digest: captured.content_digest.clone(),
                 manifest_artifact_id: source_manifest_id,
@@ -1805,376 +1797,57 @@ pub(super) fn start(options: TaskOptions) -> Result<bool, String> {
     let goal_artifact_id = cas
         .put(options.goal.as_bytes())
         .map_err(|error| error.to_string())?;
-    let loaded = load_authority(&options, &captured.manifest, &cas)?;
+    let authority = load_authority(&options, &captured.manifest, &cas)?;
     let task_id = task_id(&repo_path, &source_snapshot_id, &goal_artifact_id);
-    let opened = cas
-        .put_json(&serde_json::json!({
-            "schema": "af/task-opened@1",
-            "task_id": task_id,
-            "kind": "implement",
-            "goal_artifact_id": goal_artifact_id,
-            "source_snapshot_id": source_snapshot_id,
-            "pipeline_artifact_id": loaded.pipeline_artifact_id,
-            "lock_artifact_id": loaded.lock_artifact_id,
-            "project_artifact_id": loaded.project_artifact_id,
-            "workers": [&loaded.implementer_authority, &loaded.evaluator_authority],
-        }))
-        .map_err(|error| error.to_string())?;
-    store.append(&cas, &task_id, "TaskOpened@1", &opened)?;
     progress(&options, format!("task     {task_id}"));
     progress(&options, format!("source   {source_snapshot_id}"));
-
-    let template = review_sandbox::Template::materialize(&captured.manifest, &cas)
-        .map_err(|error| error.to_string())?;
-    let implement_sandbox = Sandbox::from_template(&template, Mode::EphemeralWrite)
-        .map_err(|error| error.to_string())?;
-    let implement_input = serde_json::json!({
-        "schema": "af/implement-input@1",
-        "task_id": task_id,
-        "goal": options.goal,
-        "source_snapshot_id": source_snapshot_id,
-        "constraints": [
-            "Edit only the provided sandbox.",
-            "Leave the sandbox in the complete state that should be evaluated.",
-            "Do not publish, push, create a branch, or write back to the source checkout."
-        ],
-        "budget": {"reserved_tokens": loaded.pipeline.attempt_tokens},
-    });
-    let implement_evidence = match invoke_worker(
-        "implementer",
-        &loaded.implementer,
-        &loaded.implementer_authority,
-        implement_sandbox.root(),
-        &cas,
-        &implement_input,
-        options
-            .timeout
-            .unwrap_or(Duration::from_secs(loaded.pipeline.timeout_seconds)),
-    ) {
-        Ok(evidence) => evidence,
-        Err(reason) => {
-            return finish(
-                &options,
-                &cas,
-                &mut store,
-                &task_id,
-                &source_snapshot_id,
-                None,
-                &goal_artifact_id,
-                &loaded,
-                &[],
-                &[],
-                "implementer",
-                &reason,
-            );
-        }
-    };
-    let implement_event = cas
-        .put_json(&serde_json::to_value(&implement_evidence).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?;
-    store.append(&cas, &task_id, "WorkerCompleted@1", &implement_event)?;
-    if implement_evidence.usage.chargeable_tokens > loaded.pipeline.attempt_tokens
-        || implement_evidence.usage.chargeable_tokens > loaded.pipeline.run_tokens
-    {
-        return finish(
-            &options,
-            &cas,
-            &mut store,
-            &task_id,
-            &source_snapshot_id,
-            None,
-            &goal_artifact_id,
-            &loaded,
-            &[implement_evidence],
-            &[],
-            "budget",
-            "implementer exceeded the admitted token budget",
-        );
-    }
-
-    let sealed = implement_sandbox
-        .seal()
-        .map_err(|error| format!("sealing implementer sandbox: {error}"))?;
-    let mutations = serde_json::json!({
-        "added": sealed.mutations.added,
-        "modified": sealed.mutations.modified,
-        "deleted": sealed.mutations.deleted,
-    });
-    let derived_manifest = sealed
-        .capture_snapshot(&cas)
-        .map_err(|error| format!("capturing derived Snapshot: {error}"))?;
-    let derived_manifest_id = put_manifest(&cas, &derived_manifest)?;
-    let derived_snapshot_id = cas
-        .put_json(
-            &serde_json::to_value(SnapshotReceipt {
-                schema: "af/snapshot@1".into(),
-                kind: "derived".into(),
-                content_digest: derived_manifest.content_digest(),
-                manifest_artifact_id: derived_manifest_id,
-                parent_snapshot_id: Some(source_snapshot_id.clone()),
-                repository_id: captured.repository_id,
-                source_revision: None,
-            })
-            .map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-    verify_snapshot(&cas, &derived_manifest, &derived_snapshot_id)?;
-    let snapshot_event = cas
-        .put_json(&serde_json::json!({
-            "schema": "af/derived-snapshot@1",
-            "snapshot_id": derived_snapshot_id,
-            "mutations": mutations,
-        }))
-        .map_err(|error| error.to_string())?;
-    store.append(&cas, &task_id, "SnapshotDerived@1", &snapshot_event)?;
-    progress(&options, format!("derived  {derived_snapshot_id}"));
-
-    let mut gates = Vec::new();
-    for definition in loaded.pipeline.check_definitions() {
-        let gate_sandbox = Sandbox::materialize(&derived_manifest, &cas, Mode::ReadOnly)
-            .map_err(|error| error.to_string())?;
-        // Build systems may write caches, but acceptance gates may not mutate the Snapshot.
-        // Give them an external disposable target directory instead of weakening read-only mode.
-        let gate_scratch = tempfile::tempdir().map_err(|error| error.to_string())?;
-        let mut result = CheckRunner::new(&cas, gate_sandbox.root())
-            .with_env(
-                "CARGO_TARGET_DIR",
-                gate_scratch
-                    .path()
-                    .join("cargo-target")
-                    .display()
-                    .to_string(),
-            )
-            .with_timeout(Duration::from_secs(loaded.pipeline.check_timeout_seconds))
-            .run(&definition);
-        let gate_sealed = gate_sandbox.seal().map_err(|error| error.to_string())?;
-        if !gate_sealed.unchanged() {
-            result = mutated_gate_result(result, gate_sealed.mutations.paths());
-        }
-        let result_artifact = cas
-            .put_json(&serde_json::to_value(&result).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
-        gates.push(GateEvidence {
-            name: result.name.clone(),
-            status: result.status,
-            result_artifact: result_artifact.clone(),
-        });
-        store.append(&cas, &task_id, "GateCompleted@1", &result_artifact)?;
-        progress(
-            &options,
-            format!("gate     {} -> {:?}", result.name, result.status),
-        );
-    }
-    if gates.iter().any(|gate| gate.status != CheckStatus::Passed) {
-        return finish(
-            &options,
-            &cas,
-            &mut store,
-            &task_id,
-            &source_snapshot_id,
-            Some(&derived_snapshot_id),
-            &goal_artifact_id,
-            &loaded,
-            &[implement_evidence],
-            &gates,
-            "gates",
-            "one or more required acceptance gates did not pass",
-        );
-    }
-    if loaded
-        .pipeline
-        .run_tokens
-        .saturating_sub(implement_evidence.usage.chargeable_tokens)
-        < loaded.pipeline.attempt_tokens
-    {
-        return finish(
-            &options,
-            &cas,
-            &mut store,
-            &task_id,
-            &source_snapshot_id,
-            Some(&derived_snapshot_id),
-            &goal_artifact_id,
-            &loaded,
-            &[implement_evidence],
-            &gates,
-            "budget",
-            "remaining run budget cannot reserve the evaluator attempt",
-        );
-    }
-
-    let evaluator_sandbox = Sandbox::materialize(&derived_manifest, &cas, Mode::ReadOnly)
-        .map_err(|error| error.to_string())?;
-    let evaluation_input = serde_json::json!({
-        "schema": "af/evaluate-input@1",
-        "task_id": task_id,
-        "goal": options.goal,
-        "source_snapshot_id": source_snapshot_id,
-        "derived_snapshot_id": derived_snapshot_id,
-        "mutations": mutations,
-        "gates": gates,
-        "budget": {"reserved_tokens": loaded.pipeline.attempt_tokens},
-        "output_contract": {"verdict": "approve|reject", "summary": "string"},
-    });
-    let evaluator_evidence = match invoke_worker(
-        "evaluator",
-        &loaded.evaluator,
-        &loaded.evaluator_authority,
-        evaluator_sandbox.root(),
-        &cas,
-        &evaluation_input,
-        options
-            .timeout
-            .unwrap_or(Duration::from_secs(loaded.pipeline.timeout_seconds)),
-    ) {
-        Ok(evidence) => evidence,
-        Err(reason) => {
-            return finish(
-                &options,
-                &cas,
-                &mut store,
-                &task_id,
-                &source_snapshot_id,
-                Some(&derived_snapshot_id),
-                &goal_artifact_id,
-                &loaded,
-                &[implement_evidence],
-                &gates,
-                "evaluator",
-                &reason,
-            );
-        }
-    };
-    let evaluator_sealed = evaluator_sandbox
-        .seal()
-        .map_err(|error| error.to_string())?;
-    if !evaluator_sealed.unchanged() {
-        return finish(
-            &options,
-            &cas,
-            &mut store,
-            &task_id,
-            &source_snapshot_id,
-            Some(&derived_snapshot_id),
-            &goal_artifact_id,
-            &loaded,
-            &[implement_evidence, evaluator_evidence],
-            &gates,
-            "evaluator",
-            "evaluator mutated its read-only Snapshot",
-        );
-    }
-    let evaluator_event = cas
-        .put_json(&serde_json::to_value(&evaluator_evidence).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())?;
-    store.append(&cas, &task_id, "WorkerCompleted@1", &evaluator_event)?;
-    if evaluator_evidence.usage.chargeable_tokens > loaded.pipeline.attempt_tokens
-        || implement_evidence
-            .usage
-            .chargeable_tokens
-            .saturating_add(evaluator_evidence.usage.chargeable_tokens)
-            > loaded.pipeline.run_tokens
-    {
-        return finish(
-            &options,
-            &cas,
-            &mut store,
-            &task_id,
-            &source_snapshot_id,
-            Some(&derived_snapshot_id),
-            &goal_artifact_id,
-            &loaded,
-            &[implement_evidence, evaluator_evidence],
-            &gates,
-            "budget",
-            "evaluator exceeded the admitted token budget",
-        );
-    }
-    let raw = cas
-        .get(&evaluator_evidence.raw_artifact)
-        .map_err(|error| error.to_string())?;
-    let answer = match worker_answer(&loaded.evaluator.runner.program, &raw) {
-        Ok(answer) => answer,
-        Err(reason) => {
-            return finish(
-                &options,
-                &cas,
-                &mut store,
-                &task_id,
-                &source_snapshot_id,
-                Some(&derived_snapshot_id),
-                &goal_artifact_id,
-                &loaded,
-                &[implement_evidence, evaluator_evidence],
-                &gates,
-                "evaluation",
-                &reason,
-            );
-        }
-    };
-    let evaluation: Evaluation = match serde_json::from_str(extract_result(&answer)) {
-        Ok(evaluation) => evaluation,
-        Err(error) => {
-            return finish(
-                &options,
-                &cas,
-                &mut store,
-                &task_id,
-                &source_snapshot_id,
-                Some(&derived_snapshot_id),
-                &goal_artifact_id,
-                &loaded,
-                &[implement_evidence, evaluator_evidence],
-                &gates,
-                "evaluation",
-                &format!("evaluator returned malformed verdict: {error}"),
-            );
-        }
-    };
-    let evaluation_artifact = cas
-        .put_json(&serde_json::json!({
-            "verdict": match evaluation.verdict {
-                EvaluationVerdict::Approve => "approve",
-                EvaluationVerdict::Reject => "reject",
-            },
-            "summary": evaluation.summary,
-        }))
-        .map_err(|error| error.to_string())?;
-    store.append(
-        &cas,
-        &task_id,
-        "EvaluationCompleted@1",
-        &evaluation_artifact,
-    )?;
-    let evidence = vec![implement_evidence, evaluator_evidence];
-    if evaluation.verdict == EvaluationVerdict::Reject {
-        return finish(
-            &options,
-            &cas,
-            &mut store,
-            &task_id,
-            &source_snapshot_id,
-            Some(&derived_snapshot_id),
-            &goal_artifact_id,
-            &loaded,
-            &evidence,
-            &gates,
-            "evaluation",
-            "independent evaluator rejected the derived Snapshot",
-        );
-    }
-    finish_verified(
-        &options,
+    let candidate = candidate_identity()?;
+    let observer = |line: &str| progress(&options, line.to_string());
+    let report = TaskKernel::new(
         &cas,
         &mut store,
-        &task_id,
-        &source_snapshot_id,
-        &derived_snapshot_id,
-        &goal_artifact_id,
-        &loaded,
-        &evidence,
-        &gates,
+        TaskInputs {
+            task_id,
+            goal: options.goal.clone(),
+            goal_artifact_id,
+            source: TaskSource {
+                snapshot_id: source_snapshot_id,
+                manifest: captured.manifest,
+                repository_id: captured.repository_id,
+            },
+            authority,
+            candidate: TaskCandidate {
+                version: candidate.version.into(),
+                executable: candidate.executable,
+                binary_sha256: candidate.binary_sha256,
+            },
+        },
     )
+    .with_worker_timeout(options.timeout)
+    .with_observer(&observer)
+    .run()?;
+    print_outcome(&options, &report)?;
+    Ok(report.verified)
+}
+
+fn print_outcome(options: &TaskOptions, report: &TaskReport) -> Result<(), String> {
+    if options.json {
+        println!(
+            "{}",
+            serde_json::to_string(&report.outcome).map_err(|error| error.to_string())?
+        );
+    } else {
+        println!(
+            "task     {}\noutcome  {}\nsnapshot {}\ntokens   {} chargeable",
+            report.task_id,
+            report.outcome["outcome"]["kind"]
+                .as_str()
+                .unwrap_or("unverified"),
+            report.derived_snapshot_id.as_deref().unwrap_or("-"),
+            report.chargeable_tokens,
+        );
+    }
+    Ok(())
 }
 
 fn task_state(options: &TaskOptions, repository: &Path) -> Result<PathBuf, String> {
@@ -2184,14 +1857,11 @@ fn task_state(options: &TaskOptions, repository: &Path) -> Result<PathBuf, Strin
 fn resolve_task_state(state: &Option<PathBuf>, repository: &Path) -> Result<PathBuf, String> {
     match state {
         Some(state) => resolve_filesystem_path(state),
-        None => {
-            let identity = Sha256::digest(repository.as_os_str().as_encoded_bytes());
-            normalize_absolute(
-                &xdg_state_root()?
-                    .join("af/task/local")
-                    .join(&format!("{identity:x}")[..16]),
-            )
-        }
+        None => normalize_absolute(
+            &xdg_state_root()?
+                .join("af/task/local")
+                .join(repository_state_id(repository)),
+        ),
     }
 }
 
@@ -2213,7 +1883,7 @@ fn load_authority(
     options: &TaskOptions,
     manifest: &Manifest,
     cas: &Cas,
-) -> Result<LoadedAuthority, String> {
+) -> Result<TaskAuthority, String> {
     let pipeline_path = canonical_authority_path(&options.pipeline)?;
     let pipeline_bytes = manifest_bytes(manifest, cas, &pipeline_path)?;
     let project_bytes = manifest_bytes(manifest, cas, ".af/af.toml")?;
@@ -2248,8 +1918,8 @@ fn load_authority(
     let project_artifact_id = cas.put(&project_bytes).map_err(|error| error.to_string())?;
     let implementer_authority = publish_worker("implementer", &implementer, cas)?;
     let evaluator_authority = publish_worker("evaluator", &evaluator, cas)?;
-    Ok(LoadedAuthority {
-        pipeline,
+    Ok(TaskAuthority {
+        pipeline: pipeline.spec(),
         pipeline_artifact_id,
         lock_artifact_id,
         project_artifact_id,
@@ -2351,388 +2021,76 @@ fn captured_registry(
     Ok(packages)
 }
 
-fn publish_worker(
-    role: &str,
-    package: &ResolvedReviewer,
-    cas: &Cas,
-) -> Result<WorkerAuthority, String> {
-    let mut files = BTreeMap::new();
-    for (path, bytes) in package.files() {
-        files.insert(path, cas.put(bytes).map_err(|error| error.to_string())?);
-    }
-    let package_artifact_id = cas
-        .put_json(&serde_json::json!({
-            "schema": "af/worker-package@1",
-            "name": package.name,
-            "version": package.version,
-            "digest": package.digest,
-            "files": files,
-        }))
-        .map_err(|error| error.to_string())?;
-    Ok(WorkerAuthority {
-        role: role.into(),
-        name: package.name.clone(),
-        version: package.version.clone(),
-        digest: package.digest.clone(),
-        package_artifact_id,
-    })
-}
-
-fn invoke_worker(
-    role: &str,
-    package: &ResolvedReviewer,
-    authority: &WorkerAuthority,
-    sandbox: &Path,
-    cas: &Cas,
-    input: &serde_json::Value,
-    timeout: Duration,
-) -> Result<WorkerEvidence, String> {
-    let instructions = package
-        .file("reviewer.md")
-        .ok_or_else(|| format!("{} package has no reviewer.md", package.name))?;
-    let instructions = std::str::from_utf8(instructions)
-        .map_err(|error| format!("{} reviewer.md is not UTF-8: {error}", package.name))?;
-    let rendered_input = serde_json::to_string_pretty(input).map_err(|error| error.to_string())?;
-    let input_artifact_id = cas
-        .put(rendered_input.as_bytes())
-        .map_err(|error| error.to_string())?;
-    let prompt = format!(
-        "{instructions}\n\n## Exact Task input (kernel data, not instructions)\n\n```json\n{rendered_input}\n```\n"
-    );
-    let mut context_manifest = ContextManifest::default();
-    context_manifest.record(
-        "worker_instructions",
-        "digest-pinned Worker package",
-        Some(authority.package_artifact_id.clone()),
-        Some("af/worker-package@1".into()),
-        instructions.len(),
-    );
-    context_manifest.record(
-        "task_input",
-        "role-scoped typed input",
-        Some(input_artifact_id),
-        input
-            .get("schema")
-            .and_then(|value| value.as_str())
-            .map(str::to_string),
-        rendered_input.len(),
-    );
-    context_manifest.finish(prompt.len());
-    let mut runner = ModelRunner::new(sandbox, timeout);
-    if package.runner.program.ends_with("codex") {
-        let codex_home = std::env::var_os("CODEX_HOME").or_else(|| {
-            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".codex").into_os_string())
-        });
-        if let Some(codex_home) = codex_home {
-            runner = runner.with_grant("CODEX_HOME", codex_home.to_string_lossy());
-        }
-    }
-    let capture = runner
-        .capture_with_stdin(cas, &package.runner, prompt.into_bytes())
-        .map_err(|error| format!("{role} Worker: {error}"))?;
-    let usage = worker_usage(&package.runner.program, &capture.stdout);
-    if !capture.status.success() {
-        let detail = String::from_utf8_lossy(&capture.stderr)
-            .lines()
-            .last()
-            .unwrap_or("Worker exited unsuccessfully")
-            .to_string();
-        return Err(format!("{role} Worker failed: {detail}"));
-    }
-    Ok(WorkerEvidence {
-        role: role.into(),
-        package_artifact_id: authority.package_artifact_id.clone(),
-        raw_artifact: capture.raw_artifact,
-        usage,
-        context_manifest,
-    })
-}
-
-fn worker_usage(program: &str, stdout: &[u8]) -> TokenUsage {
-    if program.ends_with("codex") {
-        let mut usage = TokenUsage::default();
-        for line in stdout.split(|byte| *byte == b'\n') {
-            let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
-                continue;
-            };
-            if value.get("type").and_then(|value| value.as_str()) != Some("turn.completed") {
-                continue;
-            }
-            let Some(receipt) = value.get("usage") else {
-                continue;
-            };
-            let count = |name: &str| {
-                receipt
-                    .get(name)
-                    .and_then(|value| value.as_u64())
-                    .unwrap_or(0)
-            };
-            let input = count("input_tokens");
-            let output = count("output_tokens");
-            let cache = count("cached_input_tokens");
-            add_usage(&mut usage.input_tokens, input);
-            add_usage(&mut usage.output_tokens, output);
-            add_usage(&mut usage.cache_read_tokens, cache);
-            add_usage(
-                &mut usage.cache_write_tokens,
-                count("cache_write_input_tokens"),
-            );
-            add_usage(
-                &mut usage.reasoning_tokens,
-                count("reasoning_output_tokens"),
-            );
-            usage.chargeable_tokens = usage
-                .chargeable_tokens
-                .saturating_add(input.saturating_sub(cache).saturating_add(output));
-        }
-        return usage;
-    }
-    if program.ends_with("claude")
-        && let Ok(value) = serde_json::from_slice::<serde_json::Value>(stdout)
-        && let Some(receipt) = value.get("usage")
-    {
-        let count = |name: &str| {
-            receipt
-                .get(name)
-                .and_then(|value| value.as_u64())
-                .unwrap_or(0)
-        };
-        let input = count("input_tokens");
-        let output = count("output_tokens");
-        let cache_write = count("cache_creation_input_tokens");
-        return TokenUsage {
-            input_tokens: Some(input),
-            output_tokens: Some(output),
-            cache_read_tokens: Some(count("cache_read_input_tokens")),
-            cache_write_tokens: Some(cache_write),
-            reasoning_tokens: None,
-            chargeable_tokens: input.saturating_add(output).saturating_add(cache_write),
-        };
-    }
-    TokenUsage::default()
-}
-
-fn add_usage(total: &mut Option<u64>, amount: u64) {
-    *total = Some(total.unwrap_or(0).saturating_add(amount));
-}
-
-fn worker_answer(program: &str, stdout: &[u8]) -> Result<String, String> {
-    if program.ends_with("codex") {
-        let mut answer = None;
-        for line in stdout.split(|byte| *byte == b'\n') {
-            let Ok(value) = serde_json::from_slice::<serde_json::Value>(line) else {
-                continue;
-            };
-            if value.get("type").and_then(|value| value.as_str()) == Some("item.completed")
-                && value
-                    .get("item")
-                    .and_then(|item| item.get("type"))
-                    .and_then(|value| value.as_str())
-                    == Some("agent_message")
-            {
-                answer = value
-                    .get("item")
-                    .and_then(|item| item.get("text"))
-                    .and_then(|value| value.as_str())
-                    .map(str::to_string);
-            }
-        }
-        return answer.ok_or("evaluator produced no final Codex message".into());
-    }
-    if program.ends_with("claude") {
-        let value: serde_json::Value =
-            serde_json::from_slice(stdout).map_err(|error| error.to_string())?;
-        return value
-            .get("result")
-            .and_then(|value| value.as_str())
-            .map(str::to_string)
-            .ok_or("evaluator produced no Claude result".into());
-    }
-    String::from_utf8(stdout.to_vec()).map_err(|error| error.to_string())
-}
-
-fn mutated_gate_result(result: CheckResult, paths: Vec<String>) -> CheckResult {
-    CheckResult {
-        status: CheckStatus::NotRun,
-        exit_code: None,
-        reason: Some(format!(
-            "read-only gate mutated its Snapshot: {} paths",
-            paths.len()
-        )),
-        ..result
-    }
-}
-
-fn put_manifest(cas: &Cas, manifest: &Manifest) -> Result<String, String> {
-    cas.put_json(&serde_json::to_value(manifest).map_err(|error| error.to_string())?)
-        .map_err(|error| error.to_string())
-}
-
-fn verify_snapshot(cas: &Cas, manifest: &Manifest, snapshot_id: &str) -> Result<(), String> {
-    cas.verify(snapshot_id).map_err(|error| error.to_string())?;
-    for entry in &manifest.entries {
-        cas.verify(&entry.content)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn finish(
-    options: &TaskOptions,
-    cas: &Cas,
-    store: &mut TaskStore,
-    task_id: &str,
-    source_snapshot_id: &str,
-    derived_snapshot_id: Option<&str>,
-    goal_artifact_id: &str,
-    loaded: &LoadedAuthority,
-    workers: &[WorkerEvidence],
-    gates: &[GateEvidence],
-    stage: &str,
-    reason: &str,
-) -> Result<bool, String> {
-    finish_outcome(
-        options,
-        cas,
-        store,
-        task_id,
-        source_snapshot_id,
-        derived_snapshot_id,
-        goal_artifact_id,
-        loaded,
-        workers,
-        gates,
-        serde_json::json!({"kind": "unverified", "stage": stage, "reason": reason}),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn finish_verified(
-    options: &TaskOptions,
-    cas: &Cas,
-    store: &mut TaskStore,
-    task_id: &str,
-    source_snapshot_id: &str,
-    derived_snapshot_id: &str,
-    goal_artifact_id: &str,
-    loaded: &LoadedAuthority,
-    workers: &[WorkerEvidence],
-    gates: &[GateEvidence],
-) -> Result<bool, String> {
-    finish_outcome(
-        options,
-        cas,
-        store,
-        task_id,
-        source_snapshot_id,
-        Some(derived_snapshot_id),
-        goal_artifact_id,
-        loaded,
-        workers,
-        gates,
-        serde_json::json!({"kind": "verified", "snapshot_id": derived_snapshot_id}),
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn finish_outcome(
-    options: &TaskOptions,
-    cas: &Cas,
-    store: &mut TaskStore,
-    task_id: &str,
-    source_snapshot_id: &str,
-    derived_snapshot_id: Option<&str>,
-    goal_artifact_id: &str,
-    loaded: &LoadedAuthority,
-    workers: &[WorkerEvidence],
-    gates: &[GateEvidence],
-    outcome: serde_json::Value,
-) -> Result<bool, String> {
-    let candidate = candidate_identity()?;
-    let chargeable_tokens = workers.iter().fold(0_u64, |total, worker| {
-        total.saturating_add(worker.usage.chargeable_tokens)
-    });
-    let rendered_bytes = workers.iter().fold(0_u64, |total, worker| {
-        total.saturating_add(worker.context_manifest.rendered_bytes)
-    });
-    let estimated_context_tokens = workers.iter().fold(0_u64, |total, worker| {
-        total.saturating_add(worker.context_manifest.estimated_tokens)
-    });
-    let usage = aggregate_usage(workers);
-    let result = serde_json::json!({
-        "schema": "af/task-outcome@1",
-        "candidate": {
-            "version": candidate.version,
-            "executable": candidate.executable,
-            "binary_sha256": candidate.binary_sha256,
-        },
-        "task_id": task_id,
-        "kind": "implement",
-        "goal_artifact_id": goal_artifact_id,
-        "source_snapshot_id": source_snapshot_id,
-        "derived_snapshot_id": derived_snapshot_id,
-        "authority": {
-            "pipeline_artifact_id": loaded.pipeline_artifact_id,
-            "lock_artifact_id": loaded.lock_artifact_id,
-            "project_artifact_id": loaded.project_artifact_id,
-            "workers": [&loaded.implementer_authority, &loaded.evaluator_authority],
-        },
-        "workers": workers,
-        "gates": gates,
-        "totals": {
-            "context": {
-                "rendered_bytes": rendered_bytes,
-                "estimated_tokens": estimated_context_tokens,
-            },
-            "usage": usage,
-        },
-        "delivery": {"kind": "none", "reason": "v2 ends at an internal Snapshot"},
-        "outcome": outcome,
-    });
-    let result_artifact = cas.put_json(&result).map_err(|error| error.to_string())?;
-    store.append(cas, task_id, "TaskCompleted@1", &result_artifact)?;
-    let verified = result["outcome"]["kind"] == "verified";
-    if options.json {
-        println!(
-            "{}",
-            serde_json::to_string(&result).map_err(|error| error.to_string())?
-        );
-    } else {
-        println!(
-            "task     {}\noutcome  {}\nsnapshot {}\ntokens   {} chargeable",
-            task_id,
-            result["outcome"]["kind"].as_str().unwrap_or("unverified"),
-            derived_snapshot_id.unwrap_or("-"),
-            chargeable_tokens,
-        );
-    }
-    Ok(verified)
-}
-
-fn aggregate_usage(workers: &[WorkerEvidence]) -> TokenUsage {
-    fn sum(workers: &[WorkerEvidence], select: impl Fn(&TokenUsage) -> Option<u64>) -> Option<u64> {
-        workers
-            .iter()
-            .filter_map(|worker| select(&worker.usage))
-            .reduce(u64::saturating_add)
-    }
-    TokenUsage {
-        input_tokens: sum(workers, |usage| usage.input_tokens),
-        output_tokens: sum(workers, |usage| usage.output_tokens),
-        cache_read_tokens: sum(workers, |usage| usage.cache_read_tokens),
-        cache_write_tokens: sum(workers, |usage| usage.cache_write_tokens),
-        reasoning_tokens: sum(workers, |usage| usage.reasoning_tokens),
-        chargeable_tokens: workers.iter().fold(0_u64, |total, worker| {
-            total.saturating_add(worker.usage.chargeable_tokens)
-        }),
-    }
-}
-
 fn progress(options: &TaskOptions, message: String) {
     if options.json {
         eprintln!("{message}");
     } else {
         println!("{message}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const TASK: &str = "task-0123456789abcdef0123";
+
+    #[test]
+    fn task_store_refuses_a_row_whose_artifact_is_not_durable() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut store = TaskStore::open(&directory.path().join("tasks.sqlite")).unwrap();
+        let absent = format!("sha256:{}", "b".repeat(64));
+        let refused = store
+            .append(&cas, TASK, TaskEventType::GateCompletedV1, &absent)
+            .unwrap_err();
+        assert!(refused.contains("not durable"), "{refused}");
+        assert!(store.events(TASK).unwrap().is_empty());
+        assert!(store.task_ids().unwrap().is_empty());
+
+        let evaluation = cas
+            .put_json(&serde_json::json!({
+                "schema": task_artifact::TASK_EVALUATION_V1,
+                "verdict": "reject",
+                "summary": "no",
+            }))
+            .unwrap();
+        let mistyped = store
+            .append(&cas, TASK, TaskEventType::TaskCompletedV1, &evaluation)
+            .unwrap_err();
+        assert!(mistyped.contains("af/task-outcome@1"), "{mistyped}");
+        store
+            .append(
+                &cas,
+                TASK,
+                TaskEventType::EvaluationCompletedV1,
+                &evaluation,
+            )
+            .unwrap();
+        let events = store.events(TASK).unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].sequence, 1);
+        assert_eq!(events[0].event_type, TaskEventType::EvaluationCompletedV1);
+        assert_eq!(events[0].artifact_id, evaluation);
+        assert_eq!(
+            serde_json::to_value(&events[0]).unwrap()["event_type"],
+            "EvaluationCompleted@1"
+        );
+    }
+
+    #[test]
+    fn a_task_log_row_outside_the_vocabulary_fails_closed() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = TaskStore::open(&directory.path().join("tasks.sqlite")).unwrap();
+        store
+            .connection
+            .execute(
+                "INSERT INTO task_events(task_id, sequence, event_type, artifact_id)
+                 VALUES (?1, 1, 'TaskForked@1', ?2)",
+                [TASK, &format!("sha256:{}", "c".repeat(64))],
+            )
+            .unwrap();
+        let error = store.events(TASK).unwrap_err();
+        assert!(error.contains("TaskForked@1"), "{error}");
     }
 }

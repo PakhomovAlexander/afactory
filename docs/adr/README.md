@@ -1,11 +1,10 @@
 # Review Kernel — architecture decisions
 
-Decisions about the kernel's own design. These are distinct from
-[`../../../../docs/adr/`](../../../../docs/adr/), which is a generated hub's own decision log —
-the kernel ships *into* such a hub, so its decisions travel with the code rather than with the
-project using it.
+Decisions about the kernel's own design. They travel with the code: a consuming repository —
+the Afactory hub, or any project running `af review` — keeps its own decision log for how it
+uses the kernel, and never copies these.
 
-Same rules as the hub's: one decision per file, numbered, **immutable once accepted**. A changed
+One decision per file, numbered, **immutable once accepted**. A changed
 decision becomes a new ADR marked *superseded by* the old one, with links both ways. Record the
 options you rejected and why — that is the part future-you needs.
 
@@ -100,3 +99,5 @@ options you rejected and why — that is the part future-you needs.
   layered configuration](0044-af-manages-itself-and-dispatches-to-the-pinned-release.md)
 - [0045 — One release train, and a pin that binds
   bytes](0045-one-release-train-and-a-pin-that-binds-bytes.md)
+- [0046 — Record Tasks in a distinct typed Task
+  log](0046-record-tasks-in-a-distinct-typed-task-log.md)

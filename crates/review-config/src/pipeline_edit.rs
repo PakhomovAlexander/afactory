@@ -112,9 +112,9 @@ pub fn validate_pipeline_structure(text: &str) -> Result<(), String> {
     }
     let mut pipeline = Pipeline::default();
     for spec in &definition.nodes {
-        let mut node = Node::new(&spec.id, spec.kind.into())
-            .accepting_contracts(spec.inputs.iter().map(|port| port.build()).collect())
-            .emitting_contracts(spec.outputs.iter().map(|port| port.build()).collect());
+        let mut node = Node::new(&spec.id, crate::node_kind(spec.kind))
+            .accepting_contracts(spec.inputs.iter().map(crate::port_contract).collect())
+            .emitting_contracts(spec.outputs.iter().map(crate::port_contract).collect());
         if let Some(gate) = &spec.gated_by {
             node = node.gated_by(gate);
         }

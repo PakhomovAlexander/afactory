@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 use review_config::lock::{AfPin, Lockfile, Pin, Registry};
 use review_config::{
     ArgSpec, BudgetSpec, BudgetUnit, CheckSpec, CommandSpec, ConvergenceSpec, Definition, EdgeSpec,
-    GateExecutionSpec, GateModeSpec, IsolationSpec, NodeKindSpec, NodeSpec, PortContractSpec,
-    PortSpec, ProvenanceSpec, SandboxProviderSpec, SeveritySpec, SubjectSpec, TypedPortSpec,
+    GateExecutionSpec, GateModeSpec, IsolationSpec, NodeKindSpec, NodeSpec, PipelineDefinition,
+    PortContractSpec, PortSpec, ProvenanceSpec, SandboxProviderSpec, SeveritySpec, SubjectSpec,
+    TypedPortSpec,
 };
 use review_core::{PortCardinality, SnapshotAffinity, SubjectKind, contract};
 use serde::Serialize;
@@ -827,13 +828,14 @@ fn build_definition(gates: &[Gate]) -> Definition {
     }
     edges.push(edge("gather", "reports", "ledger", "reports"));
 
-    Definition {
+    Definition::from(PipelineDefinition {
         version: 3,
         subject: Some(SubjectSpec {
             kind: SubjectKind::Diff,
         }),
         checks,
         check_timeout_seconds: Some(3600),
+        max_parallel: None,
         gate: Some(GateExecutionSpec {
             provider: SandboxProviderSpec::TrustedLocal,
             required_isolation: IsolationSpec::None,
@@ -855,7 +857,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
             fan_out: None,
         }),
         integration: None,
-    }
+    })
 }
 
 fn typed_port(name: &str, artifact_type: &str) -> PortContractSpec {
@@ -1592,9 +1594,21 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
             }
         }
     }
-    refreshed
+    // A pin describes the package on disk, so refreshing drops packages that are gone and
+    // re-derives the digest of every one that remains. Re-pinning only what a review pipeline
+    // references would leave a Task pipeline's implementer and evaluator — referenced by name
+    // from the pipeline file, not by a node — carrying a digest their files no longer match.
+    let pinned: Vec<String> = refreshed
         .workers
-        .retain(|name, _| repo.join(".af/workers").join(name).is_dir());
+        .keys()
+        .filter(|name| repo.join(".af/workers").join(name).is_dir())
+        .cloned()
+        .collect();
+    refreshed.workers.clear();
+    for name in pinned {
+        let pin = Lockfile::pin(&name, &registry).map_err(|error| error.to_string())?;
+        refreshed.workers.insert(name, pin);
+    }
     refreshed
         .reviewers
         .retain(|name, _| repo.join(".af/workers").join(name).is_dir());

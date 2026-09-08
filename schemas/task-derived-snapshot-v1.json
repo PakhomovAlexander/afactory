@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:task-derived-snapshot:1",
+  "title": "af/derived-snapshot@1 payload",
+  "description": "Referenced by SnapshotDerived@1: the sealed implementer sandbox as a verified Snapshot, with the kernel-derived mutation set relative to the source. This record is the one durable home of the complete path lists; prompts carry only a bounded summary that points here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "snapshot_id",
+    "mutations"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/derived-snapshot@1"
+    },
+    "snapshot_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "mutations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "added",
+        "modified",
+        "deleted"
+      ],
+      "properties": {
+        "added": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "modified": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "deleted": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "size": {
+      "description": "Measured by the current writer on every derived Snapshot. Not required: `af` v0.7.1 published this record without it, and absent means unmeasured, not zero.",
+      "$ref": "#/$defs/size"
+    }
+  },
+  "$defs": {
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "size": {
+      "description": "Measured size of the derived Snapshot, so the ceiling is a number in the record rather than something discovered from disk. `mutated_*` count the entries the implementer added or modified, which is what the ceiling bounds; `entries`/`bytes` describe the whole tree.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entries",
+        "bytes",
+        "mutated_entries",
+        "mutated_bytes"
+      ],
+      "properties": {
+        "entries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "mutated_entries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "mutated_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  }
+}

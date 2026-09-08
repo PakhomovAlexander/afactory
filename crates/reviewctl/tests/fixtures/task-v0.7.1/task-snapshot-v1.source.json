@@ -1,0 +1,8 @@
+{
+  "schema": "af/snapshot@1",
+  "kind": "source",
+  "content_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+  "manifest_artifact_id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "repository_id": "repo-fixture",
+  "source_revision": "5555555555555555555555555555555555555555"
+}

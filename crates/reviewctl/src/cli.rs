@@ -290,7 +290,8 @@ pub(crate) struct RunArgs {
     /// Resume a fenced provider operation at the given epoch
     #[arg(long, value_name = "OPERATION_ID:EPOCH", action = ArgAction::Append, help_heading = "Providers")]
     pub(crate) resume_provider: Vec<String>,
-    /// Wall-clock budget for the whole run
+    /// Wall-clock budget for each reviewer Attempt, in seconds (default 1800; pinned in the
+    /// Campaign manifest as reviewer_timeout_seconds, not a bound on the whole run)
     #[arg(long, value_name = "N", help_heading = "Budget")]
     pub(crate) timeout_secs: Option<u64>,
     /// Wall-clock budget for each git operation
@@ -803,7 +804,8 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
         /// Start from the working tree instead of a revision
         #[arg(long, help_heading = "Selector")]
         uncommitted: bool,
-        /// Wall-clock budget for the whole Task
+        /// Wall-clock budget for each Worker Attempt (implementer and evaluator), in seconds;
+        /// not a bound on the whole Task
         #[arg(long, value_name = "N", help_heading = "Budget")]
         timeout_secs: Option<u64>,
         /// One JSON document on stdout instead of text

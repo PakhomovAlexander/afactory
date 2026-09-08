@@ -5,6 +5,10 @@
 //! the two agree, in both directions, so a field added to one and forgotten in the other fails
 //! the build rather than surfacing as a silently dropped value at runtime.
 //!
+//! One contract has no JSON Schema: the pipeline definition ([`definition`]) is the TOML shape a
+//! project writes and a Campaign pins, kept here so the loader and the event store read pinned
+//! authority through one shape.
+//!
 //! Two rules from the design are enforced in code rather than left to reviewers:
 //!
 //! - Reports are immutable claims. Nothing here offers a way to merge, edit, or collapse one.
@@ -15,6 +19,7 @@ pub mod broker;
 pub mod cache;
 pub mod campaign;
 pub mod change_set;
+pub mod definition;
 pub mod demand;
 pub mod disposition;
 pub mod envelope;
@@ -49,6 +54,13 @@ pub use campaign::{
     RoundStartedPayloadV1,
 };
 pub use change_set::{ChangeSetV1, PathRenameV1};
+pub use definition::{
+    ArgSpec, BudgetSpec, BudgetUnit, CacheKindSpec, CheckSpec, CloseoutModeSpec, CommandSpec,
+    ConvergenceSpec, DefinitionError, EdgeSpec, GateExecutionSpec, GateModeSpec, IntegrationSpec,
+    IsolationSpec, NodeBudgetSpec, NodeKindSpec, NodeSpec, PipelineDefinition, PortContractSpec,
+    PortSpec, ProvenanceSpec, ReviewerExecutionSpec, SUPPORTED_VERSIONS, SandboxProviderSpec,
+    SeveritySpec, SlicingSpec, SubjectSpec, TypedPortSpec,
+};
 pub use demand::{
     DEMAND_REDUCER_VERSION, DemandRequirement, DemandSetEntryV1, DemandSetV1, DemandStatus,
     DemandV1, DemandWaiverV1, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1, EvidenceV1,

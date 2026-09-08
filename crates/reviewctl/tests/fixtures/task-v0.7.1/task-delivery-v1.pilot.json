@@ -1,0 +1,17 @@
+{
+  "schema": "af/task-delivery@1",
+  "delivery_id": "delivery-dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+  "task_id": "task-0123456789abcdef0123",
+  "source_snapshot_id": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+  "derived_snapshot_id": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+  "target": {
+    "repository": "/repo",
+    "repository_id": "repo-fixture",
+    "branch": "af/task-0123456789abcdef0123",
+    "worktree": "/repo/../delivered"
+  },
+  "outcome": {
+    "kind": "delivered"
+  },
+  "remote_actions": []
+}

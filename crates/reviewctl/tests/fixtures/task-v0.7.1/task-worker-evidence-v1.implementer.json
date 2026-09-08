@@ -1,0 +1,32 @@
+{
+  "role": "implementer",
+  "package_artifact_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+  "raw_artifact": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+  "usage": {
+    "input_tokens": 900,
+    "output_tokens": 120,
+    "chargeable_tokens": 1020
+  },
+  "context_manifest": {
+    "entries": [
+      {
+        "name": "worker_instructions",
+        "required_by": "digest-pinned Worker package",
+        "artifact_id": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "artifact_type": "af/worker-package@1",
+        "rendered_bytes": 412,
+        "estimated_tokens": 103
+      },
+      {
+        "name": "task_input",
+        "required_by": "role-scoped typed input",
+        "artifact_id": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "artifact_type": "af/implement-input@1",
+        "rendered_bytes": 780,
+        "estimated_tokens": 195
+      }
+    ],
+    "rendered_bytes": 1192,
+    "estimated_tokens": 298
+  }
+}

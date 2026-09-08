@@ -1,26 +1,54 @@
-version = 2
+# The kernel's own review pipeline: a diff Subject, one high-effort correctness reviewer, one
+# required clean Round, at most two Rounds (ADR-0027, ADR-0037) — in the format `af onboard
+# --apply` emits (v3: explicit Gate execution authority), because this repository practices
+# the authority it generates for others.
+#
+# The Gate runs the deterministic project gate first: scripts/verify.sh is `make check` from the
+# read-only tree a Gate sandbox materializes, reusing the machine's build cache — the same Check
+# .af/pipelines/audit.toml gates on. It is required: a red tree gets no reviewer.
+#
+# markdownlint follows, advisory. It installs its digest-pinned toolchain (tools/markdownlint/)
+# with `npm ci`, which has no offline path: on a cold cache or restricted DNS the Check cannot
+# run, and a *required* Check that cannot run loses the Round with no reviewer. A lint must never
+# cost a Round, so it reports without blocking here and is enforced where the network exists —
+# the `markdownlint` job in .github/workflows/ci.yml, and `make markdownlint` locally.
+#
+# Editing this file or a Worker package requires `af onboard --refresh-lock`; `make check` fails
+# while .af/af.lock is not what that refresh writes.
+version = 3
 check_timeout_seconds = 3600
 
 [subject]
 kind = "diff"
 
 [[checks]]
+name = "check"
+program = "bash"
+args = [{ value = "scripts/verify.sh", provenance = "literal" }]
+required = true
+
+[[checks]]
 name = "markdownlint"
-program = "npx"
-args = [
-  { value = "--yes" },
-  { value = "markdownlint-cli2@0.22.1" },
-  { value = "**/*.md" },
-]
+program = "bash"
+args = [{ value = "scripts/markdownlint.sh", provenance = "literal" }]
+required = false
+
+[gate]
+provider = "trusted_local"
+required_isolation = "none"
+mode = "ephemeral-write"
 
 [[nodes]]
 id = "gate"
 kind = "gate"
+inputs = []
 outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 
+# Prior Findings arrive through a wired port: empty in Round 1, the earlier Rounds' Ledger after.
 [[nodes]]
 id = "generation"
 kind = "generation"
+inputs = []
 outputs = [
   { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
   { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
@@ -29,14 +57,15 @@ outputs = [
 [[nodes]]
 id = "correctness"
 kind = "reviewer"
+demands = "required"
+gated_by = "gate"
+package = "correctness"
 inputs = [
   { name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
   { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
   { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
 ]
 outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
-gated_by = "gate"
-package = "correctness"
 
 [[nodes]]
 id = "gather"

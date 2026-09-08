@@ -420,24 +420,75 @@ pub(crate) fn static_reservations(loaded: &Loaded) -> Vec<StaticReservation> {
         .collect()
 }
 
-/// The most the static Workers can hold reserved at once: every first Attempt together. This is
-/// what the run cap must admit before any Worker dispatches. `None` when uncapped.
+/// The most the static Workers can hold reserved at once. This is what the run cap must admit
+/// before any Worker dispatches. `None` when uncapped.
+///
+/// Concurrency is pipeline policy: the scheduler runs at most `max_parallel` nodes, and a Worker
+/// reserves its first Attempt when it takes a slot, not when it is planned. Six Workers at
+/// 300000 with `max_parallel = 2` peak at 600000 reserved, not 1800000 — `max_parallel` is
+/// exactly the knob for this, so the gate consults it. Taking the largest reservations keeps it
+/// failing closed.
+///
+/// A Scatter node is the deliberate exception. `run_scatter` reserves *every* shard up front, in
+/// canonical Slice order, so a shard the fan-out cap refuses is a durable `Missing` outcome
+/// before any shard runs; those shards all execute inside the Scatter's single scheduler slot.
+/// Its peak is therefore `max_fanout` first Attempts, counted in full however small
+/// `max_parallel` is.
 pub(crate) fn max_simultaneous_reservation(loaded: &Loaded) -> Result<Option<u64>, String> {
     if loaded.budgets().is_none() {
         return Ok(None);
     }
-    static_reservations(loaded)
+    let fanouts: BTreeMap<&str, u32> =
+        loaded
+            .slicing()
+            .values()
+            .fold(BTreeMap::new(), |mut fanouts, policy| {
+                let entry = fanouts.entry(policy.scatter.as_str()).or_insert(0);
+                *entry = (*entry).max(policy.max_fanout);
+                fanouts
+            });
+    peak_simultaneous_reservation(
+        &static_reservations(loaded),
+        &fanouts,
+        loaded.max_parallel(),
+    )
+    .map(Some)
+}
+
+/// The reservation peak of `reservations` under a concurrency bound: the `max_parallel` largest
+/// node peaks, where a Scatter node's peak is its whole declared fan-out. Pure, so the arithmetic
+/// the pre-flight gate refuses on is testable without a loaded project.
+pub(crate) fn peak_simultaneous_reservation(
+    reservations: &[StaticReservation],
+    scatter_fanouts: &BTreeMap<&str, u32>,
+    max_parallel: usize,
+) -> Result<u64, String> {
+    let overflow = || "static Worker reservation arithmetic overflow".to_string();
+    let mut peaks: Vec<u64> = reservations
         .iter()
-        .try_fold(0_u64, |sum, reservation| {
-            sum.checked_add(reservation.tokens)
-                .ok_or_else(|| "static Worker reservation arithmetic overflow".to_string())
-        })
-        .map(Some)
+        .map(
+            |reservation| match scatter_fanouts.get(reservation.node.as_str()) {
+                Some(fanout) => reservation
+                    .tokens
+                    .checked_mul(u64::from(*fanout))
+                    .ok_or_else(overflow),
+                None => Ok(reservation.tokens),
+            },
+        )
+        .collect::<Result<Vec<u64>, String>>()?;
+    // Largest first: the bound says how many can be held at once, not which.
+    peaks.sort_unstable_by(|a, b| b.cmp(a));
+    peaks.truncate(max_parallel.max(1));
+    peaks.iter().try_fold(0_u64, |sum, peak| {
+        sum.checked_add(*peak).ok_or_else(overflow)
+    })
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ProjectFile, glob_matches};
+    use std::collections::BTreeMap;
+
+    use super::{ProjectFile, StaticReservation, glob_matches, peak_simultaneous_reservation};
 
     fn project(extra: &str, min_af: &str) -> String {
         format!(
@@ -445,6 +496,84 @@ mod tests {
              [defaults]\npipeline = \"review\"\ntask_pipeline = \"implement\"\n\
              [worker.correctness]\npackage = \"correctness\"\n{extra}"
         )
+    }
+
+    fn reservations(nodes: &[(&str, u64)]) -> Vec<StaticReservation> {
+        nodes
+            .iter()
+            .map(|(node, tokens)| StaticReservation {
+                node: (*node).to_string(),
+                tokens: *tokens,
+                source: "pipeline",
+            })
+            .collect()
+    }
+
+    /// The peak a run cap must admit is bounded by the pipeline's own concurrency policy: with
+    /// `max_parallel = 2`, six Workers at 300000 peak at 600000, not 1800000. Refusing the run
+    /// on the full sum makes the one knob that exists for this unusable.
+    #[test]
+    fn the_reservation_peak_is_bounded_by_max_parallel() {
+        let six = reservations(&[
+            ("a", 300_000),
+            ("b", 300_000),
+            ("c", 300_000),
+            ("d", 300_000),
+            ("e", 300_000),
+            ("f", 300_000),
+        ]);
+        let none = BTreeMap::new();
+        assert_eq!(
+            peak_simultaneous_reservation(&six, &none, 2).unwrap(),
+            600_000
+        );
+        assert_eq!(
+            peak_simultaneous_reservation(&six, &none, 6).unwrap(),
+            1_800_000
+        );
+        // More slots than Workers cannot raise the peak above the Workers there are.
+        assert_eq!(
+            peak_simultaneous_reservation(&six, &none, 99).unwrap(),
+            1_800_000
+        );
+    }
+
+    /// Fail closed: the bound picks the largest reservations, never the first `max_parallel` in
+    /// node order.
+    #[test]
+    fn the_reservation_peak_takes_the_largest_reservations() {
+        let mixed = reservations(&[("a", 10), ("b", 900), ("c", 500)]);
+        assert_eq!(
+            peak_simultaneous_reservation(&mixed, &BTreeMap::new(), 2).unwrap(),
+            1_400
+        );
+    }
+
+    /// A Scatter reserves every shard up front and runs them inside its one slot, so its whole
+    /// declared fan-out counts however small `max_parallel` is.
+    #[test]
+    fn a_scatter_node_counts_its_whole_declared_fanout() {
+        let nodes = reservations(&[("scatter", 300_000), ("closeout", 300_000), ("x", 10)]);
+        let fanouts = BTreeMap::from([("scatter", 4_u32)]);
+        assert_eq!(
+            peak_simultaneous_reservation(&nodes, &fanouts, 1).unwrap(),
+            1_200_000
+        );
+        assert_eq!(
+            peak_simultaneous_reservation(&nodes, &fanouts, 2).unwrap(),
+            1_500_000
+        );
+    }
+
+    #[test]
+    fn a_reservation_that_cannot_be_summed_is_refused_rather_than_wrapped() {
+        let nodes = reservations(&[("scatter", u64::MAX)]);
+        let fanouts = BTreeMap::from([("scatter", 2_u32)]);
+        assert!(
+            peak_simultaneous_reservation(&nodes, &fanouts, 4)
+                .unwrap_err()
+                .contains("overflow")
+        );
     }
 
     #[test]

@@ -10,6 +10,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use review_core::path::is_literal_path_byte;
 pub use review_core::{decode_path, encode_path};
 
 /// The lossless JSON spelling used for manifest entry paths.
@@ -29,6 +30,14 @@ impl PathEncoding {
     fn is_legacy(&self) -> bool {
         *self == Self::LegacyV1
     }
+
+    /// The serde spelling, for diagnostics that must not depend on `Debug`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LegacyV1 => "legacy_v1",
+            Self::PercentV2 => "percent_v2",
+        }
+    }
 }
 
 fn encode_path_for(encoding: PathEncoding, bytes: &[u8]) -> String {
@@ -40,9 +49,8 @@ fn encode_path_for(encoding: PathEncoding, bytes: &[u8]) -> String {
         _ => {
             let mut encoded = String::with_capacity(bytes.len());
             for byte in bytes {
-                if byte.is_ascii_alphanumeric()
-                    || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'+' | b' ' | b'@')
-                {
+                // The frozen legacy alphabet is the current one plus a literal space.
+                if is_literal_path_byte(*byte) || *byte == b' ' {
                     encoded.push(*byte as char);
                 } else {
                     encoded.push_str(&format!("%{byte:02X}"));
@@ -68,11 +76,9 @@ pub(crate) fn is_canonical_path_encoding(
         return false;
     }
     let bytes = encoded.as_bytes();
-    let literal = |byte: u8| {
-        byte.is_ascii_alphanumeric()
-            || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'+' | b'@')
-            || encoding == PathEncoding::LegacyV1 && byte == b' '
-    };
+    // One alphabet, owned by the encoder: `legacy_v1` only adds its literal space.
+    let literal =
+        |byte: u8| is_literal_path_byte(byte) || encoding == PathEncoding::LegacyV1 && byte == b' ';
     let mut index = 0;
     while index < bytes.len() {
         if bytes[index] != b'%' {
@@ -172,7 +178,8 @@ impl std::fmt::Display for ManifestError {
         match self {
             Self::NoncanonicalPath { path, encoding } => write!(
                 formatter,
-                "manifest path `{path}` is not canonical for {encoding:?}"
+                "manifest path `{path}` is not canonical for {}",
+                encoding.as_str()
             ),
             Self::DuplicatePath(path) => write!(formatter, "manifest repeats path `{path}`"),
             Self::UnsortedPaths { previous, path } => write!(
@@ -359,6 +366,60 @@ pub fn digest_reader_with_buffer(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The checker accepts exactly what the encoder produces, over the spellings that only the
+    /// percent form can carry: a literal `%`, leading and trailing whitespace, and bytes that
+    /// are not UTF-8. The legacy encoder is held to its own frozen alphabet the same way.
+    #[test]
+    fn the_canonicality_check_accepts_every_encoder_spelling() {
+        let corpus: Vec<Vec<u8>> = vec![
+            b"src/main.rs".to_vec(),
+            b"docs/50%25 off.md".to_vec(),
+            b"100%".to_vec(),
+            b" leading.txt".to_vec(),
+            b"trailing.txt ".to_vec(),
+            b"dir/ inner /file".to_vec(),
+            b"tab\there".to_vec(),
+            b"new\nline".to_vec(),
+            b"latin1-\xE9.txt".to_vec(),
+            b"\xFF\xFE".to_vec(),
+            b"plus+at@dash-under_score.ext".to_vec(),
+            b"unicode-\xC3\xA9.txt".to_vec(),
+        ];
+        for raw in &corpus {
+            for encoding in [PathEncoding::PercentV2, PathEncoding::LegacyV1] {
+                let encoded = encode_path_for(encoding, raw);
+                assert_eq!(decode_path(&encoded), *raw, "{encoding:?} {raw:?}");
+                assert!(
+                    is_canonical_path_encoding(encoding, &encoded, raw),
+                    "{encoding:?} spelling {encoded:?} of {raw:?} must be canonical"
+                );
+            }
+        }
+        for encoding in [PathEncoding::LegacyV1, PathEncoding::PercentV2] {
+            assert_eq!(
+                serde_json::to_value(encoding).unwrap(),
+                serde_json::Value::String(encoding.as_str().to_string())
+            );
+        }
+        // A spelling the encoder never produces stays refused: a percent-escaped literal byte.
+        assert!(!is_canonical_path_encoding(
+            PathEncoding::PercentV2,
+            "src%2Fmain.rs",
+            b"src/main.rs"
+        ));
+        // The legacy literal space is canonical only under the legacy generation.
+        assert!(is_canonical_path_encoding(
+            PathEncoding::LegacyV1,
+            "50%25 off",
+            b"50% off"
+        ));
+        assert!(!is_canonical_path_encoding(
+            PathEncoding::PercentV2,
+            "50%25 off",
+            b"50% off"
+        ));
+    }
 
     fn entry(path: &str, kind: EntryKind, content: &[u8]) -> Entry {
         Entry {
