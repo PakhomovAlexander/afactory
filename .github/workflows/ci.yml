@@ -26,8 +26,24 @@ jobs:
         run: make check
       - name: CLI smoke
         run: cargo run --locked -p reviewctl --bin af -- --version
+      - name: Fetch the pinned minisign
+        # Its own step, as in release.yml: a failing command substitution in an assignment
+        # *prefix* does not abort under `bash -eo pipefail`, so the fetch's exit status was
+        # discarded and installer-test.sh fell back to `command -v minisign` — bypassing the
+        # digest pin the day a runner image ships one.
+        id: minisign
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "bin=$(scripts/fetch-minisign.sh "$RUNNER_TEMP/minisign")" >> "$GITHUB_OUTPUT"
       - name: Installer test, signature path (minisign fetched by digest)
-        run: MINISIGN="$(scripts/fetch-minisign.sh "$RUNNER_TEMP/minisign")" make installer-test-signed
+        shell: bash
+        env:
+          MINISIGN: ${{ steps.minisign.outputs.bin }}
+        run: |
+          set -euo pipefail
+          [[ -x "$MINISIGN" ]] || { echo "no verified minisign at '$MINISIGN'"; exit 1; }
+          make installer-test-signed
 
   # markdownlint is enforced here, where the network exists. The review pipeline's Gate runs the
   # same script advisorily (.af/pipelines/review.toml): `npm ci` has no offline path, so a

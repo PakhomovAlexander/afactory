@@ -32,7 +32,19 @@ installer="$root/install.sh"
 
 minisign=""
 if [[ "$signed" -eq 1 ]]; then
-  minisign="${MINISIGN:-$(command -v minisign || true)}"
+  # An empty MINISIGN is a failure, not a fallback: it means the caller meant to hand over a
+  # digest-pinned binary and did not. Falling back to `command -v minisign` there would silently
+  # test whatever minisign the machine happens to carry, bypassing the pin. Only an *unset*
+  # MINISIGN looks at PATH, for a local run.
+  if [[ -n "${MINISIGN+set}" ]]; then
+    minisign="$MINISIGN"
+    [[ -n "$minisign" ]] || {
+      echo "installer-test: MINISIGN is set but empty — the pinned minisign was not fetched; scripts/fetch-minisign.sh <dir> fetches it" >&2
+      exit 1
+    }
+  else
+    minisign="$(command -v minisign || true)"
+  fi
   [[ -n "$minisign" && -x "$minisign" ]] || {
     echo "installer-test: --signed needs minisign (MINISIGN=<path>, or on PATH); scripts/fetch-minisign.sh <dir> fetches the pinned one" >&2
     exit 1
