@@ -105,6 +105,8 @@ release pages only.
   digest.
 - This repository's own `.af/pipelines/review.toml` is the v3 shape `af onboard` emits, gating on
   `scripts/verify.sh` with markdownlint from a lock-pinned toolchain rather than a live fetch.
+  The markdownlint Check is advisory: its `npm ci` install has no offline path, so a required
+  Check would lose a Round to a cold cache. markdownlint is enforced by its own CI job.
 
 ## [0.7.1] - 2026-09-03
 

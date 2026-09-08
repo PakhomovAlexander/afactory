@@ -1,13 +1,18 @@
 #!/usr/bin/env bash
 # markdownlint over every Markdown file, from the digest-pinned toolchain in tools/markdownlint/.
 #
-#   scripts/markdownlint.sh        # the review pipeline's second Gate Check; `make markdownlint`
+#   scripts/markdownlint.sh        # the markdownlint CI job; `make markdownlint`
 #
 # `npm ci` installs exactly what package-lock.json pins — every tarball checked against the
 # integrity hash recorded there — into a cache keyed by the lock's digest, outside the (read-only)
 # source tree, once per machine. The installed version is compared with the pin before anything
 # runs. Nothing is fetched by a floating version: not `npx`, not whatever the registry serves
-# today. Needs node and npm.
+# today. Needs node and npm, and a reachable registry until that cache is warm.
+#
+# That first install is why the review pipeline's Gate runs this only as an advisory Check
+# (.af/pipelines/review.toml): `npm ci` has no offline path, and a *required* Check that cannot
+# run loses the Round with no reviewer. Enforcement lives in the markdownlint job in
+# .github/workflows/ci.yml, where the network is available.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"

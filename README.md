@@ -83,9 +83,12 @@ target, plan the consumer fixtures with each binary, sign `SHA256SUMS` with the 
 `scripts/verify.sh` is `make check` as a Gate Check: it runs from the read-only tree a Gate
 sandbox materializes, reusing the machine's build cache (`$XDG_CACHE_HOME/afactory/review-target`,
 or `AFACTORY_REVIEW_TARGET_DIR`). Both first-party pipelines gate on it —
-[`.af/pipelines/review.toml`](.af/pipelines/review.toml) with markdownlint as a second Check, and
-[`.af/pipelines/audit.toml`](.af/pipelines/audit.toml) — so it is the deterministic project gate
-that follows a light Campaign's Findings.
+[`.af/pipelines/review.toml`](.af/pipelines/review.toml) with markdownlint as a second, advisory
+Check, and [`.af/pipelines/audit.toml`](.af/pipelines/audit.toml) — so it is the deterministic
+project gate that follows a light Campaign's Findings. markdownlint is *enforced* by the
+`markdownlint` job in [`.github/workflows/ci.yml`](.github/workflows/ci.yml), where the network
+exists: its `npm ci` install has no offline path, and a required Check that cannot run would cost
+a Round.
 
 ```sh
 make check       # fmt + clippy + tests + fixture reproduction + relative links + installer test
