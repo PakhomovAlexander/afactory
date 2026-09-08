@@ -94,7 +94,7 @@ a Round.
 make check       # fmt + clippy + tests + fixture reproduction + relative links + installer test
 make pilot-check # deterministic Task start/deliver/recovery/operator smoke
 make fixtures    # prove the synthetic corpus still reproduces byte-for-byte
-make links       # every relative link in every Markdown file resolves
+make links       # every relative Markdown link and cited cargo example resolves
 make markdownlint            # markdownlint over **/*.md from the pinned toolchain (tools/markdownlint/)
 make installer-test-signed   # install.sh with the signature path; needs minisign (MINISIGN=<path>)
 make review-kernel-container-probes   # live containment probes; a missing daemon is a failure

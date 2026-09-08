@@ -1,12 +1,20 @@
 #!/usr/bin/env bash
-# Every relative link in every Markdown file must name something in the tree.
+# Every reference into this tree must name something that is in it.
 #
-#   scripts/check-links.sh        # lists every broken link; exit 1 if there is one
+#   scripts/check-links.sh        # lists every broken reference; exit 1 if there is one
 #
-# Only the path is checked: `#fragment`s are stripped, never resolved. Absolute URLs
-# (`http(s)://`, `mailto:`, any `scheme:`) and bare `#anchor` links are ignored, and so are
-# fenced code blocks and inline code spans. Inline links `[text](target)`, images, and
-# reference definitions `[id]: target` are covered. Needs bash, find, and awk; nothing else.
+# Two passes. Relative Markdown links: only the path is checked, `#fragment`s are stripped and
+# never resolved. Absolute URLs (`http(s)://`, `mailto:`, any `scheme:`) and bare `#anchor` links
+# are ignored, and so are fenced code blocks and inline code spans. Inline links `[text](target)`,
+# images, and reference definitions `[id]: target` are covered.
+#
+# Then `cargo … --example <name>` anywhere in the tree — Markdown, TOML comments, scripts, Rust.
+# A deleted example leaves its instructions behind everywhere it was cited, and every citation
+# still reads as a working command; `fixtures/consumers/hub/.af/pipelines/review.toml` told
+# consumers to run a lock generator that had been deleted. Frozen migration inputs under
+# `crates/*/tests/fixtures/` are exempt: they are a record of bytes that once existed, not
+# instructions to anyone, and correcting them would change what the migration tests migrate.
+# Needs bash, find, grep, and awk.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
@@ -57,8 +65,27 @@ while IFS= read -r file; do
 done < <(find . \( -path ./.git -o -path ./target -o -path ./.scratch -o -name node_modules \) -prune \
            -o -name '*.md' -print | sed 's|^\./||' | sort)
 
+# ------------------------------------------------- cargo examples that were cited
+# `--example <name>` must name crates/<crate>/examples/<name>.rs (or examples/<name>.rs).
+examples=0
+while IFS=: read -r file line rest; do
+  name="$(printf '%s' "$rest" | awk 'match($0, /--example[ =]+[A-Za-z0-9_-]+/) {
+    print substr($0, RSTART, RLENGTH)
+  }' | awk '{print $NF}' | sed 's/^--example=//')"
+  [[ -n "$name" ]] || continue
+  case "$file" in crates/*/tests/fixtures/*) continue ;; esac   # frozen migration input
+  examples=$((examples + 1))
+  if [[ ! -f "examples/$name.rs" ]] && ! compgen -G "crates/*/examples/$name.rs" >/dev/null; then
+    echo "$file:$line: no such cargo example: $name"
+    broken=$((broken + 1))
+  fi
+done < <(grep -rIn -- '--example' . \
+           --exclude-dir=.git --exclude-dir=target --exclude-dir=.scratch \
+           --exclude-dir=node_modules --exclude=check-links.sh 2>/dev/null \
+         | sed 's|^\./||' || true)
+
 if [[ "$broken" -gt 0 ]]; then
-  echo "check-links: $broken broken relative link(s) in $checked checked" >&2
+  echo "check-links: $broken broken reference(s) in $checked link(s) and $examples example citation(s)" >&2
   exit 1
 fi
-echo "check-links: $checked relative links resolve"
+echo "check-links: $checked relative links and $examples cargo example citation(s) resolve"
