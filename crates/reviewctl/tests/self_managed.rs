@@ -9,10 +9,16 @@ use common::{AF, Sandbox, Signer, TARGET, VERSION, err, out, write};
 
 #[test]
 fn self_install_update_rollback_and_remove_against_a_directory_source() {
-    let sandbox = Sandbox::new();
+    let keys = tempfile::tempdir().unwrap();
+    let signer = Signer::new(keys.path());
+    let sandbox = Sandbox::new().with_key(&signer);
     sandbox.publish("0.7.1", false);
     sandbox.publish("0.9.0", false);
     sandbox.publish("0.8.5", true);
+    // Signed as their release job would sign them; 0.8.5's signature is over the tampered sums,
+    // so it is the checksum that has to catch it.
+    sandbox.sign("0.9.0", &signer, None);
+    sandbox.sign("0.8.5", &signer, None);
 
     let install = sandbox
         .command(Path::new(AF))
@@ -91,7 +97,7 @@ fn self_install_update_rollback_and_remove_against_a_directory_source() {
         serde_json::json!(["0.7.1", VERSION, "0.9.0"])
     );
     assert!(status["receipt"].is_object());
-    assert_eq!(status["release_key"], "none");
+    assert_eq!(status["release_key"], "environment");
 
     let rollback = sandbox
         .command(&real)
@@ -478,8 +484,11 @@ fn releases_since_0_8_0_must_carry_a_valid_signature_when_the_build_has_a_key() 
 
 #[test]
 fn refresh_check_caches_the_latest_and_applies_always() {
-    let sandbox = Sandbox::new();
+    let keys = tempfile::tempdir().unwrap();
+    let signer = Signer::new(keys.path());
+    let sandbox = Sandbox::new().with_key(&signer);
     sandbox.publish("0.9.0", false);
+    sandbox.sign("0.9.0", &signer, None);
     let real = sandbox.adopt_real_binary();
     let refresh = sandbox
         .command(&real)

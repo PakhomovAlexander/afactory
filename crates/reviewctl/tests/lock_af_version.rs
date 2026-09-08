@@ -5,16 +5,27 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+use std::sync::OnceLock;
 
 use review_config::lock::{AfPin, Lockfile};
 
 mod common;
-use common::{AF, Sandbox, TARGET, VERSION};
+use common::{AF, Sandbox, Signer, TARGET, VERSION};
+
+/// An empty self-managed layout, so the source build under test never dispatches to a release
+/// that happens to be installed on the developer's machine.
+fn empty_layout() -> &'static Path {
+    static LAYOUT: OnceLock<tempfile::TempDir> = OnceLock::new();
+    LAYOUT.get_or_init(|| tempfile::tempdir().unwrap()).path()
+}
 
 fn af(args: &[&str]) -> Output {
     Command::new(AF)
         .args(args)
         .env("AF_SELF_OFFLINE", "1")
+        .env("HOME", empty_layout())
+        .env("XDG_DATA_HOME", empty_layout().join("data"))
+        .env("XDG_BIN_HOME", empty_layout().join("bin"))
         .output()
         .unwrap()
 }
@@ -123,9 +134,13 @@ fn a_source_build_pins_nothing_and_says_so() {
 
 #[test]
 fn a_receipted_release_pins_itself_with_every_published_digest() {
-    let sandbox = Sandbox::new();
-    // The "release" of the version under test: its SHA256SUMS lists this target and one more.
+    let keys = tempfile::tempdir().unwrap();
+    let signer = Signer::new(keys.path());
+    let sandbox = Sandbox::new().with_key(&signer);
+    // The "release" of the version under test: its SHA256SUMS lists this target and one more,
+    // signed, as every release from 0.8.0 on is.
     let digest = sandbox.publish(VERSION, false);
+    sandbox.sign(VERSION, &signer, None);
     let real = sandbox.adopt_real_binary_with(&digest);
     let repo = sandbox.path("repo");
     std::fs::create_dir_all(repo.join(".git")).unwrap();
@@ -188,8 +203,11 @@ fn a_receipted_release_pins_itself_with_every_published_digest() {
 
 #[test]
 fn a_release_whose_published_digest_disagrees_with_the_receipt_is_not_pinned() {
-    let sandbox = Sandbox::new();
+    let keys = tempfile::tempdir().unwrap();
+    let signer = Signer::new(keys.path());
+    let sandbox = Sandbox::new().with_key(&signer);
     sandbox.publish(VERSION, false);
+    sandbox.sign(VERSION, &signer, None);
     // Installed from bytes the release no longer lists (a re-uploaded asset, or a mirror).
     let real = sandbox.adopt_real_binary_with(&"f".repeat(64));
     let repo = sandbox.path("repo");
