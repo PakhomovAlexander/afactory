@@ -110,7 +110,10 @@ jobs:
         with:
           ref: ${{ needs.resolve.outputs.tag }}
       - name: Install the pinned Rust toolchain and target
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --target "${{ matrix.target }}"
+        # With the components rust-toolchain.toml declares: without them the first cargo
+        # invocation makes rustup install them into the toolchain it just wrote, and that
+        # collides ("detected conflict: 'bin/cargo-fmt'"). The check job installs them too.
+        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt --target "${{ matrix.target }}"
       - name: Install zig (static Linux builds)
         if: matrix.cross != 'none'
         run: pip install --user "$CARGO_ZIGBUILD" "$ZIG"
