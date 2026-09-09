@@ -9,9 +9,23 @@ release pages only.
 
 ## [Unreleased]
 
-- A `0.7.1` default cannot read a lock written by `0.8.0` (its `[af]` table is an unknown field
-  to the older parser), so it neither dispatches to `0.8.0` nor plans: run `af self update`
-  first on such a machine.
+## [0.8.0] - 2026-09-08
+
+### Authority compatibility
+
+Requires `af onboard --migrate --apply` for a consumer still on `.review/`: legacy authority is
+no longer read for new Campaigns (ADR-0043). A repository already on `.af/` keeps working, but
+re-pin it with `af onboard --refresh-lock` so the lock records the per-target archive digest this
+release binds to. A `0.7.1` default cannot read a lock written by `0.8.0` (its `[af]` table is an
+unknown field to the older parser), so it neither dispatches to `0.8.0` nor plans: run
+`af self update` first on such a machine.
+
+### Changes
+
+- Route pipelines by changed paths; switch oversized Diffs to a bounded pipeline (#64)
+- Show Campaign state on disk and reclaim it with af review gc (#66)
+- One release train, a pin that binds bytes, and .review/ retired (ADR-0045) (#68)
+- Commit the minisign release public key: every release from 0.8.0 ships a signed `SHA256SUMS`
 
 ## [0.7.1] - 2026-09-03
 
