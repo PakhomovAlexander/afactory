@@ -1,7 +1,8 @@
 # Afactory Review Kernel - backlog
 
-Work queued for `af review`, in the order it should be done. Repository migration, private
-release parity through `v0.7.0`, and M0–M9 are complete. Minimal product v1 and v2 preceded
+Work queued for `af review`, in the order it should be done. Repository migration, release
+parity, M0–M9, and the post-roadmap `.review/` retirement (`v0.8.0`) are complete; what remains
+is the [post-roadmap capability sequence](#post-roadmap--remaining-capability-sequence). Minimal product v1 and v2 preceded
 candidate dogfood and M3.1; they must not rename frozen persisted Review Kernel contracts.
 The vocabulary these items use is defined in [`../CONTEXT.md`](../CONTEXT.md). Decisions that
 move a durable or security boundary are recorded as ADRs in [`adr/`](adr/), linked from the
@@ -841,13 +842,28 @@ resolve the claims. Publishing the derived Snapshot to a branch or PR remains ou
 
 ---
 
-## Post-roadmap · Drop legacy `.review/` authority before `v0.8.0`
+## Post-roadmap · Drop legacy `.review/` authority in `v0.8.0`
 
-Owner decision of 2026-09-02 ([ADR-0043](adr/0043-drop-legacy-review-authority-in-v0-8-0.md),
+**Status: shipped in `v0.8.0` (2026-09-09).** Owner decision of 2026-09-02
+([ADR-0043](adr/0043-drop-legacy-review-authority-in-v0-8-0.md),
 [#52](https://github.com/PakhomovAlexander/afactory/issues/52)): `v0.8.0` accepts review authority only
 under `.af/` and ships `af onboard --migrate` converting a `.review/` repository into `.af/`.
 Stored Campaign replay keeps reading its pinned `.review/...` paths; nothing persisted is renamed.
-The hub and the release-CI consumer fixture move to `.af/` before the release is cut.
+ADR-0045 (#68) added the single release train and the byte-binding pin in the same release.
+
+## Post-roadmap · Remaining capability sequence
+
+The audit umbrella #16 was partitioned into focused issues on 2026-09-01 and ordered by the hub on
+2026-09-02. Shipped: #42 per-node Attempt caps and #36 `af review render` (`v0.7.1`), #32
+oversized-input refusal (`v0.7.1`) with the bounded strategy and #40 path routing (`v0.8.0`),
+`af review gc` (`v0.8.0`). The 2026-09-10 backlog review closed #34, #35, #37, #39, and #41 as not
+needed now; each closure names its reopening condition. What remains, in order:
+
+| # | Issue | Why now | Depends on |
+|---|-------|---------|------------|
+| 1 | [#70](https://github.com/PakhomovAlexander/afactory/issues/70) retry one failed reviewer and continue the Round | The 2026-09-07 whole-tree audit spent 1.5M tokens and reported zero findings because one reviewer timed out twice and stranded three finished siblings | — |
+| 2 | [#38](https://github.com/PakhomovAlexander/afactory/issues/38) reviewer capability profiles and timeouts | Same case: the timeout is pinned per Campaign, not declared per reviewer; land it with #70 so authority, plan, and onboarding output change once | #70 |
+| 3 | [#33](https://github.com/PakhomovAlexander/afactory/issues/33) calibrated result contract with failure traces | Carry the kernel's `failure_trace` into canonical Reports and CLI output; use provider-native response schemas to cut malformed-output retries | — |
 
 ## Explicitly not doing
 
