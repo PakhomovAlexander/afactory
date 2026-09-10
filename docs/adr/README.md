@@ -100,3 +100,5 @@ options you rejected and why — that is the part future-you needs.
   layered configuration](0044-af-manages-itself-and-dispatches-to-the-pinned-release.md)
 - [0045 — One release train, and a pin that binds
   bytes](0045-one-release-train-and-a-pin-that-binds-bytes.md)
+- [0046 — Add versioned Task contracts with exact-plan
+  approval](0046-add-versioned-task-contracts-with-exact-plan-approval.md)

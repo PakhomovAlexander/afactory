@@ -20,7 +20,8 @@ supplement it. Claude calls use only `claude-personal`.
 ## Progress
 
 - [x] P00: unchanged-source baseline gate and fixture identities recorded below.
-- [ ] P01: versioned Task/Pipeline/plan/approval contracts and compatibility fixtures.
+- [ ] P01: contracts, schemas, ADR-0046 and fixtures implemented; deterministic gates pass;
+  external review pending before package closure.
 - [ ] P02/P03: common Store lifecycle and approvals; typed Pipeline compilation.
 - [ ] P04–P06: shared execution, implementation Task, review Task and legacy parity.
 - [ ] P07–P09: shared packages, embedded Review, bounded repair and fix verification.
@@ -31,7 +32,22 @@ The configured milestone review is one light Round with three required reviewers
 `correctness=claude-personal` (Fable 5.1/high), `bugs=codex-personal` (GPT-5.6-Sol/high),
 and `performance=codex-personal` (GPT-5.6-Sol/high). Packages and the review Pipeline are
 content-locked using installed release `af 0.8.0`. Required checks are Markdownlint and
-`scripts/verify.sh` (the complete kernel gate). No implementation milestone review has run yet.
+`scripts/verify.sh` (the complete kernel gate). The owner confirmed that the Sol bug role is
+a reviewer, alongside cross-review and performance review.
+
+## P01 contract checkpoint
+
+The additive `review-core::task` contracts cover immutable Task revisions, typed public Pipeline
+boundaries, bounded static operator declarations, exact plans and developer decisions, Worker
+independence, review history and targeted repair continuation. No new execution is admitted yet;
+compiler, Store authority and runtime checks remain P02–P06 work.
+
+`make check` passes with **664 tests, zero failures and 15 existing ignored probes**. The original
+synthetic fixtures still reproduce byte-for-byte. New schema/type fixtures include forbidden
+approval identities, duplicate inputs, hidden tagged-variant fields, missing evidence and stale
+repair claims; canonical content IDs use the existing digest domain. Markdownlint passes after
+removing two pre-existing extra blank lines from the workstream archive. External review is the
+remaining P01 check; its immutable candidate and findings will be recorded here.
 
 ## P00 baseline evidence
 

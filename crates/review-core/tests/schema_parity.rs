@@ -32,8 +32,18 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 42] = [
+const SCHEMAS: [&str; 52] = [
     "artifact-envelope-v1.json",
+    "task-contracts-v1.json",
+    "task-revision-v1.json",
+    "task-result-v1.json",
+    "task-phase-v1.json",
+    "pipeline-definition-v1.json",
+    "execution-plan-v1.json",
+    "plan-decision-v1.json",
+    "review-history-v1.json",
+    "verification-continuation-v1.json",
+    "repair-assessment-v1.json",
     "cache-manifest-v1.json",
     "campaign-manifest-v1.json",
     "campaign-opened-v1.json",
@@ -90,16 +100,20 @@ fn schema(name: &str) -> Value {
 }
 
 fn validator(name: &str) -> jsonschema::Validator {
-    let finding_report = jsonschema::Resource::from_contents(schema("finding-report-v1.json"))
-        .expect("FindingReport@1 is a schema resource");
-    let reviewer_result = jsonschema::Resource::from_contents(schema("reviewer-result-v1.json"))
-        .expect("ReviewerResult@1 is a schema resource");
-    jsonschema::options()
-        .with_resource("urn:review-kernel:schema:finding-report:1", finding_report)
-        .with_resource(
-            "urn:review-kernel:schema:reviewer-result:1",
-            reviewer_result,
-        )
+    let mut options = jsonschema::options();
+    for resource_name in [
+        "finding-report-v1.json",
+        "reviewer-result-v1.json",
+        "task-contracts-v1.json",
+    ] {
+        let resource = schema(resource_name);
+        let id = resource["$id"]
+            .as_str()
+            .expect("schema resource ID")
+            .to_owned();
+        options.with_resource(id, jsonschema::Resource::from_contents(resource).unwrap());
+    }
+    options
         .build(&schema(name))
         .unwrap_or_else(|e| panic!("{name}: {e}"))
 }
@@ -1650,3 +1664,6 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
         );
     }
 }
+
+#[path = "schema_parity/task_contracts.rs"]
+mod task_contracts;

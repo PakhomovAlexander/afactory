@@ -32,6 +32,7 @@ pub mod resolution;
 pub mod slice;
 pub mod snapshot;
 pub mod subject;
+pub mod task;
 
 pub use broker::{
     BrokerCredentialModeV1, BrokerFailureReasonV1, BrokerLeaseV1, BrokerOperationOutcomeV1,

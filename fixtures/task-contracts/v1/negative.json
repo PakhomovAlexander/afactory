@@ -1,0 +1,2235 @@
+[
+  {
+    "contract": "task-revision",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "value": {
+      "task_id": "jira-AF-42",
+      "revision": 1,
+      "kind": "document",
+      "goal": "Implement this Jira ticket: write a checked migration guide.",
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "required_outputs": {
+        "document": {
+          "artifact_type": "af/CheckedDocument@1",
+          "cardinality": "one"
+        }
+      },
+      "acceptance": {
+        "checked": {
+          "evidence_type": "af/CheckedDocument@1",
+          "verifier_policy": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "provenance": {
+        "adapter_id": "sha256:0000000000000000000000000000000000000000000000000000000000000003",
+        "input_artifact_ids": [
+          "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+        ]
+      },
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "strategy": "conservative",
+      "pipeline": {
+        "name": "builtin/document",
+        "fallback": "generate"
+      },
+      "facts": {
+        "small": true,
+        "estimated_files": 1
+      },
+      "invented": true
+    }
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "value": {
+      "schema": "af.pipeline/1",
+      "name": "builtin/document",
+      "version": "1.0.0",
+      "contract": {
+        "inputs": {
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "document": {
+            "artifact_type": "af/CheckedDocument@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": [
+              "checked"
+            ]
+          }
+        }
+      },
+      "accepts": {
+        "kinds": [
+          "document"
+        ],
+        "required_facts": {
+          "small": true
+        }
+      },
+      "slots": {
+        "author": {
+          "worker": "builtin/document-author",
+          "role": "author",
+          "input_type": "af/Requirements@1",
+          "output_type": "af/CheckedDocument@1",
+          "min_attempts": 1,
+          "max_attempts": 2,
+          "allow_local_replacement": true,
+          "independent_from": []
+        }
+      },
+      "nodes": [
+        {
+          "id": "write",
+          "operator": {
+            "op": "worker",
+            "slot": "author"
+          },
+          "inputs": {
+            "input": {
+              "kind": "input",
+              "port": "requirements"
+            }
+          }
+        }
+      ],
+      "outputs": {
+        "document": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "coverage": {
+        "checked": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "max_attempts": 3,
+      "max_parallel": 1,
+      "invented": true
+    }
+  },
+  {
+    "contract": "execution-plan",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "value": {
+      "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+      "engine_id": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+      "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+      "compiled_graph_id": "sha256:0000000000000000000000000000000000000000000000000000000000000009",
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "bindings": {
+        "author": {
+          "package_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000004",
+          "package_artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+          "execution": {
+            "kind": "command"
+          },
+          "invocation_policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "dependencies": {
+        "builtin/document": {
+          "name": "builtin/document",
+          "content_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+          "artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008"
+        }
+      },
+      "generated_origins": [
+        {
+          "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+          "proposal_id": "sha256:000000000000000000000000000000000000000000000000000000000000000b",
+          "bootstrap_plan_id": "sha256:000000000000000000000000000000000000000000000000000000000000000c"
+        }
+      ],
+      "acceptance": {
+        "checked": [
+          "write.output"
+        ]
+      },
+      "invented": true
+    }
+  },
+  {
+    "contract": "plan-decision",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "value": {
+      "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+      "plan_id": "sha256:000000000000000000000000000000000000000000000000000000000000000d",
+      "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+      "developer": "local:alice",
+      "authorization_id": "sha256:000000000000000000000000000000000000000000000000000000000000000e",
+      "decision": "approved",
+      "reason": "Reviewed exact inputs, dependencies, bindings and protected verification reserve.",
+      "invented": true
+    }
+  },
+  {
+    "contract": "task-result",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "value": {
+      "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+      "execution": "completed",
+      "acceptance": "satisfied",
+      "domain_conclusion": "Document verified",
+      "outputs": {
+        "document": {
+          "artifact_ids": [
+            "sha256:000000000000000000000000000000000000000000000000000000000000000f"
+          ],
+          "artifact_type": "af/CheckedDocument@1",
+          "cardinality": "one"
+        }
+      },
+      "evidence": [
+        "sha256:000000000000000000000000000000000000000000000000000000000000000f"
+      ],
+      "missing_obligations": [],
+      "invented": true
+    }
+  },
+  {
+    "contract": "task-phase",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "value": {
+      "kind": "waiting",
+      "reason": "needs_plan_review",
+      "invented": true
+    }
+  },
+  {
+    "contract": "review-history",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "value": {
+      "kind": "recorded",
+      "lineage_id": "sha256:0000000000000000000000000000000000000000000000000000000000000014",
+      "subject_id": "sha256:0000000000000000000000000000000000000000000000000000000000000015",
+      "finding_set_id": "sha256:0000000000000000000000000000000000000000000000000000000000000016",
+      "demand_set_id": "sha256:0000000000000000000000000000000000000000000000000000000000000017",
+      "round_report_id": "sha256:0000000000000000000000000000000000000000000000000000000000000018",
+      "invented": true
+    }
+  },
+  {
+    "contract": "verification-continuation",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "value": {
+      "task_revision_id": "sha256:000000000000000000000000000000000000000000000000000000000000001e",
+      "plan_id": "sha256:000000000000000000000000000000000000000000000000000000000000001f",
+      "prior_history_id": "sha256:0000000000000000000000000000000000000000000000000000000000000020",
+      "previous_subject_id": "sha256:0000000000000000000000000000000000000000000000000000000000000021",
+      "current_subject_id": "sha256:0000000000000000000000000000000000000000000000000000000000000022",
+      "current_snapshot_id": "sha256:0000000000000000000000000000000000000000000000000000000000000023",
+      "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000024",
+      "claims": {
+        "finding-1": "sha256:0000000000000000000000000000000000000000000000000000000000000025"
+      },
+      "invented": true
+    }
+  },
+  {
+    "contract": "repair-assessment",
+    "why": "unknown fields are forbidden",
+    "layer": "shape",
+    "value": {
+      "continuation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000026",
+      "current_subject_id": "sha256:0000000000000000000000000000000000000000000000000000000000000022",
+      "current_snapshot_id": "sha256:0000000000000000000000000000000000000000000000000000000000000023",
+      "check_receipt_id": "sha256:0000000000000000000000000000000000000000000000000000000000000027",
+      "scope": "targeted_fixes",
+      "claims": {
+        "finding-1": {
+          "expected_view_id": "sha256:0000000000000000000000000000000000000000000000000000000000000025",
+          "attestation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000028",
+          "receipt_id": "sha256:0000000000000000000000000000000000000000000000000000000000000029",
+          "outcome": "positive"
+        }
+      },
+      "invented": true
+    }
+  },
+  {
+    "contract": "task-revision",
+    "why": "unsafe integer cannot enter plan hashing",
+    "layer": "shape",
+    "value": {
+      "task_id": "jira-AF-42",
+      "revision": 1,
+      "kind": "document",
+      "goal": "Implement this Jira ticket: write a checked migration guide.",
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "required_outputs": {
+        "document": {
+          "artifact_type": "af/CheckedDocument@1",
+          "cardinality": "one"
+        }
+      },
+      "acceptance": {
+        "checked": {
+          "evidence_type": "af/CheckedDocument@1",
+          "verifier_policy": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "provenance": {
+        "adapter_id": "sha256:0000000000000000000000000000000000000000000000000000000000000003",
+        "input_artifact_ids": [
+          "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+        ]
+      },
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "strategy": "conservative",
+      "pipeline": {
+        "name": "builtin/document",
+        "fallback": "generate"
+      },
+      "facts": {
+        "small": true,
+        "estimated_files": 1,
+        "count": 9007199254740992
+      }
+    }
+  },
+  {
+    "contract": "task-revision",
+    "why": "required outputs are explicit",
+    "layer": "shape",
+    "value": {
+      "task_id": "jira-AF-42",
+      "revision": 1,
+      "kind": "document",
+      "goal": "Implement this Jira ticket: write a checked migration guide.",
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "required_outputs": {},
+      "acceptance": {
+        "checked": {
+          "evidence_type": "af/CheckedDocument@1",
+          "verifier_policy": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "provenance": {
+        "adapter_id": "sha256:0000000000000000000000000000000000000000000000000000000000000003",
+        "input_artifact_ids": [
+          "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+        ]
+      },
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "strategy": "conservative",
+      "pipeline": {
+        "name": "builtin/document",
+        "fallback": "generate"
+      },
+      "facts": {
+        "small": true,
+        "estimated_files": 1
+      }
+    }
+  },
+  {
+    "contract": "task-revision",
+    "why": "acceptance cannot be removed",
+    "layer": "shape",
+    "value": {
+      "task_id": "jira-AF-42",
+      "revision": 1,
+      "kind": "document",
+      "goal": "Implement this Jira ticket: write a checked migration guide.",
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "required_outputs": {
+        "document": {
+          "artifact_type": "af/CheckedDocument@1",
+          "cardinality": "one"
+        }
+      },
+      "acceptance": {},
+      "provenance": {
+        "adapter_id": "sha256:0000000000000000000000000000000000000000000000000000000000000003",
+        "input_artifact_ids": [
+          "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+        ]
+      },
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "strategy": "conservative",
+      "pipeline": {
+        "name": "builtin/document",
+        "fallback": "generate"
+      },
+      "facts": {
+        "small": true,
+        "estimated_files": 1
+      }
+    }
+  },
+  {
+    "contract": "task-revision",
+    "why": "later revisions retain predecessor",
+    "layer": "shape",
+    "value": {
+      "task_id": "jira-AF-42",
+      "revision": 2,
+      "kind": "document",
+      "goal": "Implement this Jira ticket: write a checked migration guide.",
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "required_outputs": {
+        "document": {
+          "artifact_type": "af/CheckedDocument@1",
+          "cardinality": "one"
+        }
+      },
+      "acceptance": {
+        "checked": {
+          "evidence_type": "af/CheckedDocument@1",
+          "verifier_policy": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "provenance": {
+        "adapter_id": "sha256:0000000000000000000000000000000000000000000000000000000000000003",
+        "input_artifact_ids": [
+          "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+        ]
+      },
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "strategy": "conservative",
+      "pipeline": {
+        "name": "builtin/document",
+        "fallback": "generate"
+      },
+      "facts": {
+        "small": true,
+        "estimated_files": 1
+      }
+    }
+  },
+  {
+    "contract": "task-revision",
+    "why": "first revision cannot have predecessor",
+    "layer": "shape",
+    "value": {
+      "task_id": "jira-AF-42",
+      "revision": 1,
+      "kind": "document",
+      "goal": "Implement this Jira ticket: write a checked migration guide.",
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "required_outputs": {
+        "document": {
+          "artifact_type": "af/CheckedDocument@1",
+          "cardinality": "one"
+        }
+      },
+      "acceptance": {
+        "checked": {
+          "evidence_type": "af/CheckedDocument@1",
+          "verifier_policy": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "provenance": {
+        "adapter_id": "sha256:0000000000000000000000000000000000000000000000000000000000000003",
+        "input_artifact_ids": [
+          "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+        ]
+      },
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "strategy": "conservative",
+      "pipeline": {
+        "name": "builtin/document",
+        "fallback": "generate"
+      },
+      "facts": {
+        "small": true,
+        "estimated_files": 1
+      },
+      "previous_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+    }
+  },
+  {
+    "contract": "task-revision",
+    "why": "input name is not an artifact type",
+    "layer": "shape",
+    "value": {
+      "task_id": "jira-AF-42",
+      "revision": 1,
+      "kind": "document",
+      "goal": "Implement this Jira ticket: write a checked migration guide.",
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "input:issue",
+          "cardinality": "one"
+        }
+      },
+      "required_outputs": {
+        "document": {
+          "artifact_type": "af/CheckedDocument@1",
+          "cardinality": "one"
+        }
+      },
+      "acceptance": {
+        "checked": {
+          "evidence_type": "af/CheckedDocument@1",
+          "verifier_policy": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "provenance": {
+        "adapter_id": "sha256:0000000000000000000000000000000000000000000000000000000000000003",
+        "input_artifact_ids": [
+          "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+        ]
+      },
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "strategy": "conservative",
+      "pipeline": {
+        "name": "builtin/document",
+        "fallback": "generate"
+      },
+      "facts": {
+        "small": true,
+        "estimated_files": 1
+      }
+    }
+  },
+  {
+    "contract": "task-revision",
+    "why": "one requires exactly one artifact",
+    "layer": "shape",
+    "value": {
+      "task_id": "jira-AF-42",
+      "revision": 1,
+      "kind": "document",
+      "goal": "Implement this Jira ticket: write a checked migration guide.",
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "required_outputs": {
+        "document": {
+          "artifact_type": "af/CheckedDocument@1",
+          "cardinality": "one"
+        }
+      },
+      "acceptance": {
+        "checked": {
+          "evidence_type": "af/CheckedDocument@1",
+          "verifier_policy": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "provenance": {
+        "adapter_id": "sha256:0000000000000000000000000000000000000000000000000000000000000003",
+        "input_artifact_ids": [
+          "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+        ]
+      },
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "strategy": "conservative",
+      "pipeline": {
+        "name": "builtin/document",
+        "fallback": "generate"
+      },
+      "facts": {
+        "small": true,
+        "estimated_files": 1
+      }
+    }
+  },
+  {
+    "contract": "task-revision",
+    "why": "duplicate input IDs are forbidden",
+    "layer": "shape",
+    "value": {
+      "task_id": "jira-AF-42",
+      "revision": 1,
+      "kind": "document",
+      "goal": "Implement this Jira ticket: write a checked migration guide.",
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001",
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "required_outputs": {
+        "document": {
+          "artifact_type": "af/CheckedDocument@1",
+          "cardinality": "one"
+        }
+      },
+      "acceptance": {
+        "checked": {
+          "evidence_type": "af/CheckedDocument@1",
+          "verifier_policy": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "provenance": {
+        "adapter_id": "sha256:0000000000000000000000000000000000000000000000000000000000000003",
+        "input_artifact_ids": [
+          "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+        ]
+      },
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "strategy": "conservative",
+      "pipeline": {
+        "name": "builtin/document",
+        "fallback": "generate"
+      },
+      "facts": {
+        "small": true,
+        "estimated_files": 1
+      }
+    }
+  },
+  {
+    "contract": "task-revision",
+    "why": "duplicate authority entries cannot collapse",
+    "layer": "shape",
+    "value": {
+      "task_id": "jira-AF-42",
+      "revision": 1,
+      "kind": "document",
+      "goal": "Implement this Jira ticket: write a checked migration guide.",
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "required_outputs": {
+        "document": {
+          "artifact_type": "af/CheckedDocument@1",
+          "cardinality": "one"
+        }
+      },
+      "acceptance": {
+        "checked": {
+          "evidence_type": "af/CheckedDocument@1",
+          "verifier_policy": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "provenance": {
+        "adapter_id": "sha256:0000000000000000000000000000000000000000000000000000000000000003",
+        "input_artifact_ids": [
+          "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+        ]
+      },
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source",
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "strategy": "conservative",
+      "pipeline": {
+        "name": "builtin/document",
+        "fallback": "generate"
+      },
+      "facts": {
+        "small": true,
+        "estimated_files": 1
+      }
+    }
+  },
+  {
+    "contract": "task-revision",
+    "why": "verifier Attempts cannot exceed total",
+    "layer": "semantic",
+    "value": {
+      "task_id": "jira-AF-42",
+      "revision": 1,
+      "kind": "document",
+      "goal": "Implement this Jira ticket: write a checked migration guide.",
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "required_outputs": {
+        "document": {
+          "artifact_type": "af/CheckedDocument@1",
+          "cardinality": "one"
+        }
+      },
+      "acceptance": {
+        "checked": {
+          "evidence_type": "af/CheckedDocument@1",
+          "verifier_policy": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "provenance": {
+        "adapter_id": "sha256:0000000000000000000000000000000000000000000000000000000000000003",
+        "input_artifact_ids": [
+          "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+        ]
+      },
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 5,
+          "wall_ms": 1000
+        }
+      },
+      "strategy": "conservative",
+      "pipeline": {
+        "name": "builtin/document",
+        "fallback": "generate"
+      },
+      "facts": {
+        "small": true,
+        "estimated_files": 1
+      }
+    }
+  },
+  {
+    "contract": "task-result",
+    "why": "incomplete execution cannot be accepted",
+    "layer": "shape",
+    "value": {
+      "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+      "execution": "incomplete",
+      "acceptance": "satisfied",
+      "domain_conclusion": "Document verified",
+      "outputs": {
+        "document": {
+          "artifact_ids": [
+            "sha256:000000000000000000000000000000000000000000000000000000000000000f"
+          ],
+          "artifact_type": "af/CheckedDocument@1",
+          "cardinality": "one"
+        }
+      },
+      "evidence": [
+        "sha256:000000000000000000000000000000000000000000000000000000000000000f"
+      ],
+      "missing_obligations": []
+    }
+  },
+  {
+    "contract": "task-result",
+    "why": "satisfied result requires evidence",
+    "layer": "shape",
+    "value": {
+      "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+      "execution": "completed",
+      "acceptance": "satisfied",
+      "domain_conclusion": "Document verified",
+      "outputs": {
+        "document": {
+          "artifact_ids": [
+            "sha256:000000000000000000000000000000000000000000000000000000000000000f"
+          ],
+          "artifact_type": "af/CheckedDocument@1",
+          "cardinality": "one"
+        }
+      },
+      "evidence": [],
+      "missing_obligations": []
+    }
+  },
+  {
+    "contract": "task-result",
+    "why": "missing obligations prevent acceptance",
+    "layer": "shape",
+    "value": {
+      "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+      "execution": "completed",
+      "acceptance": "satisfied",
+      "domain_conclusion": "Document verified",
+      "outputs": {
+        "document": {
+          "artifact_ids": [
+            "sha256:000000000000000000000000000000000000000000000000000000000000000f"
+          ],
+          "artifact_type": "af/CheckedDocument@1",
+          "cardinality": "one"
+        }
+      },
+      "evidence": [
+        "sha256:000000000000000000000000000000000000000000000000000000000000000f"
+      ],
+      "missing_obligations": [
+        "checked"
+      ]
+    }
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "port types must be versioned",
+    "layer": "shape",
+    "value": {
+      "schema": "af.pipeline/1",
+      "name": "builtin/document",
+      "version": "1.0.0",
+      "contract": {
+        "inputs": {
+          "requirements": {
+            "artifact_type": "requirements",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "document": {
+            "artifact_type": "af/CheckedDocument@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": [
+              "checked"
+            ]
+          }
+        }
+      },
+      "accepts": {
+        "kinds": [
+          "document"
+        ],
+        "required_facts": {
+          "small": true
+        }
+      },
+      "slots": {
+        "author": {
+          "worker": "builtin/document-author",
+          "role": "author",
+          "input_type": "af/Requirements@1",
+          "output_type": "af/CheckedDocument@1",
+          "min_attempts": 1,
+          "max_attempts": 2,
+          "allow_local_replacement": true,
+          "independent_from": []
+        }
+      },
+      "nodes": [
+        {
+          "id": "write",
+          "operator": {
+            "op": "worker",
+            "slot": "author"
+          },
+          "inputs": {
+            "input": {
+              "kind": "input",
+              "port": "requirements"
+            }
+          }
+        }
+      ],
+      "outputs": {
+        "document": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "coverage": {
+        "checked": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "max_attempts": 3,
+      "max_parallel": 1
+    }
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "output cannot synthesize root default",
+    "layer": "shape",
+    "value": {
+      "schema": "af.pipeline/1",
+      "name": "builtin/document",
+      "version": "1.0.0",
+      "contract": {
+        "inputs": {
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "document": {
+            "artifact_type": "af/CheckedDocument@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": [
+              "checked"
+            ],
+            "root_default": "empty_review_history"
+          }
+        }
+      },
+      "accepts": {
+        "kinds": [
+          "document"
+        ],
+        "required_facts": {
+          "small": true
+        }
+      },
+      "slots": {
+        "author": {
+          "worker": "builtin/document-author",
+          "role": "author",
+          "input_type": "af/Requirements@1",
+          "output_type": "af/CheckedDocument@1",
+          "min_attempts": 1,
+          "max_attempts": 2,
+          "allow_local_replacement": true,
+          "independent_from": []
+        }
+      },
+      "nodes": [
+        {
+          "id": "write",
+          "operator": {
+            "op": "worker",
+            "slot": "author"
+          },
+          "inputs": {
+            "input": {
+              "kind": "input",
+              "port": "requirements"
+            }
+          }
+        }
+      ],
+      "outputs": {
+        "document": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "coverage": {
+        "checked": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "max_attempts": 3,
+      "max_parallel": 1
+    }
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "root defaults are closed",
+    "layer": "shape",
+    "value": {
+      "schema": "af.pipeline/1",
+      "name": "builtin/document",
+      "version": "1.0.0",
+      "contract": {
+        "inputs": {
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": [],
+            "root_default": "invent_source"
+          }
+        },
+        "outputs": {
+          "document": {
+            "artifact_type": "af/CheckedDocument@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": [
+              "checked"
+            ]
+          }
+        }
+      },
+      "accepts": {
+        "kinds": [
+          "document"
+        ],
+        "required_facts": {
+          "small": true
+        }
+      },
+      "slots": {
+        "author": {
+          "worker": "builtin/document-author",
+          "role": "author",
+          "input_type": "af/Requirements@1",
+          "output_type": "af/CheckedDocument@1",
+          "min_attempts": 1,
+          "max_attempts": 2,
+          "allow_local_replacement": true,
+          "independent_from": []
+        }
+      },
+      "nodes": [
+        {
+          "id": "write",
+          "operator": {
+            "op": "worker",
+            "slot": "author"
+          },
+          "inputs": {
+            "input": {
+              "kind": "input",
+              "port": "requirements"
+            }
+          }
+        }
+      ],
+      "outputs": {
+        "document": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "coverage": {
+        "checked": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "max_attempts": 3,
+      "max_parallel": 1
+    }
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "public coverage needs internal binding",
+    "layer": "semantic",
+    "value": {
+      "schema": "af.pipeline/1",
+      "name": "builtin/document",
+      "version": "1.0.0",
+      "contract": {
+        "inputs": {
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "document": {
+            "artifact_type": "af/CheckedDocument@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": [
+              "checked"
+            ]
+          }
+        }
+      },
+      "accepts": {
+        "kinds": [
+          "document"
+        ],
+        "required_facts": {
+          "small": true
+        }
+      },
+      "slots": {
+        "author": {
+          "worker": "builtin/document-author",
+          "role": "author",
+          "input_type": "af/Requirements@1",
+          "output_type": "af/CheckedDocument@1",
+          "min_attempts": 1,
+          "max_attempts": 2,
+          "allow_local_replacement": true,
+          "independent_from": []
+        }
+      },
+      "nodes": [
+        {
+          "id": "write",
+          "operator": {
+            "op": "worker",
+            "slot": "author"
+          },
+          "inputs": {
+            "input": {
+              "kind": "input",
+              "port": "requirements"
+            }
+          }
+        }
+      ],
+      "outputs": {
+        "document": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "coverage": {},
+      "max_attempts": 3,
+      "max_parallel": 1
+    }
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "duplicate node identity is forbidden",
+    "layer": "shape",
+    "value": {
+      "schema": "af.pipeline/1",
+      "name": "builtin/document",
+      "version": "1.0.0",
+      "contract": {
+        "inputs": {
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "document": {
+            "artifact_type": "af/CheckedDocument@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": [
+              "checked"
+            ]
+          }
+        }
+      },
+      "accepts": {
+        "kinds": [
+          "document"
+        ],
+        "required_facts": {
+          "small": true
+        }
+      },
+      "slots": {
+        "author": {
+          "worker": "builtin/document-author",
+          "role": "author",
+          "input_type": "af/Requirements@1",
+          "output_type": "af/CheckedDocument@1",
+          "min_attempts": 1,
+          "max_attempts": 2,
+          "allow_local_replacement": true,
+          "independent_from": []
+        }
+      },
+      "nodes": [
+        {
+          "id": "write",
+          "operator": {
+            "op": "worker",
+            "slot": "author"
+          },
+          "inputs": {
+            "input": {
+              "kind": "input",
+              "port": "requirements"
+            }
+          }
+        },
+        {
+          "id": "write",
+          "operator": {
+            "op": "worker",
+            "slot": "author"
+          },
+          "inputs": {
+            "input": {
+              "kind": "input",
+              "port": "requirements"
+            }
+          }
+        }
+      ],
+      "outputs": {
+        "document": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "coverage": {
+        "checked": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "max_attempts": 3,
+      "max_parallel": 1
+    }
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "unknown producer is forbidden",
+    "layer": "semantic",
+    "value": {
+      "schema": "af.pipeline/1",
+      "name": "builtin/document",
+      "version": "1.0.0",
+      "contract": {
+        "inputs": {
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "document": {
+            "artifact_type": "af/CheckedDocument@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": [
+              "checked"
+            ]
+          }
+        }
+      },
+      "accepts": {
+        "kinds": [
+          "document"
+        ],
+        "required_facts": {
+          "small": true
+        }
+      },
+      "slots": {
+        "author": {
+          "worker": "builtin/document-author",
+          "role": "author",
+          "input_type": "af/Requirements@1",
+          "output_type": "af/CheckedDocument@1",
+          "min_attempts": 1,
+          "max_attempts": 2,
+          "allow_local_replacement": true,
+          "independent_from": []
+        }
+      },
+      "nodes": [
+        {
+          "id": "write",
+          "operator": {
+            "op": "worker",
+            "slot": "author"
+          },
+          "inputs": {
+            "input": {
+              "kind": "input",
+              "port": "requirements"
+            }
+          }
+        }
+      ],
+      "outputs": {
+        "document": {
+          "kind": "node",
+          "node": "missing",
+          "port": "output"
+        }
+      },
+      "coverage": {
+        "checked": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "max_attempts": 3,
+      "max_parallel": 1
+    }
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "unbounded operator is forbidden",
+    "layer": "shape",
+    "value": {
+      "schema": "af.pipeline/1",
+      "name": "builtin/document",
+      "version": "1.0.0",
+      "contract": {
+        "inputs": {
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "document": {
+            "artifact_type": "af/CheckedDocument@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": [
+              "checked"
+            ]
+          }
+        }
+      },
+      "accepts": {
+        "kinds": [
+          "document"
+        ],
+        "required_facts": {
+          "small": true
+        }
+      },
+      "slots": {
+        "author": {
+          "worker": "builtin/document-author",
+          "role": "author",
+          "input_type": "af/Requirements@1",
+          "output_type": "af/CheckedDocument@1",
+          "min_attempts": 1,
+          "max_attempts": 2,
+          "allow_local_replacement": true,
+          "independent_from": []
+        }
+      },
+      "nodes": [
+        {
+          "id": "write",
+          "operator": {
+            "op": "while"
+          },
+          "inputs": {
+            "input": {
+              "kind": "input",
+              "port": "requirements"
+            }
+          }
+        }
+      ],
+      "outputs": {
+        "document": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "coverage": {
+        "checked": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "max_attempts": 3,
+      "max_parallel": 1
+    }
+  },
+  {
+    "contract": "pipeline-definition",
+    "why": "reservation must fit",
+    "layer": "shape",
+    "value": {
+      "schema": "af.pipeline/1",
+      "name": "builtin/document",
+      "version": "1.0.0",
+      "contract": {
+        "inputs": {
+          "requirements": {
+            "artifact_type": "af/Requirements@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": []
+          }
+        },
+        "outputs": {
+          "document": {
+            "artifact_type": "af/CheckedDocument@1",
+            "cardinality": "one",
+            "optional": false,
+            "affinity": {
+              "kind": "unbound"
+            },
+            "covers": [
+              "checked"
+            ]
+          }
+        }
+      },
+      "accepts": {
+        "kinds": [
+          "document"
+        ],
+        "required_facts": {
+          "small": true
+        }
+      },
+      "slots": {
+        "author": {
+          "worker": "builtin/document-author",
+          "role": "author",
+          "input_type": "af/Requirements@1",
+          "output_type": "af/CheckedDocument@1",
+          "min_attempts": 1,
+          "max_attempts": 2,
+          "allow_local_replacement": true,
+          "independent_from": []
+        }
+      },
+      "nodes": [
+        {
+          "id": "write",
+          "operator": {
+            "op": "worker",
+            "slot": "author"
+          },
+          "inputs": {
+            "input": {
+              "kind": "input",
+              "port": "requirements"
+            }
+          }
+        }
+      ],
+      "outputs": {
+        "document": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "coverage": {
+        "checked": {
+          "kind": "node",
+          "node": "write",
+          "port": "output"
+        }
+      },
+      "max_attempts": 0,
+      "max_parallel": 1
+    }
+  },
+  {
+    "contract": "execution-plan",
+    "why": "closure must retain root pipeline",
+    "layer": "semantic",
+    "value": {
+      "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+      "engine_id": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+      "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+      "compiled_graph_id": "sha256:0000000000000000000000000000000000000000000000000000000000000009",
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "bindings": {
+        "author": {
+          "package_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000004",
+          "package_artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+          "execution": {
+            "kind": "command"
+          },
+          "invocation_policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "dependencies": {},
+      "generated_origins": [
+        {
+          "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+          "proposal_id": "sha256:000000000000000000000000000000000000000000000000000000000000000b",
+          "bootstrap_plan_id": "sha256:000000000000000000000000000000000000000000000000000000000000000c"
+        }
+      ],
+      "acceptance": {
+        "checked": [
+          "write.output"
+        ]
+      }
+    }
+  },
+  {
+    "contract": "execution-plan",
+    "why": "generated origin must be in closure",
+    "layer": "semantic",
+    "value": {
+      "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+      "engine_id": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+      "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+      "compiled_graph_id": "sha256:0000000000000000000000000000000000000000000000000000000000000009",
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "bindings": {
+        "author": {
+          "package_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000004",
+          "package_artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+          "execution": {
+            "kind": "command"
+          },
+          "invocation_policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "dependencies": {
+        "builtin/document": {
+          "name": "builtin/document",
+          "content_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+          "artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008"
+        }
+      },
+      "generated_origins": [
+        {
+          "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000063",
+          "proposal_id": "sha256:000000000000000000000000000000000000000000000000000000000000000b",
+          "bootstrap_plan_id": "sha256:000000000000000000000000000000000000000000000000000000000000000c"
+        }
+      ],
+      "acceptance": {
+        "checked": [
+          "write.output"
+        ]
+      }
+    }
+  },
+  {
+    "contract": "execution-plan",
+    "why": "generated origins cannot repeat",
+    "layer": "shape",
+    "value": {
+      "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+      "engine_id": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+      "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+      "compiled_graph_id": "sha256:0000000000000000000000000000000000000000000000000000000000000009",
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "bindings": {
+        "author": {
+          "package_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000004",
+          "package_artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+          "execution": {
+            "kind": "command"
+          },
+          "invocation_policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "dependencies": {
+        "builtin/document": {
+          "name": "builtin/document",
+          "content_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+          "artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008"
+        }
+      },
+      "generated_origins": [
+        {
+          "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+          "proposal_id": "sha256:000000000000000000000000000000000000000000000000000000000000000b",
+          "bootstrap_plan_id": "sha256:000000000000000000000000000000000000000000000000000000000000000c"
+        },
+        {
+          "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+          "proposal_id": "sha256:000000000000000000000000000000000000000000000000000000000000000b",
+          "bootstrap_plan_id": "sha256:000000000000000000000000000000000000000000000000000000000000000c"
+        }
+      ],
+      "acceptance": {
+        "checked": [
+          "write.output"
+        ]
+      }
+    }
+  },
+  {
+    "contract": "execution-plan",
+    "why": "acceptance producers cannot repeat",
+    "layer": "shape",
+    "value": {
+      "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+      "engine_id": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+      "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+      "compiled_graph_id": "sha256:0000000000000000000000000000000000000000000000000000000000000009",
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "bindings": {
+        "author": {
+          "package_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000004",
+          "package_artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+          "execution": {
+            "kind": "command"
+          },
+          "invocation_policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "dependencies": {
+        "builtin/document": {
+          "name": "builtin/document",
+          "content_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+          "artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008"
+        }
+      },
+      "generated_origins": [
+        {
+          "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+          "proposal_id": "sha256:000000000000000000000000000000000000000000000000000000000000000b",
+          "bootstrap_plan_id": "sha256:000000000000000000000000000000000000000000000000000000000000000c"
+        }
+      ],
+      "acceptance": {
+        "checked": [
+          "write.output",
+          "write.output"
+        ]
+      }
+    }
+  },
+  {
+    "contract": "execution-plan",
+    "why": "command binding cannot carry model strings",
+    "layer": "shape",
+    "value": {
+      "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+      "engine_id": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+      "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+      "compiled_graph_id": "sha256:0000000000000000000000000000000000000000000000000000000000000009",
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "bindings": {
+        "author": {
+          "package_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000004",
+          "package_artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+          "execution": {
+            "kind": "command",
+            "model": "pretend"
+          },
+          "invocation_policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "dependencies": {
+        "builtin/document": {
+          "name": "builtin/document",
+          "content_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+          "artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008"
+        }
+      },
+      "generated_origins": [
+        {
+          "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+          "proposal_id": "sha256:000000000000000000000000000000000000000000000000000000000000000b",
+          "bootstrap_plan_id": "sha256:000000000000000000000000000000000000000000000000000000000000000c"
+        }
+      ],
+      "acceptance": {
+        "checked": [
+          "write.output"
+        ]
+      }
+    }
+  },
+  {
+    "contract": "execution-plan",
+    "why": "unknown principals cannot establish independence",
+    "layer": "shape",
+    "value": {
+      "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+      "engine_id": "sha256:0000000000000000000000000000000000000000000000000000000000000007",
+      "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+      "compiled_graph_id": "sha256:0000000000000000000000000000000000000000000000000000000000000009",
+      "authority": {
+        "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+        "allowed_effects": [
+          "read-source"
+        ],
+        "data_destinations": [
+          "personal"
+        ]
+      },
+      "limits": {
+        "tokens": 1000,
+        "max_attempts": 4,
+        "deadline_unix_ms": 1800000000000,
+        "verification": {
+          "tokens": 200,
+          "attempts": 1,
+          "wall_ms": 1000
+        }
+      },
+      "inputs": {
+        "requirements": {
+          "artifact_ids": [
+            "sha256:0000000000000000000000000000000000000000000000000000000000000001"
+          ],
+          "artifact_type": "af/Requirements@1",
+          "cardinality": "one"
+        }
+      },
+      "bindings": {
+        "author": {
+          "package_digest": "sha256:0000000000000000000000000000000000000000000000000000000000000004",
+          "package_artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000005",
+          "execution": {
+            "kind": "model",
+            "provider": "personal",
+            "provider_kind": "claude",
+            "principal_id": "",
+            "model": "fable",
+            "effort": "high"
+          },
+          "invocation_policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002"
+        }
+      },
+      "dependencies": {
+        "builtin/document": {
+          "name": "builtin/document",
+          "content_digest": "sha256:000000000000000000000000000000000000000000000000000000000000000a",
+          "artifact_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008"
+        }
+      },
+      "generated_origins": [
+        {
+          "pipeline_id": "sha256:0000000000000000000000000000000000000000000000000000000000000008",
+          "proposal_id": "sha256:000000000000000000000000000000000000000000000000000000000000000b",
+          "bootstrap_plan_id": "sha256:000000000000000000000000000000000000000000000000000000000000000c"
+        }
+      ],
+      "acceptance": {
+        "checked": [
+          "write.output"
+        ]
+      }
+    }
+  },
+  {
+    "contract": "plan-decision",
+    "why": "decision binds immutable exact plan",
+    "layer": "shape",
+    "value": {
+      "task_revision_id": "sha256:0000000000000000000000000000000000000000000000000000000000000006",
+      "plan_id": "HEAD",
+      "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000002",
+      "developer": "local:alice",
+      "authorization_id": "sha256:000000000000000000000000000000000000000000000000000000000000000e",
+      "decision": "approved",
+      "reason": "Reviewed exact inputs, dependencies, bindings and protected verification reserve."
+    }
+  },
+  {
+    "contract": "review-history",
+    "why": "empty history cannot hide persisted state",
+    "layer": "shape",
+    "value": {
+      "kind": "empty",
+      "lineage_id": "sha256:0000000000000000000000000000000000000000000000000000000000000014",
+      "subject_id": "sha256:0000000000000000000000000000000000000000000000000000000000000015",
+      "finding_set_id": "sha256:0000000000000000000000000000000000000000000000000000000000000016",
+      "demand_set_id": "sha256:0000000000000000000000000000000000000000000000000000000000000017",
+      "round_report_id": "sha256:0000000000000000000000000000000000000000000000000000000000000018"
+    }
+  },
+  {
+    "contract": "verification-continuation",
+    "why": "continuation advances subject",
+    "layer": "semantic",
+    "value": {
+      "task_revision_id": "sha256:000000000000000000000000000000000000000000000000000000000000001e",
+      "plan_id": "sha256:000000000000000000000000000000000000000000000000000000000000001f",
+      "prior_history_id": "sha256:0000000000000000000000000000000000000000000000000000000000000020",
+      "previous_subject_id": "sha256:0000000000000000000000000000000000000000000000000000000000000021",
+      "current_subject_id": "sha256:0000000000000000000000000000000000000000000000000000000000000021",
+      "current_snapshot_id": "sha256:0000000000000000000000000000000000000000000000000000000000000023",
+      "policy_id": "sha256:0000000000000000000000000000000000000000000000000000000000000024",
+      "claims": {
+        "finding-1": "sha256:0000000000000000000000000000000000000000000000000000000000000025"
+      }
+    }
+  },
+  {
+    "contract": "repair-assessment",
+    "why": "targeted verification cannot claim full review",
+    "layer": "shape",
+    "value": {
+      "continuation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000026",
+      "current_subject_id": "sha256:0000000000000000000000000000000000000000000000000000000000000022",
+      "current_snapshot_id": "sha256:0000000000000000000000000000000000000000000000000000000000000023",
+      "check_receipt_id": "sha256:0000000000000000000000000000000000000000000000000000000000000027",
+      "scope": "whole_snapshot",
+      "claims": {
+        "finding-1": {
+          "expected_view_id": "sha256:0000000000000000000000000000000000000000000000000000000000000025",
+          "attestation_id": "sha256:0000000000000000000000000000000000000000000000000000000000000028",
+          "receipt_id": "sha256:0000000000000000000000000000000000000000000000000000000000000029",
+          "outcome": "positive"
+        }
+      }
+    }
+  }
+]
