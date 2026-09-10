@@ -45,6 +45,13 @@ budget, or sandbox boundary to make a test or review pass.
 
 ## Invariants
 
+- The next increment makes Task the common execution abstraction. Every Pipeline has a public
+  input/output contract, including embedded and generated Pipelines; newly generated plans
+  require developer review and exact-plan approval before execution. The implementation status
+  and compatibility checkpoints are recorded in [docs/task-execution.md](docs/task-execution.md).
+- Claude calls for this project use only `claude-personal`. The owner-selected implementation
+  review policy uses Fable 5.1/high for cross-review and GPT-5.6-Sol/high for bug and performance
+  review. This is an explicit specialist exception to the default single-reviewer policy.
 - A rename-limit warning does not erase a complete diff Subject: preserve the full Add/Delete
   path set, record truncated rename linkage, and keep the fixed limit in the diff-policy identity
   ([ADR-0017](docs/adr/0017-record-rename-truncation-and-continue.md)).

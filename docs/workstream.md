@@ -1,5 +1,9 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
+**Active increment:** [Task execution](task-execution.md), P00–P14. The owner approved
+implementation on 2026-09-10; baseline checks pass and contract work is next. The completed
+M0–M9 record below remains the compatibility foundation.
+
 **Status:** M0–M9 are complete and shipped in private release `v0.6.0` from exact `main` commit
 `fb462ba`. M7 adds base-bound, seal-checked Proposal
 transport and exact export; M8 adds typed bounded Scatter, lossless Shard Sets, whole-Subject
