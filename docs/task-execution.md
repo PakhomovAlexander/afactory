@@ -21,7 +21,7 @@ supplement it. Claude calls use only `claude-personal`.
 
 - [x] P00: unchanged-source baseline gate and fixture identities recorded below.
 - [ ] P01: contracts, schemas, ADR-0046 and fixtures implemented; deterministic gates pass;
-  external review pending before package closure.
+  external review awaits explicit `codex-personal` destination approval before package closure.
 - [ ] P02/P03: common Store lifecycle and approvals; typed Pipeline compilation.
 - [ ] P04–P06: shared execution, implementation Task, review Task and legacy parity.
 - [ ] P07–P09: shared packages, embedded Review, bounded repair and fix verification.
@@ -47,7 +47,29 @@ synthetic fixtures still reproduce byte-for-byte. New schema/type fixtures inclu
 approval identities, duplicate inputs, hidden tagged-variant fields, missing evidence and stale
 repair claims; canonical content IDs use the existing digest domain. Markdownlint passes after
 removing two pre-existing extra blank lines from the workstream archive. External review is the
-remaining P01 check; its immutable candidate and findings will be recorded here.
+remaining P01 check.
+
+The review candidate is `d1873733987c1392c4a27df60ee6162e7d77aa58`; policy and Diff base are
+`98bb904630c1c9f8e1b151fd359c874b465211a2`. Installed `af 0.8.0` successfully planned the three
+bindings with 300,000 tokens per Attempt and 1,000,000 per Round. Each first input is about
+49,800 tokens; the planned focus is P01 contracts and compatibility, with later compiler/Store
+execution explicitly outside this candidate.
+
+Automatic approval review rejected the launch before the process started: it requires explicit
+authorization for sending the private inputs to `codex-personal`, beyond the owner's confirmed
+Sol model/role selection. `claude-personal` is already authorized. The assistant requested that
+specific destination approval. **No review Campaign, reviewer Attempt or provider spend occurred.**
+Do not report review findings or a review pass, and do not retry through another route. Once
+authorized, run this same candidate as one light Round under `task-contracts-p01-20260910`, with
+state outside Git at the workspace's `.review-state/task-contracts-p01-20260910`; then fix concrete
+Findings, record usage/dispositions, and rerun the deterministic gate before closing P01.
+
+The next implementation step is P02/P03. Store integration must use `EventStore::append_batch`'s
+existing CAS publication barrier and immediate transaction, with a separate Task transition
+validator; the legacy Campaign validator's permissive tail is not Task admission. Add fenced
+writer leases and exact authorized decisions before enabling new-format dispatch. P03 lowers
+the public typed boundaries into the existing graph scheduler; it must not introduce a second
+executor. ADR-0046 records the remaining contract-to-runtime obligations.
 
 ## P00 baseline evidence
 
