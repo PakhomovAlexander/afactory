@@ -162,11 +162,20 @@ fn captured_file(cas: &Cas, manifest: &Manifest, path: &str) -> Result<Vec<u8>, 
 }
 
 fn engine(cas: &Cas) -> Result<String, String> {
-    let executable = std::fs::File::open(std::env::current_exe().map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    let (digest, _) =
-        review_source_git::digest_reader_with_buffer(executable, &mut vec![0; 64 * 1024])
-            .map_err(|e| e.to_string())?;
+    // Process-local only: every fresh process proves its running engine bytes. Reconstructing
+    // the compiler within one capture must not reread a large debug executable a second time.
+    static DIGEST: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    let digest = DIGEST
+        .get_or_init(|| {
+            let executable =
+                std::fs::File::open(std::env::current_exe().map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            review_source_git::digest_reader_with_buffer(executable, &mut vec![0; 64 * 1024])
+                .map(|(digest, _)| digest)
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
     cas.put_json(&json!({"schema":"af.task-engine/1","binary_digest":digest,"version":env!("CARGO_PKG_VERSION"),"graph":"af.compiled-task/1"})).map_err(|e|e.to_string())
 }
 

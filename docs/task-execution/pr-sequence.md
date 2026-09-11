@@ -34,3 +34,11 @@ PR 1 preflight at `fbcffa3` measured 310,029–310,166 input tokens per speciali
 diff. Its review policy therefore reserves 400,000 tokens per Attempt and 1,400,000 for the
 Campaign, including admission and bounded failure overhead. This is one light Round; the input
 measurement does not claim that any model inference has already run.
+
+PR 1 is draft [#75](https://github.com/PakhomovAlexander/afactory/pull/75). Its first CI run
+passed live container probes but exhausted deadline headroom in the Provider account-change
+fixture before any Attempt. The fix computes executable identity once per process and runs the
+SHA-2 dependency at production optimization in debug builds. Task deadlines and the fixture's
+verifier reserve remain unchanged. The corrected local gate passes 732 tests, with 15 ignored,
+plus Clippy, formatting and frozen synthetic reproduction. The external Campaign remains
+paused for `claude-personal` login at its captured candidate `456779b`; no reviewer has run.
