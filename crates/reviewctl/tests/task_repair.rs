@@ -283,7 +283,7 @@ fn clean_review_selects_s1_without_spending_the_repair_allowance() {
 
 #[test]
 fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_attempt() {
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
     let directory = tempfile::tempdir().unwrap();
     let (repo, state) = task_cli::fixture_named(directory.path(), "bounded-repair");
     let package = repo.join(".af/task-packages/fixture");
@@ -316,49 +316,75 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
         .unwrap();
     let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
     let store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
-    let until = Instant::now() + Duration::from_secs(40);
-    let frozen = loop {
-        let projection = store.task_projection(&cas, "repair-cli").unwrap().unwrap();
-        if let Some(execution) = &projection.execution
-            && execution.budget.begun_attempts() == 7
-            && execution
-                .outputs
-                .contains_key("root.nodes.repair.nodes.attest")
-            && !execution.pending_attempts().is_empty()
-        {
-            let pending = execution.pending_attempts();
-            let started = store
-                .replay(&review_store::store::task::task_run_id("repair-cli").unwrap())
-                .unwrap()
-                .into_iter()
-                .any(|event| {
-                    let transition: review_core::task::event::TaskTransitionV1 =
-                        serde_json::from_value(event.payload).unwrap();
-                    if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
-                        transition.change
-                    {
-                        let record = cas.get_json(&record_id).unwrap();
-                        record["payload"]["kind"] == "started"
-                            && record["payload"]["attempt_id"]
-                                .as_str()
-                                .is_some_and(|id| pending.iter().any(|p| p == id))
-                    } else {
-                        false
+    let revision = cas.get_json(plan["revision_id"].as_str().unwrap()).unwrap();
+    let deadline = revision["payload"]["limits"]["deadline_unix_ms"]
+        .as_u64()
+        .unwrap();
+    let run_id = review_store::store::task::task_run_id("repair-cli").unwrap();
+    let mut next_sequence = 0;
+    let mut target_attempts = std::collections::BTreeSet::new();
+    // Observe only newly appended records. Full projection replay validates the entire
+    // artifact closure and can itself delay the Worker enough to miss a short crash window.
+    let interrupted_attempt = 'observe: loop {
+        for event in store.replay_from(&run_id, next_sequence).unwrap() {
+            next_sequence = event.sequence + 1;
+            let transition: review_core::task::event::TaskTransitionV1 =
+                serde_json::from_value(event.payload).unwrap();
+            if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
+                transition.change
+            {
+                let record = cas.get_json(&record_id).unwrap();
+                if record["payload"]["kind"] == "prepared" {
+                    let invocation = cas
+                        .get_json(record["payload"]["invocation_id"].as_str().unwrap())
+                        .unwrap();
+                    if invocation["payload"]["node"] == "root.nodes.repair.nodes.verify_fixes" {
+                        target_attempts
+                            .insert(record["payload"]["attempt_id"].as_str().unwrap().to_owned());
                     }
-                });
-            if started {
-                break projection;
+                } else if record["payload"]["kind"] == "started"
+                    && let Some(attempt) = record["payload"]["attempt_id"].as_str()
+                    && target_attempts.contains(attempt)
+                {
+                    // Fence the process before doing expensive projection validation.
+                    child.kill().unwrap();
+                    child.wait().unwrap();
+                    break 'observe attempt.to_owned();
+                }
             }
         }
-        if Instant::now() > until || child.try_wait().unwrap().is_some() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        if now >= deadline || child.try_wait().unwrap().is_some() {
             let _ = child.kill();
             let _ = child.wait();
-            panic!("No pending fix-verifier Attempt at the intended crash boundary");
+            let projection = store.task_projection(&cas, "repair-cli").unwrap().unwrap();
+            panic!(
+                "No started fix-verifier Attempt before the admitted Task deadline: phase={:?}, attempts={}",
+                projection.phase,
+                projection
+                    .execution
+                    .as_ref()
+                    .map_or(0, |e| e.budget.begun_attempts())
+            );
         }
-        std::thread::sleep(Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(10));
     };
-    child.kill().unwrap();
-    child.wait().unwrap();
+    let frozen = store.task_projection(&cas, "repair-cli").unwrap().unwrap();
+    let interrupted = frozen.execution.as_ref().unwrap();
+    assert_eq!(interrupted.budget.begun_attempts(), 7);
+    assert!(
+        interrupted
+            .outputs
+            .contains_key("root.nodes.repair.nodes.attest")
+    );
+    assert!(
+        interrupted
+            .pending_attempts()
+            .contains(&interrupted_attempt)
+    );
     let final_lease = store
         .task_projection(&cas, "repair-cli")
         .unwrap()

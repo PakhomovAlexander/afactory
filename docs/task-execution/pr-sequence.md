@@ -69,3 +69,10 @@ refusals distinguish unknown facts, ambiguity, budget, capabilities and semantic
 The complete gate passes **754 tests, zero failures, 15 ignored**, across 101 suites, with
 formatting, Clippy and frozen reproduction. The additional critical-path deadline check passes
 the real CLI selection matrix; final Clippy and Markdown checks also pass.
+
+CI for `bdb7ac2` passed container probes but the interruption observer failed to catch the
+started fix-verifier boundary. The observer now reads only newly appended durable events,
+kills the CLI immediately on the target Started record, and validates the full projection
+then. Its wait uses the admitted Task deadline; Worker deadlines, the Task budget, original
+Round identity and eight-Attempt recovery assertions remain intact. The targeted crash test
+passes locally with this observer.
