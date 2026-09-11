@@ -1,6 +1,7 @@
-# Task increment review: Fable 5.1/high cross-review; GPT-5.6-Sol/high bugs and performance.
-# Bind correctness=claude-personal, bugs=codex-personal, performance=codex-personal.
-# Owner-authorized specialist policy; use one light Round per implementation milestone.
+# Task increment PR review: Fable 5.1/high correctness and architecture;
+# Opus 5/xhigh performance; GPT-5.6-Sol/high bug bounty.
+# Bind correctness=claude-personal, performance=claude-personal, bugs=codex-personal.
+# Owner-authorized specialist policy; one light Round per PR, then fixes and project Gates.
 
 version = 2
 check_timeout_seconds = 3600
