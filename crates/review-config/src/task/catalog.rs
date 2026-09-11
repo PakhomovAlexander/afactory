@@ -22,6 +22,7 @@ use crate::{CommandSpec, lock::package_digest_from_files};
 pub const TASK_PACKAGE_V1: &str = "af/TaskPackage@1";
 pub const COMPILED_TASK_V1: &str = "af/CompiledTask@1";
 
+pub mod export;
 pub mod planning;
 #[cfg(test)]
 mod tests;

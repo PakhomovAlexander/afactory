@@ -32,7 +32,7 @@ supplement it. Claude calls use only `claude-personal`.
 - [ ] P10: deterministic captured selection and CLI routing pass the full gate; PR integration pending.
 - [ ] P11: bounded generation, shared planning accounting and signed developer decisions are
   implemented and pass the full gate; PR integration pending.
-- [ ] P12: export and starters.
+- [ ] P12: portable export and contract-test commands pass the full gate; starter pack remains.
 - [ ] P13/P14: Jira/document demonstrations, compatibility, benchmark and consumer release.
 
 The owner authorized the complete plan in [three PRs](task-execution/pr-sequence.md).
@@ -45,6 +45,8 @@ The [selection walkthrough](task-execution/selection.md) explains fallback, auto
 persisted reasons without Planner calls.
 The [generated-plan walkthrough](task-execution/generated-plans.md) describes the fixed Planner,
 typed compiler repair, one-budget handoff and exact signed approval before generated execution.
+The [export walkthrough](task-execution/export.md) describes portable bundles, static contract
+fixtures and second-developer reuse without another Planner call.
 Each PR receives one light Round with Fable 5.1/high on `claude-personal` for correctness
 and architecture, Opus 5/xhigh on `claude-personal` for performance, and GPT-5.6-Sol/high on
 `codex-personal` for bug bounty. These replace the P01 reviewer selection for future PRs.
@@ -88,7 +90,7 @@ allowance. Complete finding-bearing Review Tasks retain `changes_requested` and 
 reviewers remain incomplete without authoritative partial sets. Both initial execution and
 replay preserve the domain exit. See the [Review Task walkthrough](task-execution/review-task.md).
 
-The P11 deterministic gate passed with **772 tests, zero failures and 15 existing opt-in
+The export checkpoint deterministic gate passed with **775 tests, zero failures and 15 existing opt-in
 probes ignored**, across 103 suites. Formatting, Clippy and frozen synthetic reproduction passed.
 All eleven implementation/delivery behavior cases now pass through the common Store, with their
 original source preserved as a compatibility fixture. Native timeout and storage-failure tests

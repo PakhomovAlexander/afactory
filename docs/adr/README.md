@@ -120,3 +120,4 @@ options you rejected and why — that is the part future-you needs.
 - [0054 — Keep targeted repair distinct from complete Review](0054-keep-targeted-repair-distinct-from-complete-review.md)
 - [0055 — Select captured Pipelines before generation](0055-select-captured-pipelines-before-generation.md)
 - [0056 — Share planning accounting and authenticate generated plan decisions](0056-share-planning-accounting-and-authenticate-generated-plan-decisions.md)
+- [0057 — Export portable Task definitions without execution authority](0057-export-portable-task-definitions-without-execution-authority.md)

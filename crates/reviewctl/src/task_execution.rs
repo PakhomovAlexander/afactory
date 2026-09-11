@@ -31,6 +31,7 @@ use serde_json::json;
 mod bindings;
 pub(crate) mod catalog;
 pub(super) mod developer;
+pub(super) mod export;
 mod legacy;
 mod planning;
 mod selection;

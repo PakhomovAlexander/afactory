@@ -777,6 +777,24 @@ pub(crate) enum RunnerArg {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum CatalogCommand {
+    /// Check exact Pipeline/Worker contract fixtures from a local Git revision without dispatch
+    Test {
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long, default_value = "HEAD")]
+        revision: String,
+        #[arg(long, default_value = "catalog.toml")]
+        manifest: String,
+        /// Fixture path in the same Git commit (defaults beside the manifest)
+        #[arg(long)]
+        fixtures: Option<String>,
+        #[arg(long, conflicts_with = "worker")]
+        pipeline: Option<String>,
+        #[arg(long)]
+        worker: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Explicitly sync a Git catalog into an absent directory; runs no Workers or installers
     Sync {
         /// Local Git checkout or public HTTPS Git URL
@@ -916,6 +934,16 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
     /// Explain a captured Task's ports, hierarchy, bindings, coverage and budgets
     Explain {
         task_id: String,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Export reusable definitions and contract fixtures into an absent directory
+    Export {
+        task_id: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        destination: String,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },

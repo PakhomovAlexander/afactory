@@ -32,6 +32,14 @@ An authenticated approval or rejection of an exact Task revision, Execution Plan
 policy. Generated dependencies require approval before dispatch. A model response, writer label
 or unsigned decision object cannot supply this authority.
 
+**Shared Task Catalog**:
+A Git-pinned set of Pipeline, Worker and Task-kind packages. Export uses typed public inputs as
+parameters, shared defaults and separate contract fixtures; it carries no Task execution approval.
+
+**Catalog Contract Fixture**:
+An exact expectation for public interfaces, applicability, coverage and bounds. Passing it checks
+package compatibility; independent Task acceptance still requires execution.
+
 ### What is reviewed
 
 **Snapshot**:

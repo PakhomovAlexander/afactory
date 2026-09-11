@@ -3,6 +3,120 @@ use review_core::task::pipeline::PipelineContractV1;
 use serde_json::json;
 
 #[test]
+fn export_uses_shared_defaults_and_checked_renaming_without_local_authority() {
+    let mut f = Fixture::new();
+    f.replacement(|_, files| {
+        files.insert("private-local.txt".into(), b"PRIVATE LOCAL WORKER".to_vec());
+    });
+    let exported = f
+        .compiler
+        .export_catalog("builtin/document", "team/document")
+        .unwrap();
+    assert_eq!(exported.catalog.packages.len(), 2);
+    assert!(
+        exported
+            .catalog
+            .packages
+            .contains_key("builtin/document-author")
+    );
+    assert!(!exported.catalog.packages.contains_key("local/author"));
+    assert!(
+        !exported
+            .files
+            .values()
+            .any(|b| String::from_utf8_lossy(b).contains("PRIVATE LOCAL"))
+    );
+    let mut compiler = TaskPlanCompiler::new(
+        f.compiler.engine_id.clone(),
+        f.compiler.policy_id.clone(),
+        BTreeMap::new(),
+        f.compiler.acceptance_outputs.clone(),
+        f.compiler.independence,
+    )
+    .unwrap();
+    for (name, pin) in &exported.catalog.packages {
+        compiler
+            .capture_package(&f.cas, name, pin, &exported.files)
+            .unwrap();
+    }
+    compiler.validate_dependency_closure().unwrap();
+    compiler
+        .check_contract_fixtures(&exported.contracts)
+        .unwrap();
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let schema = |name: &str| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(root.join("schemas").join(name)).unwrap()).unwrap()
+    };
+    let mut options = jsonschema::options();
+    for name in [
+        "task-contracts-v1.json",
+        "task-operator-signature-v1.json",
+        "task-kind-v1.json",
+    ] {
+        let value = schema(name);
+        options.with_resource(
+            value["$id"].as_str().unwrap().to_owned(),
+            jsonschema::Resource::from_contents(value).unwrap(),
+        );
+    }
+    for (name, value) in [
+        (
+            "catalog-contract-fixtures-v1.json",
+            serde_json::to_value(&exported.contracts).unwrap(),
+        ),
+        (
+            "shared-task-catalog-v1.json",
+            serde_json::to_value(&exported.catalog).unwrap(),
+        ),
+    ] {
+        let validator = options.build(&schema(name)).unwrap();
+        assert!(
+            validator.is_valid(&value),
+            "{name}: {:?}",
+            validator.iter_errors(&value).collect::<Vec<_>>()
+        );
+        let mut invalid = value;
+        invalid["approval"] = json!(true);
+        assert!(!validator.is_valid(&invalid));
+    }
+    let mut changed = exported.contracts.clone();
+    changed
+        .pipelines
+        .get_mut("team/document")
+        .unwrap()
+        .coverage
+        .clear();
+    assert!(compiler.check_contract_fixtures(&changed).is_err());
+    for name in [
+        "generated/document",
+        "local/document",
+        "af-internal/document",
+        "builtin/document-author",
+    ] {
+        assert!(
+            f.compiler.export_catalog("builtin/document", name).is_err(),
+            "{name}"
+        );
+    }
+    f.compiler
+        .pipelines
+        .get_mut("builtin/document")
+        .unwrap()
+        .slots
+        .get_mut("author")
+        .unwrap()
+        .worker = "local/author".into();
+    assert!(
+        f.compiler
+            .export_catalog("builtin/document", "team/document")
+            .unwrap_err()
+            .contains("shared Worker")
+    );
+}
+
+#[test]
 fn proposal_feedback_uses_full_effective_binding_independence_without_installing_a_plan() {
     use review_core::task::pipeline::*;
     use review_core::task::planning::PipelineProposalV1;

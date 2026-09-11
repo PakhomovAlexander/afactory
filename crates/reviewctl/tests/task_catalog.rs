@@ -145,7 +145,13 @@ fn git_catalog_sync_is_exact_transitive_absent_only_and_runs_offline_after_captu
     assert_eq!(planned["attempts"], 0);
     assert!(planned["plan"]["dependencies"]["team/feature-kind"].is_object());
     std::fs::write(
-        repo.join(".af/vendor/team/packages/fixture/implementer/worker.py"),
+        repo.join(".af/vendor/team")
+            .join(
+                imported["packages"]["fixture/implementer"]["path"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .join("worker.py"),
         "raise Exception('mutated import')",
     )
     .unwrap();

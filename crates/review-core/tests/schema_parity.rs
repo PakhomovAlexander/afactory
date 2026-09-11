@@ -32,7 +32,10 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 79] = [
+const SCHEMAS: [&str; 82] = [
+    "catalog-contract-fixtures-v1.json",
+    "shared-task-catalog-v1.json",
+    "task-kind-v1.json",
     "planning-request-v1.json",
     "task-planner-settings-v1.json",
     "task-operator-signature-v1.json",
@@ -471,6 +474,7 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     "reviewer-result-v1.json",
                     "task-contracts-v1.json",
                     "task-operator-signature-v1.json",
+                    "task-kind-v1.json",
                     "task-invocation-v1.json",
                     "subject-v1.json",
                     "change-set-v1.json",

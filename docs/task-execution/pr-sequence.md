@@ -88,3 +88,12 @@ Clippy and byte-identical frozen reproduction. Full binding-independence errors 
 bounded compiler repair. The generated implementation fixture embeds Review and adds only the
 admitted empty-history constructor before exact approval. Claude personal remains signed out;
 external PR reviews are paused, and no PR 2 reviewer has run.
+
+CI for `a52b804` passes Check, CLI smoke and live container probes in run `34644327889`.
+The P12 export checkpoint has passing targeted proof for nested generated-definition export,
+unchanged originating approval state, relocated bundle pins, exact contract fixtures and real
+second-developer execution with three Attempts and zero Planner calls. Default shared Workers
+replace local overrides in the exported closure; preparation, embedded Task state and unsafe
+destinations are refused. The full export gate passes **775 tests, zero failures, 15 ignored**, across 103 suites,
+plus formatting, Clippy, frozen reproduction and Markdown checks. The starter pack remains
+outstanding. Claude personal is still signed out; no PR 2 reviewer has run.

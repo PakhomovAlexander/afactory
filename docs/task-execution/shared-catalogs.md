@@ -16,7 +16,10 @@ URLs with query tokens are not accepted in catalog definitions.
 
 The shared file uses `schema = "af.shared-task-catalog/1"`. Its `packages` table has the same
 exact `version`, `digest` and repository-relative `path` fields as the project Task catalog.
-`imports = ["catalogs/workers.toml"]` names other files in that commit. There is no namespace
+`imports = ["catalogs/workers.toml"]` names other files in that commit. Optional
+`path_base = "manifest"` resolves package and import paths relative to the catalog file; omission
+retains repository-relative paths. This allows an [exported bundle](export.md) to move as a unit.
+There is no namespace
 precedence: ambiguous package names are errors. A shared catalog cannot contain `local/*`
 packages. Worker input/output schemas are validated during sync using the runtime's contract
 capture, without executing the Worker.

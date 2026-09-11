@@ -259,6 +259,218 @@ fn approve(repo: &Path, state: &Path, root: &Path, key: &minisign::KeyPair) -> V
 }
 
 #[test]
+fn export_refuses_preparation_private_task_values_and_unsafe_destinations() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state, _) = setup(root.path(), false, false);
+    let ticket: Value =
+        serde_json::from_slice(&std::fs::read(repo.join("ticket.json")).unwrap()).unwrap();
+    let worker_path = repo.join(".af/task-packages/fixture/implementer/worker.py");
+    let mut source = std::fs::read_to_string(&worker_path).unwrap();
+    source.push_str(&format!("\n# {}\n", ticket["goal"].as_str().unwrap()));
+    std::fs::write(worker_path, source).unwrap();
+    let catalog_path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    package(&repo, &mut catalog, "fixture/implementer");
+    std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+    commit(&repo);
+    run(&repo, &state, &["task", "plan", "--file", "ticket.json"], 0);
+    let rejected = |destination: &str| {
+        let output = Command::new(env!("CARGO_BIN_EXE_af"))
+            .current_dir(&repo)
+            .args([
+                "task",
+                "export",
+                "pagination-cli",
+                "--name",
+                "team/pagination",
+                "--destination",
+                destination,
+                "--state",
+            ])
+            .arg(&state)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        String::from_utf8(output.stderr).unwrap()
+    };
+    assert!(rejected("shared").contains("not produced"));
+    run(&repo, &state, &["task", "run", "pagination-cli"], 0);
+    let waiting = run(&repo, &state, &["task", "explain", "pagination-cli"], 0);
+    assert!(rejected("shared").contains("embeds originating Task state"));
+    assert!(!repo.join("shared").exists());
+    for path in ["../escape", ".git/export", "/tmp/af-export"] {
+        assert!(rejected(path).contains("safe project-relative"));
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(root.path(), repo.join("escape-link")).unwrap();
+        assert!(rejected("escape-link/export").contains("symlink"));
+    }
+    assert_eq!(
+        run(&repo, &state, &["task", "explain", "pagination-cli"], 0),
+        waiting
+    );
+}
+
+#[test]
+fn generated_definition_exports_without_approval_and_a_second_developer_reuses_it_without_planning()
+{
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state, key) = setup(root.path(), false, true);
+    let waiting = run(
+        &repo,
+        &state,
+        &["task", "start", "--file", "ticket.json"],
+        0,
+    );
+    assert_eq!(waiting["attempts"], 1);
+    let before = run(&repo, &state, &["task", "explain", "pagination-cli"], 0);
+    let exported = run(
+        &repo,
+        &state,
+        &[
+            "task",
+            "export",
+            "pagination-cli",
+            "--name",
+            "team/pagination",
+            "--destination",
+            "shared",
+        ],
+        0,
+    );
+    assert_eq!(exported["execution_authorized"], false);
+    assert_eq!(exported["packages"].as_object().unwrap().len(), 4);
+    assert!(exported["packages"]["team/pagination/implementation"].is_object());
+    assert!(exported["packages"]["fixture/planner"].is_null());
+    assert_eq!(
+        run(&repo, &state, &["task", "explain", "pagination-cli"], 0),
+        before
+    );
+    let original = std::fs::read(repo.join("shared/catalog.toml")).unwrap();
+    let denied = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(&repo)
+        .args([
+            "task",
+            "export",
+            "pagination-cli",
+            "--name",
+            "team/pagination",
+            "--destination",
+            "shared",
+            "--state",
+        ])
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert!(!denied.status.success());
+    assert_eq!(
+        std::fs::read(repo.join("shared/catalog.toml")).unwrap(),
+        original
+    );
+    // Bundle-relative pins work after moving the complete directory within its Git repo.
+    std::fs::create_dir(repo.join("relocated")).unwrap();
+    std::fs::rename(repo.join("shared"), repo.join("relocated/bundle")).unwrap();
+    commit(&repo);
+    let catalog = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_af"))
+            .current_dir(&repo)
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()
+    };
+    let checked = catalog(&[
+        "catalog",
+        "test",
+        "--source",
+        ".",
+        "--manifest",
+        "relocated/bundle/catalog.toml",
+        "--json",
+    ]);
+    assert_eq!(checked["attempts"], 0);
+    assert_eq!(checked["contract_fixtures"], "passed");
+    let checked = catalog(&[
+        "catalog",
+        "test",
+        "--source",
+        ".",
+        "--manifest",
+        "relocated/bundle/catalog.toml",
+        "--worker",
+        "fixture/evaluator",
+        "--json",
+    ]);
+    assert_eq!(checked["prerequisites"].as_array().unwrap().len(), 1);
+    approve(&repo, &state, root.path(), &key);
+    assert_eq!(
+        run(&repo, &state, &["task", "run", "pagination-cli"], 0)["result"]["acceptance"],
+        "satisfied"
+    );
+
+    let second = root.path().join("second-developer");
+    let (consumer, consumer_state) = task_cli::fixture_named(&second, "pagination");
+    let imported = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(&consumer)
+        .args(["catalog", "sync", "--source"])
+        .arg(&repo)
+        .args([
+            "--manifest",
+            "relocated/bundle/catalog.toml",
+            "--destination",
+            ".af/vendor/team",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let catalog_path = consumer.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    catalog["packages"] = toml::Value::Table(toml::map::Map::new());
+    catalog.as_table_mut().unwrap().insert(
+        "imports".into(),
+        toml::Value::try_from(vec![".af/vendor/team/catalog.lock.json"]).unwrap(),
+    );
+    std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+    std::fs::remove_dir_all(consumer.join(".af/task-packages")).unwrap();
+    let ticket_path = consumer.join("ticket.json");
+    let mut ticket: Value = serde_json::from_slice(&std::fs::read(&ticket_path).unwrap()).unwrap();
+    ticket["task_id"] = json!("second-pagination");
+    ticket["pipeline"]["name"] = json!("team/pagination");
+    write_json(&ticket_path, &ticket);
+    commit(&consumer);
+    let done = run(
+        &consumer,
+        &consumer_state,
+        &["task", "start", "--file", "ticket.json"],
+        0,
+    );
+    assert_eq!(done["result"]["acceptance"], "satisfied");
+    assert_eq!(done["attempts"], 3);
+    assert!(done["planning"].is_null());
+    let done = run(
+        &consumer,
+        &consumer_state,
+        &["task", "explain", "second-pagination"],
+        0,
+    );
+    assert_eq!(done["plan"]["generated_origins"], json!([]));
+    assert!(done["plan"]["dependencies"]["fixture/planner"].is_null());
+}
+
+#[test]
 fn generated_nested_plan_waits_for_exact_approval_then_resumes_with_shared_accounting() {
     let root = tempfile::tempdir().unwrap();
     let (repo, state, key) = setup(root.path(), false, true);

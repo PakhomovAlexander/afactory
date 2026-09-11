@@ -3,15 +3,40 @@ use super::catalog::TaskPackagePin;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CatalogPathBase {
+    #[default]
+    Repository,
+    Manifest,
+}
+
+/// Package names may be prefixes of other names. Separate physical roots prevent a parent's
+/// digest from accidentally including a nested package's files after export or vendoring.
+pub fn package_directory(name: &str) -> String {
+    let digest = review_store::canonical::blob_content_id(name.as_bytes());
+    format!("packages/{}", digest.trim_start_matches("sha256:"))
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SharedTaskCatalog {
     pub schema: String,
     pub packages: BTreeMap<String, TaskPackagePin>,
+    /// Existing catalogs use repository-relative paths. Export bundles opt into manifest-
+    /// relative paths so the whole directory can move without rewriting package pins.
+    #[serde(default, skip_serializing_if = "CatalogPathBase::is_repository")]
+    pub path_base: CatalogPathBase,
     /// Catalog files in the same exact Git commit. Another repository is a separate explicit
     /// sync; imported text cannot initiate a new transport or read another local repository.
     #[serde(default)]
     pub imports: BTreeSet<String>,
+}
+
+impl CatalogPathBase {
+    fn is_repository(&self) -> bool {
+        *self == Self::Repository
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

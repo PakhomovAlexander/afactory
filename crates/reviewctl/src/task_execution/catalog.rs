@@ -118,15 +118,34 @@ impl SyncCapture<'_> {
         let bytes = self.file(path)?;
         let catalog: SharedTaskCatalog = parse(Path::new(path), &bytes)?;
         catalog.validate()?;
+        let resolve = |relative: &str| -> Result<String, String> {
+            let path = if catalog.path_base == CatalogPathBase::Manifest {
+                Path::new(path)
+                    .parent()
+                    .unwrap_or(Path::new(""))
+                    .join(relative)
+            } else {
+                PathBuf::from(relative)
+            };
+            let text = path.to_str().ok_or("Catalog relative path is not UTF-8")?;
+            if !safe_relative_path(text) {
+                return Err("Unsafe catalog-relative path".into());
+            }
+            Ok(text.into())
+        };
         self.catalogs.insert(
             path.into(),
             review_store::canonical::blob_content_id(&bytes),
         );
         self.files.insert(format!("catalogs/{path}"), bytes);
         for import in &catalog.imports {
-            self.visit(import, depth + 1)?;
+            self.visit(&resolve(import)?, depth + 1)?;
         }
         for (name, pin) in &catalog.packages {
+            let pin = TaskPackagePin {
+                path: resolve(&pin.path)?,
+                ..pin.clone()
+            };
             if self.packages.contains_key(name) || self.packages.len() >= 128 {
                 return Err(format!(
                     "Ambiguous shared package {name} or catalog package bound exceeded"
@@ -152,7 +171,7 @@ impl SyncCapture<'_> {
                 source.insert(path, self.blob(&oid)?);
             }
             self.compiler
-                .capture_package(self.cas, name, pin, &source)?;
+                .capture_package(self.cas, name, &pin, &source)?;
             if let Some(worker) = self.compiler.worker(name) {
                 use review_pipeline::task::host::TaskEnvironment;
                 let environment = SnapshotTaskEnvironment {
@@ -164,7 +183,7 @@ impl SyncCapture<'_> {
                     &environment.kernel_outputs(&worker.signature),
                 )?;
             }
-            let relative = format!("packages/{name}");
+            let relative = package_directory(name);
             let prefix = format!("{}/", pin.path);
             for (path, bytes) in source {
                 let suffix = path
@@ -227,17 +246,7 @@ pub(crate) fn sync(
     {
         return Err("Catalog sync needs an explicit revision and safe absent destination".into());
     }
-    let project = std::fs::canonicalize(project).map_err(|e| e.to_string())?;
-    let mut current = project.clone();
-    for component in destination.split('/') {
-        current.push(component);
-        if std::fs::symlink_metadata(&current).is_ok_and(|m| m.file_type().is_symlink()) {
-            return Err("Catalog destination cannot follow a symlink".into());
-        }
-    }
-    if std::fs::symlink_metadata(project.join(destination)).is_ok() {
-        return Err("Catalog destination must be absent".into());
-    }
+    let destination_path = absent_destination(project, destination)?;
     let temporary = tempfile::tempdir().map_err(|e| e.to_string())?;
     let git_home = temporary.path().join("home");
     std::fs::create_dir(&git_home).map_err(|e| e.to_string())?;
@@ -327,7 +336,7 @@ pub(crate) fn sync(
         "catalog.lock.json".into(),
         serde_json::to_vec_pretty(&lock).map_err(|e| e.to_string())?,
     );
-    publish_absent(&project.join(destination), &captured.files)?;
+    publish_absent(&destination_path, &captured.files)?;
     if json_output {
         println!(
             "{}",
@@ -340,6 +349,28 @@ pub(crate) fn sync(
         );
     }
     Ok(())
+}
+
+pub(super) fn absent_destination(project: &Path, destination: &str) -> Result<PathBuf, String> {
+    if !safe_relative_path(destination) {
+        return Err("Catalog destination must be a safe project-relative path".into());
+    }
+    let mut current = std::fs::canonicalize(project).map_err(|e| e.to_string())?;
+    for component in destination.split('/') {
+        current.push(component);
+        match std::fs::symlink_metadata(&current) {
+            Ok(m) if !m.is_dir() || m.file_type().is_symlink() => {
+                return Err("Catalog destination cannot follow a symlink or non-directory".into());
+            }
+            Ok(_) => (),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    if std::fs::symlink_metadata(&current).is_ok() {
+        return Err("Catalog destination must be absent".into());
+    }
+    Ok(current)
 }
 
 fn transport(home: &Path, cwd: &Path, args: &[&str]) -> Result<(), String> {
@@ -380,6 +411,124 @@ fn transport(home: &Path, cwd: &Path, args: &[&str]) -> Result<(), String> {
             "Catalog Git transport failed: {}",
             String::from_utf8_lossy(&output.stderr)
         ));
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn test(
+    source: &Path,
+    revision: &str,
+    manifest: &str,
+    fixtures: Option<&str>,
+    pipeline: Option<&str>,
+    worker: Option<&str>,
+    json_output: bool,
+) -> Result<(), String> {
+    if revision.is_empty()
+        || revision.len() > 1024
+        || revision.starts_with('-')
+        || revision.chars().any(char::is_control)
+    {
+        return Err("Catalog contract test needs an explicit local Git revision".into());
+    }
+    let temporary = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let home = temporary.path().join("home");
+    std::fs::create_dir(&home).map_err(|e| e.to_string())?;
+    let source = std::fs::canonicalize(source).map_err(|e| e.to_string())?;
+    let repo = Repo::open(&source, &home);
+    let commit = repo.rev_parse(revision).map_err(|e| e.to_string())?;
+    let cas = Cas::open(temporary.path().join("cas")).map_err(|e| e.to_string())?;
+    let policy = cas
+        .put(b"catalog-contract-validation@1")
+        .map_err(|e| e.to_string())?;
+    let compiler = TaskPlanCompiler::new(
+        policy.clone(),
+        policy,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        IndependencePolicyV1::default(),
+    )?;
+    let mut captured = SyncCapture {
+        repo: &repo,
+        commit: commit.clone(),
+        compiler,
+        cas: &cas,
+        catalogs: BTreeMap::new(),
+        stack: BTreeSet::new(),
+        packages: BTreeMap::new(),
+        files: BTreeMap::new(),
+        total: 0,
+    };
+    captured.visit(manifest, 0)?;
+    captured.compiler.validate_dependency_closure()?;
+    let default = Path::new(manifest)
+        .parent()
+        .unwrap_or(Path::new(""))
+        .join("contracts.json");
+    let fixture_path = fixtures.unwrap_or(default.to_str().ok_or("Fixture path is not UTF-8")?);
+    let fixtures: review_config::task::catalog::export::CatalogContractFixtures =
+        parse(Path::new(fixture_path), &captured.file(fixture_path)?)?;
+    captured.compiler.check_contract_fixtures(&fixtures)?;
+    if pipeline.is_some_and(|p| !fixtures.pipelines.contains_key(p))
+        || worker.is_some_and(|w| !fixtures.workers.contains_key(w))
+    {
+        return Err(
+            "Requested Pipeline or Worker is absent from the exact catalog fixtures".into(),
+        );
+    }
+    let mut prerequisites = Vec::new();
+    for name in fixtures
+        .workers
+        .keys()
+        .filter(|name| worker.is_none_or(|w| w == name.as_str()))
+    {
+        let manifest = captured
+            .compiler
+            .worker(name)
+            .ok_or("Worker disappeared from catalog")?;
+        let requirement = match &manifest.runner {
+            TaskWorkerRunner::Model {
+                provider_kind,
+                model,
+                effort,
+            } => json!({
+                "kind":"provider_binding", "provider_kind":provider_kind, "model":model, "effort":effort,
+                "status":"requires_local_admission",
+            }),
+            TaskWorkerRunner::Command { command }
+            | TaskWorkerRunner::LegacyTaskCommand { command, .. } => {
+                let path = Path::new(&command.program);
+                let found = if path.is_absolute() {
+                    path.is_file()
+                } else if command.program.contains('/') {
+                    false
+                } else {
+                    std::env::var_os("PATH").is_some_and(|paths| {
+                        std::env::split_paths(&paths).any(|p| p.join(path).is_file())
+                    })
+                };
+                json!({"kind":"command", "program":command.program,
+                    "status":if found {"present_unexecuted"} else {"missing_or_environment_specific"}})
+            }
+        };
+        prerequisites.push(json!({"worker":name, "requirement":requirement}));
+    }
+    let result = json!({"schema":"af.catalog-contract-test/1", "commit":commit,
+        "contract_fixtures":"passed", "pipelines":fixtures.pipelines.keys().collect::<Vec<_>>(),
+        "workers":fixtures.workers.keys().collect::<Vec<_>>(), "prerequisites":prerequisites,
+        "attempts":0, "business_acceptance":"not_executed"});
+    if json_output {
+        println!("{result}");
+    } else {
+        println!(
+            "Contract fixtures passed at {commit}: {} Pipelines, {} Workers.\nNo Workers ran; Task acceptance requires execution under project policy.",
+            fixtures.pipelines.len(),
+            fixtures.workers.len()
+        );
+        for prerequisite in prerequisites {
+            println!("{prerequisite}");
+        }
     }
     Ok(())
 }

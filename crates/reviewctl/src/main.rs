@@ -1172,6 +1172,30 @@ fn main() {
         cli::Command::Onboard(args) => ("af onboard", onboard::run_cli(args).map(|()| 0)),
         cli::Command::Catalog {
             command:
+                cli::CatalogCommand::Test {
+                    source,
+                    revision,
+                    manifest,
+                    fixtures,
+                    pipeline,
+                    worker,
+                    json,
+                },
+        } => (
+            "af catalog test",
+            task_execution::catalog::test(
+                &source,
+                &revision,
+                &manifest,
+                fixtures.as_deref(),
+                pipeline.as_deref(),
+                worker.as_deref(),
+                json,
+            )
+            .map(|()| 0),
+        ),
+        cli::Command::Catalog {
+            command:
                 cli::CatalogCommand::Sync {
                     source,
                     revision,
@@ -1294,6 +1318,19 @@ fn main() {
                 ),
                 cli::TaskCommand::Run { task_id, inspect } => task_execution::run(
                     &task_id,
+                    &inspect.repo,
+                    inspect.state.as_deref(),
+                    inspect.json,
+                ),
+                cli::TaskCommand::Export {
+                    task_id,
+                    name,
+                    destination,
+                    inspect,
+                } => task_execution::export::run(
+                    &task_id,
+                    &name,
+                    &destination,
                     &inspect.repo,
                     inspect.state.as_deref(),
                     inspect.json,
