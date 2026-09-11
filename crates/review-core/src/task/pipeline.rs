@@ -32,7 +32,11 @@ pub struct PipelinePortV1 {
     pub cardinality: PortCardinality,
     pub optional: bool,
     pub affinity: PortAffinityV1,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
     pub root_default: Option<RootDefaultV1>,
     #[serde(default, deserialize_with = "super::unique_set")]
     pub covers: BTreeSet<String>,
@@ -205,7 +209,11 @@ pub struct TaskNodeV1 {
     pub id: String,
     pub operator: TaskOperatorV1,
     pub inputs: BTreeMap<String, ValueRefV1>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
     pub when: Option<NodeConditionV1>,
 }
 

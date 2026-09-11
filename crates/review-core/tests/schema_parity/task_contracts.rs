@@ -111,6 +111,41 @@ fn empty_tagged_variants_reject_hidden_fields() {
 }
 
 #[test]
+fn optional_properties_accept_omission_but_reject_explicit_null() {
+    for (contract, parent, field) in [
+        ("task-revision", "/inputs/requirements", "snapshot_id"),
+        ("task-revision", "", "previous_revision_id"),
+        ("task-revision", "", "pipeline"),
+        (
+            "pipeline-definition",
+            "/contract/inputs/requirements",
+            "root_default",
+        ),
+        ("pipeline-definition", "/nodes/0", "when"),
+    ] {
+        let mut value = fixture(contract);
+        value
+            .pointer_mut(parent)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert_valid(&format!("{contract}-v1.json"), &value);
+        typed(contract, value.clone()).unwrap();
+        value.pointer_mut(parent).unwrap()[field] = Value::Null;
+        assert_invalid(
+            &format!("{contract}-v1.json"),
+            &value,
+            "optional means absent or a typed value",
+        );
+        assert!(
+            typed(contract, value).is_err(),
+            "{contract} accepted null {field}"
+        );
+    }
+}
+
+#[test]
 fn output_affinity_can_reference_an_input_with_the_same_name() {
     let mut value = fixture("pipeline-definition");
     value["contract"]["outputs"]["document"]["affinity"] =

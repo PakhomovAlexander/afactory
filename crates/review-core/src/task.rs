@@ -47,6 +47,16 @@ pub(super) fn safe_number(value: u64) -> bool {
     value <= crate::json::SAFE_INTEGER_MAX as u64
 }
 
+/// Optional properties allow omission, not JSON null. Keep serde admission aligned with
+/// the wire schema before the value is canonicalized and receives an identity.
+pub(super) fn present_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
 pub(super) fn unique_set<'de, D, T>(deserializer: D) -> Result<BTreeSet<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -80,7 +90,11 @@ pub struct ArtifactInputV1 {
     pub artifact_ids: Vec<String>,
     pub artifact_type: String,
     pub cardinality: PortCardinality,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
     pub snapshot_id: Option<String>,
 }
 
@@ -225,7 +239,11 @@ impl AcceptanceObligationV1 {
 pub struct TaskRevisionV1 {
     pub task_id: String,
     pub revision: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
     pub previous_revision_id: Option<String>,
     pub kind: String,
     pub goal: String,
@@ -236,7 +254,11 @@ pub struct TaskRevisionV1 {
     pub authority: TaskAuthorityV1,
     pub limits: TaskLimitsV1,
     pub strategy: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
     pub pipeline: Option<PipelineChoiceV1>,
     #[serde(default)]
     pub facts: BTreeMap<String, TaskFactV1>,

@@ -21,7 +21,7 @@ supplement it. Claude calls use only `claude-personal`.
 
 - [x] P00: unchanged-source baseline gate and fixture identities recorded below.
 - [ ] P01: contracts, schemas, ADR-0046 and fixtures implemented; deterministic gates pass;
-  external review awaits explicit `codex-personal` destination approval before package closure.
+  external review is running under the approved personal Provider bindings before package closure.
 - [ ] P02/P03: common Store lifecycle and approvals; typed Pipeline compilation.
 - [ ] P04–P06: shared execution, implementation Task, review Task and legacy parity.
 - [ ] P07–P09: shared packages, embedded Review, bounded repair and fix verification.
@@ -55,14 +55,23 @@ bindings with 300,000 tokens per Attempt and 1,000,000 per Round. Each first inp
 49,800 tokens; the planned focus is P01 contracts and compatibility, with later compiler/Store
 execution explicitly outside this candidate.
 
-Automatic approval review rejected the launch before the process started: it requires explicit
-authorization for sending the private inputs to `codex-personal`, beyond the owner's confirmed
-Sol model/role selection. `claude-personal` is already authorized. The assistant requested that
-specific destination approval. **No review Campaign, reviewer Attempt or provider spend occurred.**
-Do not report review findings or a review pass, and do not retry through another route. Once
-authorized, run this same candidate as one light Round under `task-contracts-p01-20260910`, with
-state outside Git at the workspace's `.review-state/task-contracts-p01-20260910`; then fix concrete
-Findings, record usage/dispositions, and rerun the deterministic gate before closing P01.
+The initial launch on 2026-09-10 was rejected before execution because automatic approval review
+required explicit `codex-personal` destination authorization. The owner supplied that approval on
+2026-09-11 for both Sol reviewers; Fable continues to use only `claude-personal`.
+
+Campaign `task-contracts-p01-20260910` started under installed `af 0.8.0`, with external state at
+the workspace's `.review-state/task-contracts-p01-20260910`. Round 1, epoch 1 stopped Incomplete
+at the required test Gate: a pre-existing consumer compatibility test copied a read-only fixture
+with its permissions intact and then tried to edit that copy. Markdownlint passed, and no
+reviewer Attempt ran. Provider admission spent **14,691 tokens**: bugs 5,710, correctness 3,271,
+performance 5,710. These are preflight costs, not review findings or a review pass.
+
+The correction shares a fixture-copy helper among the consumer, migration and render tests. It
+adds owner-write permission only to disposable copies, preserves source fixture bytes and modes,
+and resolves fixture roots through `AF_WORKSPACE_ROOT` for cached review builds. The corrected
+candidate also rejects explicit nulls in optional Task/Pipeline fields, matching the schemas.
+Resume the same incomplete light Round using a recorded replacement candidate and
+`--restart-round`; retain the previous epoch and spend. Do not start a replacement Campaign.
 
 The next implementation step is P02/P03. Store integration must use `EventStore::append_batch`'s
 existing CAS publication barrier and immediate transaction, with a separate Task transition
