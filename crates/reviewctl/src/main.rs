@@ -47,6 +47,7 @@ mod project;
 mod providers;
 mod selfmgmt;
 mod task;
+mod task_execution;
 mod topics;
 mod tui;
 
@@ -1131,6 +1132,7 @@ fn main() {
                 cli::TaskCommand::Start {
                     kind: _,
                     goal,
+                    file,
                     repo,
                     pipeline,
                     state,
@@ -1138,21 +1140,65 @@ fn main() {
                     uncommitted,
                     timeout_secs,
                     json,
-                } => task::options_from_cli(
-                    goal,
+                } => {
+                    if let Some(file) = file {
+                        task_execution::start(task_execution::StartOptions {
+                            file,
+                            repo,
+                            state,
+                            authority,
+                            uncommitted,
+                            json,
+                            plan_only: false,
+                            timeout_secs,
+                        })
+                    } else {
+                        task::options_from_cli(
+                            goal.unwrap_or_default(),
+                            repo,
+                            pipeline,
+                            state,
+                            authority,
+                            uncommitted,
+                            timeout_secs,
+                            json,
+                        )
+                        .and_then(|options| {
+                            init_review_workers();
+                            task::start(options)
+                        })
+                        .map(|verified| if verified { 0 } else { 3 })
+                    }
+                }
+                cli::TaskCommand::Plan {
+                    file,
                     repo,
-                    pipeline,
                     state,
                     authority,
                     uncommitted,
-                    timeout_secs,
                     json,
-                )
-                .and_then(|options| {
-                    init_review_workers();
-                    task::start(options)
-                })
-                .map(|verified| if verified { 0 } else { 3 }),
+                } => task_execution::start(task_execution::StartOptions {
+                    file,
+                    repo,
+                    state,
+                    authority,
+                    uncommitted,
+                    json,
+                    plan_only: true,
+                    timeout_secs: None,
+                }),
+                cli::TaskCommand::Run { task_id, inspect } => task_execution::run(
+                    &task_id,
+                    &inspect.repo,
+                    inspect.state.as_deref(),
+                    inspect.json,
+                ),
+                cli::TaskCommand::Explain { task_id, inspect } => task_execution::explain(
+                    &task_id,
+                    &inspect.repo,
+                    inspect.state.as_deref(),
+                    inspect.json,
+                ),
                 cli::TaskCommand::Deliver {
                     task_id,
                     repo,

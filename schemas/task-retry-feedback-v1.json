@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-retry-feedback:1",
+  "title": "TaskRetryFeedback@1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "attempt_id",
+    "contract_id",
+    "code"
+  ],
+  "properties": {
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9]{26}$"
+    },
+    "contract_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "code": {
+      "enum": [
+        "invalid_output_contract",
+        "process_failure",
+        "provider_failure",
+        "context_rejected",
+        "output_admission_rejected"
+      ]
+    }
+  }
+}

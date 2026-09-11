@@ -212,7 +212,10 @@
           ],
           "properties": {
             "kind": {
-              "const": "resumed"
+              "enum": [
+                "resumed",
+                "lease_released"
+              ]
             }
           }
         },
@@ -243,6 +246,23 @@
           "properties": {
             "kind": {
               "const": "execution_recorded"
+            },
+            "record_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "record_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "delivery_recorded"
             },
             "record_id": {
               "type": "string",

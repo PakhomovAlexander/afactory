@@ -9,7 +9,8 @@
     "instructions",
     "inputs",
     "feedback",
-    "output_schemas"
+    "output_schemas",
+    "reply_format"
   ],
   "properties": {
     "schema": {
@@ -91,6 +92,10 @@
           }
         ]
       }
+    },
+    "reply_format": {
+      "type": "string",
+      "maxLength": 1024
     }
   }
 }

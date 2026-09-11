@@ -36,6 +36,9 @@ fn producer() -> Producer {
 
 impl Fixture {
     fn new(script: &str) -> Self {
+        Self::with_model(script, false)
+    }
+    fn with_model(script: &str, model: bool) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
@@ -74,6 +77,10 @@ impl Fixture {
             .as_millis() as u64
             + 60_000;
         task.limits.verification.wall_ms = 5000;
+        if model {
+            task.limits.tokens = 5000;
+            task.limits.verification.tokens = 1000;
+        }
         let revision_id = cas
             .put_artifact(
                 TASK_REVISION_V1,
@@ -102,13 +109,24 @@ impl Fixture {
             worker_output_type: Some("af/CheckedDocument@1".into()),
             outcome_port: Some("output".into()),
             attempt: Some(OperatorAttemptCost {
-                tokens: 0,
+                tokens: if model { 1000 } else { 0 },
                 wall_ms: 5000,
             }),
         };
         let worker = TaskWorkerManifest {
-            schema: "af.worker/1".into(), name: "builtin/document-author".into(), version: "1.0.0".into(), signature,
-            runner: TaskWorkerRunner::Command { command: serde_json::from_value(json!({"program":"/usr/bin/python3", "args":[{"value":"@package/worker.py", "provenance":"literal"}]})).unwrap() },
+            schema: "af.worker/1".into(),
+            name: "builtin/document-author".into(),
+            version: "1.0.0".into(),
+            signature,
+            runner: if model {
+                TaskWorkerRunner::Model {
+                    provider_kind: "fixture".into(),
+                    model: "typed-model".into(),
+                    effort: "high".into(),
+                }
+            } else {
+                TaskWorkerRunner::Command { command: serde_json::from_value(json!({"program":"/usr/bin/python3", "args":[{"value":"@package/worker.py", "provenance":"literal"}]})).unwrap() }
+            },
         };
         let input_schema = json!({"type":"object", "additionalProperties":false, "required":["input"], "properties":{
             "input":{"type":"array", "minItems":1, "maxItems":1, "items":{"type":"object", "additionalProperties":false,
@@ -173,7 +191,17 @@ impl Fixture {
             .bind_worker(
                 "builtin/document-author",
                 AdmittedWorkerSettings {
-                    execution: WorkerExecutionV1::Command {},
+                    execution: if model {
+                        WorkerExecutionV1::Model {
+                            provider: "personal".into(),
+                            provider_kind: "fixture".into(),
+                            principal_id: policy.clone(),
+                            model: "typed-model".into(),
+                            effort: "high".into(),
+                        }
+                    } else {
+                        WorkerExecutionV1::Command {}
+                    },
                     invocation_policy_id: policy,
                 },
             )
@@ -286,6 +314,141 @@ assert request['feedback'] == []
 text = request['inputs']['input'][0]['payload']['text']
 print(json.dumps({'schema':'af.worker-reply/1','outputs':{'output':[{'outcome':'passed','text':text}]}}))
 "#;
+
+#[test]
+fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget() {
+    use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Model(AtomicUsize);
+    impl WorkerModelAdapter for Model {
+        fn provider_kind(&self) -> &'static str {
+            "fixture"
+        }
+        fn model_settings(&self) -> Option<(String, String)> {
+            Some(("typed-model".into(), "high".into()))
+        }
+        fn invoke(
+            &self,
+            cas: &Cas,
+            _: &std::path::Path,
+            bytes: Vec<u8>,
+            _: std::time::Duration,
+            writable: bool,
+        ) -> ModelWorkerReturn {
+            assert!(!writable);
+            let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                request["inputs"]
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .collect::<Vec<_>>(),
+                ["input"]
+            );
+            assert_eq!(
+                request["reply_format"],
+                review_runner::task::WORKER_REPLY_FORMAT
+            );
+            assert!(request.get("task").is_none());
+            let first = self.0.fetch_add(1, Ordering::SeqCst) == 0;
+            assert_eq!(
+                request["feedback"].as_array().unwrap().len(),
+                usize::from(!first)
+            );
+            if !first {
+                assert_eq!(
+                    request["feedback"][0]["payload"]["code"],
+                    "invalid_output_contract"
+                );
+                assert!(!String::from_utf8_lossy(&bytes).contains("malformed response"));
+            }
+            let message = if first {
+                b"malformed response".to_vec()
+            } else {
+                serde_json::to_vec(&json!({"schema":"af.worker-reply/1","outputs":{"output":[{"outcome":"passed","text":"A checked migration guide"}]}})).unwrap()
+            };
+            ModelWorkerReturn {
+                raw_artifact_ids: vec![cas.put(&message).unwrap()],
+                message: Ok(message),
+                usage: Some(review_runner::TokenUsage::charge_only(if first {
+                    20
+                } else {
+                    30
+                })),
+            }
+        }
+    }
+    let model = Model(AtomicUsize::new(0));
+    let mut f = Fixture::with_model("unused model package file", true);
+    let slot = f.plan.bindings.keys().next().unwrap().clone();
+    let mut models = BTreeMap::from([(
+        slot.clone(),
+        TaskModelBinding {
+            binding: f.plan.bindings[&slot].clone(),
+            adapter: &model as &dyn WorkerModelAdapter,
+        },
+    )]);
+    models.get_mut(&slot).unwrap().binding.invocation_policy_id = f.revision_id.clone();
+    assert!(
+        CapturedTaskHost::capture_with_models(
+            &f.cas,
+            &f.compiler,
+            &f.task,
+            &f.plan,
+            f.graph.clone(),
+            &EmptyTaskEnvironment,
+            &DocumentDomain,
+            &models
+        )
+        .is_err()
+    );
+    assert_eq!(model.0.load(Ordering::SeqCst), 0);
+    models.get_mut(&slot).unwrap().binding = f.plan.bindings[&slot].clone();
+    let host = CapturedTaskHost::capture_with_models(
+        &f.cas,
+        &f.compiler,
+        &f.task,
+        &f.plan,
+        f.graph.clone(),
+        &EmptyTaskEnvironment,
+        &DocumentDomain,
+        &models,
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority {
+        compiler: &f.compiler,
+        domain: &host,
+        developer: &NoTaskDeveloper,
+    };
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "model-test", 60_000)
+        .unwrap();
+    f.store
+        .propose_task_plan(&f.cas, &lease, &f.plan_id, &authority)
+        .unwrap();
+    f.store.admit_task_plan(&f.cas, &lease, &authority).unwrap();
+    let runtime = TaskRuntime::new(&mut f.store, &f.cas, lease.clone(), &authority, &host).unwrap();
+    assert!(runtime.execute().unwrap().complete());
+    assert!(runtime.execute().unwrap().complete());
+    let execution = runtime.projection().unwrap().execution.unwrap();
+    assert_eq!(execution.budget.begun_attempts(), 2);
+    assert_eq!(execution.budget.committed_tokens(), 50);
+    assert_eq!(model.0.load(Ordering::SeqCst), 2);
+    assert!(execution.pending_attempts().is_empty());
+    drop(runtime);
+    let wall = f
+        .store
+        .attempt_wall(&review_store::store::task::task_run_id(lease.task_id()).unwrap())
+        .unwrap();
+    assert_eq!(wall.len(), 2);
+    assert_eq!(
+        wall.iter()
+            .map(|a| a.usage.as_ref().unwrap().chargeable_tokens)
+            .sum::<u64>(),
+        50
+    );
+}
 
 #[test]
 fn captured_command_worker_executes_and_replays_through_the_common_task_runtime() {

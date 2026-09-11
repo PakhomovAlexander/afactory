@@ -363,6 +363,17 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
                 ]),
             ));
         }
+        if case == "passed"
+            && let Some(destination) = std::env::var_os("AF_WRITE_TASK_FIXTURE")
+        {
+            export_fixture(
+                std::path::Path::new(&destination),
+                source,
+                &task,
+                &policy,
+                &packages,
+            );
+        }
         for (name, files) in packages {
             let pin = TaskPackagePin {
                 version: "1.0.0".into(),
@@ -471,6 +482,32 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
             .contains("items[offset:offset+limit]")
         );
         assert_eq!(read_snapshot(&cas, &s0).unwrap().1, original);
+        if case == "passed" {
+            // A plausible positive wrapper is insufficient: final acceptance must independently
+            // recheck the actual check/evaluator chain and the plan that produced it.
+            for field in ["evaluation_id", "plan_id"] {
+                let evidence_id = result.evidence.iter().next().unwrap();
+                let mut evidence: review_core::ArtifactEnvelope =
+                    serde_json::from_value(cas.get_json(evidence_id).unwrap()).unwrap();
+                evidence.payload[field] = json!(policy_id);
+                let forged_id = cas
+                    .put_artifact(
+                        &evidence.artifact_type,
+                        evidence.producer,
+                        evidence.input_artifacts,
+                        evidence.subject_snapshot_id,
+                        evidence.payload,
+                    )
+                    .unwrap()
+                    .0;
+                let mut forged = result.clone();
+                forged.evidence = BTreeSet::from([forged_id]);
+                assert!(
+                    domain.validate_result(&cas, &task, &forged).is_err(),
+                    "forged {field} accepted"
+                );
+            }
+        }
         let result_id = cas
             .put_artifact(
                 TASK_RESULT_V1,
@@ -483,4 +520,57 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
             .0;
         runtime.finish(&result_id).unwrap();
     }
+}
+
+/// Explicit fixture-generation mode. Normal tests never write into the repository. The
+/// exported CLI fixture uses the same typed definitions and digest routine as this test.
+fn export_fixture(
+    destination: &std::path::Path,
+    source: &[u8],
+    task: &TaskRevisionV1,
+    policy: &CodeTaskPolicy,
+    packages: &[(String, BTreeMap<String, Vec<u8>>)],
+) {
+    assert!(
+        !destination.exists(),
+        "fixture export requires an absent destination"
+    );
+    std::fs::create_dir_all(destination.join(".af")).unwrap();
+    std::fs::write(destination.join("pagination.py"), source).unwrap();
+    let mut pins = BTreeMap::new();
+    for (name, files) in packages {
+        let path = format!(".af/task-packages/{name}");
+        pins.insert(
+            name.clone(),
+            TaskPackagePin {
+                version: "1.0.0".into(),
+                path: path.clone(),
+                digest: review_config::lock::package_digest_from_files(files),
+            },
+        );
+        for (file, bytes) in files {
+            let path = destination.join(&path).join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, bytes).unwrap();
+        }
+    }
+    std::fs::write(
+        destination.join(".af/code-policy.toml"),
+        toml::to_string(policy).unwrap(),
+    )
+    .unwrap();
+    let catalog = json!({"schema":"af.task-catalog/1","code_policy":".af/code-policy.toml","packages":pins,"independence":IndependencePolicyV1::default()});
+    std::fs::write(
+        destination.join(".af/task-catalog.toml"),
+        toml::to_string(&catalog).unwrap(),
+    )
+    .unwrap();
+    let file = json!({"schema":"af.task-file/1","task_id":"pagination-cli","kind":"implement","goal":task.goal,
+        "pipeline":task.pipeline,"strategy":task.strategy,"facts":task.facts,"limits":{"tokens":task.limits.tokens,
+            "max_attempts":task.limits.max_attempts,"wall_ms":60000,"verification":task.limits.verification}});
+    std::fs::write(
+        destination.join("ticket.json"),
+        serde_json::to_string_pretty(&file).unwrap() + "\n",
+    )
+    .unwrap();
 }

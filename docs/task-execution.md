@@ -24,8 +24,8 @@ supplement it. Claude calls use only `claude-personal`.
   completed, Findings corrected and final gate passed locally; main integration remains pending.
 - [ ] P02/P03: common Store lifecycle, approvals, legacy links and typed compilation are
   implemented and verified locally; PR integration remains pending.
-- [ ] P04–P06: common command execution and implementation operators pass real-process
-  fixtures; CLI cutover, model admission and standalone review integration remain.
+- [ ] P04–P06: common command execution, Task-file CLI and verified local delivery pass
+  real-process fixtures; legacy entry-point cutover, model admission and standalone review remain.
 - [ ] P07–P09: shared packages, embedded Review, bounded repair and fix verification.
 - [ ] P10–P12: selection, bounded generation, developer approval, export and starters.
 - [ ] P13/P14: Jira/document demonstrations, compatibility, benchmark and consumer release.
@@ -52,11 +52,25 @@ S0-to-S1 lineage and independent checks/evaluation on S1. Failed and unavailable
 typed unsuccessful/inconclusive results without invoking the evaluator. Scheduler guards are
 kept outside Worker inputs; runtime caches are kept outside candidate trees.
 
-The complete deterministic gate passed with **712 tests, zero failures and 15 existing opt-in
-probes ignored**, across 93 suites. Formatting, Clippy and frozen synthetic reproduction passed.
-These checks establish the common runtime checkpoint, not completion of PR 1. The Task-file
-CLI, authenticated developer command boundary, model Provider admission and review cutover
-remain. See [ADR-0048](adr/0048-compile-task-ports-and-fence-developer-plan-decisions.md) and
+The Task-file CLI supports planning, running, explanation, inspection and explicit local delivery.
+Plans and execution use captured source, packages and checks across process boundaries; editing
+live files cannot change a resumed plan. Finished runs do not repeat Attempts. Writer leases
+are renewable and explicitly released for immediate plan/run handoff. Delivery uses the existing
+checked worktree/recovery implementation with a typed journal in the common Store.
+
+Generic Claude and Codex Task adapters preserve non-review output, raw responses and reported
+usage on failure. The captured Worker host checks exact bindings, model/effort and context caps
+before dispatch. A deterministic model fixture proves schema-failure retry charges one shared
+Task allowance. Retry guidance is a typed failure code tied to its Attempt and contract, not a
+copy of the failed response. Production Provider admission and identity capture remain unfinished.
+
+The complete deterministic gate passed with **722 tests, zero failures and 15 existing opt-in
+probes ignored**, across 96 suites. Formatting, Clippy and frozen synthetic reproduction passed.
+The 11 legacy implementation/delivery cases also pass unchanged. These checks establish the
+Task-file checkpoint, not completion of PR 1. The authenticated developer command boundary,
+model Provider admission and legacy entry-point/review cutover remain. See the
+[Task-file walkthrough](task-execution/task-file.md),
+[ADR-0048](adr/0048-compile-task-ports-and-fence-developer-plan-decisions.md) and
 [ADR-0049](adr/0049-run-task-workers-through-shared-durable-attempts.md).
 
 ## P01 contract checkpoint
@@ -88,8 +102,8 @@ across 89 suites; formatting, Clippy and synthetic fixture reproduction passed. 
 checked 96 files with zero errors. Prior candidate gates also passed on read-only archives and
 with the exact cleared Gate environment. No model review was repeated after these corrections.
 
-**Current resume:** wire the Task-file CLI and versioned implementation/review adapters through
-the shared runtime. Model admission and developer authentication must use the same Store guard.
+**Current resume:** extend the common runtime to versioned implementation/review adapters and
+model Providers. Model admission and developer authentication must use the same Store guard.
 Continue P00–P14 in the approved three PRs; this internal checkpoint does not reduce that scope.
 
 ## P00 baseline evidence

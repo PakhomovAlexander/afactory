@@ -635,6 +635,44 @@ fn changed_task_inputs_and_policy_cannot_reuse_old_plan_or_approval() {
 }
 
 #[test]
+fn released_lease_allows_immediate_handoff_and_fences_every_old_capability() {
+    let mut f = Fixture::new(false);
+    let old = f.open();
+    f.propose(&old);
+    f.store.release_task_lease(&f.cas, &old).unwrap();
+    assert!(f.store.admit_task_plan(&f.cas, &old, &f.authority).is_err());
+    let new = f
+        .store
+        .take_task_lease(&f.cas, "task-1", "writer-2", 15_000)
+        .unwrap();
+    assert_eq!(new.epoch(), old.epoch() + 1);
+    assert!(f.store.renew_task_lease(&f.cas, &old, 30_000).is_err());
+    assert!(f.store.release_task_lease(&f.cas, &old).is_err());
+    f.store.admit_task_plan(&f.cas, &new, &f.authority).unwrap();
+}
+
+#[test]
+fn pending_attempt_must_be_settled_or_released_before_writer_handoff() {
+    let mut f = Fixture::new(false).with_execution_graph();
+    let lease = f.open();
+    f.propose(&lease);
+    f.store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    f.record_execution_inputs(&lease);
+    let context = f.cas.put_json(&json!({"context":"fixture"})).unwrap();
+    let attempt = f
+        .store
+        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .unwrap();
+    assert!(f.store.release_task_lease(&f.cas, &lease).is_err());
+    f.store
+        .release_task_attempt(&f.cas, &lease, &attempt, "Not started")
+        .unwrap();
+    f.store.release_task_lease(&f.cas, &lease).unwrap();
+}
+
+#[test]
 fn lease_takeover_fences_old_writer_and_sequence_comparison_is_atomic() {
     let mut f = Fixture::new(false);
     f.store

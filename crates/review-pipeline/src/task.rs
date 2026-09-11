@@ -6,7 +6,8 @@ pub mod host;
 pub mod source;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
+use std::sync::{Condvar, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use review_core::task::execution::*;
 use review_core::task::{ArtifactInputV1, TaskRevisionV1};
@@ -56,6 +57,14 @@ pub struct TaskRuntime<'a> {
     prepared: Mutex<BTreeMap<String, PreparedTaskAttempt>>,
     pending_outputs: Mutex<BTreeMap<String, (String, Option<String>)>>,
     failures: Mutex<BTreeMap<String, NodeFailureClass>>,
+}
+
+struct StopHeartbeat<'a>(&'a (Mutex<bool>, Condvar));
+impl Drop for StopHeartbeat<'_> {
+    fn drop(&mut self) {
+        *self.0.0.lock().expect("Task heartbeat") = true;
+        self.0.1.notify_all();
+    }
 }
 
 fn envelope(cas: &Cas, id: &str) -> Result<ArtifactEnvelope, String> {
@@ -115,7 +124,48 @@ impl<'a> TaskRuntime<'a> {
     }
 
     pub fn execute(&self) -> Result<RunReport, String> {
-        self.graph.run(self)
+        // Keep the writer renewable rather than claiming the whole Task deadline. A crashed
+        // process loses this short lease, allowing another process to fence and account for it.
+        let stopped = (Mutex::new(false), Condvar::new());
+        std::thread::scope(|scope| {
+            let heartbeat = scope.spawn(|| -> Result<(), String> {
+                loop {
+                    let (done, _) = stopped
+                        .1
+                        .wait_timeout_while(
+                            stopped.0.lock().expect("Task heartbeat"),
+                            Duration::from_secs(1),
+                            |done| !*done,
+                        )
+                        .expect("Task heartbeat");
+                    if *done {
+                        return Ok(());
+                    }
+                    drop(done);
+                    let now = SystemTime::now()
+                        .duration_since(UNIX_EPOCH)
+                        .map_err(|e| e.to_string())?
+                        .as_millis() as u64;
+                    let mut store = self.store.lock().expect("Task Store");
+                    let projection = store
+                        .task_projection(self.cas, self.lease.task_id())
+                        .map_err(|e| e.to_string())?
+                        .ok_or("Unknown Task")?;
+                    if projection.lease_until_unix_ms() < now.saturating_add(10_000) {
+                        store
+                            .renew_task_lease(self.cas, &self.lease, 15_000)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+            });
+            let stop = StopHeartbeat(&stopped);
+            let result = self.graph.run(self);
+            drop(stop);
+            heartbeat
+                .join()
+                .map_err(|_| "Task heartbeat panicked".to_string())??;
+            result
+        })
     }
 
     pub fn projection(&self) -> Result<TaskProjection, String> {
@@ -402,6 +452,8 @@ impl Dispatch for TaskRuntime<'_> {
                     return Err(error.to_string());
                 }
             }
+            let started = SystemTime::now();
+            let timer = Instant::now();
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.host.execute(self.cas, input, attempt.as_ref())
             }))
@@ -412,6 +464,45 @@ impl Dispatch for TaskRuntime<'_> {
                 usage_id: None,
                 feedback_id: None,
             });
+            if let Some(attempt) = &attempt {
+                // Capture known charge before output CAS admission: a crash during output or
+                // diagnostic publication must not hide an already reported Provider overrun.
+                // The event ledger remains authoritative; recovery only raises its charge.
+                let usage = result
+                    .usage_id
+                    .as_deref()
+                    .and_then(|id| self.cas.get_json(id).ok())
+                    .and_then(|value| {
+                        serde_json::from_value::<review_runner::TokenUsage>(value).ok()
+                    });
+                let charge = result
+                    .charged_tokens
+                    .or_else(|| usage.as_ref().map(|u| u.chargeable_tokens));
+                let wall = review_store::AttemptWall {
+                    run_id: task_run_id(self.lease.task_id()).map_err(|e| e.to_string())?,
+                    attempt_id: attempt.id().into(),
+                    node_id: node.id.clone(),
+                    round: 0,
+                    epoch: u32::try_from(self.lease.epoch()).unwrap_or(u32::MAX),
+                    started_unix_ms: started
+                        .duration_since(UNIX_EPOCH)
+                        .map_or(0, |d| d.as_millis() as u64),
+                    elapsed_ms: timer.elapsed().as_millis() as u64,
+                    usage: charge.map(|chargeable_tokens| review_store::AttemptUsage {
+                        input_tokens: usage.as_ref().and_then(|u| u.input_tokens),
+                        output_tokens: usage.as_ref().and_then(|u| u.output_tokens),
+                        cache_read_tokens: usage.as_ref().and_then(|u| u.cache_read_tokens),
+                        cache_write_tokens: usage.as_ref().and_then(|u| u.cache_write_tokens),
+                        reasoning_tokens: usage.as_ref().and_then(|u| u.reasoning_tokens),
+                        chargeable_tokens,
+                    }),
+                };
+                let _ = self
+                    .store
+                    .lock()
+                    .expect("Task Store")
+                    .record_attempt_wall(&wall);
+            }
             let charged = result
                 .charged_tokens
                 .unwrap_or_else(|| attempt.as_ref().map_or(0, |a| a.reservation().tokens));

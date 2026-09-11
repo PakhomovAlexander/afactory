@@ -21,6 +21,7 @@ use crate::{Cas, content_id, validate_envelope};
 #[cfg(test)]
 mod tests;
 
+mod delivery;
 pub mod execution;
 
 fn conflict(message: impl Into<String>) -> StoreError {
@@ -58,6 +59,12 @@ impl TaskLease {
     }
     pub fn epoch(&self) -> u64 {
         self.epoch
+    }
+}
+
+impl TaskProjection {
+    pub fn lease_until_unix_ms(&self) -> u64 {
+        self.lease_until
     }
 }
 
@@ -147,6 +154,7 @@ pub struct TaskProjection {
     resume_phase: Option<TaskPhaseV1>,
     decisions: BTreeMap<String, Decision>,
     pub execution: Option<execution::TaskExecutionProjection>,
+    pub deliveries: Vec<(String, task::delivery::TaskDeliveryRecordV1)>,
 }
 
 /// Created after replay/transition validation; the shared transaction then compares sequence
@@ -245,6 +253,13 @@ fn references(
 ) -> Result<Vec<String>, StoreError> {
     let mut refs = BTreeSet::new();
     match change {
+        TaskChangeV1::DeliveryRecorded { record_id } => {
+            let value: task::delivery::TaskDeliveryRecordV1 =
+                payload(cas, record_id, task::delivery::TASK_DELIVERY_RECORD_V1)?;
+            value.validate().map_err(conflict)?;
+            refs.insert(record_id.clone());
+            refs.extend(value.references().into_iter().map(str::to_owned));
+        }
         TaskChangeV1::ExecutionRecorded { record_id } => {
             refs.extend(execution::references(cas, record_id)?);
         }
@@ -354,7 +369,10 @@ impl TaskProjection {
             return Err(conflict("Task event sequence has a gap or duplicate"));
         }
         let accounting_after_finish = match &transition.change {
-            TaskChangeV1::LeaseTaken { .. } | TaskChangeV1::LeaseRenewed { .. } => true,
+            TaskChangeV1::LeaseTaken { .. }
+            | TaskChangeV1::LeaseRenewed { .. }
+            | TaskChangeV1::LeaseReleased {}
+            | TaskChangeV1::DeliveryRecorded { .. } => true,
             TaskChangeV1::ExecutionRecorded { record_id } => matches!(
                 payload::<review_core::task::execution::TaskExecutionRecordV1>(
                     cas,
@@ -389,6 +407,9 @@ impl TaskProjection {
         } else {
             self.check_lease(transition)?;
             match &transition.change {
+                TaskChangeV1::DeliveryRecorded { record_id } => {
+                    self.apply_delivery(cas, record_id)?;
+                }
                 TaskChangeV1::ExecutionRecorded { record_id } => {
                     self.apply_execution(cas, record_id, transition.now_unix_ms)?;
                 }
@@ -402,6 +423,18 @@ impl TaskProjection {
                         return Err(conflict("Task lease renewal must advance expiry"));
                     }
                     self.lease_until = *lease_until_unix_ms;
+                }
+                TaskChangeV1::LeaseReleased {} => {
+                    if self
+                        .execution
+                        .as_ref()
+                        .is_some_and(|e| !e.pending_attempts().is_empty())
+                    {
+                        return Err(conflict(
+                            "Cannot release a Task lease with pending Attempts",
+                        ));
+                    }
+                    self.lease_until = transition.now_unix_ms;
                 }
                 TaskChangeV1::RevisionRecorded { revision_id } => {
                     if self.admitted || self.execution.is_some() {
@@ -630,6 +663,33 @@ impl TaskProjection {
 }
 
 impl EventStore {
+    /// Enumerate only validated common Task streams; Review run IDs are not Task labels.
+    pub fn task_ids(&self, cas: &Cas) -> Result<Vec<String>, StoreError> {
+        let mut ids = BTreeSet::new();
+        for run_id in self.run_ids()? {
+            if !run_id.starts_with("task:") {
+                continue;
+            }
+            let events = self.replay(&run_id)?;
+            let first = events
+                .first()
+                .ok_or_else(|| conflict("Empty Task stream"))?;
+            let transition: TaskTransitionV1 = serde_json::from_value(first.payload.clone())
+                .map_err(|e| conflict(e.to_string()))?;
+            let TaskChangeV1::Opened { revision_id, .. } = transition.change else {
+                return Err(conflict("Task stream does not begin with Opened"));
+            };
+            let task = revision(cas, &revision_id)?;
+            if task_run_id(&task.task_id)? != run_id {
+                return Err(conflict("Task stream identity differs from its revision"));
+            }
+            self.task_projection(cas, &task.task_id)?
+                .ok_or_else(|| conflict("Task disappeared"))?;
+            ids.insert(task.task_id);
+        }
+        Ok(ids.into_iter().collect())
+    }
+
     pub fn task_projection(
         &self,
         cas: &Cas,
@@ -690,6 +750,20 @@ impl EventStore {
                     Some(state),
                 )?);
             }
+            for (id, recorded) in &state.deliveries {
+                let value: task::delivery::TaskDeliveryRecordV1 =
+                    payload(cas, id, task::delivery::TASK_DELIVERY_RECORD_V1)?;
+                if &value != recorded {
+                    return Err(conflict("Cached Task delivery changed identity"));
+                }
+                active_refs.extend(references(
+                    cas,
+                    &TaskChangeV1::DeliveryRecorded {
+                        record_id: id.clone(),
+                    },
+                    Some(state),
+                )?);
+            }
             for id in active_refs {
                 cas.verify(&id)
                     .map_err(|e| StoreError::Artifact(e.to_string()))?;
@@ -745,6 +819,7 @@ impl EventStore {
                     resume_phase: None,
                     decisions: BTreeMap::new(),
                     execution: None,
+                    deliveries: Vec::new(),
                 });
             } else {
                 return Err(conflict("Task transition precedes genesis"));
@@ -889,6 +964,14 @@ impl EventStore {
             },
             time,
         )
+    }
+
+    pub fn release_task_lease(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+    ) -> Result<RunEvent, StoreError> {
+        self.task_change(cas, lease, TaskChangeV1::LeaseReleased {}, now()?)
     }
 
     fn task_change(

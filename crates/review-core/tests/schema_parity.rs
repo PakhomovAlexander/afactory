@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 64] = [
+const SCHEMAS: [&str; 66] = [
     "task-check-receipt-v1.json",
     "task-evaluation-v1.json",
     "verification-result-v1.json",
@@ -41,9 +41,11 @@ const SCHEMAS: [&str; 64] = [
     "candidate-tree-v1.json",
     "task-worker-reply-v1.json",
     "task-worker-request-v1.json",
+    "task-retry-feedback-v1.json",
     "artifact-envelope-v1.json",
     "task-contracts-v1.json",
     "task-transition-v1.json",
+    "task-delivery-record-v1.json",
     "task-invocation-v1.json",
     "task-output-v1.json",
     "task-execution-record-v1.json",
@@ -201,6 +203,57 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
         value["undeclared"] = json!(true);
         assert!(!validator("task-execution-record-v1.json").is_valid(&value));
         assert!(serde_json::from_value::<TaskExecutionRecordV1>(value).is_err());
+    }
+}
+
+#[test]
+fn task_retry_feedback_has_only_a_bounded_code_and_exact_attempt_contract() {
+    use review_core::task::feedback::*;
+    for code in [
+        TaskFeedbackCodeV1::InvalidOutputContract,
+        TaskFeedbackCodeV1::ProcessFailure,
+        TaskFeedbackCodeV1::ProviderFailure,
+        TaskFeedbackCodeV1::ContextRejected,
+        TaskFeedbackCodeV1::OutputAdmissionRejected,
+    ] {
+        let feedback = TaskRetryFeedbackV1 {
+            attempt_id: "01AAAAAAAAAAAAAAAAAAAAAAAA".into(),
+            contract_id: format!("sha256:{}", "1".repeat(64)),
+            code,
+        };
+        feedback.validate().unwrap();
+        let mut value = serde_json::to_value(feedback).unwrap();
+        assert_valid("task-retry-feedback-v1.json", &value);
+        value["transcript"] = json!("unrelated prior conversation");
+        assert!(!validator("task-retry-feedback-v1.json").is_valid(&value));
+        assert!(serde_json::from_value::<TaskRetryFeedbackV1>(value).is_err());
+    }
+}
+
+#[test]
+fn task_delivery_contract_binds_the_exact_result_and_local_receipt() {
+    use review_core::task::delivery::*;
+    let id = format!("sha256:{}", "1".repeat(64));
+    for status in [
+        TaskDeliveryStatusV1::Prepared,
+        TaskDeliveryStatusV1::Delivered,
+        TaskDeliveryStatusV1::Failed,
+    ] {
+        let record = TaskDeliveryRecordV1 {
+            task_id: "pagination".into(),
+            result_id: id.clone(),
+            source_snapshot_id: id.clone(),
+            derived_snapshot_id: id.clone(),
+            target_id: id.clone(),
+            receipt_id: id.clone(),
+            status,
+        };
+        record.validate().unwrap();
+        let mut value = serde_json::to_value(record).unwrap();
+        assert_valid("task-delivery-record-v1.json", &value);
+        value["approved"] = json!(true);
+        assert!(!validator("task-delivery-record-v1.json").is_valid(&value));
+        assert!(serde_json::from_value::<TaskDeliveryRecordV1>(value).is_err());
     }
 }
 
@@ -1899,7 +1952,11 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
             reason: TaskWaitingReasonV1::NeedsInput,
         },
         TaskChangeV1::Resumed {},
+        TaskChangeV1::LeaseReleased {},
         TaskChangeV1::ExecutionRecorded {
+            record_id: id.clone(),
+        },
+        TaskChangeV1::DeliveryRecorded {
             record_id: id.clone(),
         },
         TaskChangeV1::Finished { result_id: id },

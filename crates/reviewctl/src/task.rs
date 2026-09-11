@@ -23,6 +23,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{candidate_identity, normalize_absolute, resolve_filesystem_path, xdg_state_root};
+mod delivery_common;
+use delivery_common::DeliveryJournal;
 
 #[derive(Debug, Clone)]
 pub(super) struct TaskOptions {
@@ -127,6 +129,9 @@ pub(super) fn inspect_from_cli(
 }
 
 fn validate_task_id(task_id: &str) -> Result<(), String> {
+    if review_core::task::is_name(task_id) {
+        return Ok(());
+    }
     let digest = task_id
         .strip_prefix("task-")
         .ok_or("Task ID must start with `task-`")?;
@@ -609,7 +614,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     if state.starts_with(&repository) {
         return Err("Task state must be outside the repository".into());
     }
-    if !state.join("tasks.sqlite").is_file() {
+    if !state.join("tasks.sqlite").is_file() && !state.join("events.sqlite").is_file() {
         return Err(format!("Task state {} does not exist", state.display()));
     }
     // A separate SQLite write transaction is an OS-released process lock. Prepared delivery
@@ -620,9 +625,25 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     let repository_text = utf8_path(&repository, "repository")?;
     let worktree_text = utf8_path(&worktree, "worktree")?;
     let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
-    let mut store = TaskStore::open(&state.join("tasks.sqlite"))?;
-    let events = store.events(&options.task_id)?;
-    let assets = load_delivery_assets(&cas, &events)?;
+    let common = delivery_common::projection(&state, &cas, &options.task_id)?;
+    let (mut store, events, assets): (Box<dyn DeliveryJournal>, _, _) = if let Some(task) = &common
+    {
+        let events = delivery_common::events(task);
+        let assets = delivery_common::assets(&cas, task)?;
+        (
+            Box::new(delivery_common::CommonDelivery::open(&state, task)?),
+            events,
+            assets,
+        )
+    } else {
+        if !state.join("tasks.sqlite").is_file() {
+            return Err("Unknown Task".into());
+        }
+        let store = TaskStore::open(&state.join("tasks.sqlite"))?;
+        let events = store.events(&options.task_id)?;
+        let assets = load_delivery_assets(&cas, &events)?;
+        (Box::new(store), events, assets)
+    };
     let source_revision = assets
         .source
         .source_revision
@@ -670,7 +691,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
                     &assets.derived_manifest,
                 )?;
                 let receipt = delivered_receipt(&existing, ignored_paths);
-                append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
+                append_delivery_receipt(store.as_mut(), &cas, &receipt, "TaskDelivered@1")?;
                 print_delivery(&options, &receipt)?;
                 return Ok(());
             }
@@ -686,7 +707,12 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
                         "delivery recovery preserved the unsealed branch/worktree because it could not prove the content was delivery-owned: verification failed: {verification}; rollback refused: {rollback}"
                     );
                     let receipt = failed_receipt(&existing, &reason);
-                    append_delivery_receipt(&mut store, &cas, &receipt, "TaskDeliveryFailed@1")?;
+                    append_delivery_receipt(
+                        store.as_mut(),
+                        &cas,
+                        &receipt,
+                        "TaskDeliveryFailed@1",
+                    )?;
                     return Err(format!(
                         "delivery recovery stopped and preserved branch `{}` at `{}`; retry this Task with a new absent branch and worktree (or remove the preserved target with normal Git controls before reusing it): {rollback}",
                         existing.target.branch, existing.target.worktree
@@ -713,7 +739,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     match execute_delivery(&git, &git_home, &cas, &assets, &prepared) {
         Ok(ignored_paths) => {
             let receipt = delivered_receipt(&prepared, ignored_paths);
-            append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
+            append_delivery_receipt(store.as_mut(), &cas, &receipt, "TaskDelivered@1")?;
             print_delivery(&options, &receipt)
         }
         Err(reason) => match rollback_owned_delivery(
@@ -724,7 +750,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
         ) {
             Ok(()) => {
                 let receipt = failed_receipt(&prepared, &reason);
-                append_delivery_receipt(&mut store, &cas, &receipt, "TaskDeliveryFailed@1")?;
+                append_delivery_receipt(store.as_mut(), &cas, &receipt, "TaskDeliveryFailed@1")?;
                 Err(format!("delivery failed and was rolled back: {reason}"))
             }
             Err(rollback) => Err(format!(
@@ -738,13 +764,16 @@ pub(super) fn list(options: InspectOptions) -> Result<(), String> {
     let repository = std::fs::canonicalize(&options.repo)
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
+    let mut tasks = super::task_execution::list_common(&state)?;
     if !state.join("tasks.sqlite").is_file() {
-        return print_task_list(&options, Vec::new());
+        return print_task_list(&options, tasks);
     }
     let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
     let store = TaskStore::open(&state.join("tasks.sqlite"))?;
-    let mut tasks = Vec::new();
     for task_id in store.task_ids()? {
+        if tasks.iter().any(|task| task["task_id"] == task_id) {
+            return Err("Task ID is ambiguous across common and legacy stores".into());
+        }
         let events = store.events(&task_id)?;
         let outcome = latest_event_json(&cas, &events, "TaskCompleted@1")?;
         let delivery = latest_delivery_value(&cas, &events)?;
@@ -764,6 +793,9 @@ pub(super) fn show(options: InspectOptions) -> Result<(), String> {
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
     let task_id = options.task_id.as_deref().expect("validated by parser");
+    if super::task_execution::show_if_common(task_id, &state, options.json)? {
+        return Ok(());
+    }
     if !state.join("tasks.sqlite").is_file() {
         return Err(format!("Task `{task_id}` was not found"));
     }
@@ -1583,7 +1615,7 @@ fn failed_receipt(prepared: &DeliveryPrepared, reason: &str) -> DeliveryReceipt 
 }
 
 fn append_delivery_receipt(
-    store: &mut TaskStore,
+    store: &mut dyn DeliveryJournal,
     cas: &Cas,
     receipt: &DeliveryReceipt,
     event_type: &str,

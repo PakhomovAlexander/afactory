@@ -559,8 +559,9 @@ impl CodeTaskDomain {
                     return Err("Unsupported code acceptance evidence".into());
                 }
                 let receipt: VerificationResultV1 =
-                    serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+                    serde_json::from_value(artifact.payload.clone()).map_err(|e| e.to_string())?;
                 receipt.validate()?;
+                self.validate_result_chain(cas, task, result, &artifact, &receipt)?;
                 if receipt.policy_id != obligation.verifier_policy
                     || receipt.policy_id != self.policy_id
                 {
@@ -587,6 +588,125 @@ impl CodeTaskDomain {
         }
         .into();
         result.missing_obligations = missing;
+        Ok(())
+    }
+
+    fn validate_result_chain(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        result: &TaskResultV1,
+        artifact: &review_core::ArtifactEnvelope,
+        receipt: &VerificationResultV1,
+    ) -> Result<(), String> {
+        let plan_envelope = envelope(cas, &receipt.plan_id)?;
+        if plan_envelope.artifact_type != EXECUTION_PLAN_V1 {
+            return Err("Verification result has no exact ExecutionPlan".into());
+        }
+        let plan: ExecutionPlanV1 =
+            serde_json::from_value(plan_envelope.payload).map_err(|e| e.to_string())?;
+        if plan.task_revision_id != result.task_revision_id
+            || plan.authority != task.authority
+            || envelope(cas, &plan.compiled_graph_id)?.payload
+                != serde_json::to_value(&self.graph).map_err(|e| e.to_string())?
+        {
+            return Err("Verification result belongs to another Task or compiled plan".into());
+        }
+        let run_id =
+            review_store::store::task::task_run_id(&task.task_id).map_err(|e| e.to_string())?;
+        let node = match &artifact.producer {
+            review_core::Producer::KernelOperation {
+                run_id: recorded,
+                node_id: Some(node),
+                ..
+            } if *recorded == run_id => node,
+            _ => {
+                return Err(
+                    "Verification result was not assembled by this Task's installed operator"
+                        .into(),
+                );
+            }
+        };
+        if !matches!(
+            self.graph.nodes.get(node).map(|n| &n.operator),
+            Some(CompiledOperator::Primitive {
+                operator: TaskOperatorV1::Accept {},
+                ..
+            })
+        ) {
+            return Err("Verification result was not produced by accept".into());
+        }
+        let source = result
+            .outputs
+            .get("snapshot")
+            .ok_or("Verification result has no public Snapshot")?;
+        if source_input(cas, source)? != receipt.snapshot_id
+            || artifact.subject_snapshot_id.as_ref() != Some(&receipt.snapshot_id)
+        {
+            return Err("Verification result is stale for the public Snapshot".into());
+        }
+        let receipt_port = |id: &str, artifact_type: &str| ArtifactInputV1 {
+            artifact_ids: vec![id.into()],
+            artifact_type: artifact_type.into(),
+            cardinality: PortCardinality::One,
+            snapshot_id: Some(receipt.snapshot_id.clone()),
+        };
+        let mut inputs = BTreeMap::from([
+            ("source".into(), source.clone()),
+            (
+                "checks".into(),
+                receipt_port(&receipt.check_receipt_id, TASK_CHECK_RECEIPT_V1),
+            ),
+        ]);
+        for (id, evaluator) in std::iter::once((&receipt.check_receipt_id, false))
+            .chain(receipt.evaluation_id.iter().map(|id| (id, true)))
+        {
+            let evidence = envelope(cas, id)?;
+            let upstream = match &evidence.producer {
+                review_core::Producer::Attempt {
+                    run_id: recorded,
+                    node_id,
+                    ..
+                } if *recorded == run_id => node_id,
+                _ => return Err("Verification evidence has no current Task Attempt".into()),
+            };
+            let operator = self.graph.nodes.get(upstream).map(|n| &n.operator);
+            if if evaluator {
+                !matches!(
+                    operator,
+                    Some(CompiledOperator::Primitive {
+                        operator: TaskOperatorV1::Verify { .. },
+                        ..
+                    })
+                )
+            } else {
+                !matches!(
+                    operator,
+                    Some(CompiledOperator::Primitive {
+                        operator: TaskOperatorV1::Check { .. },
+                        ..
+                    })
+                )
+            } {
+                return Err("Verification evidence came from another operator role".into());
+            }
+        }
+        if let Some(id) = &receipt.evaluation_id {
+            inputs.insert("evaluation".into(), receipt_port(id, TASK_EVALUATION_V1));
+        }
+        if self.verification(
+            cas,
+            &TaskInvocationV1 {
+                plan_id: receipt.plan_id.clone(),
+                node: node.clone(),
+                inputs,
+            },
+        )? != *receipt
+        {
+            return Err(
+                "Verification outcome contradicts its retained check/evaluator receipts".into(),
+            );
+        }
         Ok(())
     }
 }

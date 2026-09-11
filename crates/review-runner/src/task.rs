@@ -6,6 +6,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use review_core::task::execution::TaskInvocationV1;
+use review_core::task::feedback::TaskFeedbackCodeV1;
 use review_core::{ArtifactEnvelope, Command, Producer};
 use review_store::{Cas, validate_envelope};
 use serde::{Deserialize, Serialize};
@@ -15,6 +16,7 @@ use crate::{ContextManifest, ModelRunner, RunnerError, TokenUsage};
 
 pub const TASK_CONTEXT_V1: &str = "af/TaskContext@1";
 pub const MAX_WORKER_BYTES: usize = 1024 * 1024;
+pub const WORKER_REPLY_FORMAT: &str = "Return exactly one JSON object: {\"schema\":\"af.worker-reply/1\",\"outputs\":{\"PORT\":[PAYLOAD]}}. Use declared output ports; each PAYLOAD must match output_schemas[PORT].";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,6 +36,7 @@ pub struct WorkerValue {
 #[serde(deny_unknown_fields)]
 pub struct WorkerRequest {
     pub schema: String,
+    pub reply_format: String,
     pub instructions: String,
     pub inputs: BTreeMap<String, Vec<WorkerValue>>,
     pub feedback: Vec<WorkerValue>,
@@ -224,11 +227,19 @@ impl WorkerContract {
         );
         let request = WorkerRequest {
             schema: "af.worker-request/1".into(),
+            reply_format: WORKER_REPLY_FORMAT.into(),
             instructions: instructions.into(),
             inputs,
             feedback: feedback_values,
             output_schemas: self.output_schemas.clone(),
         };
+        manifest.record(
+            "reply_format",
+            "installed Worker protocol",
+            None,
+            None,
+            WORKER_REPLY_FORMAT.len(),
+        );
         let bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
         if bytes.len() > MAX_WORKER_BYTES {
             return Err("Worker context exceeds byte bound; narrow the declared input".into());
@@ -279,7 +290,9 @@ impl WorkerContract {
         if context.contract_id != self.id {
             return Err("Worker context uses another contract".into());
         }
-        let bytes = cas.get(&context.rendered_id).map_err(|e| e.to_string())?;
+        let bytes = cas
+            .get_bounded(&context.rendered_id, MAX_WORKER_BYTES as u64)
+            .map_err(|e| e.to_string())?;
         if bytes.len() > MAX_WORKER_BYTES || context.manifest.rendered_bytes != bytes.len() as u64 {
             return Err("Worker context manifest differs from rendered input".into());
         }
@@ -292,7 +305,9 @@ impl WorkerContract {
 }
 
 fn worker_value(cas: &Cas, id: &str) -> Result<WorkerValue, String> {
-    let bytes = cas.get(id).map_err(|e| e.to_string())?;
+    let bytes = cas
+        .get_bounded(id, MAX_WORKER_BYTES as u64)
+        .map_err(|e| e.to_string())?;
     if bytes.len() > MAX_WORKER_BYTES {
         return Err("Worker input exceeds byte bound".into());
     }
@@ -314,6 +329,87 @@ pub struct WorkerReturn {
     pub reply: Result<WorkerReply, String>,
     pub usage: Option<TokenUsage>,
     pub raw_artifact_ids: Vec<String>,
+    pub feedback_code: Option<TaskFeedbackCodeV1>,
+}
+
+/// Provider framing is separate from the Worker's business contract. A model adapter returns
+/// final-message bytes even when they are not a Reviewer Result; the captured Worker schema
+/// performs admission afterwards. Every failure retains raw evidence and any known usage.
+pub struct ModelWorkerReturn {
+    pub message: Result<Vec<u8>, String>,
+    pub usage: Option<TokenUsage>,
+    pub raw_artifact_ids: Vec<String>,
+}
+
+pub trait WorkerModelAdapter: Send + Sync {
+    fn provider_kind(&self) -> &'static str;
+    /// Exact model and effort encoded by the adapter's command builder. None cannot satisfy
+    /// a plan binding; provider defaults or aliases must be resolved during host admission.
+    fn model_settings(&self) -> Option<(String, String)>;
+    /// Called only by the host after common Task Attempt admission. The adapter owns security
+    /// flags; writable grants only edits inside the supplied source sandbox.
+    fn invoke(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+    ) -> ModelWorkerReturn;
+}
+
+impl ModelWorkerReturn {
+    pub fn failed(error: RunnerError) -> Self {
+        let raw_artifact_ids = match &error {
+            RunnerError::TimedOut { raw_artifact, .. } => raw_artifact.iter().cloned().collect(),
+            RunnerError::MalformedOutput { raw_artifact, .. } => vec![raw_artifact.clone()],
+            _ => vec![],
+        };
+        Self {
+            message: Err(error.to_string()),
+            usage: None,
+            raw_artifact_ids,
+        }
+    }
+}
+
+pub fn invoke_model(
+    cas: &Cas,
+    workdir: &Path,
+    adapter: &dyn WorkerModelAdapter,
+    contract: &WorkerContract,
+    context_id: &str,
+    timeout: Duration,
+    writable: bool,
+) -> WorkerReturn {
+    let bytes = match contract.read_context(cas, context_id) {
+        Ok((_, bytes)) => bytes,
+        Err(error) => {
+            return WorkerReturn {
+                reply: Err(error),
+                usage: Some(TokenUsage::charge_only(0)),
+                raw_artifact_ids: vec![],
+                feedback_code: Some(TaskFeedbackCodeV1::ContextRejected),
+            };
+        }
+    };
+    let returned = adapter.invoke(cas, workdir, bytes, timeout, writable);
+    let (reply, feedback_code) = match returned.message {
+        Ok(bytes) => {
+            let reply = contract.validate_reply(&bytes);
+            let code = reply
+                .is_err()
+                .then_some(TaskFeedbackCodeV1::InvalidOutputContract);
+            (reply, code)
+        }
+        Err(error) => (Err(error), Some(TaskFeedbackCodeV1::ProviderFailure)),
+    };
+    WorkerReturn {
+        reply,
+        usage: returned.usage,
+        raw_artifact_ids: returned.raw_artifact_ids,
+        feedback_code,
+    }
 }
 
 pub fn invoke_command(
@@ -349,15 +445,24 @@ pub fn invoke_command(
         runner.capture_with_stdin(cas, command, bytes)
     });
     match result {
-        Ok(raw) => WorkerReturn {
-            reply: if raw.status.success() {
+        Ok(raw) => {
+            let reply = if raw.status.success() {
                 contract.validate_reply(&raw.stdout)
             } else {
                 Err(format!("Command Worker exited with {}", raw.status))
-            },
-            usage: Some(TokenUsage::charge_only(0)),
-            raw_artifact_ids: vec![raw.raw_artifact],
-        },
+            };
+            let feedback_code = reply.is_err().then_some(if raw.status.success() {
+                TaskFeedbackCodeV1::InvalidOutputContract
+            } else {
+                TaskFeedbackCodeV1::ProcessFailure
+            });
+            WorkerReturn {
+                reply,
+                usage: Some(TokenUsage::charge_only(0)),
+                raw_artifact_ids: vec![raw.raw_artifact],
+                feedback_code,
+            }
+        }
         Err(error) => WorkerReturn {
             raw_artifact_ids: match &error {
                 RunnerError::TimedOut { raw_artifact, .. } => {
@@ -367,6 +472,7 @@ pub fn invoke_command(
             },
             reply: Err(error.to_string()),
             usage: Some(TokenUsage::charge_only(0)),
+            feedback_code: Some(TaskFeedbackCodeV1::ProcessFailure),
         },
     }
 }

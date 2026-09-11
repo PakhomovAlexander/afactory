@@ -9,7 +9,8 @@ use review_core::Producer;
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::pipeline::{PortAffinityV1, TaskOperatorV1};
 use review_core::task::plan::{
-    ExecutionPlanV1, GeneratedOriginV1, PlanDecisionKindV1, PlanDecisionV1,
+    EffectiveWorkerBindingV1, ExecutionPlanV1, GeneratedOriginV1, PlanDecisionKindV1,
+    PlanDecisionV1, WorkerExecutionV1,
 };
 use review_core::task::{ArtifactInputV1, TaskResultV1, TaskRevisionV1};
 use review_graph::task::{CompiledOperator, CompiledTask, OperatorSignature};
@@ -203,23 +204,37 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
     }
 }
 
-struct CommandWorker {
-    command: review_core::Command,
+enum WorkerTransport<'a> {
+    Command(review_core::Command),
+    Model(&'a dyn review_runner::task::WorkerModelAdapter),
+}
+
+/// Installed by the host after Provider admission. The complete effective binding must equal
+/// the plan's captured slot; a local alias cannot substitute another principal or model.
+pub struct TaskModelBinding<'a> {
+    pub binding: EffectiveWorkerBindingV1,
+    pub adapter: &'a dyn review_runner::task::WorkerModelAdapter,
+}
+
+struct CapturedWorker<'a> {
+    transport: WorkerTransport<'a>,
     files: BTreeMap<String, Vec<u8>>,
     instructions: String,
     signature: OperatorSignature,
     contract: WorkerContract,
 }
 
-pub struct CommandTaskHost<'a> {
+pub struct CapturedTaskHost<'a> {
     run_id: String,
     graph: CompiledTask,
-    workers: BTreeMap<String, CommandWorker>,
+    workers: BTreeMap<String, CapturedWorker<'a>>,
     environment: &'a dyn TaskEnvironment,
     domain: &'a dyn TaskDomain,
 }
 
-impl<'a> CommandTaskHost<'a> {
+pub type CommandTaskHost<'a> = CapturedTaskHost<'a>;
+
+impl<'a> CapturedTaskHost<'a> {
     pub fn capture(
         cas: &Cas,
         compiler: &TaskPlanCompiler,
@@ -228,6 +243,29 @@ impl<'a> CommandTaskHost<'a> {
         graph: CompiledTask,
         environment: &'a dyn TaskEnvironment,
         domain: &'a dyn TaskDomain,
+    ) -> Result<Self, String> {
+        Self::capture_with_models(
+            cas,
+            compiler,
+            task,
+            plan,
+            graph,
+            environment,
+            domain,
+            &BTreeMap::new(),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn capture_with_models(
+        cas: &Cas,
+        compiler: &TaskPlanCompiler,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        graph: CompiledTask,
+        environment: &'a dyn TaskEnvironment,
+        domain: &'a dyn TaskDomain,
+        models: &BTreeMap<String, TaskModelBinding<'a>>,
     ) -> Result<Self, String> {
         compiler.validate_plan(cas, task, plan)?;
         if serde_json::to_value(&graph).map_err(|e| e.to_string())?
@@ -248,8 +286,21 @@ impl<'a> CommandTaskHost<'a> {
             };
             let name = &graph.slots[slot].worker;
             let manifest = compiler.worker(name).ok_or("Missing captured Worker")?;
-            let TaskWorkerRunner::Command { command } = &manifest.runner else {
-                return Err("Model Worker requires its admitted Provider adapter".into());
+            let transport = match &manifest.runner {
+                TaskWorkerRunner::Command { command } => WorkerTransport::Command(command.build()),
+                TaskWorkerRunner::Model { provider_kind, .. } => {
+                    let model = models
+                        .get(slot)
+                        .ok_or("Model Worker requires its admitted Provider adapter")?;
+                    if plan.bindings.get(slot) != Some(&model.binding)
+                        || !matches!(&model.binding.execution, WorkerExecutionV1::Model { provider_kind: kind, model: model_id, effort, .. } if kind == provider_kind && kind == model.adapter.provider_kind() && model.adapter.model_settings().as_ref() == Some(&(model_id.clone(), effort.clone())))
+                    {
+                        return Err(
+                            "Model adapter differs from the exact admitted Worker binding".into(),
+                        );
+                    }
+                    WorkerTransport::Model(model.adapter)
+                }
             };
             let files = compiler
                 .package_files(name)
@@ -283,8 +334,8 @@ impl<'a> CommandTaskHost<'a> {
                     .map_err(|e| e.to_string())?;
             workers.insert(
                 id.clone(),
-                CommandWorker {
-                    command: command.build(),
+                CapturedWorker {
+                    transport,
                     files: files.clone(),
                     instructions,
                     signature: manifest.signature.clone(),
@@ -306,38 +357,28 @@ impl<'a> CommandTaskHost<'a> {
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: &PreparedTaskAttempt,
-        worker: &CommandWorker,
+        worker: &CapturedWorker<'_>,
     ) -> TaskWorkOutput {
+        use review_core::task::feedback::*;
         let mut raw_artifact_ids = Vec::new();
+        let mut charged_tokens = Some(0);
+        let mut usage_id = None;
+        let mut feedback_code = None;
         let outputs = (|| {
             let (context, _) = worker.contract.read_context(cas, attempt.context_id())?;
             if context.invocation != *input {
                 return Err("Worker context belongs to another invocation".into());
             }
+            if matches!(worker.transport, WorkerTransport::Model(_))
+                && context.manifest.estimated_tokens > attempt.reservation().tokens
+            {
+                return Err(
+                    "Rendered model context exceeds its admitted Attempt token reservation".into(),
+                );
+            }
             let sandbox = self
                 .environment
                 .materialize(cas, input, &worker.signature)?;
-            let package = tempfile::tempdir().map_err(|e| e.to_string())?;
-            for (path, bytes) in &worker.files {
-                let path = package.path().join(path);
-                std::fs::create_dir_all(path.parent().ok_or("Worker file has no parent")?)
-                    .map_err(|e| e.to_string())?;
-                std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-            }
-            let mut command = worker.command.clone();
-            for arg in &mut command.args {
-                if let Some(path) = arg.value.strip_prefix("@package/") {
-                    if !worker.files.contains_key(path) {
-                        return Err("Worker command references an uncaptured package file".into());
-                    }
-                    arg.value = package
-                        .path()
-                        .join(path)
-                        .to_str()
-                        .ok_or("Worker path is not UTF-8")?
-                        .into();
-                }
-            }
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_err(|e| e.to_string())?
@@ -348,16 +389,61 @@ impl<'a> CommandTaskHost<'a> {
                 .checked_sub(now)
                 .filter(|ms| *ms > 0)
                 .ok_or("Worker deadline expired before process start")?;
-            let result = review_runner::task::invoke_command(
-                cas,
-                sandbox.root(),
-                tempfile::tempdir().map_err(|e| e.to_string())?.path(),
-                &command,
-                &worker.contract,
-                attempt.context_id(),
-                Duration::from_millis(remaining),
-            );
+            let result = match &worker.transport {
+                WorkerTransport::Command(command) => {
+                    let package = tempfile::tempdir().map_err(|e| e.to_string())?;
+                    for (path, bytes) in &worker.files {
+                        let path = package.path().join(path);
+                        std::fs::create_dir_all(path.parent().ok_or("Worker file has no parent")?)
+                            .map_err(|e| e.to_string())?;
+                        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+                    }
+                    let mut command = command.clone();
+                    for arg in &mut command.args {
+                        if let Some(path) = arg.value.strip_prefix("@package/") {
+                            if !worker.files.contains_key(path) {
+                                return Err(
+                                    "Worker command references an uncaptured package file".into()
+                                );
+                            }
+                            arg.value = package
+                                .path()
+                                .join(path)
+                                .to_str()
+                                .ok_or("Worker path is not UTF-8")?
+                                .into();
+                        }
+                    }
+                    review_runner::task::invoke_command(
+                        cas,
+                        sandbox.root(),
+                        tempfile::tempdir().map_err(|e| e.to_string())?.path(),
+                        &command,
+                        &worker.contract,
+                        attempt.context_id(),
+                        Duration::from_millis(remaining),
+                    )
+                }
+                WorkerTransport::Model(adapter) => review_runner::task::invoke_model(
+                    cas,
+                    sandbox.root(),
+                    *adapter,
+                    &worker.contract,
+                    attempt.context_id(),
+                    Duration::from_millis(remaining),
+                    worker.signature.effects.contains("write-source"),
+                ),
+            };
             raw_artifact_ids = result.raw_artifact_ids;
+            feedback_code = result.feedback_code;
+            charged_tokens = result.usage.as_ref().map(|usage| usage.chargeable_tokens);
+            usage_id = result
+                .usage
+                .map(|usage| {
+                    cas.put_json(&serde_json::to_value(usage).map_err(|e| e.to_string())?)
+                        .map_err(|e| e.to_string())
+                })
+                .transpose()?;
             let reply = result.reply?;
             let producer = Producer::Attempt {
                 run_id: self.run_id.clone(),
@@ -422,17 +508,44 @@ impl<'a> CommandTaskHost<'a> {
             self.environment
                 .finish(cas, input, &worker.signature, attempt, sandbox, outputs)
         })();
+        let feedback_id = if outputs.is_err() {
+            let feedback = TaskRetryFeedbackV1 {
+                attempt_id: attempt.id().into(),
+                contract_id: worker.contract.id().into(),
+                code: feedback_code.unwrap_or(TaskFeedbackCodeV1::OutputAdmissionRejected),
+            };
+            feedback
+                .validate()
+                .and_then(|()| {
+                    cas.put_artifact(
+                        TASK_RETRY_FEEDBACK_V1,
+                        Producer::Attempt {
+                            run_id: self.run_id.clone(),
+                            node_id: input.node.clone(),
+                            attempt_id: attempt.id().into(),
+                        },
+                        vec![attempt.context_id().into(), worker.contract.id().into()],
+                        None,
+                        serde_json::to_value(feedback).map_err(|e| e.to_string())?,
+                    )
+                    .map(|(id, _)| id)
+                    .map_err(|e| e.to_string())
+                })
+                .ok()
+        } else {
+            None
+        };
         TaskWorkOutput {
             outputs,
-            charged_tokens: Some(0),
+            charged_tokens,
             raw_artifact_ids,
-            usage_id: None,
-            feedback_id: None,
+            usage_id,
+            feedback_id,
         }
     }
 }
 
-impl TaskOperatorHost for CommandTaskHost<'_> {
+impl TaskOperatorHost for CapturedTaskHost<'_> {
     fn prepare_context(
         &self,
         cas: &Cas,
@@ -466,7 +579,7 @@ impl TaskOperatorHost for CommandTaskHost<'_> {
     }
 }
 
-impl TaskDomain for CommandTaskHost<'_> {
+impl TaskDomain for CapturedTaskHost<'_> {
     fn validate_context(
         &self,
         cas: &Cas,
@@ -475,7 +588,20 @@ impl TaskDomain for CommandTaskHost<'_> {
         context_id: &str,
     ) -> Result<(), String> {
         if let Some(worker) = self.workers.get(&input.node) {
-            worker.contract.read_context(cas, context_id)?;
+            let (context, _) = worker.contract.read_context(cas, context_id)?;
+            if matches!(worker.transport, WorkerTransport::Model(_))
+                && self
+                    .graph
+                    .allowances
+                    .get(&input.node)
+                    .is_none_or(|allowance| {
+                        context.manifest.estimated_tokens > allowance.tokens_per_attempt
+                    })
+            {
+                return Err(
+                    "Rendered model context exceeds its admitted Attempt token reservation".into(),
+                );
+            }
             if worker
                 .contract
                 .prepare(cas, input, feedback, &worker.instructions)?

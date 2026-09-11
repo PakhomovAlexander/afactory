@@ -1,7 +1,8 @@
 # ADR-0049 — Run Task Workers through shared durable Attempts
 
 **Status:** accepted for the unreleased Task increment, 2026-09-11. Command Workers and code
-operators execute through the shared runtime; CLI cutover and model admission remain in progress.
+operators and the Task-file CLI execute through the shared runtime; legacy entry-point cutover
+and production model admission remain in progress.
 
 ## Decision
 
@@ -58,6 +59,19 @@ omit a mandatory check. It makes negative checks useful typed results while leav
 missing execution distinguishable. Task acceptance is derived from receipts independently of
 execution status; review's separate domain conclusion remains a P06 adapter obligation.
 
+Task-file commands release writer leases explicitly, allowing immediate plan/run handoff. Active
+runtimes renew short leases; old started Attempts are fenced and conservatively charged on
+recovery. Known usage is also recorded before output CAS admission, so a crash there cannot
+hide a reported overrun. Completed Tasks may append typed local-delivery records without
+reopening execution. Delivery reuses the existing exact-source and worktree recovery code.
+
+Generic model adapters keep Provider framing separate from the typed Worker contract. The host
+requires the exact plan binding and the adapter's explicit model/effort, and refuses a rendered
+context exceeding its reservation before start. Failed or schema-invalid responses retain usage
+and raw evidence. Retry feedback records only a bounded code and exact Attempt/contract IDs.
+Production admission must still supply authenticated canonical principal identity; a model label
+or auth-directory name is not proof.
+
 ## Compatibility and remaining work
 
 Legacy implementation and Review histories retain their native identities, original Stores
@@ -65,7 +79,7 @@ and charge records. The common Store's read-only links capture stable origin and
 identities; linking twice is idempotent and never imports legacy charges as new Task spending.
 Historical delivery and Review fixtures remain unchanged.
 
-The production Task-file and review command adapters, model Provider admission, authenticated
+The legacy-entry-point and review command adapters, model Provider admission, authenticated
 developer CLI and the supported contained execution routes must still use these same boundaries.
 `trusted_local` remains an explicit non-isolating environment; it cannot claim container policy
 or protect a host approval service from arbitrary model-controlled host code.

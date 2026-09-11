@@ -148,6 +148,61 @@ impl Fixture {
 }
 
 #[test]
+fn root_constructors_are_explicit_and_never_fill_unrelated_required_inputs() {
+    use review_core::task::pipeline::{PipelinePortV1, PortAffinityV1, RootDefaultV1};
+    let mut f = Fixture::new();
+    let pipeline = f.compiler.pipelines.get_mut("builtin/document").unwrap();
+    pipeline.contract.inputs.insert(
+        "history".into(),
+        PipelinePortV1 {
+            artifact_type: review_core::task::REVIEW_HISTORY_V1.into(),
+            cardinality: review_core::PortCardinality::One,
+            optional: false,
+            affinity: PortAffinityV1::Unbound {},
+            root_default: Some(RootDefaultV1::EmptyReviewHistory),
+            covers: BTreeSet::new(),
+        },
+    );
+    assert!(
+        f.compiler
+            .normalize_root_inputs(&f.cas, "builtin/document", BTreeMap::new())
+            .is_err()
+    );
+    let inputs = f
+        .compiler
+        .normalize_root_inputs(&f.cas, "builtin/document", f.task.inputs.clone())
+        .unwrap();
+    assert_eq!(inputs["requirements"], f.task.inputs["requirements"]);
+    let history = read_envelope(
+        &f.cas,
+        &inputs["history"].artifact_ids[0],
+        review_core::task::REVIEW_HISTORY_V1,
+    )
+    .unwrap();
+    assert_eq!(history.payload, json!({"kind":"empty"}));
+    assert_eq!(
+        f.compiler
+            .normalize_root_inputs(&f.cas, "builtin/document", inputs.clone())
+            .unwrap(),
+        inputs
+    );
+    f.compiler
+        .pipelines
+        .get_mut("builtin/document")
+        .unwrap()
+        .contract
+        .inputs
+        .get_mut("history")
+        .unwrap()
+        .root_default = None;
+    assert!(
+        f.compiler
+            .normalize_root_inputs(&f.cas, "builtin/document", f.task.inputs.clone())
+            .is_err()
+    );
+}
+
+#[test]
 fn exact_captured_plan_recompiles_without_registry_reads_and_changed_authority_fails() {
     let mut f = Fixture::new();
     let (plan, graph) = f

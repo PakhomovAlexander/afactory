@@ -134,6 +134,56 @@ fn read_envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope
 }
 
 impl TaskPlanCompiler {
+    /// Apply only constructors explicitly declared on this root contract. A child call has
+    /// no access to this adapter operation and must bind every required input itself.
+    pub fn normalize_root_inputs(
+        &self,
+        cas: &Cas,
+        root: &str,
+        mut inputs: BTreeMap<String, review_core::task::ArtifactInputV1>,
+    ) -> Result<BTreeMap<String, review_core::task::ArtifactInputV1>, String> {
+        use review_core::task::pipeline::RootDefaultV1;
+        let pipeline = self.pipelines.get(root).ok_or("Unknown root Pipeline")?;
+        if inputs
+            .keys()
+            .any(|name| !pipeline.contract.inputs.contains_key(name))
+        {
+            return Err("Task binds an undeclared root input".into());
+        }
+        for (name, port) in &pipeline.contract.inputs {
+            if inputs.contains_key(name) {
+                continue;
+            }
+            if let Some(RootDefaultV1::EmptyReviewHistory) = port.root_default {
+                let id = cas
+                    .put_artifact(
+                        review_core::task::REVIEW_HISTORY_V1,
+                        capture_producer(),
+                        vec![],
+                        None,
+                        serde_json::to_value(review_core::task::review::ReviewHistoryV1::Empty {})
+                            .map_err(|e| e.to_string())?,
+                    )
+                    .map_err(|e| e.to_string())?
+                    .0;
+                inputs.insert(
+                    name.clone(),
+                    review_core::task::ArtifactInputV1 {
+                        artifact_ids: vec![id],
+                        artifact_type: review_core::task::REVIEW_HISTORY_V1.into(),
+                        cardinality: review_core::PortCardinality::One,
+                        snapshot_id: None,
+                    },
+                );
+            } else if !port.optional {
+                return Err(format!(
+                    "Required Task input {name} has no declared root constructor"
+                ));
+            }
+        }
+        Ok(inputs)
+    }
+
     /// Installed operators are supplied by the engine, not loaded from Pipeline source.
     pub fn new(
         engine_id: String,

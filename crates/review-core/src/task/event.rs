@@ -19,6 +19,7 @@ pub enum TaskChangeV1 {
     LeaseRenewed {
         lease_until_unix_ms: u64,
     },
+    LeaseReleased {},
     RevisionRecorded {
         revision_id: String,
     },
@@ -44,6 +45,9 @@ pub enum TaskChangeV1 {
         result_id: String,
     },
     ExecutionRecorded {
+        record_id: String,
+    },
+    DeliveryRecorded {
         record_id: String,
     },
 }
@@ -109,7 +113,8 @@ impl TaskTransitionV1 {
             TaskChangeV1::PlanDecided { decision_id, .. }
             | TaskChangeV1::ApprovalRevoked { decision_id, .. } => vec![decision_id],
             TaskChangeV1::Finished { result_id } => vec![result_id],
-            TaskChangeV1::ExecutionRecorded { record_id } => vec![record_id],
+            TaskChangeV1::ExecutionRecorded { record_id }
+            | TaskChangeV1::DeliveryRecorded { record_id } => vec![record_id],
             _ => Vec::new(),
         }
     }
