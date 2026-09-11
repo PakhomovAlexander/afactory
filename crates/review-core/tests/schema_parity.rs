@@ -32,7 +32,10 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 90] = [
+const SCHEMAS: [&str; 93] = [
+    "normalized-task-requirements-v1.json",
+    "task-source-capture-v1.json",
+    "issue-input-v1.json",
     "document-sources-v1.json",
     "document-draft-v1.json",
     "document-v1.json",
@@ -2170,4 +2173,54 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
                 .is_err()
         );
     }
+}
+
+#[test]
+fn source_contracts_keep_exact_fields_separate_from_normalized_requirements_and_authority() {
+    use review_core::task::source::*;
+    let id = format!("sha256:{}", "a".repeat(64));
+    let issue = json!({"schema":"af.issue-input/1","id":"10042","key":"AF-42","revision":"2026-09-12T10:00:00Z",
+        "summary":"Add pagination","description":"Preserve input","acceptance":{"customfield_1":"Reject invalid bounds"}});
+    assert_valid("issue-input-v1.json", &issue);
+    let parsed: IssueInputV1 = serde_json::from_value(issue.clone()).unwrap();
+    parsed.validate().unwrap();
+    let requirements = parsed.requirements(Some(
+        json!({"schema":"tutorial.pagination/1"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    ));
+    requirements.validate().unwrap();
+    assert_valid(
+        "normalized-task-requirements-v1.json",
+        &serde_json::to_value(&requirements).unwrap(),
+    );
+    let capture = json!({"schema":"af.task-source-capture/1","adapter":"jira_cloud","locator":"https://example.atlassian.net/rest/api/3/issue/AF-42",
+        "external_id":"10042","external_key":"AF-42","source_revision":"2026-09-12T10:00:00Z","raw_source_id":id,
+        "fields":{"summary":{"value_id":id,"text_id":id},"description":{"value_id":id,"text_id":id}}});
+    assert_valid("task-source-capture-v1.json", &capture);
+    serde_json::from_value::<TaskSourceCaptureV1>(capture.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let mut forged = capture;
+    forged["fields"]
+        .as_object_mut()
+        .unwrap()
+        .remove("description");
+    assert!(!validator("task-source-capture-v1.json").is_valid(&forged));
+    assert!(
+        serde_json::from_value::<TaskSourceCaptureV1>(forged)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let mut forged = issue;
+    forged["allowed_effects"] = json!(["write-source"]);
+    assert!(!validator("issue-input-v1.json").is_valid(&forged));
+    assert!(serde_json::from_value::<IssueInputV1>(forged).is_err());
+    let mut forged = serde_json::to_value(&requirements).unwrap();
+    forged["specification"] = json!(null);
+    assert!(!validator("normalized-task-requirements-v1.json").is_valid(&forged));
+    assert!(serde_json::from_value::<NormalizedRequirementsV1>(forged).is_err());
 }

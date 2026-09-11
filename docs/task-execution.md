@@ -34,8 +34,9 @@ supplement it. Claude calls use only `claude-personal`.
   implemented and pass the full gate; PR integration pending.
 - [ ] P12: portable export and contract tests pass the full gate. The complete starter catalog
   passes the full gate, including CLI execution, repair, planning, approval and reuse.
-- [ ] P13: document execution and independent acceptance pass the full gate; Jira revision capture
-  and source/Provider substitution evidence remain.
+- [ ] P13: document execution and independent acceptance pass the full gate. Read-only issue
+  capture and local/Jira source conformance pass the full gate.
+  Ticket revision refresh and remaining Provider evidence are next.
 - [ ] P14: compatibility, benchmark and consumer release.
 
 The owner authorized the complete plan in [three PRs](task-execution/pr-sequence.md).
@@ -52,6 +53,7 @@ The [generated-plan walkthrough](task-execution/generated-plans.md) describes th
 typed compiler repair, one-budget handoff and exact signed approval before generated execution.
 The [export walkthrough](task-execution/export.md) describes portable bundles, static contract
 fixtures and second-developer reuse without another Planner call.
+The [issue walkthrough](task-execution/issues.md) covers read-only capture and local/Jira bindings.
 The [document walkthrough](task-execution/document.md) runs a credential-free release-note Task
 with captured sources, protected content checks, independent acceptance and recorded Markdown output.
 The [starter walkthrough](task-execution/starters.md) creates software, document, review and repair

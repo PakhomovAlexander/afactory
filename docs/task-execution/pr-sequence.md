@@ -127,3 +127,12 @@ export privacy regression remains unchanged and passes. The complete gate passes
 zero failures, 15 ignored**, across 106 suites, plus formatting, Clippy and frozen reproduction.
 Markdown checks pass. Jira revision capture, legacy Review migration and P14 remain required.
 Claude personal is still signed out; no external PR 2 reviewer has run.
+
+The P13 source checkpoint captures exact local JSON/TOML or read-only Jira fields into normalized
+Task input before selection. Raw response, field values and normalized text retain distinct
+identities; unsupported content and missing selected requirements fail explicitly. Native source
+transport keeps credentials off argv and Worker inputs, bounds response bytes and time, and
+cancels through the shared process supervisor. The source substitution fixtures and real CLI
+issue-to-embedded-Review-to-delivery flow pass. The complete gate passes **793 tests, zero failures,
+15 ignored**, across 111 suites, plus formatting, Clippy and frozen reproduction. Markdown checks
+pass. No live Jira request or model call ran; source refresh remains the next P13 checkpoint.

@@ -1464,6 +1464,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "review-source-task"
+version = "0.8.0"
+dependencies = [
+ "review-core",
+ "review-process",
+ "review-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "review-store"
 version = "0.8.0"
 dependencies = [
@@ -1506,6 +1519,7 @@ dependencies = [
  "review-runner-codex",
  "review-sandbox",
  "review-source-git",
+ "review-source-task",
  "review-store",
  "rusqlite",
  "rustix",

@@ -124,3 +124,4 @@ options you rejected and why — that is the part future-you needs.
 - [0058 — Verify document artifacts through the common Task runtime](0058-verify-document-artifacts-through-the-common-task-runtime.md)
 - [0059 — Carry Task fix evidence into bounded heavy Review](0059-carry-task-fix-evidence-into-bounded-heavy-review.md)
 - [0060 — Generate working starters from supported contracts](0060-generate-working-starters-from-supported-contracts.md)
+- [0061 — Capture read-only issue sources outside execution authority](0061-capture-read-only-issue-sources-outside-execution-authority.md)

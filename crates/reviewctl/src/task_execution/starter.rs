@@ -406,6 +406,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
         kinds: BTreeMap::from([(kind.name.clone(), kind)]),
     };
     let task = TaskFile {
+        issue: None,
         requirements: None,
         schema: "af.task-file/1".into(),
         task_id: "release-notes".into(),

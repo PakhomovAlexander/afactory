@@ -855,6 +855,9 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
         /// Capture local Worker tuning for this Task
         #[arg(long, value_name = "FILE", requires = "file")]
         bindings: Option<PathBuf>,
+        /// Explicit machine-local read-only issue source accounts
+        #[arg(long, value_name = "FILE", requires = "file")]
+        source_bindings: Option<PathBuf>,
         /// Repository to work in
         #[arg(
             long,
@@ -894,6 +897,9 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
         file: PathBuf,
         #[arg(long, value_name = "FILE")]
         bindings: Option<PathBuf>,
+        /// Explicit machine-local read-only issue source accounts
+        #[arg(long, value_name = "FILE", requires = "file")]
+        source_bindings: Option<PathBuf>,
         #[arg(long, value_name = "DIR", default_value = ".")]
         repo: PathBuf,
         #[arg(long, value_name = "DIR")]

@@ -4,7 +4,8 @@
 implementation on 2026-09-10. Contracts, common execution, sharing, embedding, bounded repair,
 selection and generated-plan approval are implemented in the stacked PRs. Portable export and
 contract tests, the software/document starter pack and heavy repair-history continuation pass the
-full gate. Jira revision capture, Review compatibility and P14 release evidence are next. The completed
+full gate. Read-only issue capture and source conformance also pass. Ticket revision refresh,
+Review compatibility and P14 release evidence are next. The completed
 M0–M9 record below remains the compatibility foundation.
 
 **Status:** M0–M9 are complete and shipped in private release `v0.6.0` from exact `main` commit

@@ -237,6 +237,7 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         policy_source
     };
     let file = TaskFile {
+        issue: None,
         requirements: None,
         document_sources: None,
         schema: "af.task-file/1".into(),
@@ -271,6 +272,7 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
     };
     let bytes = serde_json::to_vec(&file).map_err(|e| e.to_string())?;
     let options = StartOptions {
+        source_bindings: None,
         file: PathBuf::new(),
         bindings: None,
         repo,

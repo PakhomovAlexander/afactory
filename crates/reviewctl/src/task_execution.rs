@@ -36,6 +36,7 @@ pub(crate) mod catalog;
 pub(super) mod developer;
 pub(crate) mod domain;
 pub(super) mod export;
+mod issue;
 mod legacy;
 mod planning;
 mod selection;
@@ -45,6 +46,7 @@ pub(super) use legacy::start_legacy;
 pub(super) struct StartOptions {
     pub file: PathBuf,
     pub bindings: Option<PathBuf>,
+    pub source_bindings: Option<PathBuf>,
     pub repo: PathBuf,
     pub state: Option<PathBuf>,
     pub authority: String,
@@ -74,6 +76,12 @@ struct TaskFile {
         deserialize_with = "present_option"
     )]
     document_sources: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    issue: Option<issue::IssueSource>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -832,6 +840,31 @@ fn start_captured(
         )?)
     };
     let input_file = cas.put(&bytes).map_err(|e| e.to_string())?;
+    let wall = options
+        .timeout_secs
+        .map(|seconds| seconds.checked_mul(1000).ok_or("Task timeout overflow"))
+        .transpose()?
+        .map_or(file.limits.wall_ms, |limit| limit.min(file.limits.wall_ms));
+    let deadline = started.checked_add(wall).ok_or("Task deadline overflow")?;
+    let issue = file
+        .issue
+        .as_ref()
+        .map(|selected| {
+            if profile == TaskKindProfile::Review || legacy_budget.is_some() {
+                return Err(
+                    "Issue requirements need a Task-file implementation or document profile".into(),
+                );
+            }
+            issue::capture(
+                &cas,
+                &source.manifest,
+                selected,
+                options.source_bindings.as_deref(),
+                file.requirements.clone(),
+                deadline,
+            )
+        })
+        .transpose()?;
     let mut requirements_payload = match legacy_budget {
         Some(tokens) => {
             json!({"text":file.goal,"task_id":file.task_id,"budget":{"reserved_tokens":tokens}})
@@ -841,32 +874,39 @@ fn start_captured(
     if let Some(specification) = &file.requirements {
         requirements_payload["specification"] = json!(specification);
     }
+    let mut input_refs = vec![input_file.clone()];
+    if let Some(issue) = &issue {
+        requirements_payload =
+            serde_json::to_value(&issue.requirements).map_err(|e| e.to_string())?;
+        input_refs.push(issue.capture_id.clone());
+    }
     let requirements = cas
         .put_artifact(
             "af/Requirements@1",
             producer(),
-            vec![input_file.clone()],
+            input_refs,
             None,
             requirements_payload,
         )
         .map_err(|e| e.to_string())?
         .0;
-    let adapter = cas
-        .put_json(&json!({"schema":"af.task-file-adapter/1","source_file_id":input_file}))
-        .map_err(|e| e.to_string())?;
-    let wall = options
-        .timeout_secs
-        .map(|seconds| seconds.checked_mul(1000).ok_or("Task timeout overflow"))
-        .transpose()?
-        .map_or(file.limits.wall_ms, |limit| limit.min(file.limits.wall_ms));
+    let mut adapter = json!({"schema":"af.task-file-adapter/1","source_file_id":input_file});
+    if let Some(issue) = &issue {
+        adapter["source_capture_id"] = json!(issue.capture_id);
+    }
+    let adapter = cas.put_json(&adapter).map_err(|e| e.to_string())?;
+    let goal = match &issue {
+        Some(issue) => format!("{}\n\n{}", file.goal, issue.requirements.text),
+        None => file.goal.clone(),
+    };
     let mut revision=TaskRevisionV1 {
-        task_id:file.task_id,revision:1,previous_revision_id:None,kind:file.kind,goal:file.goal,
+        task_id:file.task_id,revision:1,previous_revision_id:None,kind:file.kind,goal,
         inputs:BTreeMap::from([("requirements".into(),ArtifactInputV1 {artifact_ids:vec![requirements.clone()],artifact_type:"af/Requirements@1".into(),cardinality:PortCardinality::One,snapshot_id:None})]),
         required_outputs:serde_json::from_value(json!({"snapshot":{"artifact_type":SOURCE_TREE_V1,"cardinality":"one"},"verification":{"artifact_type":VERIFICATION_RESULT_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?,
         acceptance:BTreeMap::from([("verified".into(),AcceptanceObligationV1 {evidence_type:VERIFICATION_RESULT_V1.into(),verifier_policy:authority.invocation_policy_id()?.into()})]),
         provenance:TaskProvenanceV1 {adapter_id:adapter,input_artifact_ids:vec![requirements]},
         authority:TaskAuthorityV1 {policy_id:authority_id,allowed_effects:BTreeSet::from(["read-source".into(),"write-source".into(),"execute-checks".into()]),data_destinations:BTreeSet::new()},
-        limits:TaskLimitsV1 {tokens:file.limits.tokens,max_attempts:file.limits.max_attempts,deadline_unix_ms:started.checked_add(wall).ok_or("Task deadline overflow")?,verification:file.limits.verification},
+        limits:TaskLimitsV1 {tokens:file.limits.tokens,max_attempts:file.limits.max_attempts,deadline_unix_ms:deadline,verification:file.limits.verification},
         strategy:file.strategy,pipeline:file.pipeline,facts:file.facts,
     };
     if let Some(source_port) = source_port {

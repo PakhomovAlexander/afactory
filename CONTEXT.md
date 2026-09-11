@@ -51,6 +51,11 @@ Exact independently verified repair evidence projected into the next admitted di
 It retains the original Round and claim identities, grants no complete-Review coverage and does
 not create legacy Resolution authority. Later discovery can reopen a previously fixed claim.
 
+**Captured Issue Source**:
+An exact read-only observation of ticket fields, with raw source, per-field value and normalized
+text identities. A source revision label alone is not immutable identity. It supplies Task
+requirements and never execution authority; resume reads captured input without fetching again.
+
 ### What is reviewed
 
 **Snapshot**:

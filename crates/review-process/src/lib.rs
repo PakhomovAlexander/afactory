@@ -9,6 +9,7 @@ const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 pub enum SupervisedError {
+    Cancelled,
     Spawn(std::io::Error),
     Wait(std::io::Error),
     TimedOut {
@@ -26,6 +27,7 @@ pub enum SupervisedError {
 impl std::fmt::Display for SupervisedError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Cancelled => write!(f, "process was cancelled"),
             Self::Spawn(error) => write!(f, "starting process: {error}"),
             Self::Wait(error) => write!(f, "waiting for process: {error}"),
             Self::TimedOut { .. } => write!(f, "process exceeded its deadline"),
@@ -133,6 +135,52 @@ where
     F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
     G: FnOnce(&mut dyn Read) -> R + Send,
 {
+    run_supervised_duplex_inner(command, timeout, exit_policy, None, writer, reader)
+}
+
+/// Cancelled work terminates the same owned process group as deadline expiration. Existing
+/// callers retain the non-polling wait; only cancellable calls observe this flag every 20 ms.
+pub fn run_supervised_duplex_cancellable<I, R, F, G>(
+    command: &mut std::process::Command,
+    timeout: Duration,
+    exit_policy: ExitPolicy,
+    cancellation: &std::sync::atomic::AtomicBool,
+    writer: F,
+    reader: G,
+) -> Result<SupervisedDuplexOutput<I, R>, SupervisedError>
+where
+    I: Send,
+    R: Send,
+    F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
+    G: FnOnce(&mut dyn Read) -> R + Send,
+{
+    run_supervised_duplex_inner(
+        command,
+        timeout,
+        exit_policy,
+        Some(cancellation),
+        writer,
+        reader,
+    )
+}
+
+fn run_supervised_duplex_inner<I, R, F, G>(
+    command: &mut std::process::Command,
+    timeout: Duration,
+    exit_policy: ExitPolicy,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
+    writer: F,
+    reader: G,
+) -> Result<SupervisedDuplexOutput<I, R>, SupervisedError>
+where
+    I: Send,
+    R: Send,
+    F: FnOnce(&mut dyn Write) -> Result<(), I> + Send,
+    G: FnOnce(&mut dyn Read) -> R + Send,
+{
+    if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+        return Err(SupervisedError::Cancelled);
+    }
     command.stdin(Stdio::piped());
     command.stdout(Stdio::piped());
     command.stderr(Stdio::piped());
@@ -163,7 +211,7 @@ where
 
         let stderr = drain_async(child.stderr.take().expect("stderr was piped"));
         let deadline = Instant::now() + timeout;
-        let status = match wait_exact(child, deadline) {
+        let status = match wait_exact_cancellable(child, deadline, cancellation) {
             Ok(status) => status,
             Err(error) => return Err(error),
         };
@@ -381,58 +429,90 @@ fn collect_stderr(
     }
 }
 
-#[cfg(unix)]
 fn wait_exact(
+    child: std::process::Child,
+    deadline: Instant,
+) -> Result<ExitStatus, SupervisedError> {
+    wait_exact_cancellable(child, deadline, None)
+}
+
+#[cfg(unix)]
+fn wait_exact_cancellable(
     mut child: std::process::Child,
     deadline: Instant,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<ExitStatus, SupervisedError> {
     let pid = child.id();
     let (send, receive) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let _ = send.send(child.wait());
     });
-    match receive.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-        Ok(Ok(status)) => Ok(status),
-        Ok(Err(error)) => {
-            kill_process_group(pid);
-            Err(SupervisedError::Wait(error))
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+    loop {
+        let cancelled =
+            cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire));
+        if cancelled {
             kill_process_group(pid);
             let _ = receive.recv_timeout(OUTPUT_DRAIN_GRACE);
-            Err(SupervisedError::TimedOut {
-                stdout: Vec::new(),
-                stderr: Vec::new(),
-            })
+            return Err(SupervisedError::Cancelled);
         }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            kill_process_group(pid);
-            Err(SupervisedError::Wait(std::io::Error::other(
-                "process waiter stopped without a result",
-            )))
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let delay = if cancellation.is_some() {
+            remaining.min(Duration::from_millis(20))
+        } else {
+            remaining
+        };
+        match receive.recv_timeout(delay) {
+            Ok(Ok(status)) => return Ok(status),
+            Ok(Err(error)) => {
+                kill_process_group(pid);
+                return Err(SupervisedError::Wait(error));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if Instant::now() >= deadline {
+                    kill_process_group(pid);
+                    let _ = receive.recv_timeout(OUTPUT_DRAIN_GRACE);
+                    return Err(SupervisedError::TimedOut {
+                        stdout: Vec::new(),
+                        stderr: Vec::new(),
+                    });
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                kill_process_group(pid);
+                return Err(SupervisedError::Wait(std::io::Error::other(
+                    "process waiter stopped without a result",
+                )));
+            }
         }
     }
 }
 
 #[cfg(not(unix))]
-fn wait_exact(
+fn wait_exact_cancellable(
     mut child: std::process::Child,
     deadline: Instant,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> Result<ExitStatus, SupervisedError> {
     let mut delay = Duration::from_millis(1);
     loop {
+        let cancelled =
+            cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire));
         match child.try_wait().map_err(SupervisedError::Wait)? {
             Some(status) => return Ok(status),
-            None if Instant::now() < deadline => {
+            None if Instant::now() < deadline && !cancelled => {
                 std::thread::sleep(delay);
                 delay = (delay * 2).min(Duration::from_millis(20));
             }
             None => {
                 let _ = child.kill();
                 let _ = child.wait();
-                return Err(SupervisedError::TimedOut {
-                    stdout: Vec::new(),
-                    stderr: Vec::new(),
+                return Err(if cancelled {
+                    SupervisedError::Cancelled
+                } else {
+                    SupervisedError::TimedOut {
+                        stdout: Vec::new(),
+                        stderr: Vec::new(),
+                    }
                 });
             }
         }

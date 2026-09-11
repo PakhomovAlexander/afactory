@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "$id": "urn:af:schema:task-source-capture:1",
+  "properties": {
+    "schema": {
+      "const": "af.task-source-capture/1"
+    },
+    "adapter": {
+      "enum": [
+        "local_issue",
+        "jira_cloud"
+      ]
+    },
+    "locator": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2048,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "external_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "external_key": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "source_revision": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "raw_source_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "fields": {
+      "type": "object",
+      "minProperties": 2,
+      "maxProperties": 18,
+      "required": [
+        "summary",
+        "description"
+      ],
+      "propertyNames": {
+        "type": "string",
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "value_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "text_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          }
+        },
+        "required": [
+          "value_id",
+          "text_id"
+        ]
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "adapter",
+    "locator",
+    "external_id",
+    "external_key",
+    "source_revision",
+    "raw_source_id",
+    "fields"
+  ]
+}

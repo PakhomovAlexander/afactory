@@ -14,6 +14,7 @@ pub mod planning;
 pub mod provider;
 pub mod repair;
 pub mod review;
+pub mod source;
 pub mod verification;
 
 use std::collections::{BTreeMap, BTreeSet};
