@@ -316,6 +316,161 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'output':[{'outcome':'
 "#;
 
 #[test]
+fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_business_worker() {
+    use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Model {
+        calls: AtomicUsize,
+        pass: bool,
+    }
+    impl WorkerModelAdapter for Model {
+        fn provider_kind(&self) -> &'static str {
+            "fixture"
+        }
+        fn model_settings(&self) -> Option<(String, String)> {
+            Some(("typed-model".into(), "high".into()))
+        }
+        fn invoke(
+            &self,
+            cas: &Cas,
+            _: &std::path::Path,
+            input: Vec<u8>,
+            _: std::time::Duration,
+            writable: bool,
+        ) -> ModelWorkerReturn {
+            assert!(!writable);
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            let (bytes, cost) = if n == 0 {
+                assert_eq!(input, b"Reply with exactly: OK\n");
+                (
+                    if self.pass {
+                        b"OK".to_vec()
+                    } else {
+                        b"capability unavailable".to_vec()
+                    },
+                    7,
+                )
+            } else {
+                assert!(self.pass, "failed admission reached a business Worker");
+                let request: serde_json::Value = serde_json::from_slice(&input).unwrap();
+                assert_eq!(request["inputs"].as_object().unwrap().len(), 1);
+                assert!(request["inputs"]["input"].is_array());
+                (serde_json::to_vec(&json!({"schema":"af.worker-reply/1","outputs":{"output":[{"outcome":"passed","text":"Checked document"}]}})).unwrap(),11)
+            };
+            ModelWorkerReturn {
+                raw_artifact_ids: vec![cas.put(&bytes).unwrap()],
+                message: Ok(bytes),
+                usage: Some(review_runner::TokenUsage::charge_only(cost)),
+            }
+        }
+    }
+    for pass in [true, false] {
+        let model = Model {
+            calls: AtomicUsize::new(0),
+            pass,
+        };
+        let mut f = Fixture::with_model("unused", true);
+        f.task.limits.verification.tokens = 1100;
+        f.task.limits.verification.attempts = 2;
+        f.task.limits.verification.wall_ms = 6000;
+        f.revision_id = f
+            .cas
+            .put_artifact(
+                TASK_REVISION_V1,
+                producer(),
+                vec![],
+                None,
+                serde_json::to_value(&f.task).unwrap(),
+            )
+            .unwrap()
+            .0;
+        f.compiler = f.compiler.with_provider_admission(OperatorAttemptCost {
+            tokens: 100,
+            wall_ms: 1000,
+        });
+        (f.plan, f.graph) = f
+            .compiler
+            .compile(&f.cas, &f.revision_id, "builtin/document")
+            .unwrap();
+        f.plan_id = f
+            .cas
+            .put_artifact(
+                EXECUTION_PLAN_V1,
+                producer(),
+                vec![],
+                None,
+                serde_json::to_value(&f.plan).unwrap(),
+            )
+            .unwrap()
+            .0;
+        assert_eq!(
+            f.graph.allowances["root.providers.admit0"].verification_attempts,
+            1
+        );
+        let models = f
+            .plan
+            .bindings
+            .iter()
+            .map(|(slot, binding)| {
+                (
+                    slot.clone(),
+                    TaskModelBinding {
+                        binding: binding.clone(),
+                        adapter: &model as &dyn WorkerModelAdapter,
+                    },
+                )
+            })
+            .collect();
+        let domain = review_pipeline::task::provider::ProviderTaskDomain {
+            graph: &f.graph,
+            models: &models,
+            inner: &DocumentDomain,
+        };
+        let host = CapturedTaskHost::capture_with_models(
+            &f.cas,
+            &f.compiler,
+            &f.task,
+            &f.plan,
+            f.graph.clone(),
+            &EmptyTaskEnvironment,
+            &domain,
+            &models,
+        )
+        .unwrap();
+        let authority = CapturedTaskAuthority {
+            compiler: &f.compiler,
+            domain: &host,
+            developer: &NoTaskDeveloper,
+        };
+        let lease = f
+            .store
+            .open_task(&f.cas, &f.revision_id, "writer", 60000)
+            .unwrap();
+        f.store
+            .propose_task_plan(&f.cas, &lease, &f.plan_id, &authority)
+            .unwrap();
+        f.store.admit_task_plan(&f.cas, &lease, &authority).unwrap();
+        let runtime = TaskRuntime::new(&mut f.store, &f.cas, lease, &authority, &host).unwrap();
+        let report = runtime.execute().unwrap();
+        assert_eq!(report.complete(), pass, "{report:?}");
+        assert_eq!(runtime.execute().unwrap().complete(), pass);
+        assert_eq!(model.calls.load(Ordering::SeqCst), if pass { 2 } else { 1 });
+        let execution = runtime.projection().unwrap().execution.unwrap();
+        assert_eq!(
+            execution.budget.committed_tokens(),
+            if pass { 18 } else { 7 }
+        );
+        assert_eq!(execution.budget.begun_attempts(), if pass { 2 } else { 1 });
+        assert_eq!(execution.outputs.contains_key("root.nodes.write"), pass);
+        assert_eq!(
+            execution.outputs.contains_key("root.providers.admit0"),
+            pass
+        );
+        assert!(execution.pending_attempts().is_empty());
+    }
+}
+
+#[test]
 fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget() {
     use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
     use std::sync::atomic::{AtomicUsize, Ordering};

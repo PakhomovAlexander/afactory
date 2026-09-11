@@ -32,7 +32,8 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 68] = [
+const SCHEMAS: [&str; 69] = [
+    "task-provider-admission-v1.json",
     "task-review-subject-v1.json",
     "task-review-round-v1.json",
     "task-check-receipt-v1.json",
@@ -377,6 +378,38 @@ fn review_task_round_contracts_preserve_completeness() {
         );
         assert!(
             serde_json::from_value::<TaskReviewRoundV1>(value)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn provider_admission_contract_requires_exact_model_capability() {
+    use review_core::task::provider::TaskProviderAdmissionV1;
+    let id = format!("sha256:{}", "b".repeat(64));
+    let value = json!({"plan_id":id,"invocation_policy_id":id,"outcome":"passed","bindings":["root.slots.reviewer"],
+        "execution":{"kind":"model","provider":"personal","provider_kind":"claude","principal_id":id,"model":"claude-fixture-1","effort":"high"}});
+    assert_valid("task-provider-admission-v1.json", &value);
+    serde_json::from_value::<TaskProviderAdmissionV1>(value.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    for (field, replacement) in [
+        ("outcome", json!("failed")),
+        ("bindings", json!([])),
+        ("execution", json!({"kind":"command"})),
+    ] {
+        let mut changed = value.clone();
+        changed[field] = replacement;
+        assert_invalid(
+            "task-provider-admission-v1.json",
+            &changed,
+            "invalid capability proof",
+        );
+        assert!(
+            serde_json::from_value::<TaskProviderAdmissionV1>(changed)
                 .unwrap()
                 .validate()
                 .is_err()

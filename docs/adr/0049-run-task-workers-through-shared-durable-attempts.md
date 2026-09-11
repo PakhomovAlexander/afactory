@@ -69,8 +69,12 @@ Generic model adapters keep Provider framing separate from the typed Worker cont
 requires the exact plan binding and the adapter's explicit model/effort, and refuses a rendered
 context exceeding its reservation before start. Failed or schema-invalid responses retain usage
 and raw evidence. Retry feedback records only a bounded code and exact Attempt/contract IDs.
-Production admission must still supply authenticated canonical principal identity; a model label
-or auth-directory name is not proof.
+Native Task-file admission now obtains account identity through the fixed Provider protocol,
+captures its canonical digest and rechecks it on resume. A model label or auth-directory name
+is not proof. A fixed capability probe is compiled as an internal charged Task node, with
+downstream Workers guarded by its successful receipt. Matching slots share a probe; probes
+serving verifiers hold protected capacity. The probe has an exact context manifest and receives
+no business inputs. Its failure and replay use the same durable Attempt and budget rules.
 
 ## Compatibility and remaining work
 
@@ -79,7 +83,7 @@ and charge records. The common Store's read-only links capture stable origin and
 identities; linking twice is idempotent and never imports legacy charges as new Task spending.
 Historical delivery and Review fixtures remain unchanged.
 
-The legacy-entry-point and review command adapters, model Provider admission, authenticated
-developer CLI and the supported contained execution routes must still use these same boundaries.
+The remaining legacy-entry-point adapters, authenticated developer CLI and supported contained
+execution routes must still use these same boundaries. Live Provider probes remain release gates.
 `trusted_local` remains an explicit non-isolating environment; it cannot claim container policy
 or protect a host approval service from arbitrary model-controlled host code.

@@ -12,8 +12,9 @@ af task run review-cli --state /tmp/af-review-state --json
 declare `kind = "review"`. Its Pipeline and Worker packages come from committed
 `.af/task-catalog.toml`. The catalog's `review` table declares required reviewer names, their
 Demand requirements, the severity gate and bounded convergence policy. The existing captured
-code-check policy supplies the required checks. Task-file execution currently admits command
-Workers; production model Provider admission remains a separate unfinished migration step.
+code-check policy supplies the required checks. Command Workers and native Model Workers use
+the same runtime; [Model bindings](model-bindings.md) require account identity and charged
+capability admission inside the Task.
 
 The executable fixture is `fixtures/task-runtime/review`. Copy it into an empty directory,
 initialize and commit a Git repository there, and run the commands above. It has two command
@@ -74,5 +75,5 @@ Review exit codes on replay, and inspection includes the typed Round receipts.
 
 This is the command-Worker Review Task checkpoint. Historical Campaign commands still use
 their captured format and readers. The full legacy entry-point cutover, current-Snapshot repair
-operators, embedded implementation acceptance and production Provider admission are unfinished
+operators, embedded implementation acceptance and live Provider boundary probes are unfinished
 parts of the accepted increment; this checkpoint does not close P06 or release the product.

@@ -78,6 +78,11 @@ impl Address {
 pub enum CompiledOperator {
     RootInputs,
     Select,
+    /// Installed host bootstrap, never a Pipeline-supplied operation. All listed slots use
+    /// the same captured Provider capability and share this admission Attempt.
+    ProviderAdmission {
+        bindings: BTreeSet<String>,
+    },
     Primitive {
         operator: TaskOperatorV1,
         signature: String,
@@ -126,6 +131,99 @@ pub struct CompiledTask {
 }
 
 impl CompiledTask {
+    pub fn require_provider_admission(
+        &mut self,
+        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV1>,
+        cost: &OperatorAttemptCost,
+        limits: &review_core::task::TaskLimitsV1,
+    ) -> Result<(), String> {
+        use review_core::task::plan::WorkerExecutionV1;
+        if cost.tokens == 0 || cost.wall_ms == 0 {
+            return Err("Provider admission requires a bounded paid reservation".into());
+        }
+        if self
+            .nodes
+            .values()
+            .any(|node| matches!(node.operator, CompiledOperator::ProviderAdmission { .. }))
+        {
+            return Err("Provider admission can be compiled only once".into());
+        }
+        let mut capabilities: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+        for (slot, binding) in bindings {
+            if matches!(binding.execution, WorkerExecutionV1::Model { .. }) {
+                let key =
+                    serde_json::to_string(&(&binding.execution, &binding.invocation_policy_id))
+                        .map_err(|e| e.to_string())?;
+                capabilities.entry(key).or_default().insert(slot.clone());
+            }
+        }
+        for (index, slots) in capabilities.into_values().enumerate() {
+            let name = format!("root.providers.admit{index}");
+            if self.nodes.contains_key(&name) || self.nodes.len() >= 64 {
+                return Err("Provider admission exceeds the installed graph bound".into());
+            }
+            let mut protected = false;
+            for (id, node) in &mut self.nodes {
+                if let CompiledOperator::Primitive {
+                    operator:
+                        TaskOperatorV1::Worker { slot }
+                        | TaskOperatorV1::Verify { slot }
+                        | TaskOperatorV1::FixVerify { slot },
+                    ..
+                } = &node.operator
+                    && slots.contains(slot)
+                {
+                    node.conditions.push(CompiledCondition {
+                        source: Address {
+                            node: name.clone(),
+                            port: "result".into(),
+                        },
+                        outcome: ReceiptOutcomeV1::Passed,
+                    });
+                    protected |= self
+                        .allowances
+                        .get(id)
+                        .is_some_and(|a| a.verification_attempts > 0);
+                }
+            }
+            self.nodes.insert(
+                name.clone(),
+                CompiledNode {
+                    operator: CompiledOperator::ProviderAdmission { bindings: slots },
+                    contract: PipelineContractV1 {
+                        inputs: BTreeMap::new(),
+                        outputs: BTreeMap::from([(
+                            "result".into(),
+                            PipelinePortV1 {
+                                artifact_type: "af/TaskProviderAdmission@1".into(),
+                                cardinality: review_core::PortCardinality::One,
+                                optional: false,
+                                affinity: PortAffinityV1::Unbound {},
+                                root_default: None,
+                                covers: BTreeSet::new(),
+                            },
+                        )]),
+                    },
+                    inputs: BTreeMap::new(),
+                    conditions: vec![],
+                },
+            );
+            self.allowances.insert(
+                name.clone(),
+                NodeAllowance {
+                    tokens_per_attempt: cost.tokens,
+                    wall_ms_per_attempt: cost.wall_ms,
+                    max_attempts: 1,
+                    verification_attempts: u32::from(protected),
+                },
+            );
+            self.order.insert(index, name);
+        }
+        self.order = self.scheduler_plan()?.order;
+        self.budget(limits.clone())?;
+        Ok(())
+    }
+
     pub fn budget(&self, limits: review_core::task::TaskLimitsV1) -> Result<TaskBudget, String> {
         TaskBudget::new(limits, self.allowances.clone())?.with_call_limits(
             self.calls

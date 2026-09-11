@@ -57,13 +57,19 @@ impl EffectiveWorkerBindingV1 {
             is_digest(&self.invocation_policy_id),
             "Worker binding needs an exact invocation policy",
         )?;
+        self.execution.validate()
+    }
+}
+
+impl WorkerExecutionV1 {
+    pub fn validate(&self) -> Result<(), String> {
         if let WorkerExecutionV1::Model {
             provider,
             provider_kind,
             principal_id,
             model,
             effort,
-        } = &self.execution
+        } = self
         {
             require(
                 is_name(provider) && is_name(provider_kind) && !principal_id.trim().is_empty(),

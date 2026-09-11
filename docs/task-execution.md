@@ -25,7 +25,7 @@ supplement it. Claude calls use only `claude-personal`.
 - [ ] P02/P03: common Store lifecycle, approvals, legacy links and typed compilation are
   implemented and verified locally; PR integration remains pending.
 - [ ] P04–P06: common implementation and Review command execution, Task-file CLI and verified
-  local delivery pass real-process fixtures; legacy entry-point cutover and model admission remain.
+  local delivery pass real-process fixtures; legacy entry-point cutover and live probes remain.
 - [ ] P07–P09: shared packages, embedded Review, bounded repair and fix verification.
 - [ ] P10–P12: selection, bounded generation, developer approval, export and starters.
 - [ ] P13/P14: Jira/document demonstrations, compatibility, benchmark and consumer release.
@@ -62,7 +62,11 @@ Generic Claude and Codex Task adapters preserve non-review output, raw responses
 usage on failure. The captured Worker host checks exact bindings, model/effort and context caps
 before dispatch. A deterministic model fixture proves schema-failure retry charges one shared
 Task allowance. Retry guidance is a typed failure code tied to its Attempt and contract, not a
-copy of the failed response. Production Provider admission and identity capture remain unfinished.
+copy of the failed response. Native Provider identity capture and charged admission now pass the
+Task-file CLI fixtures. Each distinct effective capability runs a fixed internal probe under the
+same Task budget. Shared slots reuse it; a failed probe retains usage and dispatches no business
+Worker. Token-free planning captures canonical account identity, and account changes on resume
+invalidate the recorded binding. See [Model bindings](task-execution/model-bindings.md).
 
 Standalone `af review --file` now executes through the common runtime. Its typed Subject binder
 and atomic gather/reducer reuse historical Finding/Demand semantics without a second Store or
@@ -70,11 +74,11 @@ allowance. Complete finding-bearing Review Tasks retain `changes_requested` and 
 reviewers remain incomplete without authoritative partial sets. Both initial execution and
 replay preserve the domain exit. See the [Review Task walkthrough](task-execution/review-task.md).
 
-The complete deterministic gate passed with **726 tests, zero failures and 15 existing opt-in
+The complete deterministic gate passed with **730 tests, zero failures and 15 existing opt-in
 probes ignored**, across 97 suites. Formatting, Clippy and frozen synthetic reproduction passed.
 The 11 legacy implementation/delivery cases also pass unchanged. These checks establish the
 Task-file checkpoint, not completion of PR 1. The authenticated developer command boundary,
-model Provider admission and legacy entry-point cutover remain. See the
+live Provider boundary probes and legacy entry-point cutover remain. See the
 [Task-file walkthrough](task-execution/task-file.md),
 [ADR-0048](adr/0048-compile-task-ports-and-fence-developer-plan-decisions.md) and
 [ADR-0049](adr/0049-run-task-workers-through-shared-durable-attempts.md).

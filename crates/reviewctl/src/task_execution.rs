@@ -16,8 +16,9 @@ use review_graph::task::CompiledTask;
 use review_pipeline::task::TaskRuntime;
 use review_pipeline::task::code::{CodeTaskDomain, CodeTaskPolicy, code_signatures};
 use review_pipeline::task::host::{
-    CapturedTaskAuthority, CommandTaskHost, NoTaskDeveloper, TaskDomain,
+    CapturedTaskAuthority, CommandTaskHost, NoTaskDeveloper, TaskDomain, TaskModelBinding,
 };
+use review_pipeline::task::provider::ProviderTaskDomain;
 use review_pipeline::task::review::{ReviewTaskDomain, ReviewTaskPolicy, review_signatures};
 use review_pipeline::task::source::SnapshotTaskEnvironment;
 use review_source_git::task::{SOURCE_TREE_V1, capture_snapshot, source_tree};
@@ -74,6 +75,8 @@ struct TaskCatalog {
     review: Option<ReviewSettings>,
     packages: BTreeMap<String, TaskPackagePin>,
     independence: IndependencePolicyV1,
+    #[serde(default)]
+    providers: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +110,8 @@ struct RunAuthority {
     catalog_id: String,
     packages: BTreeMap<String, CapturedPackage>,
     independence: IndependencePolicyV1,
+    #[serde(default)]
+    providers: BTreeMap<String, String>,
 }
 
 fn clock() -> Result<u64, String> {
@@ -272,6 +277,7 @@ fn capture_authority(
         catalog_id: cas.put(&bytes).map_err(|e| e.to_string())?,
         packages,
         independence: catalog.independence,
+        providers: catalog.providers,
     };
     let id = cas
         .put_json(&serde_json::to_value(&authority).map_err(|e| e.to_string())?)
@@ -322,9 +328,7 @@ fn restore_compiler(
     for name in authority.packages.keys() {
         if let Some(worker) = compiler.worker(name) {
             if !matches!(worker.runner, TaskWorkerRunner::Command { .. }) {
-                return Err(format!(
-                    "Worker {name} requires a configured admitted model Provider"
-                ));
+                continue;
             }
             compiler.bind_worker(
                 name,
@@ -335,7 +339,84 @@ fn restore_compiler(
             )?;
         }
     }
-    Ok(compiler)
+    Ok(
+        compiler.with_provider_admission(review_graph::task::OperatorAttemptCost {
+            tokens: 4096,
+            wall_ms: 45000,
+        }),
+    )
+}
+
+fn bind_models(
+    cas: &Cas,
+    compiler: &mut TaskPlanCompiler,
+    authority: &RunAuthority,
+    revision_id: &str,
+    root: &str,
+) -> Result<BTreeMap<String, Box<dyn review_runner::task::WorkerModelAdapter>>, String> {
+    let mut identities = BTreeMap::new();
+    let mut adapters = BTreeMap::new();
+    for name in compiler.required_worker_packages(cas, revision_id, root)? {
+        let worker = compiler.worker(&name).ok_or("Required Worker is absent")?;
+        let TaskWorkerRunner::Model {
+            provider_kind,
+            model,
+            effort,
+        } = &worker.runner
+        else {
+            continue;
+        };
+        let alias = authority.providers.get(&name).ok_or_else(||format!("Worker {name} requires an explicit local Provider binding in the catalog providers table"))?;
+        if !identities.contains_key(alias) {
+            identities.insert(
+                alias.clone(),
+                super::providers::task::TaskProviderIdentity::probe(alias, provider_kind)?,
+            );
+        }
+        let identity = &identities[alias];
+        let execution = identity.execution(model, effort)?;
+        if !matches!(&execution,WorkerExecutionV1::Model {provider_kind:kind,..} if kind==provider_kind)
+        {
+            return Err("Worker and Provider implementation families differ".into());
+        }
+        adapters.insert(name.clone(), identity.adapter(&execution)?);
+        compiler.bind_worker(
+            &name,
+            AdmittedWorkerSettings {
+                execution,
+                invocation_policy_id: authority.code_policy_id.clone(),
+            },
+        )?;
+    }
+    Ok(adapters)
+}
+
+fn model_bindings<'a>(
+    plan: &ExecutionPlanV1,
+    graph: &CompiledTask,
+    adapters: &'a BTreeMap<String, Box<dyn review_runner::task::WorkerModelAdapter>>,
+) -> Result<BTreeMap<String, TaskModelBinding<'a>>, String> {
+    plan.bindings
+        .iter()
+        .filter(|(_, binding)| matches!(binding.execution, WorkerExecutionV1::Model { .. }))
+        .map(|(slot, binding)| {
+            let name = &graph
+                .slots
+                .get(slot)
+                .ok_or("Captured Model slot is absent")?
+                .worker;
+            let adapter = adapters
+                .get(name)
+                .ok_or("Captured Model adapter is absent")?;
+            Ok((
+                slot.clone(),
+                TaskModelBinding {
+                    binding: binding.clone(),
+                    adapter: adapter.as_ref(),
+                },
+            ))
+        })
+        .collect()
 }
 
 pub(super) fn start(options: StartOptions) -> Result<i32, String> {
@@ -384,7 +465,7 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
     let policy_source = Capture::new(&source_repo, &cas)
         .committed(&options.authority)
         .map_err(|e| e.to_string())?;
-    let (authority_id, authority, compiler) = capture_authority(&cas, &policy_source.manifest)?;
+    let (authority_id, authority, mut compiler) = capture_authority(&cas, &policy_source.manifest)?;
     let source = if options.uncommitted {
         Capture::new(&source_repo, &cas)
             .dirty()
@@ -464,6 +545,17 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
         )
         .map_err(|e| e.to_string())?
         .0;
+    let adapters = bind_models(
+        &cas,
+        &mut compiler,
+        &authority,
+        &revision_id,
+        &revision
+            .pipeline
+            .as_ref()
+            .ok_or("Task has no selected Pipeline")?
+            .name,
+    )?;
     let (plan, graph) = compiler.compile(
         &cas,
         &revision_id,
@@ -483,7 +575,13 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
         )
         .map_err(|e| e.to_string())?
         .0;
-    let domain = captured_domain(&cas, &authority, &revision.kind, graph.clone())?;
+    let inner = captured_domain(&cas, &authority, &revision.kind, graph.clone())?;
+    let models = model_bindings(&plan, &graph, &adapters)?;
+    let domain = ProviderTaskDomain {
+        graph: &graph,
+        models: &models,
+        inner: inner.as_ref(),
+    };
     let policy: CodeTaskPolicy = serde_json::from_value(
         cas.get_json(&authority.code_policy_id)
             .map_err(|e| e.to_string())?,
@@ -492,14 +590,15 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
     let environment = SnapshotTaskEnvironment {
         policy: policy.isolation(),
     };
-    let host = CommandTaskHost::capture(
+    let host = CommandTaskHost::capture_with_models(
         &cas,
         &compiler,
         &revision,
         &plan,
-        graph,
+        graph.clone(),
         &environment,
-        domain.as_ref(),
+        &domain,
+        &models,
     )?;
     let trusted = CapturedTaskAuthority {
         compiler: &compiler,
@@ -524,7 +623,7 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
         store
             .admit_task_plan(&cas, &lease, &trusted)
             .map_err(|e| e.to_string())?;
-        execute(&cas, &mut store, &lease, &trusted, &host, domain.as_ref())?;
+        execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
         Ok(())
     })();
     release(&cas, &mut store, &lease, outcome)?;
@@ -622,7 +721,8 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
             .map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    let compiler = restore_compiler(&cas, &projection.revision.authority.policy_id, &authority)?;
+    let mut compiler =
+        restore_compiler(&cas, &projection.revision.authority.policy_id, &authority)?;
     let plan: ExecutionPlanV1 = artifact(
         &cas,
         projection
@@ -632,7 +732,26 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
         EXECUTION_PLAN_V1,
     )?;
     let graph: CompiledTask = artifact(&cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
-    let domain = captured_domain(&cas, &authority, &projection.revision.kind, graph.clone())?;
+    let adapters = bind_models(
+        &cas,
+        &mut compiler,
+        &authority,
+        &projection.revision_id,
+        &projection
+            .revision
+            .pipeline
+            .as_ref()
+            .ok_or("Task has no selected Pipeline")?
+            .name,
+    )?;
+    compiler.validate_plan(&cas, &projection.revision, &plan)?;
+    let inner = captured_domain(&cas, &authority, &projection.revision.kind, graph.clone())?;
+    let models = model_bindings(&plan, &graph, &adapters)?;
+    let domain = ProviderTaskDomain {
+        graph: &graph,
+        models: &models,
+        inner: inner.as_ref(),
+    };
     let policy: CodeTaskPolicy = serde_json::from_value(
         cas.get_json(&authority.code_policy_id)
             .map_err(|e| e.to_string())?,
@@ -641,14 +760,15 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
     let environment = SnapshotTaskEnvironment {
         policy: policy.isolation(),
     };
-    let host = CommandTaskHost::capture(
+    let host = CommandTaskHost::capture_with_models(
         &cas,
         &compiler,
         &projection.revision,
         &plan,
-        graph,
+        graph.clone(),
         &environment,
-        domain.as_ref(),
+        &domain,
+        &models,
     )?;
     let trusted = CapturedTaskAuthority {
         compiler: &compiler,
@@ -667,7 +787,7 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
                 .admit_task_plan(&cas, &lease, &trusted)
                 .map_err(|e| e.to_string())?;
         }
-        execute(&cas, &mut store, &lease, &trusted, &host, domain.as_ref())?;
+        execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
         Ok(())
     })();
     release(&cas, &mut store, &lease, outcome)?;

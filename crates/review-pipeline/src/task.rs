@@ -3,6 +3,7 @@
 
 pub mod code;
 pub mod host;
+pub mod provider;
 pub mod review;
 pub mod source;
 

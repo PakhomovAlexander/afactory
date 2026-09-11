@@ -95,6 +95,7 @@ pub struct TaskPlanCompiler {
     generated: BTreeMap<String, GeneratedOriginV1>,
     acceptance_outputs: BTreeMap<String, String>,
     independence: IndependencePolicyV1,
+    provider_admission: Option<review_graph::task::OperatorAttemptCost>,
 }
 
 fn safe_path(path: &str) -> bool {
@@ -134,6 +135,15 @@ fn read_envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope
 }
 
 impl TaskPlanCompiler {
+    /// A production host enables this when a fresh paid capability probe is required.
+    /// Identity-only probes occur before planning; these model calls belong to Task execution.
+    pub fn with_provider_admission(
+        mut self,
+        cost: review_graph::task::OperatorAttemptCost,
+    ) -> Self {
+        self.provider_admission = Some(cost);
+        self
+    }
     /// Apply only constructors explicitly declared on this root contract. A child call has
     /// no access to this adapter operation and must bind every required input itself.
     pub fn normalize_root_inputs(
@@ -212,6 +222,7 @@ impl TaskPlanCompiler {
             generated: BTreeMap::new(),
             acceptance_outputs,
             independence,
+            provider_admission: None,
         })
     }
 
@@ -444,6 +455,38 @@ impl TaskPlanCompiler {
         self.compile_inner(cas, task_revision_id, root, None)
     }
 
+    /// Pure preflight for the selected definition, before any account probes. Unused catalog
+    /// Workers must not make an otherwise fitting Pipeline require unrelated credentials.
+    pub fn required_worker_packages(
+        &self,
+        cas: &Cas,
+        task_revision_id: &str,
+        root: &str,
+    ) -> Result<BTreeSet<String>, String> {
+        let revision = read_envelope(cas, task_revision_id, review_core::task::TASK_REVISION_V1)?;
+        let task: TaskRevisionV1 =
+            serde_json::from_value(revision.payload).map_err(|e| e.to_string())?;
+        if task.authority.policy_id != self.policy_id {
+            return Err("Task does not belong to captured authority".into());
+        }
+        let graph = compile_task(
+            &task,
+            root,
+            &CompileContext {
+                pipelines: &self.pipelines,
+                signatures: &self.signatures,
+                acceptance_outputs: self.acceptance_outputs.clone(),
+                max_nodes: 64,
+                max_depth: 4,
+            },
+        )?;
+        Ok(graph
+            .slots
+            .values()
+            .map(|slot| slot.worker.clone())
+            .collect())
+    }
+
     fn compile_inner(
         &self,
         cas: &Cas,
@@ -459,7 +502,7 @@ impl TaskPlanCompiler {
         }
         cas.verify(&self.engine_id).map_err(|e| e.to_string())?;
         cas.verify(&self.policy_id).map_err(|e| e.to_string())?;
-        let graph = compile_task(
+        let mut graph = compile_task(
             &task,
             root,
             &CompileContext {
@@ -540,6 +583,9 @@ impl TaskPlanCompiler {
             .iter()
             .filter_map(|name| self.generated.get(name).cloned())
             .collect();
+        if let Some(cost) = &self.provider_admission {
+            graph.require_provider_admission(&bindings, cost, &task.limits)?;
+        }
         let graph_value = serde_json::to_value(&graph).map_err(|e| e.to_string())?;
         let compiled_graph_id = if let Some(recorded) = recorded_graph {
             if recorded.payload != graph_value
