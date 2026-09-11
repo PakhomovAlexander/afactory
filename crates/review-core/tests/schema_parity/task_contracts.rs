@@ -9,6 +9,71 @@ use review_core::task::{
 };
 use serde_json::{Value, json};
 
+#[test]
+fn document_contracts_keep_source_data_closed_and_never_use_code_snapshots() {
+    use review_core::task::document::*;
+    let sources = json!({"schema":"af.document-sources/1","sources":{"ticket":{"title":"Pagination","uri":"https://example.invalid/AF-42","revision":"42@1","text":"Add offset pagination."}}});
+    assert_valid("document-sources-v1.json", &sources);
+    serde_json::from_value::<DocumentSourcesV1>(sources.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let draft = json!({"schema":"af.document-draft/1","title":"Release notes","sections":[{"heading":"Summary","body":"Adds offset pagination."}],"citations":["ticket"]});
+    assert_valid("document-draft-v1.json", &draft);
+    serde_json::from_value::<DocumentDraftV1>(draft.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    for (schema, value) in [
+        ("document-sources-v1.json", sources),
+        ("document-draft-v1.json", draft.clone()),
+    ] {
+        let mut invalid = value;
+        invalid["allowed_effects"] = json!(["write-source"]);
+        assert_invalid(
+            schema,
+            &invalid,
+            "document source/draft data cannot grant execution effects",
+        );
+    }
+    let mut duplicate = draft;
+    let section = duplicate["sections"][0].clone();
+    duplicate["sections"].as_array_mut().unwrap().push(section);
+    assert!(
+        serde_json::from_value::<DocumentDraftV1>(duplicate)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let id = format!("sha256:{}", "1".repeat(64));
+    let document = json!({"schema":"af.document/1","draft_id":id,"sources_id":id,"format":"markdown","text":"# Release notes\n"});
+    assert_valid("document-v1.json", &document);
+    serde_json::from_value::<DocumentV1>(document.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let mut invalid = document;
+    invalid["snapshot_id"] = json!(id);
+    assert_invalid(
+        "document-v1.json",
+        &invalid,
+        "a document is not a fabricated code Snapshot",
+    );
+    let evaluation = json!({"document_id":id,"sources_id":id,"requirements_id":id,"check_receipt_id":id,"outcome":"passed","summary":"Exact sources verified."});
+    assert_valid("document-evaluation-v1.json", &evaluation);
+    serde_json::from_value::<DocumentEvaluationV1>(evaluation.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let mut missing = evaluation;
+    missing.as_object_mut().unwrap().remove("document_id");
+    assert_invalid(
+        "document-evaluation-v1.json",
+        &missing,
+        "evaluation requires exact document identity",
+    );
+}
+
 fn fixture(name: &str) -> Value {
     let path = workspace_root()
         .join("fixtures/task-contracts/v1")

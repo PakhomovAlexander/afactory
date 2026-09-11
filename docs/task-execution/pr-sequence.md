@@ -97,3 +97,13 @@ replace local overrides in the exported closure; preparation, embedded Task stat
 destinations are refused. The full export gate passes **775 tests, zero failures, 15 ignored**, across 103 suites,
 plus formatting, Clippy, frozen reproduction and Markdown checks. The starter pack remains
 outstanding. Claude personal is still signed out; no PR 2 reviewer has run.
+
+CI for `9800756` passes Check, CLI smoke and live container probes in run `34646435520`.
+The document checkpoint adds typed source/draft/document contracts, a captured document policy,
+data-only environments, source/content checks and exact-artifact independent acceptance through
+the common runtime. The token-free starter factory emits actual package pins and contract fixtures.
+Real CLI tests cover captured replay, Markdown output without overwrite, failed checks, unsafe
+links, stale evaluation, a negative verdict and an unavailable verifier. The full gate passes
+**779 tests, zero failures, 15 ignored**, across 104 suites, plus formatting, Clippy and frozen
+reproduction. The remaining starters, Jira adapter, Review migration and release evidence are
+still required; no external PR 2 reviewer has run.

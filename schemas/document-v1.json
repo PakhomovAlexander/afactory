@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:document:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "draft_id",
+    "sources_id",
+    "format",
+    "text"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.document/1"
+    },
+    "draft_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "sources_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "format": {
+      "const": "markdown"
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1048576,
+      "pattern": "\\S"
+    }
+  }
+}

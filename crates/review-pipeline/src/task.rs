@@ -2,6 +2,7 @@
 //! supply typed operations; they do not schedule children or create their own Attempt budgets.
 
 pub mod code;
+pub mod document;
 pub mod host;
 pub mod planning;
 pub mod provider;

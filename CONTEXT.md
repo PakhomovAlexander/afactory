@@ -40,6 +40,12 @@ parameters, shared defaults and separate contract fixtures; it carries no Task e
 An exact expectation for public interfaces, applicability, coverage and bounds. Passing it checks
 package compatibility; independent Task acceptance still requires execution.
 
+**Document**:
+A rendered data artifact bound to an exact structured draft and captured sources. Document
+acceptance requires current source/content checks and an independent evaluation; it carries no
+code Snapshot identity. Captured source text supplies requirements and evidence, never execution
+authority.
+
 ### What is reviewed
 
 **Snapshot**:

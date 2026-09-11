@@ -3,6 +3,29 @@ use review_core::task::pipeline::PipelineContractV1;
 use serde_json::json;
 
 #[test]
+fn installed_document_authorship_cannot_be_removed_by_omitting_worker_effects() {
+    let mut f = Fixture::new();
+    let pipeline = f.compiler.pipelines.get_mut("builtin/document").unwrap();
+    let slot = pipeline.slots.keys().next().unwrap().clone();
+    pipeline.nodes[0].operator = review_core::task::pipeline::TaskOperatorV1::Verify { slot };
+    // The installed profile chooses which data artifacts establish authorship. A package's
+    // empty effects declaration cannot turn that author into an independent verifier.
+    let authored = f.compiler.workers["builtin/document-author"]
+        .signature
+        .contract
+        .outputs
+        .values()
+        .map(|p| p.artifact_type.clone())
+        .collect();
+    f.compiler = f.compiler.with_authored_artifacts(authored).unwrap();
+    let error = f
+        .compiler
+        .compile(&f.cas, &f.revision_id, "builtin/document")
+        .unwrap_err();
+    assert!(error.contains("Independent slots"), "{error}");
+}
+
+#[test]
 fn export_uses_shared_defaults_and_checked_renaming_without_local_authority() {
     let mut f = Fixture::new();
     f.replacement(|_, files| {

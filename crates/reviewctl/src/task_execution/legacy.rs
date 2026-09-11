@@ -197,7 +197,8 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         no_match: review_config::task::selection::NoMatchPolicy::Refuse,
         developers: None,
         planner: None,
-        code_policy: ".af/task-compat/code-policy.toml".into(),
+        code_policy: Some(".af/task-compat/code-policy.toml".into()),
+        document_policy: None,
         review: None,
         packages: pins,
         kinds: BTreeMap::new(),
@@ -206,7 +207,7 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         providers: BTreeMap::new(),
     };
     virtual_files.insert(
-        catalog.code_policy.clone(),
+        catalog.code_policy.clone().expect("legacy code policy"),
         toml::to_string(&code_policy)
             .map_err(|e| e.to_string())?
             .into_bytes(),
@@ -236,6 +237,7 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         policy_source
     };
     let file = TaskFile {
+        document_sources: None,
         schema: "af.task-file/1".into(),
         task_id: crate::task::task_id(&repo, &source.content_digest, &loaded.pipeline_artifact_id),
         kind: "implement".into(),

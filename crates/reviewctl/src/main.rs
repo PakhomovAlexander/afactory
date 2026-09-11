@@ -1172,6 +1172,18 @@ fn main() {
         cli::Command::Onboard(args) => ("af onboard", onboard::run_cli(args).map(|()| 0)),
         cli::Command::Catalog {
             command:
+                cli::CatalogCommand::Init {
+                    profile: _,
+                    repo,
+                    destination,
+                    json,
+                },
+        } => (
+            "af catalog init",
+            task_execution::starter::init(&repo, &destination, json).map(|()| 0),
+        ),
+        cli::Command::Catalog {
+            command:
                 cli::CatalogCommand::Test {
                     source,
                     revision,
@@ -1318,6 +1330,21 @@ fn main() {
                 ),
                 cli::TaskCommand::Run { task_id, inspect } => task_execution::run(
                     &task_id,
+                    &inspect.repo,
+                    inspect.state.as_deref(),
+                    inspect.json,
+                ),
+                cli::TaskCommand::Output {
+                    task_id,
+                    port,
+                    format,
+                    output,
+                    inspect,
+                } => task_execution::domain::write_output(
+                    &task_id,
+                    &port,
+                    &format,
+                    &output,
                     &inspect.repo,
                     inspect.state.as_deref(),
                     inspect.json,

@@ -16,6 +16,9 @@ use review_core::{ArtifactEnvelope, PortCardinality, Producer};
 use review_graph::task::CompiledTask;
 use review_pipeline::task::TaskRuntime;
 use review_pipeline::task::code::{CodeTaskDomain, CodeTaskPolicy, code_signatures};
+use review_pipeline::task::document::{
+    DocumentTaskDomain, DocumentTaskPolicy, document_signatures,
+};
 use review_pipeline::task::host::{
     CapturedTaskAuthority, CommandTaskHost, NoTaskDeveloper, TaskDomain, TaskModelBinding,
 };
@@ -31,10 +34,12 @@ use serde_json::json;
 mod bindings;
 pub(crate) mod catalog;
 pub(super) mod developer;
+pub(crate) mod domain;
 pub(super) mod export;
 mod legacy;
 mod planning;
 mod selection;
+pub(crate) mod starter;
 pub(super) use legacy::start_legacy;
 
 pub(super) struct StartOptions {
@@ -56,6 +61,12 @@ struct TaskFile {
     task_id: String,
     kind: String,
     goal: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    document_sources: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -97,7 +108,18 @@ struct FileLimits {
 #[serde(deny_unknown_fields)]
 struct TaskCatalog {
     schema: String,
-    code_policy: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    code_policy: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    document_policy: Option<String>,
     /// Lower numbers win within a strategy; missing entries have equal last priority.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     selection: BTreeMap<String, BTreeMap<String, u32>>,
@@ -154,7 +176,18 @@ struct CapturedPackage {
 struct RunAuthority {
     schema: String,
     engine_id: String,
-    code_policy_id: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    code_policy_id: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    document_policy_id: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -198,6 +231,20 @@ struct RunAuthority {
     kind_package: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     import_locks: BTreeSet<String>,
+}
+
+impl RunAuthority {
+    fn invocation_policy_id(&self) -> Result<&str, String> {
+        match (&self.code_policy_id, &self.document_policy_id) {
+            (Some(id), None) | (None, Some(id)) => Ok(id),
+            _ => Err("Task requires one captured domain policy".into()),
+        }
+    }
+    fn code_policy_id(&self) -> Result<&str, String> {
+        self.code_policy_id
+            .as_deref()
+            .ok_or_else(|| "Task has no captured code policy".into())
+    }
 }
 
 fn clock() -> Result<u64, String> {
@@ -314,21 +361,29 @@ fn capture_authority(
     {
         return Err("Task catalog requires one to 128 exactly pinned packages".into());
     }
-    let policy: CodeTaskPolicy = parse(
-        Path::new(&catalog.code_policy),
-        &captured_file(cas, manifest, &catalog.code_policy)?,
+    let code_policy_id = domain::capture_policy::<CodeTaskPolicy>(
+        cas,
+        manifest,
+        catalog.code_policy.as_deref(),
+        CodeTaskPolicy::validate,
     )?;
-    policy.validate()?;
-    let policy_id = cas
-        .put_json(&serde_json::to_value(&policy).map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
+    let document_policy_id = domain::capture_policy::<DocumentTaskPolicy>(
+        cas,
+        manifest,
+        catalog.document_policy.as_deref(),
+        DocumentTaskPolicy::validate,
+    )?;
+    let initial_policy = code_policy_id
+        .as_ref()
+        .or(document_policy_id.as_ref())
+        .ok_or("Catalog has no installed domain policy")?;
     let engine_id = engine(cas)?;
-    // Capture first; compilation is reconstructed under the complete authority ID below.
+    // Package capture does not compile a Task or choose its business acceptance profile.
     let mut capture = TaskPlanCompiler::new(
         engine_id.clone(),
-        policy_id.clone(),
-        code_signatures(&policy_id, &policy)?,
-        BTreeMap::from([("verified".into(), "snapshot".into())]),
+        initial_policy.clone(),
+        BTreeMap::new(),
+        BTreeMap::new(),
         catalog.independence,
     )?;
     let mut packages = BTreeMap::new();
@@ -426,27 +481,52 @@ fn capture_authority(
         providers.extend(local.definition.providers);
         slot_workers = local.definition.slots;
     }
+    let is_document = catalog
+        .kinds
+        .get(task_kind)
+        .and_then(|name| capture.task_kind(name))
+        .map_or(task_kind == "document", |kind| {
+            kind.profile == TaskKindProfile::Document
+        });
+    let (code_policy_id, document_policy_id) = if is_document {
+        (
+            None,
+            Some(document_policy_id.ok_or("Document Task requires a captured document policy")?),
+        )
+    } else {
+        (
+            Some(code_policy_id.ok_or("Code/Review Task requires a captured code policy")?),
+            None,
+        )
+    };
     let authority = RunAuthority {
         schema: "af.task-run-authority/1".into(),
         engine_id,
-        code_policy_id: policy_id.clone(),
-        review_policy_id: catalog
-            .review
-            .map(|review| {
-                let review = ReviewTaskPolicy {
-                    schema: "af.review-task-policy/1".into(),
-                    check_policy_id: policy_id.clone(),
-                    reviewers: review.reviewers,
-                    gate: review.gate,
-                    clean_rounds: review.clean_rounds,
-                    max_rounds: review.max_rounds,
-                    allow_targeted_repairs: review.allow_targeted_repairs,
-                };
-                review.validate()?;
-                cas.put_json(&serde_json::to_value(review).map_err(|e| e.to_string())?)
-                    .map_err(|e| e.to_string())
-            })
-            .transpose()?,
+        code_policy_id: code_policy_id.clone(),
+        document_policy_id,
+        review_policy_id: if is_document {
+            None
+        } else {
+            catalog
+                .review
+                .map(|review| {
+                    let review = ReviewTaskPolicy {
+                        schema: "af.review-task-policy/1".into(),
+                        check_policy_id: code_policy_id
+                            .clone()
+                            .ok_or("Review requires code checks")?,
+                        reviewers: review.reviewers,
+                        gate: review.gate,
+                        clean_rounds: review.clean_rounds,
+                        max_rounds: review.max_rounds,
+                        allow_targeted_repairs: review.allow_targeted_repairs,
+                    };
+                    review.validate()?;
+                    cas.put_json(&serde_json::to_value(review).map_err(|e| e.to_string())?)
+                        .map_err(|e| e.to_string())
+                })
+                .transpose()?
+        },
         catalog_id: cas.put(&bytes).map_err(|e| e.to_string())?,
         selection: catalog.selection,
         no_match: catalog.no_match,
@@ -485,18 +565,30 @@ fn restore_compiler(
     for lock in &authority.import_locks {
         cas.verify(lock).map_err(|e| e.to_string())?;
     }
-    let policy: CodeTaskPolicy = serde_json::from_value(
-        cas.get_json(&authority.code_policy_id)
-            .map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    let mut signatures = code_signatures(&authority.code_policy_id, &policy)?;
-    let mut coverage = BTreeMap::from([("verified".into(), "snapshot".into())]);
+    authority.invocation_policy_id()?;
+    let (mut signatures, mut coverage) = if let Some(id) = &authority.document_policy_id {
+        let policy: DocumentTaskPolicy =
+            serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        (
+            document_signatures(id, &policy)?,
+            BTreeMap::from([("verified".into(), "document".into())]),
+        )
+    } else {
+        let id = authority.code_policy_id()?;
+        let policy: CodeTaskPolicy =
+            serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        (
+            code_signatures(id, &policy)?,
+            BTreeMap::from([("verified".into(), "snapshot".into())]),
+        )
+    };
     if let Some(id) = &authority.review_policy_id {
         let review: ReviewTaskPolicy =
             serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
-        if review.check_policy_id != authority.code_policy_id {
+        if review.check_policy_id != authority.code_policy_id()? {
             return Err("Review policy changed its captured checks".into());
         }
         signatures.extend(review_signatures(id, &review)?);
@@ -509,6 +601,11 @@ fn restore_compiler(
         coverage,
         authority.independence,
     )?;
+    if authority.document_policy_id.is_some() {
+        compiler = compiler.with_authored_artifacts(BTreeSet::from([
+            review_core::task::document::DOCUMENT_DRAFT_V1.into(),
+        ]))?;
+    }
     for (name, package) in &authority.packages {
         compiler.restore_package(cas, name, &package.digest, &package.artifact_id)?;
     }
@@ -528,7 +625,7 @@ fn restore_compiler(
                 name,
                 AdmittedWorkerSettings {
                     execution: WorkerExecutionV1::Command {},
-                    invocation_policy_id: authority.code_policy_id.clone(),
+                    invocation_policy_id: authority.invocation_policy_id()?.into(),
                 },
             )?;
         }
@@ -587,7 +684,7 @@ fn bind_named_models(
             &name,
             AdmittedWorkerSettings {
                 execution,
-                invocation_policy_id: authority.code_policy_id.clone(),
+                invocation_policy_id: authority.invocation_policy_id()?.into(),
             },
         )?;
     }
@@ -703,8 +800,20 @@ fn start_captured(
 ) -> Result<i32, String> {
     let profile = selected_profile(&compiler, &authority, &file.kind, file.verification)?;
     let origin=cas.put_json(&json!({"schema":"af.task-source-origin/1","repository_id":source.repository_id,"source_revision":source.source_revision,"content_digest":source.content_digest})).map_err(|e|e.to_string())?;
-    let snapshot = capture_snapshot(&cas, &source.manifest, &origin, None)?;
-    let source_port = source_tree(&cas, producer(), &snapshot, vec![origin])?;
+    let source_port = if profile == TaskKindProfile::Document {
+        None
+    } else {
+        if file.document_sources.is_some() {
+            return Err("Document source input is only valid for a document Task".into());
+        }
+        let snapshot = capture_snapshot(&cas, &source.manifest, &origin, None)?;
+        Some(source_tree(
+            &cas,
+            producer(),
+            &snapshot,
+            vec![origin.clone()],
+        )?)
+    };
     let input_file = cas.put(&bytes).map_err(|e| e.to_string())?;
     let requirements_payload = match legacy_budget {
         Some(tokens) => {
@@ -732,14 +841,61 @@ fn start_captured(
         .map_or(file.limits.wall_ms, |limit| limit.min(file.limits.wall_ms));
     let mut revision=TaskRevisionV1 {
         task_id:file.task_id,revision:1,previous_revision_id:None,kind:file.kind,goal:file.goal,
-        inputs:BTreeMap::from([("source".into(),source_port),("requirements".into(),ArtifactInputV1 {artifact_ids:vec![requirements.clone()],artifact_type:"af/Requirements@1".into(),cardinality:PortCardinality::One,snapshot_id:None})]),
+        inputs:BTreeMap::from([("requirements".into(),ArtifactInputV1 {artifact_ids:vec![requirements.clone()],artifact_type:"af/Requirements@1".into(),cardinality:PortCardinality::One,snapshot_id:None})]),
         required_outputs:serde_json::from_value(json!({"snapshot":{"artifact_type":SOURCE_TREE_V1,"cardinality":"one"},"verification":{"artifact_type":VERIFICATION_RESULT_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?,
-        acceptance:BTreeMap::from([("verified".into(),AcceptanceObligationV1 {evidence_type:VERIFICATION_RESULT_V1.into(),verifier_policy:authority.code_policy_id.clone()})]),
+        acceptance:BTreeMap::from([("verified".into(),AcceptanceObligationV1 {evidence_type:VERIFICATION_RESULT_V1.into(),verifier_policy:authority.invocation_policy_id()?.into()})]),
         provenance:TaskProvenanceV1 {adapter_id:adapter,input_artifact_ids:vec![requirements]},
         authority:TaskAuthorityV1 {policy_id:authority_id,allowed_effects:BTreeSet::from(["read-source".into(),"write-source".into(),"execute-checks".into()]),data_destinations:BTreeSet::new()},
         limits:TaskLimitsV1 {tokens:file.limits.tokens,max_attempts:file.limits.max_attempts,deadline_unix_ms:started.checked_add(wall).ok_or("Task deadline overflow")?,verification:file.limits.verification},
         strategy:file.strategy,pipeline:file.pipeline,facts:file.facts,
     };
+    if let Some(source_port) = source_port {
+        revision.inputs.insert("source".into(), source_port);
+    }
+    if profile == TaskKindProfile::Document {
+        use review_core::task::document::*;
+        let path = file
+            .document_sources
+            .as_deref()
+            .ok_or("Document Task needs a captured document_sources file")?;
+        if !review_config::task::shared::safe_relative_path(path) {
+            return Err("Document source path must be project-relative".into());
+        }
+        let bytes = captured_file(&cas, &source.manifest, path)?;
+        let sources: DocumentSourcesV1 = parse(Path::new(path), &bytes)?;
+        sources.validate()?;
+        let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
+        let id = cas
+            .put_artifact(
+                DOCUMENT_SOURCES_V1,
+                producer(),
+                vec![raw, origin],
+                None,
+                serde_json::to_value(sources).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?
+            .0;
+        revision.inputs.insert(
+            "sources".into(),
+            ArtifactInputV1 {
+                artifact_ids: vec![id.clone()],
+                artifact_type: DOCUMENT_SOURCES_V1.into(),
+                cardinality: PortCardinality::One,
+                snapshot_id: None,
+            },
+        );
+        revision.provenance.input_artifact_ids.push(id);
+        revision.provenance.input_artifact_ids.sort();
+        revision.authority.allowed_effects.clear();
+        revision.required_outputs = serde_json::from_value(json!({"document":{"artifact_type":DOCUMENT_V1,"cardinality":"one"},"verification":{"artifact_type":DOCUMENT_VERIFICATION_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?;
+        revision.acceptance = BTreeMap::from([(
+            "verified".into(),
+            AcceptanceObligationV1 {
+                evidence_type: DOCUMENT_VERIFICATION_V1.into(),
+                verifier_policy: authority.invocation_policy_id()?.into(),
+            },
+        )]);
+    }
     if profile == TaskKindProfile::Review {
         revision.inputs.remove("requirements");
         revision.authority.allowed_effects.remove("write-source");
@@ -829,21 +985,14 @@ fn start_captured(
         models: &models,
         inner: inner.as_ref(),
     };
-    let policy: CodeTaskPolicy = serde_json::from_value(
-        cas.get_json(&authority.code_policy_id)
-            .map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    let environment = SnapshotTaskEnvironment {
-        policy: policy.isolation(),
-    };
+    let environment = domain::environment(&cas, &authority)?;
     let host = CommandTaskHost::capture_with_models(
         &cas,
         &compiler,
         &revision,
         &plan,
         graph.clone(),
-        &environment,
+        environment.as_ref(),
         &domain,
         &models,
     )?;
@@ -926,6 +1075,7 @@ fn selected_profile(
             }
             "implement" => TaskKindProfile::Implementation,
             "review" => TaskKindProfile::Review,
+            "document" => TaskKindProfile::Document,
             _ => return Err("Task requires a configured kind package".into()),
         }
     };
@@ -946,9 +1096,6 @@ fn selected_profile(
     }) {
         return Err("Task verification request contradicts its captured kind profile".into());
     }
-    if profile == TaskKindProfile::Document {
-        return Err("Document profile requires the document domain capability".into());
-    }
     Ok(profile)
 }
 
@@ -960,7 +1107,7 @@ fn captured_domain(
 ) -> Result<Box<dyn TaskDomain>, String> {
     match profile {
         TaskKindProfile::Implementation if authority.review_policy_id.is_none() => Ok(Box::new(
-            CodeTaskDomain::captured(cas, &authority.code_policy_id, graph)?,
+            CodeTaskDomain::captured(cas, authority.code_policy_id()?, graph)?,
         )),
         TaskKindProfile::Review
         | TaskKindProfile::Implementation
@@ -976,7 +1123,14 @@ fn captured_domain(
             )?
             .with_review_task(profile == TaskKindProfile::Review),
         )),
-        _ => Err("Task has no installed domain adapter".into()),
+        TaskKindProfile::Document => Ok(Box::new(DocumentTaskDomain::captured(
+            cas,
+            authority
+                .document_policy_id
+                .as_deref()
+                .ok_or("Task lost its document policy")?,
+            graph,
+        )?)),
     }
 }
 
@@ -1080,21 +1234,14 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
         models: &models,
         inner: inner.as_ref(),
     };
-    let policy: CodeTaskPolicy = serde_json::from_value(
-        cas.get_json(&authority.code_policy_id)
-            .map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    let environment = SnapshotTaskEnvironment {
-        policy: policy.isolation(),
-    };
+    let environment = domain::environment(&cas, &authority)?;
     let host = CommandTaskHost::capture_with_models(
         &cas,
         &compiler,
         &projection.revision,
         &plan,
         graph.clone(),
-        &environment,
+        environment.as_ref(),
         &domain,
         &models,
     )?;

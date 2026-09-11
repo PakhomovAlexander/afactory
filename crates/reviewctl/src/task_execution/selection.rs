@@ -73,7 +73,7 @@ pub(super) fn available_tools(
         )
     }) {
         let policy: CodeTaskPolicy = serde_json::from_value(
-            cas.get_json(&authority.code_policy_id)
+            cas.get_json(authority.code_policy_id()?)
                 .map_err(|e| e.to_string())?,
         )
         .map_err(|e| e.to_string())?;

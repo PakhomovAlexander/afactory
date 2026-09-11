@@ -170,6 +170,9 @@ pub enum TaskOperatorV1 {
     },
     /// Fixed bootstrap context constructed from captured Task and installed signatures.
     PlanningContext {},
+    DocumentSeal {},
+    DocumentCheck {},
+    DocumentAccept {},
     Seal {},
     /// Kernel receipt assembly: preserves negative/inconclusive checks without invoking a
     /// conditional evaluator, and admits success only from current independent evidence.

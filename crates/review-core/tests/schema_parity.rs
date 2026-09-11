@@ -32,7 +32,14 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 82] = [
+const SCHEMAS: [&str; 89] = [
+    "document-sources-v1.json",
+    "document-draft-v1.json",
+    "document-v1.json",
+    "document-check-receipt-v1.json",
+    "document-evaluation-v1.json",
+    "document-verification-v1.json",
+    "document-task-policy-v1.json",
     "catalog-contract-fixtures-v1.json",
     "shared-task-catalog-v1.json",
     "task-kind-v1.json",

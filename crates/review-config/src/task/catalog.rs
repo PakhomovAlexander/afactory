@@ -113,6 +113,9 @@ pub struct TaskPlanCompiler {
     independence: IndependencePolicyV1,
     provider_admission: Option<review_graph::task::OperatorAttemptCost>,
     preparation_roots: BTreeSet<String>,
+    /// Installed domain artifact types that establish authorship independently of a
+    /// Worker's removable role/effect declarations (for example a data-only document draft).
+    authored_artifacts: BTreeSet<String>,
 }
 
 fn safe_path(path: &str) -> bool {
@@ -152,6 +155,13 @@ fn read_envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope
 }
 
 impl TaskPlanCompiler {
+    pub fn with_authored_artifacts(mut self, types: BTreeSet<String>) -> Result<Self, String> {
+        if types.len() > 32 || types.iter().any(|ty| !review_core::is_artifact_type(ty)) {
+            return Err("Domain authorship requires bounded versioned artifact types".into());
+        }
+        self.authored_artifacts = types;
+        Ok(self)
+    }
     /// A production host enables this when a fresh paid capability probe is required.
     /// Identity-only probes occur before planning; these model calls belong to Task execution.
     pub fn with_provider_admission(
@@ -244,6 +254,7 @@ impl TaskPlanCompiler {
             independence,
             provider_admission: None,
             preparation_roots: BTreeSet::new(),
+            authored_artifacts: BTreeSet::new(),
         })
     }
 
@@ -838,6 +849,12 @@ impl TaskPlanCompiler {
                     .signature
                     .effects
                     .contains("write-source")
+                    || self.workers[&slot.worker]
+                        .signature
+                        .contract
+                        .outputs
+                        .values()
+                        .any(|port| self.authored_artifacts.contains(&port.artifact_type))
             })
             .map(|(name, _)| name)
             .collect();

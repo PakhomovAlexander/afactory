@@ -777,6 +777,17 @@ pub(crate) enum RunnerArg {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum CatalogCommand {
+    /// Create a credential-free document starter in an absent directory
+    Init {
+        #[arg(long, default_value="document", value_parser=["document"])]
+        profile: String,
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        destination: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Check exact Pipeline/Worker contract fixtures from a local Git revision without dispatch
     Test {
         #[arg(long)]
@@ -901,6 +912,18 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
         #[arg(long)]
         reason: String,
         #[arg(long, value_name = "ABSENT_FILE")]
+        output: PathBuf,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Write one recorded Task output to an absent file (Markdown for a Document, or JSON)
+    Output {
+        task_id: String,
+        #[arg(long)]
+        port: String,
+        #[arg(long, default_value="json", value_parser=["json","markdown"])]
+        format: String,
+        #[arg(long)]
         output: PathBuf,
         #[command(flatten)]
         inspect: TaskInspectArgs,

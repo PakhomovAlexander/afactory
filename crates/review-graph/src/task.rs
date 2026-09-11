@@ -1248,6 +1248,7 @@ impl Compiler<'_> {
                                 | TaskOperatorV1::Verify { .. }
                                 | TaskOperatorV1::FixVerify { .. }
                                 | TaskOperatorV1::Check { .. }
+                                | TaskOperatorV1::DocumentCheck {}
                         );
                         if paid && signature.attempt.is_none() {
                             return Err(format!("{signature_name} has no bounded Attempt cost"));
@@ -1284,6 +1285,7 @@ impl Compiler<'_> {
                                         TaskOperatorV1::Verify { .. }
                                             | TaskOperatorV1::FixVerify { .. }
                                             | TaskOperatorV1::Check { .. }
+                                            | TaskOperatorV1::DocumentCheck {}
                                     ) || signature
                                         .evidence
                                         .values()
@@ -1463,6 +1465,9 @@ fn resolve(
 fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
     match operator {
         TaskOperatorV1::PlanningContext {} => Ok("planning-context"),
+        TaskOperatorV1::DocumentSeal {} => Ok("document-seal"),
+        TaskOperatorV1::DocumentCheck {} => Ok("document-check"),
+        TaskOperatorV1::DocumentAccept {} => Ok("document-accept"),
         TaskOperatorV1::Seal {} => Ok("seal"),
         TaskOperatorV1::Accept {} => Ok("accept"),
         TaskOperatorV1::Check { .. } => Ok("check"),

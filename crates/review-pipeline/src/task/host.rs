@@ -58,6 +58,35 @@ pub trait TaskEnvironment: Sync {
 /// Deterministic data-only Workers start in a fresh empty directory. They receive their
 /// declared inputs on stdin and cannot return filesystem edits as an admitted artifact.
 pub struct EmptyTaskEnvironment;
+
+/// Data-only execution with the project's captured isolation requirement. No source tree is
+/// synthesized for a document Task, and emitted content must use its typed reply contract.
+pub struct DataTaskEnvironment {
+    pub policy: review_sandbox::Policy,
+}
+impl TaskEnvironment for DataTaskEnvironment {
+    fn materialize(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        signature: &OperatorSignature,
+    ) -> Result<Sandbox, String> {
+        let sandbox = EmptyTaskEnvironment.materialize(cas, input, signature)?;
+        review_sandbox::admit(self.policy, &sandbox).map_err(|e| e.to_string())?;
+        Ok(sandbox)
+    }
+    fn finish(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        signature: &OperatorSignature,
+        attempt: &PreparedTaskAttempt,
+        sandbox: Sandbox,
+        outputs: BTreeMap<String, ArtifactInputV1>,
+    ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
+        EmptyTaskEnvironment.finish(cas, input, signature, attempt, sandbox, outputs)
+    }
+}
 impl TaskEnvironment for EmptyTaskEnvironment {
     fn materialize(
         &self,

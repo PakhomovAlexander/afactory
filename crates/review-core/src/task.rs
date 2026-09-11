@@ -4,6 +4,7 @@
 //! compatibility; the Store establishes identity, authority and legal transitions.
 
 pub mod delivery;
+pub mod document;
 pub mod event;
 pub mod execution;
 pub mod feedback;

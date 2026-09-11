@@ -3,8 +3,8 @@
 **Active increment:** [Task execution](task-execution.md), P00–P14. The owner approved
 implementation on 2026-09-10. Contracts, common execution, sharing, embedding, bounded repair,
 selection and generated-plan approval are implemented in the stacked PRs. Portable export and
-contract tests pass the full gate; starters, Jira/document workflows,
-remaining Review compatibility and the P14 release evidence are next. The completed
+contract tests and a document starter pass the full gate. The remaining starter pack, Jira revision
+capture, Review compatibility and P14 release evidence are next. The completed
 M0–M9 record below remains the compatibility foundation.
 
 **Status:** M0–M9 are complete and shipped in private release `v0.6.0` from exact `main` commit
