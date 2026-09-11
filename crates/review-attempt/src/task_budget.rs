@@ -376,6 +376,28 @@ impl TaskBudget {
     pub fn committed_tokens(&self) -> u64 {
         self.tokens.committed(&Scope::Run)
     }
+
+    /// A late Provider observation may increase a conservatively settled charge. It cannot
+    /// refund abandoned work or consume another live reservation's credit.
+    pub fn observe_charge(&mut self, id: &str, actual: u64) -> Result<(), String> {
+        let held = self
+            .reservations
+            .get_mut(id)
+            .ok_or("Unknown Task reservation")?;
+        let previous = held
+            .settled
+            .ok_or("Late usage requires a settled Attempt")?;
+        if !held.begun || held.released {
+            return Err("Late usage has no started Attempt".into());
+        }
+        if actual > previous {
+            let total = add(self.tokens.committed(&Scope::Run), actual - previous)?;
+            self.tokens = self.tokens.clone().with_committed(Scope::Run, total);
+            held.settled = Some(actual);
+        }
+        self.breached |= actual > held.tokens.amount;
+        Ok(())
+    }
     pub fn reserved_tokens(&self) -> u64 {
         self.tokens.reserved(&Scope::Run)
     }

@@ -856,7 +856,7 @@
           ],
           "properties": {
             "op": {
-              "const": "seal"
+              "enum": ["seal", "accept"]
             }
           }
         },

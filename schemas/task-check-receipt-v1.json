@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-check-receipt:1",
+  "title": "task-check-receipt@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "plan_id",
+    "snapshot_id",
+    "policy_id",
+    "outcome",
+    "checks"
+  ],
+  "properties": {
+    "plan_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "policy_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "outcome": {
+      "enum": [
+        "passed",
+        "failed",
+        "inconclusive"
+      ]
+    },
+    "checks": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      }
+    }
+  }
+}

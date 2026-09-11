@@ -1,0 +1,1072 @@
+//! Durable invocation/admission/settlement shared by every new Task kind. The scheduler and
+//! domain adapters call this boundary; no Worker output can bypass plan or lease admission.
+
+use review_attempt::task_budget::{TaskBudget, TaskReservation};
+use review_attempt::{AttemptId, AttemptLedger, Receipt, Selection};
+use review_core::task::execution::*;
+use review_graph::task::{CompiledOperator, CompiledTask, condition_input};
+
+use super::*;
+
+#[derive(Debug, Clone)]
+pub struct TaskExecutionProjection {
+    pub graph: CompiledTask,
+    pub budget: TaskBudget,
+    pub invocations: BTreeMap<String, (String, TaskInvocationV1)>,
+    pub outputs: BTreeMap<String, (String, TaskOutputV1)>,
+    ledger: AttemptLedger,
+    attempts: BTreeMap<String, RecordedAttempt>,
+}
+
+#[derive(Debug, Clone)]
+struct RecordedAttempt {
+    invocation_id: String,
+    reservation: TaskReservation,
+    prepared_epoch: u64,
+    started: bool,
+    released: bool,
+    settlement: Option<TaskExecutionRecordV1>,
+}
+
+/// The common Store returns this after publishing the reservation. It is not a wire type.
+#[derive(Debug, Clone)]
+pub struct PreparedTaskAttempt {
+    id: String,
+    node: String,
+    reservation: TaskReservation,
+    context_id: String,
+}
+
+impl PreparedTaskAttempt {
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn node(&self) -> &str {
+        &self.node
+    }
+    pub fn reservation(&self) -> &TaskReservation {
+        &self.reservation
+    }
+    pub fn context_id(&self) -> &str {
+        &self.context_id
+    }
+}
+
+fn invocation(cas: &Cas, id: &str) -> Result<TaskInvocationV1, StoreError> {
+    let value: TaskInvocationV1 = payload(cas, id, TASK_INVOCATION_V1)?;
+    value.validate().map_err(conflict)?;
+    Ok(value)
+}
+
+fn output(cas: &Cas, id: &str) -> Result<TaskOutputV1, StoreError> {
+    let value: TaskOutputV1 = payload(cas, id, TASK_OUTPUT_V1)?;
+    value.validate().map_err(conflict)?;
+    Ok(value)
+}
+
+fn verify_attempt_producer(
+    cas: &Cas,
+    task_id: &str,
+    node: &str,
+    attempt_id: &str,
+    output_id: &str,
+    output: &TaskOutputV1,
+) -> Result<(), StoreError> {
+    let expected = review_core::Producer::Attempt {
+        run_id: task_run_id(task_id)?,
+        node_id: node.into(),
+        attempt_id: attempt_id.into(),
+    };
+    if envelope(cas, output_id, TASK_OUTPUT_V1)?.producer != expected {
+        return Err(conflict("Task output wrapper belongs to another Attempt"));
+    }
+    for port in output.outputs.values() {
+        for id in &port.artifact_ids {
+            if envelope(cas, id, &port.artifact_type)?.producer != expected {
+                return Err(conflict("Task output artifact belongs to another Attempt"));
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError> {
+    let record: TaskExecutionRecordV1 = payload(cas, id, TASK_EXECUTION_RECORD_V1)?;
+    record.validate().map_err(conflict)?;
+    let mut refs: BTreeSet<_> = record
+        .artifact_refs()
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    refs.insert(id.into());
+    let mut invocation_ids = Vec::new();
+    match &record {
+        TaskExecutionRecordV1::Invocation { invocation_id }
+        | TaskExecutionRecordV1::Prepared { invocation_id, .. } => {
+            invocation_ids.push(invocation_id.clone())
+        }
+        TaskExecutionRecordV1::Published { output_id, .. }
+        | TaskExecutionRecordV1::Settled {
+            result: TaskAttemptResultV1::Succeeded { output_id },
+            ..
+        } => {
+            let out = output(cas, output_id)?;
+            invocation_ids.push(out.invocation_id.clone());
+            for port in out.outputs.values() {
+                validate_input_refs(cas, port, &mut refs)?;
+            }
+        }
+        _ => (),
+    }
+    for id in invocation_ids {
+        let input = invocation(cas, &id)?;
+        refs.insert(id);
+        refs.insert(input.plan_id);
+        for port in input.inputs.values() {
+            validate_input_refs(cas, port, &mut refs)?;
+        }
+    }
+    Ok(refs.into_iter().collect())
+}
+
+impl TaskExecutionProjection {
+    /// Settlement selects a result durably before the scheduler publishes its ports. A new
+    /// writer may finish that publication without starting another paid Attempt.
+    pub fn reusable_output(&self, node: &str) -> Option<(String, String)> {
+        self.attempts.iter().find_map(|(id, attempt)| {
+            if attempt.reservation.node != node
+                || self.ledger.attempt(&AttemptId(id.clone()))?.state
+                    != review_attempt::AttemptState::Selected
+            {
+                return None;
+            }
+            match &attempt.settlement {
+                Some(TaskExecutionRecordV1::Settled {
+                    result: TaskAttemptResultV1::Succeeded { output_id },
+                    ..
+                }) => Some((output_id.clone(), id.clone())),
+                _ => None,
+            }
+        })
+    }
+
+    pub fn retry_feedback(&self, node: &str) -> Vec<String> {
+        self.attempts
+            .values()
+            .filter(|a| a.reservation.node == node)
+            .filter_map(|a| match &a.settlement {
+                Some(TaskExecutionRecordV1::Settled {
+                    result:
+                        TaskAttemptResultV1::Failed {
+                            feedback_id: Some(id),
+                            ..
+                        },
+                    ..
+                }) => Some(id.clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect()
+    }
+
+    fn new(cas: &Cas, state: &TaskProjection) -> Result<Self, StoreError> {
+        let plan = plan(
+            cas,
+            state
+                .plan_id
+                .as_ref()
+                .ok_or_else(|| conflict("Task has no plan"))?,
+            state,
+        )?;
+        let graph: CompiledTask = payload(cas, &plan.compiled_graph_id, "af/CompiledTask@1")?;
+        if graph.schema != "af.compiled-task/1" || graph.inputs != state.revision.inputs {
+            return Err(conflict("Task execution requires its exact compiled graph"));
+        }
+        let planned = graph.scheduler_plan().map_err(conflict)?;
+        if graph.order != planned.order {
+            return Err(conflict("Compiled Task order is not canonical"));
+        }
+        let budget = graph
+            .budget(state.revision.limits.clone())
+            .map_err(conflict)?;
+        Ok(Self {
+            graph,
+            budget,
+            invocations: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+            ledger: AttemptLedger::scoped(
+                format!("af/task-attempts/1:{}", task_run_id(&state.task_id)?),
+                BTreeMap::new(),
+            ),
+            attempts: BTreeMap::new(),
+        })
+    }
+
+    pub fn pending_attempts(&self) -> Vec<String> {
+        self.attempts
+            .iter()
+            .filter(|(_, attempt)| !attempt.released && attempt.settlement.is_none())
+            .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    fn verify_invocation(&self, cas: &Cas, input: &TaskInvocationV1) -> Result<(), StoreError> {
+        let node = self
+            .graph
+            .nodes
+            .get(&input.node)
+            .ok_or_else(|| conflict("Invocation names an unplanned node"))?;
+        let sources = node.inputs.clone();
+        let mut expected = BTreeMap::new();
+        for (name, source) in sources {
+            let value = self
+                .outputs
+                .get(&source.node)
+                .and_then(|(_, output)| output.outputs.get(&source.port));
+            if let Some(value) = value {
+                expected.insert(name, value.clone());
+            } else if node
+                .contract
+                .inputs
+                .get(&name)
+                .is_some_and(|port| !port.optional)
+            {
+                return Err(conflict("Required Task input has no admitted producer"));
+            }
+        }
+        if input.inputs != expected {
+            return Err(conflict(
+                "Invocation does not match the exact admitted graph inputs",
+            ));
+        }
+        let mut ids: BTreeMap<_, _> = input
+            .inputs
+            .iter()
+            .map(|(name, port)| (name.clone(), port.artifact_ids.clone()))
+            .collect();
+        for (index, condition) in node.conditions.iter().enumerate() {
+            if let Some(value) = self
+                .outputs
+                .get(&condition.source.node)
+                .and_then(|(_, output)| output.outputs.get(&condition.source.port))
+            {
+                ids.insert(condition_input(index), value.artifact_ids.clone());
+            }
+        }
+        let selected = self
+            .graph
+            .node_selected(&input.node, &ids, |id| {
+                let value: ArtifactEnvelope =
+                    serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                        .map_err(|e| e.to_string())?;
+                validate_envelope(&value)?;
+                serde_json::from_value(
+                    value
+                        .payload
+                        .get("outcome")
+                        .cloned()
+                        .ok_or("Typed branch receipt has no outcome")?,
+                )
+                .map_err(|e| e.to_string())
+            })
+            .map_err(conflict)?;
+        if !selected {
+            return Err(conflict(
+                "Inactive Task branch cannot publish an invocation",
+            ));
+        }
+        Ok(())
+    }
+
+    fn verify_output(
+        &self,
+        cas: &Cas,
+        receipt: &TaskOutputV1,
+    ) -> Result<TaskInvocationV1, StoreError> {
+        let input = invocation(cas, &receipt.invocation_id)?;
+        if self.invocations.get(&input.node).map(|(id, _)| id) != Some(&receipt.invocation_id) {
+            return Err(conflict("Output has no admitted invocation"));
+        }
+        let node = &self.graph.nodes[&input.node];
+        if matches!(node.operator, CompiledOperator::RootInputs)
+            && receipt.outputs != self.graph.inputs
+        {
+            return Err(conflict(
+                "Root input receipt changed the Task's normalized inputs",
+            ));
+        }
+        if matches!(node.operator, CompiledOperator::Select) {
+            let values = input
+                .inputs
+                .iter()
+                .map(|(port, value)| (port.clone(), value.artifact_ids.clone()))
+                .collect();
+            let selected = self
+                .graph
+                .select_output(&input.node, &values, |id| {
+                    let value = envelope(cas, id, &input.inputs["condition"].artifact_type)
+                        .map_err(|e| e.to_string())?;
+                    serde_json::from_value(
+                        value
+                            .payload
+                            .get("outcome")
+                            .cloned()
+                            .ok_or("Typed branch receipt has no outcome")?,
+                    )
+                    .map_err(|e| e.to_string())
+                })
+                .map_err(conflict)?;
+            let actual: BTreeMap<_, _> = receipt
+                .outputs
+                .iter()
+                .map(|(port, value)| (port.clone(), value.artifact_ids.clone()))
+                .collect();
+            if actual != selected {
+                return Err(conflict(
+                    "Select output differs from its admitted condition and arm",
+                ));
+            }
+        }
+        for (name, contract) in &node.contract.outputs {
+            match receipt.outputs.get(name) {
+                None if contract.optional => (),
+                None => return Err(conflict(format!("Task output lacks {name}"))),
+                Some(value) => {
+                    if value.artifact_type != contract.artifact_type
+                        || value.cardinality != contract.cardinality
+                    {
+                        return Err(conflict("Task output changed its port contract"));
+                    }
+                    match &contract.affinity {
+                        review_core::task::pipeline::PortAffinityV1::SameAs { input: source } => {
+                            if input.inputs.get(source).map(|i| &i.snapshot_id)
+                                != Some(&value.snapshot_id)
+                            {
+                                return Err(conflict(
+                                    "Task output changed its input Snapshot affinity",
+                                ));
+                            }
+                        }
+                        review_core::task::pipeline::PortAffinityV1::DerivedFrom {
+                            input: source,
+                        } => {
+                            let prior = input
+                                .inputs
+                                .get(source)
+                                .and_then(|i| i.snapshot_id.as_ref());
+                            if value.snapshot_id.is_none()
+                                || prior.is_none()
+                                || value.snapshot_id.as_ref() == prior
+                            {
+                                return Err(conflict(
+                                    "Derived Task output did not produce a distinct Snapshot",
+                                ));
+                            }
+                        }
+                        _ => (),
+                    }
+                }
+            }
+        }
+        if receipt
+            .outputs
+            .keys()
+            .any(|port| !node.contract.outputs.contains_key(port))
+        {
+            return Err(conflict("Task output has an undeclared port"));
+        }
+        Ok(input)
+    }
+}
+
+impl TaskProjection {
+    pub(super) fn apply_execution(
+        &mut self,
+        cas: &Cas,
+        record_id: &str,
+        time: u64,
+    ) -> Result<(), StoreError> {
+        let record: TaskExecutionRecordV1 = payload(cas, record_id, TASK_EXECUTION_RECORD_V1)?;
+        record.validate().map_err(conflict)?;
+        let dispatching = matches!(
+            record,
+            TaskExecutionRecordV1::Invocation { .. }
+                | TaskExecutionRecordV1::Prepared { .. }
+                | TaskExecutionRecordV1::Started { .. }
+                | TaskExecutionRecordV1::Published { .. }
+        );
+        if dispatching {
+            if !self.admitted || self.phase != (TaskPhaseV1::Running {}) {
+                return Err(conflict("Task execution is not admitted and running"));
+            }
+            self.check_approval(cas, time)?;
+        }
+        if self.execution.is_none() {
+            self.execution = Some(TaskExecutionProjection::new(cas, self)?);
+        }
+        let execution = self.execution.as_mut().expect("execution initialized");
+        match &record {
+            TaskExecutionRecordV1::UsageObserved {
+                attempt_id,
+                charged_tokens,
+                ..
+            } => {
+                let attempt = execution
+                    .attempts
+                    .get(attempt_id)
+                    .ok_or_else(|| conflict("Unknown Task Attempt"))?;
+                if attempt.settlement.is_none() {
+                    return Err(conflict("Usage observation requires settled Task work"));
+                }
+                execution
+                    .budget
+                    .observe_charge(&attempt.reservation.id, *charged_tokens)
+                    .map_err(conflict)?;
+                let id = AttemptId(attempt_id.clone());
+                let charged = execution
+                    .ledger
+                    .attempt(&id)
+                    .map_or(0, |a| a.charged)
+                    .max(*charged_tokens);
+                execution.ledger.charge(&id, charged);
+            }
+            TaskExecutionRecordV1::Invocation { invocation_id } => {
+                let input = invocation(cas, invocation_id)?;
+                if self.plan_id.as_ref() != Some(&input.plan_id) {
+                    return Err(conflict("Task invocation belongs to another plan"));
+                }
+                if execution.invocations.contains_key(&input.node) {
+                    return Err(conflict("Task invocation is duplicated"));
+                }
+                execution.verify_invocation(cas, &input)?;
+                execution
+                    .invocations
+                    .insert(input.node.clone(), (invocation_id.clone(), input));
+            }
+            TaskExecutionRecordV1::Prepared {
+                invocation_id,
+                attempt_id,
+                reservation_id,
+                reserved_tokens,
+                deadline_unix_ms,
+                feedback_ids,
+                ..
+            } => {
+                let input = invocation(cas, invocation_id)?;
+                if execution.invocations.get(&input.node).map(|(id, _)| id) != Some(invocation_id)
+                    || execution.outputs.contains_key(&input.node)
+                    || execution.reusable_output(&input.node).is_some()
+                {
+                    return Err(conflict("Task Attempt has no pending invocation"));
+                }
+                if execution.attempts.values().any(|a| {
+                    &a.invocation_id == invocation_id && !a.released && a.settlement.is_none()
+                }) {
+                    return Err(conflict("Task invocation already has a live Attempt"));
+                }
+                let expected_feedback: Vec<_> = execution
+                    .attempts
+                    .values()
+                    .filter(|a| &a.invocation_id == invocation_id)
+                    .filter_map(|a| match &a.settlement {
+                        Some(TaskExecutionRecordV1::Settled {
+                            result:
+                                TaskAttemptResultV1::Failed {
+                                    feedback_id: Some(id),
+                                    ..
+                                },
+                            ..
+                        }) => Some(id.clone()),
+                        _ => None,
+                    })
+                    .collect::<BTreeSet<_>>()
+                    .into_iter()
+                    .collect();
+                if feedback_ids != &expected_feedback {
+                    return Err(conflict(
+                        "Retry input does not match admitted Task feedback",
+                    ));
+                }
+                let reservation = execution
+                    .budget
+                    .prepare(&input.node, time)
+                    .map_err(conflict)?;
+                if reservation.id != *reservation_id
+                    || reservation.tokens != *reserved_tokens
+                    || reservation.deadline_unix_ms != *deadline_unix_ms
+                {
+                    return Err(conflict("Task reservation differs from shared accounting"));
+                }
+                let attempt = execution.ledger.dispatch(&input.node);
+                if attempt.0 != *attempt_id {
+                    return Err(conflict(
+                        "Task Attempt identity differs from its durable namespace",
+                    ));
+                }
+                execution.attempts.insert(
+                    attempt_id.clone(),
+                    RecordedAttempt {
+                        invocation_id: invocation_id.clone(),
+                        reservation,
+                        prepared_epoch: self.epoch,
+                        started: false,
+                        released: false,
+                        settlement: None,
+                    },
+                );
+            }
+            TaskExecutionRecordV1::Started { attempt_id } => {
+                let attempt = execution
+                    .attempts
+                    .get_mut(attempt_id)
+                    .ok_or_else(|| conflict("Unknown Task Attempt"))?;
+                if attempt.started
+                    || attempt.released
+                    || attempt.settlement.is_some()
+                    || attempt.prepared_epoch != self.epoch
+                {
+                    return Err(conflict(
+                        "Task Attempt cannot start under this writer epoch",
+                    ));
+                }
+                execution
+                    .budget
+                    .begin(&attempt.reservation.id, time)
+                    .map_err(conflict)?;
+                attempt.started = true;
+            }
+            TaskExecutionRecordV1::Released { attempt_id, .. } => {
+                let attempt = execution
+                    .attempts
+                    .get_mut(attempt_id)
+                    .ok_or_else(|| conflict("Unknown Task Attempt"))?;
+                execution
+                    .budget
+                    .release(&attempt.reservation.id)
+                    .map_err(conflict)?;
+                execution.ledger.fence(&attempt.reservation.node);
+                attempt.released = true;
+            }
+            TaskExecutionRecordV1::Settled {
+                attempt_id,
+                charged_tokens,
+                result,
+                ..
+            } => {
+                let attempt = execution
+                    .attempts
+                    .get(attempt_id)
+                    .ok_or_else(|| conflict("Unknown Task Attempt"))?
+                    .clone();
+                if !attempt.started || attempt.released || attempt.settlement.is_some() {
+                    return Err(conflict("Task settlement has no unsettled started Attempt"));
+                }
+                if let TaskAttemptResultV1::Succeeded { output_id } = result {
+                    let out = output(cas, output_id)?;
+                    verify_attempt_producer(
+                        cas,
+                        &self.task_id,
+                        &attempt.reservation.node,
+                        attempt_id,
+                        output_id,
+                        &out,
+                    )?;
+                    if out.invocation_id != attempt.invocation_id {
+                        return Err(conflict(
+                            "Task Attempt returned another invocation's output",
+                        ));
+                    }
+                    execution.verify_output(cas, &out)?;
+                }
+                if matches!(result, TaskAttemptResultV1::Abandoned { .. })
+                    && *charged_tokens < attempt.reservation.tokens
+                {
+                    return Err(conflict(
+                        "Abandoned Task work retains its full reserved charge",
+                    ));
+                }
+                execution
+                    .budget
+                    .settle(&attempt.reservation.id, *charged_tokens)
+                    .map_err(conflict)?;
+                execution
+                    .ledger
+                    .charge(&AttemptId(attempt_id.clone()), *charged_tokens);
+                if !matches!(result, TaskAttemptResultV1::Succeeded { .. })
+                    || attempt.prepared_epoch != self.epoch
+                {
+                    execution.ledger.fence(&attempt.reservation.node);
+                } else if let TaskAttemptResultV1::Succeeded { output_id } = result {
+                    if execution.ledger.admit(&Receipt {
+                        attempt: AttemptId(attempt_id.clone()),
+                        output: output_id.clone(),
+                        cost: *charged_tokens,
+                    }) != Selection::Selected
+                    {
+                        return Err(conflict("Task settlement was quarantined"));
+                    }
+                }
+                execution
+                    .attempts
+                    .get_mut(attempt_id)
+                    .expect("known Attempt")
+                    .settlement = Some(record.clone());
+            }
+            TaskExecutionRecordV1::Published {
+                output_id,
+                attempt_id,
+            } => {
+                let out = output(cas, output_id)?;
+                let input = execution.verify_output(cas, &out)?;
+                if execution.outputs.contains_key(&input.node) {
+                    return Err(conflict("Task output has already been published"));
+                }
+                if let Some(id) = attempt_id {
+                    let attempt = execution
+                        .attempts
+                        .get(id)
+                        .ok_or_else(|| conflict("Unknown output Attempt"))?;
+                    let Some(TaskExecutionRecordV1::Settled {
+                        result:
+                            TaskAttemptResultV1::Succeeded {
+                                output_id: selected,
+                            },
+                        ..
+                    }) = &attempt.settlement
+                    else {
+                        return Err(conflict("Task output has no successful settlement"));
+                    };
+                    if selected != output_id
+                        || execution
+                            .ledger
+                            .attempt(&AttemptId(id.clone()))
+                            .is_none_or(|a| a.state != review_attempt::AttemptState::Selected)
+                    {
+                        return Err(conflict("Task output is stale or fenced"));
+                    }
+                } else if execution.graph.allowances.contains_key(&input.node) {
+                    return Err(conflict(
+                        "A paid Task node needs a settled selected Attempt",
+                    ));
+                }
+                execution
+                    .outputs
+                    .insert(input.node, (output_id.clone(), out));
+            }
+        }
+        Ok(())
+    }
+}
+
+impl EventStore {
+    /// Recover a previous writer's pending work before new dispatch. Started work is charged
+    /// conservatively; only a durable prepare with no start record may release its credit.
+    pub fn recover_task_attempts(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+    ) -> Result<(), StoreError> {
+        self.recover_task_attempts_at(cas, lease, now()?)
+    }
+
+    pub(super) fn recover_task_attempts_at(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        time: u64,
+    ) -> Result<(), StoreError> {
+        let state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        state.check_lease(&TaskTransitionV1 {
+            writer: lease.writer.clone(),
+            epoch: lease.epoch,
+            now_unix_ms: time,
+            change: TaskChangeV1::Resumed {},
+        })?;
+        let Some(execution) = state.execution else {
+            return Ok(());
+        };
+        if execution
+            .attempts
+            .values()
+            .any(|a| !a.released && a.settlement.is_none() && a.prepared_epoch == lease.epoch)
+        {
+            return Err(conflict("Current writer still owns a pending Task Attempt"));
+        }
+        let walls = self.attempt_wall(&task_run_id(&lease.task_id)?)?;
+        for (id, attempt) in execution
+            .attempts
+            .iter()
+            .filter(|(_, a)| !a.released && a.settlement.is_none())
+        {
+            if attempt.prepared_epoch == lease.epoch {
+                return Err(conflict("Current writer still owns this Task Attempt"));
+            }
+            let record = if attempt.started {
+                let observed = walls
+                    .iter()
+                    .filter(|w| &w.attempt_id == id)
+                    .filter_map(|w| w.usage.as_ref().map(|u| u.chargeable_tokens))
+                    .max()
+                    .unwrap_or(0);
+                let diagnostic_id = cas.put_json(&json!({"schema":"af.task-diagnostic/1", "reason":"previous Task writer disappeared", "attempt_id":id})).map_err(|e| StoreError::Artifact(e.to_string()))?;
+                TaskExecutionRecordV1::Settled {
+                    attempt_id: id.clone(),
+                    charged_tokens: observed.max(attempt.reservation.tokens),
+                    result: TaskAttemptResultV1::Abandoned { diagnostic_id },
+                    raw_artifact_ids: vec![],
+                    usage_id: None,
+                }
+            } else {
+                TaskExecutionRecordV1::Released {
+                    attempt_id: id.clone(),
+                    reason: "Recovered before durable dispatch".into(),
+                }
+            };
+            self.task_execution_record(cas, lease, record, time)?;
+        }
+        Ok(())
+    }
+
+    pub fn observe_task_usage(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        observation: TaskExecutionRecordV1,
+    ) -> Result<(), StoreError> {
+        if !matches!(observation, TaskExecutionRecordV1::UsageObserved { .. }) {
+            return Err(conflict("Expected a late Task usage observation"));
+        }
+        self.task_execution_record(cas, lease, observation, now()?)?;
+        Ok(())
+    }
+
+    fn task_execution_record(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        record: TaskExecutionRecordV1,
+        time: u64,
+    ) -> Result<RunEvent, StoreError> {
+        record.validate().map_err(conflict)?;
+        let (id, _) = cas
+            .put_artifact(
+                TASK_EXECUTION_RECORD_V1,
+                review_core::Producer::KernelOperation {
+                    run_id: task_run_id(&lease.task_id)?,
+                    node_id: None,
+                    operation_id: "task-execution@1".into(),
+                },
+                record
+                    .artifact_refs()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                None,
+                serde_json::to_value(record)?,
+            )
+            .map_err(|e| StoreError::Artifact(e.to_string()))?;
+        self.task_change(
+            cas,
+            lease,
+            TaskChangeV1::ExecutionRecorded { record_id: id },
+            time,
+        )
+    }
+
+    pub fn record_task_invocation(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        invocation_id: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(), StoreError> {
+        self.check_task_dispatch(cas, lease, authority)?;
+        let input = invocation(cas, invocation_id)?;
+        let state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        if let Some((old, _)) = state
+            .execution
+            .as_ref()
+            .and_then(|e| e.invocations.get(&input.node))
+        {
+            return if old == invocation_id {
+                Ok(())
+            } else {
+                Err(conflict("Invocation replay changed its inputs"))
+            };
+        }
+        self.task_execution_record(
+            cas,
+            lease,
+            TaskExecutionRecordV1::Invocation {
+                invocation_id: invocation_id.into(),
+            },
+            now()?,
+        )?;
+        Ok(())
+    }
+
+    pub fn prepare_task_attempt(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        node: &str,
+        context_id: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<PreparedTaskAttempt, StoreError> {
+        let plan = self.check_task_dispatch(cas, lease, authority)?;
+        let state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        let mut execution = state
+            .execution
+            .ok_or_else(|| conflict("Task has no recorded invocation"))?;
+        let (invocation_id, invocation) = execution
+            .invocations
+            .get(node)
+            .ok_or_else(|| conflict("Unknown Task invocation"))?;
+        let time = now()?;
+        let reservation = execution.budget.prepare(node, time).map_err(conflict)?;
+        let attempt = execution.ledger.dispatch(node);
+        let feedback_ids: Vec<String> = execution
+            .attempts
+            .values()
+            .filter(|a| &a.invocation_id == invocation_id)
+            .filter_map(|a| match &a.settlement {
+                Some(TaskExecutionRecordV1::Settled {
+                    result:
+                        TaskAttemptResultV1::Failed {
+                            feedback_id: Some(id),
+                            ..
+                        },
+                    ..
+                }) => Some(id.clone()),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        authority
+            .validate_context(
+                cas,
+                &state.revision,
+                &plan,
+                invocation,
+                &feedback_ids,
+                context_id,
+            )
+            .map_err(conflict)?;
+        self.task_execution_record(
+            cas,
+            lease,
+            TaskExecutionRecordV1::Prepared {
+                invocation_id: invocation_id.clone(),
+                attempt_id: attempt.0.clone(),
+                reservation_id: reservation.id.clone(),
+                reserved_tokens: reservation.tokens,
+                deadline_unix_ms: reservation.deadline_unix_ms,
+                context_id: context_id.into(),
+                feedback_ids,
+            },
+            time,
+        )?;
+        Ok(PreparedTaskAttempt {
+            id: attempt.0,
+            node: node.into(),
+            reservation,
+            context_id: context_id.into(),
+        })
+    }
+
+    pub fn start_task_attempt(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        attempt: &PreparedTaskAttempt,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(), StoreError> {
+        self.check_task_dispatch(cas, lease, authority)?;
+        self.task_execution_record(
+            cas,
+            lease,
+            TaskExecutionRecordV1::Started {
+                attempt_id: attempt.id.clone(),
+            },
+            now()?,
+        )?;
+        Ok(())
+    }
+
+    pub fn release_task_attempt(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        attempt: &PreparedTaskAttempt,
+        reason: &str,
+    ) -> Result<(), StoreError> {
+        self.task_execution_record(
+            cas,
+            lease,
+            TaskExecutionRecordV1::Released {
+                attempt_id: attempt.id.clone(),
+                reason: reason.into(),
+            },
+            now()?,
+        )?;
+        Ok(())
+    }
+
+    pub fn settle_task_attempt(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        mut settlement: TaskExecutionRecordV1,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(), StoreError> {
+        let TaskExecutionRecordV1::Settled { attempt_id, .. } = &settlement else {
+            return Err(conflict("Expected a Task settlement"));
+        };
+        let state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        state.check_lease(&TaskTransitionV1 {
+            writer: lease.writer.clone(),
+            epoch: lease.epoch,
+            now_unix_ms: now()?,
+            change: TaskChangeV1::Resumed {},
+        })?;
+        if let Some(old) = state
+            .execution
+            .as_ref()
+            .and_then(|e| e.attempts.get(attempt_id))
+            .and_then(|a| a.settlement.as_ref())
+        {
+            return if old == &settlement {
+                Ok(())
+            } else {
+                Err(conflict("Conflicting Task settlement"))
+            };
+        }
+        let failure = match &settlement {
+            TaskExecutionRecordV1::Settled {
+                result: TaskAttemptResultV1::Succeeded { output_id },
+                ..
+            } => self
+                .validate_task_output(cas, lease, output_id, Some(attempt_id), authority)
+                .err(),
+            _ => None,
+        };
+        if let Some(error) = &failure {
+            let diagnostic_id = cas
+                .put_json(&json!({"schema":"af.task-diagnostic/1", "error":error.to_string()}))
+                .map_err(|e| StoreError::Artifact(e.to_string()))?;
+            if let TaskExecutionRecordV1::Settled { result, .. } = &mut settlement {
+                *result = TaskAttemptResultV1::Failed {
+                    diagnostic_id,
+                    feedback_id: None,
+                };
+            }
+        }
+        self.task_execution_record(cas, lease, settlement, now()?)?;
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
+
+    fn validate_task_output(
+        &self,
+        cas: &Cas,
+        lease: &TaskLease,
+        output_id: &str,
+        attempt_id: Option<&str>,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(), StoreError> {
+        let state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        let id = state
+            .plan_id
+            .as_ref()
+            .ok_or_else(|| conflict("Task has no plan"))?;
+        let plan = self.authorized_plan(cas, &state, id, authority)?;
+        let out = output(cas, output_id)?;
+        let input = invocation(cas, &out.invocation_id)?;
+        if let Some(attempt_id) = attempt_id {
+            verify_attempt_producer(
+                cas,
+                &state.task_id,
+                &input.node,
+                attempt_id,
+                output_id,
+                &out,
+            )?;
+        }
+        state
+            .execution
+            .as_ref()
+            .ok_or_else(|| conflict("Task has no admitted execution"))?
+            .verify_output(cas, &out)?;
+        let mut refs = BTreeSet::new();
+        for value in out.outputs.values() {
+            validate_input_refs(cas, value, &mut refs)?;
+        }
+        for id in refs {
+            cas.verify(&id)
+                .map_err(|e| StoreError::Artifact(e.to_string()))?;
+        }
+        authority
+            .validate_output(cas, &state.revision, &plan, &input, &out)
+            .map_err(conflict)
+    }
+
+    pub fn publish_task_output(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        output_id: &str,
+        attempt_id: Option<&str>,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(), StoreError> {
+        self.check_task_dispatch(cas, lease, authority)?;
+        self.validate_task_output(cas, lease, output_id, attempt_id, authority)?;
+        let out = output(cas, output_id)?;
+        let input = invocation(cas, &out.invocation_id)?;
+        let state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        if let Some(execution) = &state.execution {
+            if let Some((old, _)) = execution.outputs.get(&input.node) {
+                let same_attempt = match attempt_id {
+                    Some(id) => execution
+                        .ledger
+                        .attempt(&AttemptId(id.into()))
+                        .is_some_and(|a| {
+                            a.node == input.node
+                                && a.state == review_attempt::AttemptState::Selected
+                        }),
+                    None => !execution.graph.allowances.contains_key(&input.node),
+                };
+                return if old == output_id && same_attempt {
+                    Ok(())
+                } else {
+                    Err(conflict("Conflicting Task output replay"))
+                };
+            }
+        }
+        self.task_execution_record(
+            cas,
+            lease,
+            TaskExecutionRecordV1::Published {
+                output_id: output_id.into(),
+                attempt_id: attempt_id.map(str::to_owned),
+            },
+            now()?,
+        )?;
+        Ok(())
+    }
+}

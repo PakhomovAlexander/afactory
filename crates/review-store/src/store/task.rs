@@ -21,6 +21,8 @@ use crate::{Cas, content_id, validate_envelope};
 #[cfg(test)]
 mod tests;
 
+pub mod execution;
+
 fn conflict(message: impl Into<String>) -> StoreError {
     StoreError::Conflict(message.into())
 }
@@ -70,7 +72,7 @@ pub struct DeveloperGrant {
 /// The implementation authenticates the developer through the host and resolves exact captured
 /// package authority. Possession of actor strings or serialized PlanDecision does not implement
 /// this interface. Every execution adapter must use this same boundary on resume and dispatch.
-pub trait TaskAuthority {
+pub trait TaskAuthority: Sync {
     /// Validate the compiled graph, bindings and exact dependency closure, returning the
     /// generated origins derived from trusted package provenance, including nested Pipelines.
     fn validate_plan(
@@ -86,6 +88,19 @@ pub trait TaskAuthority {
         decision: PlanDecisionKindV1,
     ) -> Result<DeveloperGrant, String>;
     fn authorization_current(&self, decision: &PlanDecisionV1) -> Result<(), String>;
+    /// Match the exact rendered context to captured schemas, instructions, invocation and
+    /// admitted retry feedback before any Attempt reservation can become executable.
+    fn validate_context(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _invocation: &review_core::task::execution::TaskInvocationV1,
+        _feedback_ids: &[String],
+        _context_id: &str,
+    ) -> Result<(), String> {
+        Err("Task context admission is not configured".into())
+    }
     /// Recompute acceptance from exact durable output/verification receipts, not result prose.
     fn validate_result(
         &self,
@@ -93,6 +108,18 @@ pub trait TaskAuthority {
         task: &TaskRevisionV1,
         result: &TaskResultV1,
     ) -> Result<(), String>;
+    /// Domain checks supplement the Store's exact graph-port/provenance checks. The host
+    /// verifies typed Worker schemas, seal ancestry and retained verifier receipts here.
+    fn validate_output(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _invocation: &review_core::task::execution::TaskInvocationV1,
+        _output: &review_core::task::execution::TaskOutputV1,
+    ) -> Result<(), String> {
+        Err("Task output domain admission is not configured".into())
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -119,6 +146,7 @@ pub struct TaskProjection {
     last_time: u64,
     resume_phase: Option<TaskPhaseV1>,
     decisions: BTreeMap<String, Decision>,
+    pub execution: Option<execution::TaskExecutionProjection>,
 }
 
 /// Created after replay/transition validation; the shared transaction then compares sequence
@@ -217,6 +245,9 @@ fn references(
 ) -> Result<Vec<String>, StoreError> {
     let mut refs = BTreeSet::new();
     match change {
+        TaskChangeV1::ExecutionRecorded { record_id } => {
+            refs.extend(execution::references(cas, record_id)?);
+        }
         TaskChangeV1::Opened { revision_id, .. }
         | TaskChangeV1::RevisionRecorded { revision_id } => {
             let value = revision(cas, revision_id)?;
@@ -322,8 +353,20 @@ impl TaskProjection {
         if event.sequence != self.next_sequence {
             return Err(conflict("Task event sequence has a gap or duplicate"));
         }
+        let accounting_after_finish = match &transition.change {
+            TaskChangeV1::LeaseTaken { .. } | TaskChangeV1::LeaseRenewed { .. } => true,
+            TaskChangeV1::ExecutionRecorded { record_id } => matches!(
+                payload::<review_core::task::execution::TaskExecutionRecordV1>(
+                    cas,
+                    record_id,
+                    review_core::task::execution::TASK_EXECUTION_RECORD_V1
+                )?,
+                review_core::task::execution::TaskExecutionRecordV1::UsageObserved { .. }
+            ),
+            _ => false,
+        };
         if transition.now_unix_ms < self.last_time
-            || matches!(self.phase, TaskPhaseV1::Finished { .. })
+            || (matches!(self.phase, TaskPhaseV1::Finished { .. }) && !accounting_after_finish)
         {
             return Err(conflict(
                 "Task is finished or its policy clock moved backwards",
@@ -346,6 +389,9 @@ impl TaskProjection {
         } else {
             self.check_lease(transition)?;
             match &transition.change {
+                TaskChangeV1::ExecutionRecorded { record_id } => {
+                    self.apply_execution(cas, record_id, transition.now_unix_ms)?;
+                }
                 TaskChangeV1::Opened { .. } | TaskChangeV1::LeaseTaken { .. } => {
                     return Err(conflict("Task already exists"));
                 }
@@ -358,7 +404,7 @@ impl TaskProjection {
                     self.lease_until = *lease_until_unix_ms;
                 }
                 TaskChangeV1::RevisionRecorded { revision_id } => {
-                    if self.admitted {
+                    if self.admitted || self.execution.is_some() {
                         return Err(conflict(
                             "An executing Task needs a recorded replan barrier",
                         ));
@@ -382,7 +428,7 @@ impl TaskProjection {
                     self.resume_phase = None;
                 }
                 TaskChangeV1::PlanProposed { plan_id } => {
-                    if self.admitted {
+                    if self.admitted || self.execution.is_some() {
                         return Err(conflict("Cannot replace an executing Task plan"));
                     }
                     let plan = plan(cas, plan_id, self)?;
@@ -482,8 +528,50 @@ impl TaskProjection {
                     self.phase = prior;
                 }
                 TaskChangeV1::Finished { result_id } => {
+                    if self
+                        .execution
+                        .as_ref()
+                        .is_some_and(|execution| !execution.pending_attempts().is_empty())
+                    {
+                        return Err(conflict(
+                            "Task must settle or release every pending Attempt before finishing",
+                        ));
+                    }
                     let result: TaskResultV1 = payload(cas, result_id, task::TASK_RESULT_V1)?;
                     result.validate().map_err(conflict)?;
+                    if let Some(execution) = &self.execution {
+                        let expected_outputs: BTreeMap<_, _> = execution
+                            .graph
+                            .outputs
+                            .iter()
+                            .filter_map(|(name, address)| {
+                                execution
+                                    .outputs
+                                    .get(&address.node)
+                                    .and_then(|(_, receipt)| receipt.outputs.get(&address.port))
+                                    .map(|value| (name.clone(), value.clone()))
+                            })
+                            .collect();
+                        let expected_evidence: BTreeSet<_> = execution
+                            .graph
+                            .coverage
+                            .values()
+                            .filter_map(|address| {
+                                execution
+                                    .outputs
+                                    .get(&address.node)
+                                    .and_then(|(_, receipt)| receipt.outputs.get(&address.port))
+                            })
+                            .flat_map(|port| port.artifact_ids.iter().cloned())
+                            .collect();
+                        if result.outputs != expected_outputs
+                            || result.evidence != expected_evidence
+                        {
+                            return Err(conflict(
+                                "Task result does not retain its exact admitted public outputs and evidence",
+                            ));
+                        }
+                    }
                     if result.task_revision_id != self.revision_id {
                         return Err(conflict("Task result is stale"));
                     }
@@ -656,6 +744,7 @@ impl EventStore {
                     last_time: transition.now_unix_ms,
                     resume_phase: None,
                     decisions: BTreeMap::new(),
+                    execution: None,
                 });
             } else {
                 return Err(conflict("Task transition precedes genesis"));

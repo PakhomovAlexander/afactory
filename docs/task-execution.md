@@ -22,8 +22,10 @@ supplement it. Claude calls use only `claude-personal`.
 - [x] P00: unchanged-source baseline gate and fixture identities recorded below.
 - [ ] P01: contracts, schemas, ADR-0046/0047 and fixtures implemented; one review Round
   completed, Findings corrected and final gate passed locally; main integration remains pending.
-- [ ] P02/P03: common Store lifecycle and approvals; typed Pipeline compilation.
-- [ ] P04–P06: shared execution, implementation Task, review Task and legacy parity.
+- [ ] P02/P03: common Store lifecycle, approvals, legacy links and typed compilation are
+  implemented and verified locally; PR integration remains pending.
+- [ ] P04–P06: common command execution and implementation operators pass real-process
+  fixtures; CLI cutover, model admission and standalone review integration remain.
 - [ ] P07–P09: shared packages, embedded Review, bounded repair and fix verification.
 - [ ] P10–P12: selection, bounded generation, developer approval, export and starters.
 - [ ] P13/P14: Jira/document demonstrations, compatibility, benchmark and consumer release.
@@ -36,15 +38,26 @@ Required checks remain Markdownlint and `scripts/verify.sh` (the complete kernel
 Policy `452b752` is content-locked using installed `af 0.8.0`; all three requested models
 passed bounded Provider preflight (11,377 chargeable tokens, no Gates or reviewer Workers).
 
-PR 1 is in progress: protected Task accounting, the pure compiler, package capture and Store
-lifecycle have focused regression coverage. The compiler expands calls, proves branch
-availability and typed selection, and checks coverage against final-output lineage. Exact
-package recompilation rejects edited graphs, closures and Worker bindings. The Store persists
-plans and developer decisions under fenced writer leases, with a guard that rechecks waiting
-and revocation before dispatch. These components are not yet wired into production CLI
-execution. Host authority integration, legacy links and common invocation/settlement remain
-required before PR 1 is ready. See
-[ADR-0048](adr/0048-compile-task-ports-and-fence-developer-plan-decisions.md).
+PR 1 is in progress. The compiler expands calls, proves branch availability and typed selection,
+and checks coverage against final-output lineage. Exact package recompilation rejects edited
+graphs, closures and Worker bindings. The common Store persists plans, developer decisions,
+invocations, reservations, starts, settlements and selected outputs under fenced writer leases.
+Recovery reuses settled successes and retains failed, abandoned and late usage. Legacy read-only
+links preserve original history and charge identities without duplicating execution.
+
+Command Workers use the existing scheduler and process runner through `TaskRuntime`. Captured
+input/output schemas and exact context manifests govern each Attempt. A document fixture proves
+execution, replay and final acceptance. A pagination fixture proves durable candidate capture,
+S0-to-S1 lineage and independent checks/evaluation on S1. Failed and unavailable checks feed
+typed unsuccessful/inconclusive results without invoking the evaluator. Scheduler guards are
+kept outside Worker inputs; runtime caches are kept outside candidate trees.
+
+The complete deterministic gate passed with **712 tests, zero failures and 15 existing opt-in
+probes ignored**, across 93 suites. Formatting, Clippy and frozen synthetic reproduction passed.
+These checks establish the common runtime checkpoint, not completion of PR 1. The Task-file
+CLI, authenticated developer command boundary, model Provider admission and review cutover
+remain. See [ADR-0048](adr/0048-compile-task-ports-and-fence-developer-plan-decisions.md) and
+[ADR-0049](adr/0049-run-task-workers-through-shared-durable-attempts.md).
 
 ## P01 contract checkpoint
 
@@ -75,13 +88,9 @@ across 89 suites; formatting, Clippy and synthetic fixture reproduction passed. 
 checked 96 files with zero errors. Prior candidate gates also passed on read-only archives and
 with the exact cleared Gate environment. No model review was repeated after these corrections.
 
-**Resume:** P02/P03 after this local checkpoint. Use `EventStore::append_batch`'s CAS publication
-barrier and immediate transaction with a dedicated Task transition validator; the legacy Campaign
-validator's permissive tail is not Task admission. Implement fenced writer leases and authenticated,
-exact-plan decisions before enabling new dispatch. Compile public typed boundaries into the existing
-graph scheduler, with explicit root-input nodes and per-node Snapshot lineage. Preserve the permanent
-review and historical Task readers. General Task sealing cannot reuse the Integration-specific
-`SourceSnapshot@1::Capture::Derived` meaning.
+**Current resume:** wire the Task-file CLI and versioned implementation/review adapters through
+the shared runtime. Model admission and developer authentication must use the same Store guard.
+Continue P00–P14 in the approved three PRs; this internal checkpoint does not reduce that scope.
 
 ## P00 baseline evidence
 

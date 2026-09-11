@@ -111,6 +111,25 @@ fn child_attempt_cap_protects_its_verifier_even_when_the_parent_has_capacity() {
 }
 
 #[test]
+fn late_provider_usage_keeps_conservative_spend_and_leaves_other_reservations_intact() {
+    let mut ledger = budget(3, 200, 1000);
+    let abandoned = ledger.prepare("implement", 1).unwrap();
+    ledger.begin(&abandoned.id, 2).unwrap();
+    ledger.settle(&abandoned.id, abandoned.tokens).unwrap();
+    let verifier = ledger.prepare("review.verify", 3).unwrap();
+    ledger.observe_charge(&abandoned.id, 20).unwrap();
+    assert_eq!(ledger.committed_tokens(), 40);
+    ledger.observe_charge(&abandoned.id, 60).unwrap();
+    ledger.observe_charge(&abandoned.id, 60).unwrap();
+    assert_eq!(ledger.committed_tokens(), 60);
+    assert_eq!(ledger.reserved_tokens(), 30);
+    assert!(
+        ledger.begin(&verifier.id, 4).is_err(),
+        "observed overrun fences further dispatch"
+    );
+}
+
+#[test]
 fn concurrent_reservations_protect_tokens_before_either_attempt_begins() {
     let mut ledger = budget(3, 90, 1000);
     let first = ledger.prepare("implement", 1).unwrap();

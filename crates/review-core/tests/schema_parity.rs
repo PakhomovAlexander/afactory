@@ -32,10 +32,21 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 53] = [
+const SCHEMAS: [&str; 64] = [
+    "task-check-receipt-v1.json",
+    "task-evaluation-v1.json",
+    "verification-result-v1.json",
+    "task-snapshot-v1.json",
+    "source-tree-v1.json",
+    "candidate-tree-v1.json",
+    "task-worker-reply-v1.json",
+    "task-worker-request-v1.json",
     "artifact-envelope-v1.json",
     "task-contracts-v1.json",
     "task-transition-v1.json",
+    "task-invocation-v1.json",
+    "task-output-v1.json",
+    "task-execution-record-v1.json",
     "task-revision-v1.json",
     "task-result-v1.json",
     "task-phase-v1.json",
@@ -98,6 +109,160 @@ fn schema(name: &str) -> Value {
     let path = workspace_root().join("schemas").join(name);
     serde_json::from_str(&std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{name}: {e}")))
         .unwrap_or_else(|e| panic!("{name}: {e}"))
+}
+
+#[test]
+fn task_invocations_and_attempt_records_are_versioned_and_closed() {
+    use review_core::task::execution::*;
+    let id = format!("sha256:{}", "1".repeat(64));
+    let attempt_id = "a".repeat(26);
+    let invocation = TaskInvocationV1 {
+        plan_id: id.clone(),
+        node: "root.nodes.implement".into(),
+        inputs: Default::default(),
+    };
+    invocation.validate().unwrap();
+    assert_valid(
+        "task-invocation-v1.json",
+        &serde_json::to_value(&invocation).unwrap(),
+    );
+    let output = TaskOutputV1 {
+        invocation_id: id.clone(),
+        outputs: Default::default(),
+    };
+    output.validate().unwrap();
+    assert_valid(
+        "task-output-v1.json",
+        &serde_json::to_value(&output).unwrap(),
+    );
+    let records = [
+        TaskExecutionRecordV1::Invocation {
+            invocation_id: id.clone(),
+        },
+        TaskExecutionRecordV1::Prepared {
+            invocation_id: id.clone(),
+            attempt_id: attempt_id.clone(),
+            reservation_id: "reservation:0".into(),
+            reserved_tokens: 10,
+            deadline_unix_ms: 1000,
+            context_id: id.clone(),
+            feedback_ids: vec![],
+        },
+        TaskExecutionRecordV1::Started {
+            attempt_id: attempt_id.clone(),
+        },
+        TaskExecutionRecordV1::Released {
+            attempt_id: attempt_id.clone(),
+            reason: "not dispatched".into(),
+        },
+        TaskExecutionRecordV1::Settled {
+            attempt_id: attempt_id.clone(),
+            charged_tokens: 11,
+            result: TaskAttemptResultV1::Succeeded {
+                output_id: id.clone(),
+            },
+            raw_artifact_ids: vec![],
+            usage_id: Some(id.clone()),
+        },
+        TaskExecutionRecordV1::Settled {
+            attempt_id: attempt_id.clone(),
+            charged_tokens: 11,
+            result: TaskAttemptResultV1::Failed {
+                diagnostic_id: id.clone(),
+                feedback_id: Some(id.clone()),
+            },
+            raw_artifact_ids: vec![id.clone()],
+            usage_id: None,
+        },
+        TaskExecutionRecordV1::Settled {
+            attempt_id: attempt_id.clone(),
+            charged_tokens: 10,
+            result: TaskAttemptResultV1::Abandoned {
+                diagnostic_id: id.clone(),
+            },
+            raw_artifact_ids: vec![],
+            usage_id: None,
+        },
+        TaskExecutionRecordV1::Published {
+            output_id: id.clone(),
+            attempt_id: Some(attempt_id.clone()),
+        },
+        TaskExecutionRecordV1::UsageObserved {
+            charged_tokens: 12,
+            raw_artifact_ids: vec![],
+            usage_id: id,
+            attempt_id,
+        },
+    ];
+    for record in records {
+        record.validate().unwrap();
+        let mut value = serde_json::to_value(record).unwrap();
+        assert_valid("task-execution-record-v1.json", &value);
+        value["undeclared"] = json!(true);
+        assert!(!validator("task-execution-record-v1.json").is_valid(&value));
+        assert!(serde_json::from_value::<TaskExecutionRecordV1>(value).is_err());
+    }
+}
+
+#[test]
+fn task_verification_contracts_preserve_negative_results_and_require_positive_evidence() {
+    use review_core::task::pipeline::ReceiptOutcomeV1;
+    use review_core::task::verification::*;
+    let id = format!("sha256:{}", "1".repeat(64));
+    for outcome in [
+        ReceiptOutcomeV1::Passed,
+        ReceiptOutcomeV1::Failed,
+        ReceiptOutcomeV1::Inconclusive,
+    ] {
+        let check = TaskCheckReceiptV1 {
+            plan_id: id.clone(),
+            snapshot_id: id.clone(),
+            policy_id: id.clone(),
+            outcome,
+            checks: std::collections::BTreeMap::from([("unit".into(), id.clone())]),
+        };
+        check.validate().unwrap();
+        assert_valid(
+            "task-check-receipt-v1.json",
+            &serde_json::to_value(check).unwrap(),
+        );
+        let evaluation = TaskEvaluationV1 {
+            outcome,
+            reason: "Verified the current source".into(),
+        };
+        evaluation.validate().unwrap();
+        assert_valid(
+            "task-evaluation-v1.json",
+            &serde_json::to_value(evaluation).unwrap(),
+        );
+        let result = VerificationResultV1 {
+            plan_id: id.clone(),
+            snapshot_id: id.clone(),
+            policy_id: id.clone(),
+            outcome,
+            check_receipt_id: id.clone(),
+            evaluation_id: (outcome == ReceiptOutcomeV1::Passed).then(|| id.clone()),
+        };
+        result.validate().unwrap();
+        let value = serde_json::to_value(&result).unwrap();
+        assert_valid("verification-result-v1.json", &value);
+        let mut unknown = value.clone();
+        unknown["approved"] = json!(true);
+        assert!(!validator("verification-result-v1.json").is_valid(&unknown));
+        assert!(serde_json::from_value::<VerificationResultV1>(unknown).is_err());
+        let mut null = value;
+        null["evaluation_id"] = Value::Null;
+        assert!(!validator("verification-result-v1.json").is_valid(&null));
+        assert!(serde_json::from_value::<VerificationResultV1>(null).is_err());
+    }
+    let missing = json!({"plan_id":id,"snapshot_id":id,"policy_id":id,"outcome":"passed","check_receipt_id":id});
+    assert!(!validator("verification-result-v1.json").is_valid(&missing));
+    assert!(
+        serde_json::from_value::<VerificationResultV1>(missing)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
 }
 
 fn validator(name: &str) -> &'static jsonschema::Validator {
@@ -1734,6 +1899,9 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
             reason: TaskWaitingReasonV1::NeedsInput,
         },
         TaskChangeV1::Resumed {},
+        TaskChangeV1::ExecutionRecorded {
+            record_id: id.clone(),
+        },
         TaskChangeV1::Finished { result_id: id },
     ];
     for change in changes {

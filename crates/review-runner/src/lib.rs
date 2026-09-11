@@ -20,6 +20,7 @@
 
 pub mod command_runner;
 pub mod model;
+pub mod task;
 
 pub use command_runner::{CommandRunner, RunnerError};
 pub use model::{

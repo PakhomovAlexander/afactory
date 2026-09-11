@@ -3,6 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use review_attempt::task_budget::{NodeAllowance, TaskBudget};
 use review_core::task::pipeline::{
     PipelineContractV1, PipelineDefinitionV1, PipelinePortV1, PortAffinityV1, ReceiptOutcomeV1,
     TaskOperatorV1, ValueRefV1, WorkerSlotV1,
@@ -20,12 +21,43 @@ pub struct OperatorSignature {
     pub contract: PipelineContractV1,
     pub effects: BTreeSet<String>,
     pub evidence: BTreeMap<String, BTreeSet<String>>,
+    /// Public output envelopes retain these exact input receipts. Runtime admission verifies
+    /// that provenance; a Pipeline's covers declaration cannot create a retention guarantee.
+    #[serde(default)]
+    pub retains: BTreeMap<String, BTreeSet<String>>,
     pub roles: BTreeSet<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
     pub worker_input_type: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
     pub worker_output_type: Option<String>,
     /// The sole typed receipt port available to `when`. Ordinary artifacts cannot branch.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
     pub outcome_port: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub attempt: Option<OperatorAttemptCost>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperatorAttemptCost {
+    pub tokens: u64,
+    pub wall_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -90,9 +122,19 @@ pub struct CompiledTask {
     pub calls: BTreeMap<String, CompiledCall>,
     pub slots: BTreeMap<String, WorkerSlotV1>,
     pub max_parallel: u32,
+    pub allowances: BTreeMap<String, NodeAllowance>,
 }
 
 impl CompiledTask {
+    pub fn budget(&self, limits: review_core::task::TaskLimitsV1) -> Result<TaskBudget, String> {
+        TaskBudget::new(limits, self.allowances.clone())?.with_call_limits(
+            self.calls
+                .iter()
+                .map(|(scope, call)| (scope.clone(), call.max_attempts))
+                .collect(),
+        )
+    }
+
     pub fn run(&self, dispatch: &(dyn crate::Dispatch + Sync)) -> Result<crate::RunReport, String> {
         let plan = self.scheduler_plan()?;
         let limits = self
@@ -171,6 +213,14 @@ impl CompiledTask {
     pub fn scheduler_plan(&self) -> Result<Planned, String> {
         let mut pipeline = Pipeline::default();
         for (id, node) in &self.nodes {
+            if node
+                .contract
+                .inputs
+                .keys()
+                .any(|name| name.starts_with("af_condition_"))
+            {
+                return Err("Task input uses a reserved scheduler guard name".into());
+            }
             let ports = |ports: &BTreeMap<String, PipelinePortV1>| -> Vec<PortContract> {
                 ports
                     .iter()
@@ -250,6 +300,7 @@ struct Compiler<'a> {
     evidence: BTreeMap<Address, BTreeSet<String>>,
     availability: BTreeMap<Address, Vec<CompiledCondition>>,
     outcomes: BTreeSet<Address>,
+    retained: BTreeMap<Address, BTreeSet<Address>>,
 }
 
 pub fn compile_task(
@@ -287,6 +338,7 @@ pub fn compile_task(
         evidence: BTreeMap::new(),
         availability: BTreeMap::new(),
         outcomes: BTreeSet::new(),
+        retained: BTreeMap::new(),
         graph: CompiledTask {
             schema: "af.compiled-task/1".into(),
             nodes: BTreeMap::new(),
@@ -297,6 +349,7 @@ pub fn compile_task(
             calls: BTreeMap::new(),
             slots: BTreeMap::new(),
             max_parallel: definition.max_parallel,
+            allowances: BTreeMap::new(),
         },
     };
     let mut root_inputs = BTreeMap::new();
@@ -402,6 +455,7 @@ pub fn compile_task(
     compiler.graph.outputs = outputs;
     compiler.graph.coverage = coverage;
     compiler.graph.order = compiler.graph.scheduler_plan()?.order;
+    compiler.graph.budget(task.limits.clone())?;
     Ok(compiler.graph)
 }
 
@@ -438,6 +492,7 @@ impl Compiler<'_> {
             .affinity = PortAffinityV1::Unbound {};
         let mut lineages = Vec::new();
         let mut evidence: Option<BTreeSet<String>> = None;
+        let mut retained: Option<BTreeSet<Address>> = None;
         for outcome in [
             ReceiptOutcomeV1::Passed,
             ReceiptOutcomeV1::Failed,
@@ -469,6 +524,15 @@ impl Compiler<'_> {
             evidence = Some(match evidence {
                 None => policies,
                 Some(previous) => previous.intersection(&policies).cloned().collect(),
+            });
+            let receipts = self
+                .retained
+                .get(address)
+                .cloned()
+                .unwrap_or_else(|| BTreeSet::from([address.clone()]));
+            retained = Some(match retained {
+                None => receipts,
+                Some(previous) => previous.intersection(&receipts).cloned().collect(),
             });
         }
         if self.graph.nodes.len() > self.context.max_nodes {
@@ -503,6 +567,9 @@ impl Compiler<'_> {
             .insert(address.clone(), conditions.to_vec());
         self.evidence
             .insert(address.clone(), evidence.unwrap_or_default());
+        let mut retained = retained.unwrap_or_default();
+        retained.insert(address.clone());
+        self.retained.insert(address.clone(), retained);
         if ["passed", "failed", "inconclusive"]
             .iter()
             .all(|arm| self.outcomes.contains(&bound[*arm]))
@@ -722,6 +789,8 @@ impl Compiler<'_> {
                         Some(address) => {
                             bound.insert(port.clone(), address);
                         }
+                        None if matches!(reference, ValueRefV1::Input {port} if definition.contract.inputs[port].optional) =>
+                            {}
                         None => {
                             return Err(format!("{}.{} has an unavailable input", scope, node.id));
                         }
@@ -790,6 +859,16 @@ impl Compiler<'_> {
                             .get(&signature_name)
                             .ok_or_else(|| format!("Unsupported {signature_name}"))?;
                         signature.contract.validate()?;
+                        if signature.retains.iter().any(|(output, inputs)| {
+                            !signature.contract.outputs.contains_key(output)
+                                || inputs
+                                    .iter()
+                                    .any(|input| !signature.contract.inputs.contains_key(input))
+                        }) {
+                            return Err(
+                                "Operator retention signature names an undeclared port".into()
+                            );
+                        }
                         if signature
                             .contract
                             .inputs
@@ -840,6 +919,55 @@ impl Compiler<'_> {
                         if self.graph.nodes.len() > self.context.max_nodes {
                             return Err("Expanded Task exceeds the node limit".into());
                         }
+                        let paid = matches!(
+                            operator,
+                            TaskOperatorV1::Worker { .. }
+                                | TaskOperatorV1::Verify { .. }
+                                | TaskOperatorV1::FixVerify { .. }
+                                | TaskOperatorV1::Check { .. }
+                        );
+                        if paid && signature.attempt.is_none() {
+                            return Err(format!("{signature_name} has no bounded Attempt cost"));
+                        }
+                        if let TaskOperatorV1::Check { checks } = &operator {
+                            for check in checks {
+                                if self
+                                    .context
+                                    .signatures
+                                    .get(&format!("operator/check/{check}"))
+                                    != Some(signature)
+                                {
+                                    return Err(format!(
+                                        "Check {check} is not installed under the captured check policy"
+                                    ));
+                                }
+                            }
+                        }
+                        if let Some(cost) = &signature.attempt {
+                            let slot = match &operator {
+                                TaskOperatorV1::Worker { slot }
+                                | TaskOperatorV1::Verify { slot }
+                                | TaskOperatorV1::FixVerify { slot } => self.graph.slots.get(slot),
+                                _ => None,
+                            };
+                            self.graph.allowances.insert(
+                                qualified.clone(),
+                                NodeAllowance {
+                                    tokens_per_attempt: cost.tokens,
+                                    wall_ms_per_attempt: cost.wall_ms,
+                                    max_attempts: slot.map_or(1, |s| s.max_attempts),
+                                    verification_attempts: if signature
+                                        .evidence
+                                        .values()
+                                        .any(|policies| !policies.is_empty())
+                                    {
+                                        slot.map_or(1, |s| s.min_attempts.max(1))
+                                    } else {
+                                        0
+                                    },
+                                },
+                            );
+                        }
                         self.graph.nodes.insert(
                             qualified.clone(),
                             CompiledNode {
@@ -875,20 +1003,40 @@ impl Compiler<'_> {
                                     ),
                                 ),
                             };
+                            let mut retained = BTreeSet::from([address.clone()]);
+                            let mut evidence = signature
+                                .evidence
+                                .get(port_name)
+                                .cloned()
+                                .unwrap_or_default();
+                            if let Some(inputs) = signature.retains.get(port_name) {
+                                for input in inputs {
+                                    let Some(source) = bound.get(input) else {
+                                        continue;
+                                    };
+                                    retained.insert(source.clone());
+                                    if let Some(ancestors) = self.retained.get(source) {
+                                        retained.extend(ancestors.iter().cloned());
+                                    }
+                                    if self.lineage.get(source) == Some(&lineage) {
+                                        evidence.extend(
+                                            self.evidence
+                                                .get(source)
+                                                .into_iter()
+                                                .flatten()
+                                                .cloned(),
+                                        );
+                                    }
+                                }
+                            }
                             self.lineage.insert(address.clone(), lineage);
+                            self.retained.insert(address.clone(), retained);
                             self.availability
                                 .insert(address.clone(), conditions.clone());
                             if signature.outcome_port.as_ref() == Some(port_name) {
                                 self.outcomes.insert(address.clone());
                             }
-                            self.evidence.insert(
-                                address.clone(),
-                                signature
-                                    .evidence
-                                    .get(port_name)
-                                    .cloned()
-                                    .unwrap_or_default(),
-                            );
+                            self.evidence.insert(address.clone(), evidence);
                             outputs.insert(port_name.clone(), address);
                         }
                         outputs
@@ -919,9 +1067,12 @@ impl Compiler<'_> {
             for obligation in &contract.covers {
                 let producer = resolve(&definition.coverage[obligation], inputs, &values)
                     .ok_or("Unavailable evidence output")?;
-                // This initial interface exports evidence directly. Composite envelopes need an
-                // installed signature that proves evidence retention before they can cover it.
-                if producer != address {
+                if producer != address
+                    && !self
+                        .retained
+                        .get(&address)
+                        .is_some_and(|retained| retained.contains(&producer))
+                {
                     return Err(format!(
                         "Public output {public} does not retain coverage {obligation}"
                     ));
@@ -962,6 +1113,7 @@ fn resolve(
 fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
     match operator {
         TaskOperatorV1::Seal {} => Ok("seal"),
+        TaskOperatorV1::Accept {} => Ok("accept"),
         TaskOperatorV1::Check { .. } => Ok("check"),
         TaskOperatorV1::ReviewBind {} => Ok("review-bind"),
         TaskOperatorV1::AttestFixes {} => Ok("attest-fixes"),

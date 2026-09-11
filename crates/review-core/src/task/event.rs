@@ -43,6 +43,9 @@ pub enum TaskChangeV1 {
     Finished {
         result_id: String,
     },
+    ExecutionRecorded {
+        record_id: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,6 +109,7 @@ impl TaskTransitionV1 {
             TaskChangeV1::PlanDecided { decision_id, .. }
             | TaskChangeV1::ApprovalRevoked { decision_id, .. } => vec![decision_id],
             TaskChangeV1::Finished { result_id } => vec![result_id],
+            TaskChangeV1::ExecutionRecorded { record_id } => vec![record_id],
             _ => Vec::new(),
         }
     }

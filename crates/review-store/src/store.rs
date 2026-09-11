@@ -20,6 +20,7 @@ use serde_json::Value;
 use crate::cas::{Cas, CasError};
 
 pub mod task;
+pub mod task_legacy;
 
 #[derive(Debug)]
 pub enum StoreError {

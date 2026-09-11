@@ -169,6 +169,9 @@ pub enum TaskOperatorV1 {
         slot: String,
     },
     Seal {},
+    /// Kernel receipt assembly: preserves negative/inconclusive checks without invoking a
+    /// conditional evaluator, and admits success only from current independent evidence.
+    Accept {},
     Check {
         #[serde(deserialize_with = "super::unique_set")]
         checks: BTreeSet<String>,

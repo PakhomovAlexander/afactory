@@ -23,6 +23,7 @@
 //! produces no reviewer artifacts at all — not reviewer artifacts nobody reads.
 
 pub mod scatter;
+pub mod task;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};

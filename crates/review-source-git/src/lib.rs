@@ -14,6 +14,7 @@ pub mod capture;
 pub mod git;
 pub mod manifest;
 pub mod materialize;
+pub mod task;
 
 pub use capture::{Capture, CaptureError, CaptureObserver, NoObserver, Snapshot, worktree_state};
 pub use git::{

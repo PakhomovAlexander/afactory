@@ -70,9 +70,14 @@ impl Fixture {
                 effects: BTreeSet::from(["read-source".into()]),
                 evidence: BTreeMap::from([("output".into(), BTreeSet::from([policy.clone()]))]),
                 roles: BTreeSet::from(["author".into()]),
+                retains: BTreeMap::new(),
                 worker_input_type: Some("af/Requirements@1".into()),
                 worker_output_type: Some("af/CheckedDocument@1".into()),
                 outcome_port: None,
+                attempt: Some(review_graph::task::OperatorAttemptCost {
+                    tokens: 0,
+                    wall_ms: 1000,
+                }),
             },
             runner: TaskWorkerRunner::Command {
                 command: CommandSpec {
@@ -80,8 +85,6 @@ impl Fixture {
                     args: vec![],
                 },
             },
-            tokens_per_attempt: 0,
-            wall_ms_per_attempt: 1000,
         };
         let mut project = BTreeMap::new();
         let mut pins: BTreeMap<String, TaskPackagePin> = BTreeMap::new();

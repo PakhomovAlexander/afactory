@@ -8,9 +8,21 @@ struct Authority {
     developer_allowed: bool,
     current: bool,
     valid_until: u64,
+    output_allowed: bool,
 }
 
 impl TaskAuthority for Authority {
+    fn validate_context(
+        &self,
+        _: &Cas,
+        _: &TaskRevisionV1,
+        _: &ExecutionPlanV1,
+        _: &review_core::task::execution::TaskInvocationV1,
+        _: &[String],
+        _: &str,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     fn validate_plan(
         &self,
         _: &Cas,
@@ -43,6 +55,20 @@ impl TaskAuthority for Authority {
     }
     fn validate_result(&self, _: &Cas, _: &TaskRevisionV1, _: &TaskResultV1) -> Result<(), String> {
         Err("No execution receipts exist in this lifecycle fixture".into())
+    }
+    fn validate_output(
+        &self,
+        _: &Cas,
+        _: &TaskRevisionV1,
+        _: &ExecutionPlanV1,
+        _: &review_core::task::execution::TaskInvocationV1,
+        _: &review_core::task::execution::TaskOutputV1,
+    ) -> Result<(), String> {
+        if self.output_allowed {
+            Ok(())
+        } else {
+            Err("Output schema admission failed".into())
+        }
     }
 }
 
@@ -168,6 +194,7 @@ impl Fixture {
             developer_allowed: true,
             current: true,
             valid_until: now().unwrap() + 500_000,
+            output_allowed: true,
         };
         Self {
             _dir: dir,
@@ -209,6 +236,183 @@ impl Fixture {
             .task_projection(&self.cas, "task-1")
             .unwrap()
             .unwrap()
+    }
+
+    fn with_execution_graph(mut self) -> Self {
+        use review_core::task::pipeline::*;
+        use review_graph::task::{
+            CompileContext, OperatorAttemptCost, OperatorSignature, compile_task,
+        };
+        let pipeline: PipelineDefinitionV1 =
+            payload(&self.cas, &self.plan.pipeline_id, task::PIPELINE_V1).unwrap();
+        let mut output = pipeline.contract.outputs["document"].clone();
+        output.covers.clear();
+        let signature = OperatorSignature {
+            contract: PipelineContractV1 {
+                inputs: BTreeMap::from([(
+                    "input".into(),
+                    pipeline.contract.inputs["requirements"].clone(),
+                )]),
+                outputs: BTreeMap::from([("output".into(), output)]),
+            },
+            effects: BTreeSet::new(),
+            evidence: BTreeMap::from([(
+                "output".into(),
+                BTreeSet::from([self.revision.acceptance["checked"].verifier_policy.clone()]),
+            )]),
+            retains: BTreeMap::new(),
+            roles: BTreeSet::from(["author".into()]),
+            worker_input_type: Some("af/Requirements@1".into()),
+            worker_output_type: Some("af/CheckedDocument@1".into()),
+            outcome_port: None,
+            attempt: Some(OperatorAttemptCost {
+                tokens: 10,
+                wall_ms: 1000,
+            }),
+        };
+        let pipelines = BTreeMap::from([(pipeline.name.clone(), pipeline)]);
+        let signatures = BTreeMap::from([("worker/builtin/document-author".into(), signature)]);
+        let graph = compile_task(
+            &self.revision,
+            "builtin/document",
+            &CompileContext {
+                pipelines: &pipelines,
+                signatures: &signatures,
+                acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
+                max_nodes: 64,
+                max_depth: 4,
+            },
+        )
+        .unwrap();
+        self.plan.compiled_graph_id = self
+            .cas
+            .put_artifact(
+                "af/CompiledTask@1",
+                producer(),
+                vec![],
+                None,
+                serde_json::to_value(graph).unwrap(),
+            )
+            .unwrap()
+            .0;
+        self.plan_id = self
+            .cas
+            .put_artifact(
+                task::EXECUTION_PLAN_V1,
+                producer(),
+                vec![self.revision_id.clone()],
+                None,
+                serde_json::to_value(&self.plan).unwrap(),
+            )
+            .unwrap()
+            .0;
+        self
+    }
+
+    fn record_execution_inputs(&mut self, lease: &TaskLease) -> String {
+        use review_core::task::execution::*;
+        let root = self
+            .cas
+            .put_artifact(
+                TASK_INVOCATION_V1,
+                producer(),
+                vec![self.plan_id.clone()],
+                None,
+                serde_json::to_value(TaskInvocationV1 {
+                    plan_id: self.plan_id.clone(),
+                    node: "root.inputs".into(),
+                    inputs: BTreeMap::new(),
+                })
+                .unwrap(),
+            )
+            .unwrap()
+            .0;
+        self.store
+            .record_task_invocation(&self.cas, lease, &root, &self.authority)
+            .unwrap();
+        let root_output = self
+            .cas
+            .put_artifact(
+                TASK_OUTPUT_V1,
+                producer(),
+                vec![root.clone()],
+                None,
+                serde_json::to_value(TaskOutputV1 {
+                    invocation_id: root,
+                    outputs: self.revision.inputs.clone(),
+                })
+                .unwrap(),
+            )
+            .unwrap()
+            .0;
+        self.store
+            .publish_task_output(&self.cas, lease, &root_output, None, &self.authority)
+            .unwrap();
+        let writer = self
+            .cas
+            .put_artifact(
+                TASK_INVOCATION_V1,
+                producer(),
+                vec![self.plan_id.clone()],
+                None,
+                serde_json::to_value(TaskInvocationV1 {
+                    plan_id: self.plan_id.clone(),
+                    node: "root.nodes.write".into(),
+                    inputs: BTreeMap::from([(
+                        "input".into(),
+                        self.revision.inputs["requirements"].clone(),
+                    )]),
+                })
+                .unwrap(),
+            )
+            .unwrap()
+            .0;
+        self.store
+            .record_task_invocation(&self.cas, lease, &writer, &self.authority)
+            .unwrap();
+        writer
+    }
+
+    fn execution_output(&self, invocation_id: &str, attempt_id: &str) -> String {
+        use review_core::task::execution::*;
+        let producer = Producer::Attempt {
+            run_id: task_run_id(&self.revision.task_id).unwrap(),
+            node_id: "root.nodes.write".into(),
+            attempt_id: attempt_id.into(),
+        };
+        let document = self
+            .cas
+            .put_artifact(
+                "af/CheckedDocument@1",
+                producer.clone(),
+                vec![invocation_id.into()],
+                None,
+                json!({"outcome":"passed"}),
+            )
+            .unwrap()
+            .0;
+        self.cas
+            .put_artifact(
+                TASK_OUTPUT_V1,
+                producer,
+                vec![invocation_id.into(), document.clone()],
+                None,
+                serde_json::to_value(TaskOutputV1 {
+                    invocation_id: invocation_id.into(),
+                    outputs: BTreeMap::from([(
+                        "output".into(),
+                        task::ArtifactInputV1 {
+                            artifact_ids: vec![document],
+                            artifact_type: "af/CheckedDocument@1".into(),
+                            cardinality: review_core::PortCardinality::One,
+                            snapshot_id: None,
+                        },
+                    )]),
+                })
+                .unwrap(),
+            )
+            .unwrap()
+            .0
     }
 }
 
@@ -571,4 +775,396 @@ fn dispatch_guard_rechecks_approval_waiting_and_host_revocation_after_admission(
             .is_err()
     );
     assert!(f.store.resume_task(&f.cas, &lease, &f.authority).is_err());
+}
+
+#[test]
+fn shared_execution_replays_reserved_attempts_and_publishes_outputs_once() {
+    use review_core::task::execution::*;
+    let mut f = Fixture::new(false).with_execution_graph();
+    let lease = f.open();
+    f.propose(&lease);
+    f.store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    let invocation_id = f.record_execution_inputs(&lease);
+    let context_id = f
+        .cas
+        .put_json(&json!({"context":"exact fixture inputs"}))
+        .unwrap();
+    let attempt = f
+        .store
+        .prepare_task_attempt(
+            &f.cas,
+            &lease,
+            "root.nodes.write",
+            &context_id,
+            &f.authority,
+        )
+        .unwrap();
+    assert_eq!(f.state().execution.unwrap().budget.reserved_tokens(), 10);
+    f.store = EventStore::open(&f.path).unwrap();
+    f.store
+        .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+        .unwrap();
+    let output_id = f.execution_output(&invocation_id, attempt.id());
+    let settlement = TaskExecutionRecordV1::Settled {
+        attempt_id: attempt.id().into(),
+        charged_tokens: 7,
+        result: TaskAttemptResultV1::Succeeded {
+            output_id: output_id.clone(),
+        },
+        raw_artifact_ids: vec![],
+        usage_id: None,
+    };
+    f.store
+        .settle_task_attempt(&f.cas, &lease, settlement.clone(), &f.authority)
+        .unwrap();
+    let sequence = f.state().next_sequence;
+    f.store
+        .settle_task_attempt(&f.cas, &lease, settlement, &f.authority)
+        .unwrap();
+    assert_eq!(f.state().next_sequence, sequence);
+    f.store
+        .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
+        .unwrap();
+    let sequence = f.state().next_sequence;
+    f.store = EventStore::open(&f.path).unwrap();
+    f.store
+        .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
+        .unwrap();
+    let state = f.state();
+    assert_eq!(state.next_sequence, sequence);
+    let execution = state.execution.unwrap();
+    assert_eq!(execution.budget.committed_tokens(), 7);
+    assert_eq!(execution.budget.reserved_tokens(), 0);
+    assert_eq!(execution.budget.begun_attempts(), 1);
+    assert_eq!(execution.outputs["root.nodes.write"].0, output_id);
+    assert!(execution.pending_attempts().is_empty());
+}
+
+#[test]
+fn rejected_task_output_keeps_its_charge_and_cannot_feed_downstream_nodes() {
+    use review_core::task::execution::*;
+    let mut f = Fixture::new(false).with_execution_graph();
+    let lease = f.open();
+    f.propose(&lease);
+    f.store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    let invocation_id = f.record_execution_inputs(&lease);
+    let context_id = f
+        .cas
+        .put_json(&json!({"context":"exact fixture inputs"}))
+        .unwrap();
+    let attempt = f
+        .store
+        .prepare_task_attempt(
+            &f.cas,
+            &lease,
+            "root.nodes.write",
+            &context_id,
+            &f.authority,
+        )
+        .unwrap();
+    f.store
+        .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+        .unwrap();
+    let output_id = f.execution_output(&invocation_id, attempt.id());
+    f.authority.output_allowed = false;
+    assert!(
+        f.store
+            .settle_task_attempt(
+                &f.cas,
+                &lease,
+                TaskExecutionRecordV1::Settled {
+                    attempt_id: attempt.id().into(),
+                    charged_tokens: 7,
+                    result: TaskAttemptResultV1::Succeeded {
+                        output_id: output_id.clone()
+                    },
+                    raw_artifact_ids: vec![],
+                    usage_id: None
+                },
+                &f.authority
+            )
+            .is_err()
+    );
+    f.authority.output_allowed = true;
+    assert!(
+        f.store
+            .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
+            .is_err()
+    );
+    f.store = EventStore::open(&f.path).unwrap();
+    let state = f.state().execution.unwrap();
+    assert_eq!(state.budget.committed_tokens(), 7);
+    assert!(!state.outputs.contains_key("root.nodes.write"));
+    assert!(state.pending_attempts().is_empty());
+}
+
+#[test]
+fn crash_after_successful_settlement_reuses_the_selected_result_under_a_new_writer() {
+    use review_core::task::execution::*;
+    let mut f = Fixture::new(false).with_execution_graph();
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "writer-1", 10000)
+        .unwrap();
+    f.propose(&lease);
+    f.store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    let invocation = f.record_execution_inputs(&lease);
+    let context = f.cas.put_json(&json!({"exact":"context"})).unwrap();
+    let attempt = f
+        .store
+        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .unwrap();
+    f.store
+        .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+        .unwrap();
+    let output = f.execution_output(&invocation, attempt.id());
+    f.store
+        .settle_task_attempt(
+            &f.cas,
+            &lease,
+            TaskExecutionRecordV1::Settled {
+                attempt_id: attempt.id().into(),
+                charged_tokens: 7,
+                result: TaskAttemptResultV1::Succeeded {
+                    output_id: output.clone(),
+                },
+                raw_artifact_ids: vec![],
+                usage_id: None,
+            },
+            &f.authority,
+        )
+        .unwrap();
+    f.store = EventStore::open(&f.path).unwrap();
+    assert_eq!(
+        f.state()
+            .execution
+            .unwrap()
+            .reusable_output("root.nodes.write"),
+        Some((output.clone(), attempt.id().into()))
+    );
+    assert!(
+        f.store
+            .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+            .is_err()
+    );
+    let time = f.state().lease_until + 1;
+    f.store
+        .append_task_transition(
+            &f.cas,
+            "task-1",
+            TaskTransitionV1 {
+                writer: "writer-2".into(),
+                epoch: 2,
+                now_unix_ms: time,
+                change: TaskChangeV1::LeaseTaken {
+                    lease_until_unix_ms: time + 1000,
+                },
+            },
+        )
+        .unwrap();
+    let new = TaskLease {
+        task_id: "task-1".into(),
+        writer: "writer-2".into(),
+        epoch: 2,
+    };
+    let record = f
+        .cas
+        .put_artifact(
+            TASK_EXECUTION_RECORD_V1,
+            producer(),
+            vec![output.clone()],
+            None,
+            serde_json::to_value(TaskExecutionRecordV1::Published {
+                output_id: output.clone(),
+                attempt_id: Some(attempt.id().into()),
+            })
+            .unwrap(),
+        )
+        .unwrap()
+        .0;
+    f.store
+        .task_change(
+            &f.cas,
+            &new,
+            TaskChangeV1::ExecutionRecorded { record_id: record },
+            time,
+        )
+        .unwrap();
+    f.store = EventStore::open(&f.path).unwrap();
+    let execution = f.state().execution.unwrap();
+    assert_eq!(execution.outputs["root.nodes.write"].0, output);
+    assert_eq!(execution.budget.begun_attempts(), 1);
+    assert_eq!(execution.budget.committed_tokens(), 7);
+}
+
+#[test]
+fn writer_recovery_charges_started_work_and_releases_only_unstarted_work() {
+    for started in [false, true] {
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f.open();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        f.record_execution_inputs(&lease);
+        let context_id = f
+            .cas
+            .put_json(&json!({"context":"exact fixture inputs"}))
+            .unwrap();
+        let attempt = f
+            .store
+            .prepare_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.write",
+                &context_id,
+                &f.authority,
+            )
+            .unwrap();
+        if started {
+            f.store
+                .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+                .unwrap();
+        }
+        let old = f.state();
+        let time = old.lease_until + 1;
+        f.store
+            .append_task_transition(
+                &f.cas,
+                &lease.task_id,
+                TaskTransitionV1 {
+                    writer: "writer-2".into(),
+                    epoch: 2,
+                    now_unix_ms: time,
+                    change: TaskChangeV1::LeaseTaken {
+                        lease_until_unix_ms: time + 10000,
+                    },
+                },
+            )
+            .unwrap();
+        let new = TaskLease {
+            task_id: lease.task_id.clone(),
+            writer: "writer-2".into(),
+            epoch: 2,
+        };
+        f.store
+            .recover_task_attempts_at(&f.cas, &new, time)
+            .unwrap();
+        f.store = EventStore::open(&f.path).unwrap();
+        let execution = f.state().execution.unwrap();
+        assert!(execution.pending_attempts().is_empty());
+        assert_eq!(execution.budget.reserved_tokens(), 0);
+        assert_eq!(
+            execution.budget.committed_tokens(),
+            if started { 10 } else { 0 }
+        );
+        assert_eq!(execution.budget.begun_attempts(), u64::from(started));
+        assert!(!execution.outputs.contains_key("root.nodes.write"));
+    }
+}
+
+#[test]
+fn late_usage_is_charged_after_task_finish_without_reopening_its_result() {
+    use review_core::task::execution::*;
+    let mut f = Fixture::new(false).with_execution_graph();
+    let lease = f.open();
+    f.propose(&lease);
+    f.store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    f.record_execution_inputs(&lease);
+    let diagnostic = f
+        .cas
+        .put_json(&json!({"reason":"runner disappeared"}))
+        .unwrap();
+    let attempt = f
+        .store
+        .prepare_task_attempt(
+            &f.cas,
+            &lease,
+            "root.nodes.write",
+            &diagnostic,
+            &f.authority,
+        )
+        .unwrap();
+    f.store
+        .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+        .unwrap();
+    f.store
+        .settle_task_attempt(
+            &f.cas,
+            &lease,
+            TaskExecutionRecordV1::Settled {
+                attempt_id: attempt.id().into(),
+                charged_tokens: 10,
+                result: TaskAttemptResultV1::Abandoned {
+                    diagnostic_id: diagnostic,
+                },
+                raw_artifact_ids: vec![],
+                usage_id: None,
+            },
+            &f.authority,
+        )
+        .unwrap();
+    let result = TaskResultV1 {
+        task_revision_id: f.revision_id.clone(),
+        execution: task::TaskExecutionV1::Exhausted,
+        acceptance: TaskAcceptanceV1::Unsatisfied,
+        domain_conclusion: "missing output".into(),
+        outputs: BTreeMap::new(),
+        evidence: BTreeSet::new(),
+        missing_obligations: BTreeSet::from(["checked".into()]),
+    };
+    let result_id = f
+        .cas
+        .put_artifact(
+            task::TASK_RESULT_V1,
+            producer(),
+            vec![f.revision_id.clone()],
+            None,
+            serde_json::to_value(result).unwrap(),
+        )
+        .unwrap()
+        .0;
+    f.store
+        .task_change(
+            &f.cas,
+            &lease,
+            TaskChangeV1::Finished {
+                result_id: result_id.clone(),
+            },
+            now().unwrap(),
+        )
+        .unwrap();
+    let usage_id = f.cas.put_json(&json!({"chargeable_tokens":17})).unwrap();
+    let observation = TaskExecutionRecordV1::UsageObserved {
+        attempt_id: attempt.id().into(),
+        charged_tokens: 17,
+        usage_id,
+        raw_artifact_ids: vec![],
+    };
+    f.store
+        .observe_task_usage(&f.cas, &lease, observation.clone())
+        .unwrap();
+    f.store
+        .observe_task_usage(&f.cas, &lease, observation)
+        .unwrap();
+    f.store = EventStore::open(&f.path).unwrap();
+    let state = f.state();
+    assert_eq!(state.phase, TaskPhaseV1::Finished { result_id });
+    let execution = state.execution.unwrap();
+    assert_eq!(execution.budget.committed_tokens(), 17);
+    assert!(execution.budget.breached());
+    assert!(!execution.outputs.contains_key("root.nodes.write"));
+    assert!(
+        f.store
+            .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+            .is_err()
+    );
 }

@@ -33,9 +33,14 @@ fn fixture() -> (
             BTreeSet::from([task.acceptance["checked"].verifier_policy.clone()]),
         )]),
         roles: BTreeSet::from(["author".into()]),
+        retains: BTreeMap::new(),
         worker_input_type: Some("af/Requirements@1".into()),
         worker_output_type: Some("af/CheckedDocument@1".into()),
         outcome_port: None,
+        attempt: Some(review_graph::task::OperatorAttemptCost {
+            tokens: 0,
+            wall_ms: 1000,
+        }),
     };
     (
         task,
@@ -256,12 +261,16 @@ fn branching_fixture() -> (
     BTreeMap<String, PipelineDefinitionV1>,
     BTreeMap<String, OperatorSignature>,
 ) {
-    let (task, mut pipelines, mut signatures) = fixture();
+    let (mut task, mut pipelines, mut signatures) = fixture();
+    task.limits.max_attempts = 10;
+    task.limits.verification.attempts = 4;
+    task.limits.verification.wall_ms = 4000;
     signatures
         .get_mut("worker/builtin/document-author")
         .unwrap()
         .outcome_port = Some("output".into());
     let pipeline = pipelines.get_mut("builtin/document").unwrap();
+    pipeline.max_attempts = 10;
     let writer = pipeline.nodes[0].clone();
     for (id, outcome) in [
         ("passed", ReceiptOutcomeV1::Passed),
@@ -444,4 +453,125 @@ fn branch_contracts_reject_missing_paths_wrong_arms_and_untyped_conditions() {
             "{defect}"
         );
     }
+}
+
+#[test]
+fn composite_public_results_must_retain_the_exact_verifier_receipt() {
+    let (task, mut pipelines, mut signatures) = fixture();
+    let pipeline = pipelines.get_mut("builtin/document").unwrap();
+    let mut input = pipeline.contract.outputs["document"].clone();
+    input.covers.clear();
+    let mut output = input.clone();
+    output.affinity = PortAffinityV1::SameAs {
+        input: "document".into(),
+    };
+    let mut signature = signatures["worker/builtin/document-author"].clone();
+    signature.contract = PipelineContractV1 {
+        inputs: BTreeMap::from([("document".into(), input)]),
+        outputs: BTreeMap::from([("output".into(), output)]),
+    };
+    signature.evidence.clear();
+    signature.attempt = None;
+    signature
+        .retains
+        .insert("output".into(), BTreeSet::from(["document".into()]));
+    signatures.insert("operator/attest-fixes".into(), signature);
+    pipeline.nodes.push(TaskNodeV1 {
+        id: "wrap".into(),
+        operator: TaskOperatorV1::AttestFixes {},
+        inputs: BTreeMap::from([(
+            "document".into(),
+            ValueRefV1::Node {
+                node: "write".into(),
+                port: "output".into(),
+            },
+        )]),
+        when: None,
+    });
+    pipeline.outputs.insert(
+        "document".into(),
+        ValueRefV1::Node {
+            node: "wrap".into(),
+            port: "output".into(),
+        },
+    );
+    let compile = |signatures: &BTreeMap<String, OperatorSignature>| {
+        compile_task(
+            &task,
+            "builtin/document",
+            &CompileContext {
+                pipelines: &pipelines,
+                signatures,
+                acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
+                max_nodes: 64,
+                max_depth: 4,
+            },
+        )
+    };
+    let graph = compile(&signatures).unwrap();
+    assert_eq!(graph.outputs["document"].node, "root.nodes.wrap");
+    assert_eq!(graph.coverage["checked"].node, "root.nodes.write");
+    signatures
+        .get_mut("operator/attest-fixes")
+        .unwrap()
+        .retains
+        .clear();
+    assert!(
+        compile(&signatures)
+            .unwrap_err()
+            .contains("does not retain")
+    );
+}
+
+#[test]
+fn evidence_from_an_earlier_output_cannot_validate_a_later_final_output() {
+    let (mut task, mut pipelines, signatures) = fixture();
+    task.limits.verification.attempts = 2;
+    task.limits.verification.wall_ms = 2000;
+    let pipeline = pipelines.get_mut("builtin/document").unwrap();
+    let mut revised = pipeline.nodes[0].clone();
+    revised.id = "revised".into();
+    pipeline.nodes.push(revised);
+    let evidence = pipeline.contract.outputs["document"].clone();
+    pipeline
+        .contract
+        .outputs
+        .get_mut("document")
+        .unwrap()
+        .covers
+        .clear();
+    pipeline
+        .contract
+        .outputs
+        .insert("evidence".into(), evidence);
+    pipeline.outputs.insert(
+        "document".into(),
+        ValueRefV1::Node {
+            node: "revised".into(),
+            port: "output".into(),
+        },
+    );
+    pipeline.outputs.insert(
+        "evidence".into(),
+        ValueRefV1::Node {
+            node: "write".into(),
+            port: "output".into(),
+        },
+    );
+    let result = compile_task(
+        &task,
+        "builtin/document",
+        &CompileContext {
+            pipelines: &pipelines,
+            signatures: &signatures,
+            acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
+            max_nodes: 64,
+            max_depth: 4,
+        },
+    );
+    assert!(
+        result
+            .unwrap_err()
+            .contains("does not judge the required final output")
+    );
 }

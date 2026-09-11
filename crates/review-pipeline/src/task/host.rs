@@ -1,0 +1,561 @@
+//! Captured command Workers behind the common Task dispatcher. Environment and domain
+//! extensions provide operations and validation, never scheduling or child accounting.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use review_config::task::catalog::{TaskPlanCompiler, TaskWorkerRunner};
+use review_core::Producer;
+use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
+use review_core::task::pipeline::{PortAffinityV1, TaskOperatorV1};
+use review_core::task::plan::{
+    ExecutionPlanV1, GeneratedOriginV1, PlanDecisionKindV1, PlanDecisionV1,
+};
+use review_core::task::{ArtifactInputV1, TaskResultV1, TaskRevisionV1};
+use review_graph::task::{CompiledOperator, CompiledTask, OperatorSignature};
+use review_runner::task::WorkerContract;
+use review_sandbox::{Mode, Sandbox};
+use review_store::Cas;
+use review_store::store::task::{DeveloperGrant, TaskAuthority, task_run_id};
+
+use super::{TaskOperatorHost, TaskWorkOutput, envelope};
+use review_store::store::task::execution::PreparedTaskAttempt;
+
+/// Installed host policy chooses the actual environment; a Pipeline cannot assert isolation.
+pub trait TaskEnvironment: Sync {
+    /// Additional outputs computed by the installed environment, such as a fully captured
+    /// candidate tree. A Worker reply cannot fill these ports itself.
+    fn kernel_outputs(&self, _signature: &OperatorSignature) -> BTreeSet<String> {
+        BTreeSet::new()
+    }
+    fn validate_outputs(
+        &self,
+        _cas: &Cas,
+        _input: &TaskInvocationV1,
+        _signature: &OperatorSignature,
+        _output: &TaskOutputV1,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+    fn materialize(
+        &self,
+        cas: &Cas,
+        invocation: &TaskInvocationV1,
+        signature: &OperatorSignature,
+    ) -> Result<Sandbox, String>;
+    fn finish(
+        &self,
+        cas: &Cas,
+        invocation: &TaskInvocationV1,
+        signature: &OperatorSignature,
+        attempt: &PreparedTaskAttempt,
+        sandbox: Sandbox,
+        outputs: BTreeMap<String, ArtifactInputV1>,
+    ) -> Result<BTreeMap<String, ArtifactInputV1>, String>;
+}
+
+/// Deterministic data-only Workers start in a fresh empty directory. They receive their
+/// declared inputs on stdin and cannot return filesystem edits as an admitted artifact.
+pub struct EmptyTaskEnvironment;
+impl TaskEnvironment for EmptyTaskEnvironment {
+    fn materialize(
+        &self,
+        cas: &Cas,
+        _: &TaskInvocationV1,
+        signature: &OperatorSignature,
+    ) -> Result<Sandbox, String> {
+        if !signature.effects.is_empty() {
+            return Err(
+                "Data-only environment does not admit filesystem or network effects".into(),
+            );
+        }
+        let manifest = review_source_git::Manifest::new(vec![]).map_err(|e| e.to_string())?;
+        Sandbox::materialize(&manifest, cas, Mode::EphemeralWrite).map_err(|e| e.to_string())
+    }
+    fn finish(
+        &self,
+        _: &Cas,
+        _: &TaskInvocationV1,
+        _: &OperatorSignature,
+        _: &PreparedTaskAttempt,
+        sandbox: Sandbox,
+        outputs: BTreeMap<String, ArtifactInputV1>,
+    ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
+        let sealed = sandbox.seal().map_err(|e| e.to_string())?;
+        if !sealed.unchanged() {
+            return Err(format!(
+                "Data-only Worker wrote undeclared files: {:?}",
+                sealed.mutations.paths()
+            ));
+        }
+        Ok(outputs)
+    }
+}
+
+/// Domain operators retain their own receipt semantics. This interface cannot create an
+/// Attempt, execute a child graph, authorize a plan, or change the parent's allowance.
+pub trait TaskDomain: TaskOperatorHost {
+    fn validate_context(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        feedback: &[String],
+        context_id: &str,
+    ) -> Result<(), String>;
+    fn validate_output(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        input: &TaskInvocationV1,
+        output: &TaskOutputV1,
+    ) -> Result<(), String>;
+    fn validate_result(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        result: &TaskResultV1,
+    ) -> Result<(), String>;
+}
+
+/// Supplied by the trusted host's developer session. Worker identity and serialized decision
+/// JSON never implement this capability. Model-containing environments must isolate this host.
+pub trait TaskDeveloper: Sync {
+    fn decide(
+        &self,
+        task: &TaskRevisionV1,
+        plan_id: &str,
+        decision: PlanDecisionKindV1,
+    ) -> Result<DeveloperGrant, String>;
+    fn current(&self, decision: &PlanDecisionV1) -> Result<(), String>;
+}
+
+pub struct NoTaskDeveloper;
+impl TaskDeveloper for NoTaskDeveloper {
+    fn decide(
+        &self,
+        _: &TaskRevisionV1,
+        _: &str,
+        _: PlanDecisionKindV1,
+    ) -> Result<DeveloperGrant, String> {
+        Err("This execution process has no developer decision capability".into())
+    }
+    fn current(&self, _: &PlanDecisionV1) -> Result<(), String> {
+        Err("This host cannot authenticate a recorded developer decision".into())
+    }
+}
+
+pub struct CapturedTaskAuthority<'a> {
+    pub compiler: &'a TaskPlanCompiler,
+    pub domain: &'a dyn TaskDomain,
+    pub developer: &'a dyn TaskDeveloper,
+}
+
+impl TaskAuthority for CapturedTaskAuthority<'_> {
+    fn validate_plan(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+    ) -> Result<Vec<GeneratedOriginV1>, String> {
+        self.compiler.validate_plan(cas, task, plan)?;
+        Ok(plan.generated_origins.clone())
+    }
+    fn authorize_decision(
+        &self,
+        task: &TaskRevisionV1,
+        id: &str,
+        decision: PlanDecisionKindV1,
+    ) -> Result<DeveloperGrant, String> {
+        self.developer.decide(task, id, decision)
+    }
+    fn authorization_current(&self, decision: &PlanDecisionV1) -> Result<(), String> {
+        self.developer.current(decision)
+    }
+    fn validate_context(
+        &self,
+        cas: &Cas,
+        _: &TaskRevisionV1,
+        _: &ExecutionPlanV1,
+        input: &TaskInvocationV1,
+        feedback: &[String],
+        id: &str,
+    ) -> Result<(), String> {
+        self.domain.validate_context(cas, input, feedback, id)
+    }
+    fn validate_output(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        input: &TaskInvocationV1,
+        output: &TaskOutputV1,
+    ) -> Result<(), String> {
+        self.domain.validate_output(cas, task, plan, input, output)
+    }
+    fn validate_result(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        result: &TaskResultV1,
+    ) -> Result<(), String> {
+        self.domain.validate_result(cas, task, result)
+    }
+}
+
+struct CommandWorker {
+    command: review_core::Command,
+    files: BTreeMap<String, Vec<u8>>,
+    instructions: String,
+    signature: OperatorSignature,
+    contract: WorkerContract,
+}
+
+pub struct CommandTaskHost<'a> {
+    run_id: String,
+    graph: CompiledTask,
+    workers: BTreeMap<String, CommandWorker>,
+    environment: &'a dyn TaskEnvironment,
+    domain: &'a dyn TaskDomain,
+}
+
+impl<'a> CommandTaskHost<'a> {
+    pub fn capture(
+        cas: &Cas,
+        compiler: &TaskPlanCompiler,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        graph: CompiledTask,
+        environment: &'a dyn TaskEnvironment,
+        domain: &'a dyn TaskDomain,
+    ) -> Result<Self, String> {
+        compiler.validate_plan(cas, task, plan)?;
+        if serde_json::to_value(&graph).map_err(|e| e.to_string())?
+            != envelope(cas, &plan.compiled_graph_id)?.payload
+        {
+            return Err("Task host received a different compiled graph".into());
+        }
+        let mut workers = BTreeMap::new();
+        for (id, node) in &graph.nodes {
+            let CompiledOperator::Primitive { operator, .. } = &node.operator else {
+                continue;
+            };
+            let slot = match operator {
+                TaskOperatorV1::Worker { slot }
+                | TaskOperatorV1::Verify { slot }
+                | TaskOperatorV1::FixVerify { slot } => slot,
+                _ => continue,
+            };
+            let name = &graph.slots[slot].worker;
+            let manifest = compiler.worker(name).ok_or("Missing captured Worker")?;
+            let TaskWorkerRunner::Command { command } = &manifest.runner else {
+                return Err("Model Worker requires its admitted Provider adapter".into());
+            };
+            let files = compiler
+                .package_files(name)
+                .ok_or("Missing captured Worker files")?;
+            let schema = |path: &str| -> Result<serde_json::Value, String> {
+                serde_json::from_slice(
+                    files
+                        .get(path)
+                        .ok_or_else(|| format!("Worker {name} lacks {path}"))?,
+                )
+                .map_err(|e| e.to_string())
+            };
+            let output_schemas = manifest
+                .signature
+                .contract
+                .outputs
+                .keys()
+                .filter(|port| {
+                    !environment
+                        .kernel_outputs(&manifest.signature)
+                        .contains(*port)
+                })
+                .map(|port| {
+                    schema(&format!("outputs/{port}.schema.json")).map(|s| (port.clone(), s))
+                })
+                .collect::<Result<_, _>>()?;
+            let contract =
+                WorkerContract::capture(cas, schema("input.schema.json")?, output_schemas)?;
+            let instructions =
+                String::from_utf8(files.get("instructions.md").cloned().unwrap_or_default())
+                    .map_err(|e| e.to_string())?;
+            workers.insert(
+                id.clone(),
+                CommandWorker {
+                    command: command.build(),
+                    files: files.clone(),
+                    instructions,
+                    signature: manifest.signature.clone(),
+                    contract,
+                },
+            );
+        }
+        Ok(Self {
+            run_id: task_run_id(&task.task_id).map_err(|e| e.to_string())?,
+            graph,
+            workers,
+            environment,
+            domain,
+        })
+    }
+
+    fn worker_execute(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: &PreparedTaskAttempt,
+        worker: &CommandWorker,
+    ) -> TaskWorkOutput {
+        let mut raw_artifact_ids = Vec::new();
+        let outputs = (|| {
+            let (context, _) = worker.contract.read_context(cas, attempt.context_id())?;
+            if context.invocation != *input {
+                return Err("Worker context belongs to another invocation".into());
+            }
+            let sandbox = self
+                .environment
+                .materialize(cas, input, &worker.signature)?;
+            let package = tempfile::tempdir().map_err(|e| e.to_string())?;
+            for (path, bytes) in &worker.files {
+                let path = package.path().join(path);
+                std::fs::create_dir_all(path.parent().ok_or("Worker file has no parent")?)
+                    .map_err(|e| e.to_string())?;
+                std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+            }
+            let mut command = worker.command.clone();
+            for arg in &mut command.args {
+                if let Some(path) = arg.value.strip_prefix("@package/") {
+                    if !worker.files.contains_key(path) {
+                        return Err("Worker command references an uncaptured package file".into());
+                    }
+                    arg.value = package
+                        .path()
+                        .join(path)
+                        .to_str()
+                        .ok_or("Worker path is not UTF-8")?
+                        .into();
+                }
+            }
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| e.to_string())?
+                .as_millis() as u64;
+            let remaining = attempt
+                .reservation()
+                .deadline_unix_ms
+                .checked_sub(now)
+                .filter(|ms| *ms > 0)
+                .ok_or("Worker deadline expired before process start")?;
+            let result = review_runner::task::invoke_command(
+                cas,
+                sandbox.root(),
+                tempfile::tempdir().map_err(|e| e.to_string())?.path(),
+                &command,
+                &worker.contract,
+                attempt.context_id(),
+                Duration::from_millis(remaining),
+            );
+            raw_artifact_ids = result.raw_artifact_ids;
+            let reply = result.reply?;
+            let producer = Producer::Attempt {
+                run_id: self.run_id.clone(),
+                node_id: input.node.clone(),
+                attempt_id: attempt.id().into(),
+            };
+            let mut outputs = BTreeMap::new();
+            for (port, values) in reply.outputs {
+                let declaration = &worker.signature.contract.outputs[&port];
+                let snapshot_id = match &declaration.affinity {
+                    PortAffinityV1::Unbound {} => None,
+                    PortAffinityV1::SameAs { input: port } => input
+                        .inputs
+                        .get(port)
+                        .ok_or("Worker output affinity input is absent")?
+                        .snapshot_id
+                        .clone(),
+                    PortAffinityV1::DerivedFrom { .. } => {
+                        return Err(
+                            "Only an installed seal operator can establish a derived Snapshot"
+                                .into(),
+                        );
+                    }
+                };
+                let retained: BTreeSet<_> = worker
+                    .signature
+                    .retains
+                    .get(&port)
+                    .into_iter()
+                    .flatten()
+                    .flat_map(|p| {
+                        input
+                            .inputs
+                            .get(p)
+                            .into_iter()
+                            .flat_map(|i| i.artifact_ids.iter().cloned())
+                    })
+                    .collect();
+                let mut ids = Vec::new();
+                for value in values {
+                    ids.push(
+                        cas.put_artifact(
+                            &declaration.artifact_type,
+                            producer.clone(),
+                            retained.iter().cloned().collect(),
+                            snapshot_id.clone(),
+                            value,
+                        )
+                        .map_err(|e| e.to_string())?
+                        .0,
+                    );
+                }
+                let value = ArtifactInputV1 {
+                    artifact_ids: ids,
+                    artifact_type: declaration.artifact_type.clone(),
+                    cardinality: declaration.cardinality,
+                    snapshot_id,
+                };
+                value.validate()?;
+                outputs.insert(port, value);
+            }
+            self.environment
+                .finish(cas, input, &worker.signature, attempt, sandbox, outputs)
+        })();
+        TaskWorkOutput {
+            outputs,
+            charged_tokens: Some(0),
+            raw_artifact_ids,
+            usage_id: None,
+            feedback_id: None,
+        }
+    }
+}
+
+impl TaskOperatorHost for CommandTaskHost<'_> {
+    fn prepare_context(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        feedback: &[String],
+    ) -> Result<String, String> {
+        match self.workers.get(&input.node) {
+            Some(worker) => worker
+                .contract
+                .prepare(cas, input, feedback, &worker.instructions),
+            None => self.domain.prepare_context(cas, input, feedback),
+        }
+    }
+    fn execute(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+    ) -> TaskWorkOutput {
+        match (self.workers.get(&input.node), attempt) {
+            (Some(worker), Some(attempt)) => self.worker_execute(cas, input, attempt, worker),
+            (Some(_), None) => TaskWorkOutput {
+                outputs: Err("Worker has no durably started Attempt".into()),
+                charged_tokens: Some(0),
+                raw_artifact_ids: vec![],
+                usage_id: None,
+                feedback_id: None,
+            },
+            (None, _) => self.domain.execute(cas, input, attempt),
+        }
+    }
+}
+
+impl TaskDomain for CommandTaskHost<'_> {
+    fn validate_context(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        feedback: &[String],
+        context_id: &str,
+    ) -> Result<(), String> {
+        if let Some(worker) = self.workers.get(&input.node) {
+            worker.contract.read_context(cas, context_id)?;
+            if worker
+                .contract
+                .prepare(cas, input, feedback, &worker.instructions)?
+                != context_id
+            {
+                return Err(
+                    "Task context changed captured inputs, instructions, contracts or feedback"
+                        .into(),
+                );
+            }
+            self.domain
+                .validate_context(cas, input, feedback, context_id)
+        } else {
+            self.domain
+                .validate_context(cas, input, feedback, context_id)
+        }
+    }
+    fn validate_output(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        input: &TaskInvocationV1,
+        output: &TaskOutputV1,
+    ) -> Result<(), String> {
+        let node = self
+            .graph
+            .nodes
+            .get(&input.node)
+            .ok_or("Unknown Task output node")?;
+        if matches!(
+            node.operator,
+            CompiledOperator::RootInputs | CompiledOperator::Select
+        ) {
+            return Ok(());
+        }
+        if let Some(worker) = self.workers.get(&input.node) {
+            self.environment
+                .validate_outputs(cas, input, &worker.signature, output)?;
+            let kernel_outputs = self.environment.kernel_outputs(&worker.signature);
+            let mut values = BTreeMap::new();
+            for (port, value) in &output.outputs {
+                if kernel_outputs.contains(port) {
+                    continue;
+                }
+                let mut payloads = Vec::new();
+                for id in &value.artifact_ids {
+                    let artifact = envelope(cas, id)?;
+                    for retained_port in worker.signature.retains.get(port).into_iter().flatten() {
+                        for expected in &input
+                            .inputs
+                            .get(retained_port)
+                            .ok_or("Retained receipt input is absent")?
+                            .artifact_ids
+                        {
+                            if !artifact.input_artifacts.contains(expected) {
+                                return Err("Worker output lost a retained input receipt".into());
+                            }
+                        }
+                    }
+                    payloads.push(artifact.payload);
+                }
+                values.insert(port.clone(), payloads);
+            }
+            worker.contract.validate_reply(
+                &serde_json::to_vec(&review_runner::task::WorkerReply {
+                    schema: "af.worker-reply/1".into(),
+                    outputs: values,
+                })
+                .map_err(|e| e.to_string())?,
+            )?;
+        }
+        self.domain.validate_output(cas, task, plan, input, output)
+    }
+    fn validate_result(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        result: &TaskResultV1,
+    ) -> Result<(), String> {
+        self.domain.validate_result(cas, task, result)
+    }
+}

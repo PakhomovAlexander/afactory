@@ -106,3 +106,5 @@ options you rejected and why — that is the part future-you needs.
   completeness](0047-preserve-task-wire-identity-and-review-completeness.md)
 - [0048 — Compile Task ports and fence developer plan
   decisions](0048-compile-task-ports-and-fence-developer-plan-decisions.md)
+- [0049 — Run Task Workers through shared durable
+  Attempts](0049-run-task-workers-through-shared-durable-attempts.md)

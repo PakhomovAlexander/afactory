@@ -4,9 +4,11 @@
 //! compatibility; the Store establishes identity, authority and legal transitions.
 
 pub mod event;
+pub mod execution;
 pub mod pipeline;
 pub mod plan;
 pub mod review;
+pub mod verification;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -50,7 +52,7 @@ pub(super) fn safe_number(value: u64) -> bool {
 
 /// Optional properties allow omission, not JSON null. Keep serde admission aligned with
 /// the wire schema before the value is canonicalized and receives an identity.
-pub(super) fn present_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+pub fn present_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
     T: Deserialize<'de>,

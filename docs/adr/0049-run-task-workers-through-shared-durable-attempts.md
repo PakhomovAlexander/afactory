@@ -1,0 +1,71 @@
+# ADR-0049 — Run Task Workers through shared durable Attempts
+
+**Status:** accepted for the unreleased Task increment, 2026-09-11. Command Workers and code
+operators execute through the shared runtime; CLI cutover and model admission remain in progress.
+
+## Decision
+
+`TaskRuntime` implements the existing graph scheduler's dispatch interface. The common Store
+owns Task invocations, reservations, Attempt starts, settlements and published ports. Domain
+handlers supply operations and validate receipts; they cannot schedule children or mint budgets.
+Every initial Attempt and retry rechecks the same exact-plan and developer-approval boundary.
+
+Success selects its output at durable settlement. The scheduler publishes selected ports in
+canonical order. Recovery after settlement can publish the saved result under a new writer
+lease without paying for another Attempt. An unsettled old-writer Attempt is fenced: started
+work retains its full reservation, while provably unstarted work releases its allowance. Late
+usage may increase charges after Task completion without changing the completed result.
+
+The Store verifies that paid output envelopes and their artifacts belong to the recorded
+Attempt. Invalid outputs retain their usage and cannot feed downstream nodes. Root outputs
+equal the normalized Task inputs. Select outputs equal the arm chosen by the recorded condition.
+Scheduler guards stay in execution authority and never become undeclared Worker input ports.
+
+Command Worker packages include `input.schema.json` and `outputs/PORT.schema.json` for their
+declared protocol ports. Input is `af.worker-request/1`; output is `af.worker-reply/1`. Schemas
+resolve only local references, with byte, depth and item bounds. A Worker supplies payloads;
+the host assigns canonical producers and Snapshot affinity. A document payload is never parsed
+as a Reviewer Result. Captured instructions, declared input artifacts, output contracts and
+admitted retry feedback form an exact, durable context manifest. Host runtime directories are
+outside the source tree so language caches cannot become implementation output.
+
+An installed environment may own additional output ports. A source-writing Worker has a
+`candidate` port of type `af/CandidateTree@1`; Worker JSON cannot fill it. Before that Attempt
+is accepted, the host seals its sandbox and captures every candidate byte and Manifest in CAS.
+The installed `seal` operator creates `af.task-snapshot/1` lineage and `af/SourceTree@1` output.
+These records do not reuse frozen Review Integration's checked `Capture::Derived` meaning.
+
+The installed `check` operator records typed passed, failed or inconclusive receipts for the
+current Snapshot. All named checks must exist in captured policy before compilation succeeds.
+A conditional evaluator executes only after those checks pass. The additive `accept` operator
+assembles exact check and evaluator evidence and retains the final Snapshot on every path:
+
+```text
+implement -> durable candidate -> seal S1 -> check S1
+                                             |
+                      +----------------------+-------------------+
+                      | passed               | failed/unavailable|
+                      v                      |                   |
+                 evaluate S1                 |                   |
+                      +----------------------+-------------------+
+                                             v
+                                      accept exact S1
+                              passed / failed / inconclusive
+```
+
+`accept` performs no Worker call. It cannot turn a missing evaluator into positive evidence or
+omit a mandatory check. It makes negative checks useful typed results while leaving failed or
+missing execution distinguishable. Task acceptance is derived from receipts independently of
+execution status; review's separate domain conclusion remains a P06 adapter obligation.
+
+## Compatibility and remaining work
+
+Legacy implementation and Review histories retain their native identities, original Stores
+and charge records. The common Store's read-only links capture stable origin and history-prefix
+identities; linking twice is idempotent and never imports legacy charges as new Task spending.
+Historical delivery and Review fixtures remain unchanged.
+
+The production Task-file and review command adapters, model Provider admission, authenticated
+developer CLI and the supported contained execution routes must still use these same boundaries.
+`trusted_local` remains an explicit non-isolating environment; it cannot claim container policy
+or protect a host approval service from arbitrary model-controlled host code.

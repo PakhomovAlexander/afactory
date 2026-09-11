@@ -41,8 +41,6 @@ pub struct TaskWorkerManifest {
     pub version: String,
     pub signature: OperatorSignature,
     pub runner: TaskWorkerRunner,
-    pub tokens_per_attempt: u64,
-    pub wall_ms_per_attempt: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -280,6 +278,13 @@ impl TaskPlanCompiler {
             || !is_package_name(&bytes.name)
             || !exact_version(&bytes.version)
             || bytes.files.keys().any(|path| !safe_path(path))
+            || bytes.files.is_empty()
+            || bytes.files.len() > 4096
+            || bytes
+                .files
+                .values()
+                .try_fold(0usize, |total, bytes| total.checked_add(bytes.len()))
+                .is_none_or(|total| total > 16 * 1024 * 1024)
         {
             return Err("Invalid captured Task package".into());
         }
@@ -304,7 +309,6 @@ impl TaskPlanCompiler {
                 if worker.schema != "af.worker/1"
                     || worker.name != bytes.name
                     || worker.version != bytes.version
-                    || worker.wall_ms_per_attempt == 0
                     || worker.signature.roles.is_empty()
                     || worker.signature.worker_input_type.is_none()
                     || worker.signature.worker_output_type.is_none()
@@ -312,9 +316,17 @@ impl TaskPlanCompiler {
                     return Err("Worker manifest has incompatible identity or protocol".into());
                 }
                 worker.signature.contract.validate()?;
+                let cost = worker
+                    .signature
+                    .attempt
+                    .as_ref()
+                    .ok_or("Worker signature requires bounded Attempt cost")?;
+                if cost.wall_ms == 0 {
+                    return Err("Worker Attempt wall limit is zero".into());
+                }
                 match &worker.runner {
-                    TaskWorkerRunner::Command {command} if command.program.trim().is_empty() || worker.tokens_per_attempt != 0 => return Err("Command Worker requires a program and zero model-token reservation".into()),
-                    TaskWorkerRunner::Model {provider_kind, model, effort} if !review_core::task::is_name(provider_kind) || model.trim().is_empty() || !review_core::task::is_name(effort) || worker.tokens_per_attempt == 0 => return Err("Model Worker needs explicit Provider/model/effort and token reservation".into()),
+                    TaskWorkerRunner::Command {command} if command.program.trim().is_empty() || cost.tokens != 0 => return Err("Command Worker requires a program and zero model-token reservation".into()),
+                    TaskWorkerRunner::Model {provider_kind, model, effort} if !review_core::task::is_name(provider_kind) || model.trim().is_empty() || !review_core::task::is_name(effort) || cost.tokens == 0 => return Err("Model Worker needs explicit Provider/model/effort and token reservation".into()),
                     _ => (),
                 }
                 Ok((None, Some(worker)))
@@ -368,6 +380,9 @@ impl TaskPlanCompiler {
     }
     pub fn worker(&self, name: &str) -> Option<&TaskWorkerManifest> {
         self.workers.get(name)
+    }
+    pub fn package_files(&self, name: &str) -> Option<&BTreeMap<String, Vec<u8>>> {
+        self.packages.get(name).map(|package| &package.bytes.files)
     }
 
     pub fn compile(
