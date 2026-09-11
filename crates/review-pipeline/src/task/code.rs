@@ -31,6 +31,14 @@ pub struct CodeTaskPolicy {
     pub schema: String,
     pub checks: BTreeMap<String, CheckDefinition>,
     pub check_wall_ms: u64,
+    /// Optional per-process cap within the aggregate check Attempt. Fixed-format migration
+    /// preserves each old Check deadline even when one Attempt owns several named checks.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub check_process_wall_ms: Option<u64>,
     pub require_container: bool,
 }
 
@@ -40,7 +48,15 @@ impl CodeTaskPolicy {
             || self.checks.is_empty()
             || self.checks.len() > 32
             || self.check_wall_ms == 0
-            || self.check_wall_ms > 3_600_000
+            || self.check_wall_ms
+                > self.check_process_wall_ms.map_or(3_600_000, |per_check| {
+                    per_check
+                        .saturating_mul(self.checks.len() as u64)
+                        .max(3_600_000)
+                })
+            || self
+                .check_process_wall_ms
+                .is_some_and(|ms| ms == 0 || ms > 3_600_000 || ms > self.check_wall_ms)
             || !self.checks.values().any(|check| check.required)
             || self.checks.iter().any(|(name, check)| {
                 !is_name(name) || name != &check.name || check.command.resolve().is_err()
@@ -299,6 +315,10 @@ impl CodeTaskDomain {
                 .map_err(|e| e.to_string())?
                 .as_millis() as u64;
             let remaining = attempt.reservation().deadline_unix_ms.saturating_sub(now);
+            let remaining = self
+                .policy
+                .check_process_wall_ms
+                .map_or(remaining, |limit| limit.min(remaining));
             let runner = CheckRunner::new(cas, sandbox.root())
                 .with_timeout(Duration::from_millis(remaining))
                 .with_env("HOME", runtime.path().display().to_string())

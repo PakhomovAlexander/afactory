@@ -1208,9 +1208,8 @@ fn main() {
                         )
                         .and_then(|options| {
                             init_review_workers();
-                            task::start(options)
+                            task_execution::start_legacy(options)
                         })
-                        .map(|verified| if verified { 0 } else { 3 })
                     }
                 }
                 cli::TaskCommand::Plan {

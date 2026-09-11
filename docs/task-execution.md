@@ -25,7 +25,8 @@ supplement it. Claude calls use only `claude-personal`.
 - [ ] P02/P03: common Store lifecycle, approvals, legacy links and typed compilation are
   implemented and verified locally; PR integration remains pending.
 - [ ] P04–P06: common implementation and Review command execution, Task-file CLI and verified
-  local delivery pass real-process fixtures; legacy entry-point cutover and live probes remain.
+  local delivery pass real-process fixtures. Fixed command implementation now uses the common
+  runtime; legacy Review entry-point cutover and live probes remain.
 - [ ] P07–P09: shared packages, embedded Review, bounded repair and fix verification.
 - [ ] P10–P12: selection, bounded generation, developer approval, export and starters.
 - [ ] P13/P14: Jira/document demonstrations, compatibility, benchmark and consumer release.
@@ -74,11 +75,14 @@ allowance. Complete finding-bearing Review Tasks retain `changes_requested` and 
 reviewers remain incomplete without authoritative partial sets. Both initial execution and
 replay preserve the domain exit. See the [Review Task walkthrough](task-execution/review-task.md).
 
-The complete deterministic gate passed with **730 tests, zero failures and 15 existing opt-in
+The complete deterministic gate passed with **732 tests, zero failures and 15 existing opt-in
 probes ignored**, across 97 suites. Formatting, Clippy and frozen synthetic reproduction passed.
-The 11 legacy implementation/delivery cases also pass unchanged. These checks establish the
-Task-file checkpoint, not completion of PR 1. The authenticated developer command boundary,
-live Provider boundary probes and legacy entry-point cutover remain. See the
+All eleven implementation/delivery behavior cases now pass through the common Store, with their
+original source preserved as a compatibility fixture. Native timeout and storage-failure tests
+retain reported usage. The final compatibility gate also covers preserved per-Check process
+deadlines inside the aggregate check Attempt. The authenticated developer command boundary,
+live Provider boundary probes and legacy Review entry-point cutover belong to the remaining
+increment. See the
 [Task-file walkthrough](task-execution/task-file.md),
 [ADR-0048](adr/0048-compile-task-ports-and-fence-developer-plan-decisions.md) and
 [ADR-0049](adr/0049-run-task-workers-through-shared-durable-attempts.md).
@@ -112,8 +116,9 @@ across 89 suites; formatting, Clippy and synthetic fixture reproduction passed. 
 checked 96 files with zero errors. Prior candidate gates also passed on read-only archives and
 with the exact cleared Gate environment. No model review was repeated after these corrections.
 
-**Current resume:** extend the common runtime to versioned implementation/review adapters and
-model Providers. Model admission and developer authentication must use the same Store guard.
+**Current resume:** finish versioned Review entry-point adapters and developer authentication
+through the common Store guard. Fixed implementation cutover is described in
+[ADR-0051](adr/0051-compile-fixed-implementation-tasks-into-the-common-runtime.md).
 Continue P00–P14 in the approved three PRs; this internal checkpoint does not reduce that scope.
 
 ## P00 baseline evidence
@@ -131,7 +136,7 @@ identify the selected compatibility anchors:
 |---|---|
 | `fixtures/synthetic/MANIFEST.tsv` | `ebe802e244b99d05240a7b073c5c2e70f2334282292507b23aa0418637b30dea` |
 | `schemas/reviewer-result-v1-conformance.json` | `fe309a0e8304906bce135afca612f466eb895de0b1177b7bc7f1d43ace7ae9cc` |
-| `crates/reviewctl/tests/task_implement.rs` | `21da1453f236d8f09d1ab4b15ce41274e8b785d5b260491d26d407a2ccee5cb7` |
+| `fixtures/compatibility/task-implement-v0.8.0.rs.fixture` (original regression source) | `21da1453f236d8f09d1ab4b15ce41274e8b785d5b260491d26d407a2ccee5cb7` |
 
 Compatibility obligations include legacy review result parsing and ledger replay, Campaign
 authority, incomplete/resumable review, existing Task completion/failure/delivery, consumer

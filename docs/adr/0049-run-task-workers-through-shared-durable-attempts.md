@@ -1,8 +1,9 @@
 # ADR-0049 — Run Task Workers through shared durable Attempts
 
 **Status:** accepted for the unreleased Task increment, 2026-09-11. Command Workers and code
-operators and the Task-file CLI execute through the shared runtime; legacy entry-point cutover
-and production model admission remain in progress.
+operators, the Task-file CLI and fixed command implementation entry point execute through the
+shared runtime. Native Task-file Models use charged Provider admission. Legacy review entry-point
+cutover remains in progress; fixed implementation migration follows ADR-0051.
 
 ## Decision
 

@@ -49,6 +49,10 @@ pub enum TaskWorkerRunner {
     Command {
         command: CommandSpec,
     },
+    LegacyTaskCommand {
+        command: CommandSpec,
+        protocol: review_runner::task::legacy::LegacyTaskProtocol,
+    },
     Model {
         provider_kind: String,
         model: String,
@@ -386,7 +390,7 @@ impl TaskPlanCompiler {
                     return Err("Worker Attempt wall limit is zero".into());
                 }
                 match &worker.runner {
-                    TaskWorkerRunner::Command {command} if command.program.trim().is_empty() || cost.tokens != 0 => return Err("Command Worker requires a program and zero model-token reservation".into()),
+                    TaskWorkerRunner::Command {command} | TaskWorkerRunner::LegacyTaskCommand {command, ..} if command.program.trim().is_empty() || cost.tokens != 0 => return Err("Command Worker requires a program and zero model-token reservation".into()),
                     TaskWorkerRunner::Model {provider_kind, model, effort} if !review_core::task::is_name(provider_kind) || model.trim().is_empty() || !review_core::task::is_name(effort) || cost.tokens == 0 => return Err("Model Worker needs explicit Provider/model/effort and token reservation".into()),
                     _ => (),
                 }
@@ -406,7 +410,10 @@ impl TaskPlanCompiler {
             .get(name)
             .ok_or("Worker package is not captured")?;
         match (&worker.runner, &settings.execution) {
-            (TaskWorkerRunner::Command { .. }, WorkerExecutionV1::Command {}) => (),
+            (
+                TaskWorkerRunner::Command { .. } | TaskWorkerRunner::LegacyTaskCommand { .. },
+                WorkerExecutionV1::Command {},
+            ) => (),
             (
                 TaskWorkerRunner::Model {
                     provider_kind: wanted_kind,

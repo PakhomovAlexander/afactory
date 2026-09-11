@@ -316,7 +316,7 @@ impl Events {
                         let output = count("output_tokens");
                         let reasoning = count("reasoning_output_tokens");
                         let cache_write = count("cache_write_input_tokens");
-                        let chargeable = input.saturating_sub(cache_read) + output;
+                        let chargeable = input.saturating_sub(cache_read).saturating_add(output);
                         events.cost_tokens = events.cost_tokens.saturating_add(chargeable);
                         add_usage(&mut events.usage.input_tokens, input);
                         add_usage(&mut events.usage.output_tokens, output);

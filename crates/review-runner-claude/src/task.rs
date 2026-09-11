@@ -60,10 +60,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         for (name, value) in &self.grants {
             runner = runner.with_env(name, value);
         }
-        let capture = match runner.capture_with_stdin(cas, &command, input) {
-            Ok(capture) => capture,
-            Err(error) => return ModelWorkerReturn::failed(error),
-        };
+        let capture = runner.capture_settled_with_stdin(cas, &command, input);
         let parsed = serde_json::from_slice::<serde_json::Value>(&capture.stdout).ok();
         let usage = parsed
             .as_ref()
@@ -79,8 +76,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         let cache_write = count("cache_creation_input_tokens");
         let charge = input
             .zip(output)
-            .and_then(|(i, o)| i.checked_add(o))
-            .and_then(|n| n.checked_add(cache_write.unwrap_or(0)));
+            .map(|(i, o)| i.saturating_add(o).saturating_add(cache_write.unwrap_or(0)));
         let usage = charge.map(|chargeable_tokens| TokenUsage {
             input_tokens: input,
             output_tokens: output,
@@ -89,7 +85,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             reasoning_tokens: None,
             chargeable_tokens,
         });
-        let success = capture.status.success()
+        let success = capture.status.as_ref().is_ok_and(|status| status.success())
             && parsed.as_ref().is_some_and(|v| {
                 v.get("is_error").and_then(serde_json::Value::as_bool) == Some(false)
             });
@@ -102,12 +98,12 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 .map(|s| s.as_bytes().to_vec())
                 .ok_or_else(|| "Claude Worker returned no final message".into())
         } else {
-            Err(format!("Claude Worker failed with {}", capture.status))
+            Err(format!("Claude Worker failed with {:?}", capture.status))
         };
         ModelWorkerReturn {
             message,
             usage,
-            raw_artifact_ids: vec![capture.raw_artifact],
+            raw_artifact_ids: capture.raw_artifact_ids,
         }
     }
 }

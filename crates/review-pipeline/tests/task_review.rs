@@ -66,6 +66,7 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
         let code = CodeTaskPolicy {
+            check_process_wall_ms: None,
             schema: "af.code-task-policy/1".into(),
             checks: BTreeMap::from([(
                 "syntax".into(),

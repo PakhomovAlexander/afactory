@@ -296,7 +296,10 @@ impl<'a> CapturedTaskHost<'a> {
             let name = &graph.slots[slot].worker;
             let manifest = compiler.worker(name).ok_or("Missing captured Worker")?;
             let transport = match &manifest.runner {
-                TaskWorkerRunner::Command { command } => WorkerTransport::Command(command.build()),
+                TaskWorkerRunner::Command { command }
+                | TaskWorkerRunner::LegacyTaskCommand { command, .. } => {
+                    WorkerTransport::Command(command.build())
+                }
                 TaskWorkerRunner::Model { provider_kind, .. } => {
                     let model = models
                         .get(slot)
@@ -338,6 +341,12 @@ impl<'a> CapturedTaskHost<'a> {
                 .collect::<Result<_, _>>()?;
             let contract =
                 WorkerContract::capture(cas, schema("input.schema.json")?, output_schemas)?;
+            let contract = match &manifest.runner {
+                TaskWorkerRunner::LegacyTaskCommand { protocol, .. } => {
+                    contract.with_legacy_protocol(cas, *protocol)?
+                }
+                _ => contract,
+            };
             let instructions =
                 String::from_utf8(files.get("instructions.md").cloned().unwrap_or_default())
                     .map_err(|e| e.to_string())?;
@@ -675,7 +684,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
                 }
                 values.insert(port.clone(), payloads);
             }
-            worker.contract.validate_reply(
+            worker.contract.validate_typed_reply(
                 &serde_json::to_vec(&review_runner::task::WorkerReply {
                     schema: "af.worker-reply/1".into(),
                     outputs: values,

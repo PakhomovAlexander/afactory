@@ -1121,6 +1121,16 @@ pub struct RawCapture {
     pub raw_artifact: String,
 }
 
+/// Process evidence remains available for usage accounting even when the deadline or CAS
+/// fails. A failed status never authorizes a business output, including a complete message
+/// printed before a timeout. Raw bytes have already had credential grants redacted.
+pub struct SettledCapture {
+    pub status: Result<std::process::ExitStatus, RunnerError>,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub raw_artifact_ids: Vec<String>,
+}
+
 impl RawCapture {
     /// Map a nonzero exit to [`RunnerError::Failed`] with the last (redacted) stderr line.
     pub fn require_success(self) -> Result<RawCapture, RunnerError> {
@@ -1198,9 +1208,67 @@ impl ModelRunner {
         command: &Command,
         input: Option<Vec<u8>>,
     ) -> Result<RawCapture, RunnerError> {
+        let capture = self.capture_process(command, input);
+        let status = capture.status.map_err(|error| match error {
+            RunnerError::TimedOut { after_ms, .. } => RunnerError::TimedOut {
+                after_ms,
+                raw_artifact: cas.put(&capture.stdout).ok(),
+            },
+            error => error,
+        })?;
+        let raw_artifact = cas
+            .put(&capture.stdout)
+            .map_err(|e| RunnerError::Unavailable(format!("storing raw output: {e}")))?;
+        Ok(RawCapture {
+            status,
+            stdout: capture.stdout,
+            stderr: capture.stderr,
+            raw_artifact,
+        })
+    }
+
+    /// Task adapters decode usage from both successful and failed process captures. Storage
+    /// failure refuses the output without erasing usage that was already reported on stdout.
+    pub fn capture_settled_with_stdin(
+        &self,
+        cas: &Cas,
+        command: &Command,
+        input: Vec<u8>,
+    ) -> SettledCapture {
+        let mut capture = self.capture_process(command, Some(input));
+        for bytes in [&capture.stdout, &capture.stderr] {
+            if bytes.is_empty() {
+                continue;
+            }
+            match cas.put(bytes) {
+                Ok(id) => capture.raw_artifact_ids.push(id),
+                Err(error) => {
+                    capture.status = Err(RunnerError::Unavailable(format!(
+                        "storing raw output: {error}"
+                    )));
+                }
+            }
+        }
+        capture
+    }
+
+    fn capture_process(&self, command: &Command, input: Option<Vec<u8>>) -> SettledCapture {
+        let mut capture = SettledCapture {
+            status: Err(RunnerError::Refused("unresolved command".into())),
+            stdout: vec![],
+            stderr: vec![],
+            raw_artifact_ids: vec![],
+        };
         let argv = command
             .resolve()
-            .map_err(|e| RunnerError::Refused(e.to_string()))?;
+            .map_err(|e| RunnerError::Refused(e.to_string()));
+        let argv = match argv {
+            Ok(argv) => argv,
+            Err(error) => {
+                capture.status = Err(error);
+                return capture;
+            }
+        };
 
         let mut cmd = std::process::Command::new(&command.program);
         cmd.args(&argv);
@@ -1215,37 +1283,38 @@ impl ModelRunner {
         for grant in &self.grants {
             cmd.env(&grant.name, &grant.value);
         }
-        let output =
-            run_supervised(&mut cmd, input, self.timeout).map_err(|error| match error {
-                SupervisedError::TimedOut { stdout, .. } => {
-                    let stdout = redact(stdout, &self.grants);
-                    RunnerError::TimedOut {
-                        after_ms: self.timeout.as_millis() as u64,
-                        raw_artifact: cas.put(&stdout).ok(),
+        match run_supervised(&mut cmd, input, self.timeout) {
+            Ok(output) => {
+                capture.status = Ok(output.status);
+                capture.stdout = redact(output.stdout, &self.grants);
+                capture.stderr = redact(output.stderr, &self.grants);
+                if output.stderr_held {
+                    capture
+                        .stderr
+                        .extend_from_slice(b"\nstderr was still held after 5 seconds\n");
+                }
+            }
+            Err(error) => {
+                capture.status = Err(match error {
+                    SupervisedError::TimedOut { stdout, stderr } => {
+                        capture.stdout = redact(stdout, &self.grants);
+                        capture.stderr = redact(stderr, &self.grants);
+                        RunnerError::TimedOut {
+                            after_ms: self.timeout.as_millis() as u64,
+                            raw_artifact: None,
+                        }
                     }
-                }
-                SupervisedError::Spawn(error) => {
-                    RunnerError::Unavailable(format!("{}: {error}", command.program))
-                }
-                error => RunnerError::Failed {
-                    exit_code: -1,
-                    stderr_excerpt: error.to_string(),
-                },
-            })?;
-        let stdout = redact(output.stdout, &self.grants);
-        let mut stderr = redact(output.stderr, &self.grants);
-        if output.stderr_held {
-            stderr.extend_from_slice(b"\nstderr was still held after 5 seconds\n");
+                    SupervisedError::Spawn(error) => {
+                        RunnerError::Unavailable(format!("{}: {error}", command.program))
+                    }
+                    error => RunnerError::Failed {
+                        exit_code: -1,
+                        stderr_excerpt: error.to_string(),
+                    },
+                });
+            }
         }
-        let raw_artifact = cas
-            .put(&stdout)
-            .map_err(|e| RunnerError::Unavailable(format!("storing raw output: {e}")))?;
-        Ok(RawCapture {
-            status: output.status,
-            stdout,
-            stderr,
-            raw_artifact,
-        })
+        capture
     }
 }
 

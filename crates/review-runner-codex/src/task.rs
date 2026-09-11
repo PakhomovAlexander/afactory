@@ -70,24 +70,18 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         if let Some(home) = &self.codex_home {
             runner = runner.with_grant("CODEX_HOME", home);
         }
-        let capture = match runner.capture_with_stdin(cas, &command, input) {
-            Ok(capture) => capture,
-            Err(error) => return ModelWorkerReturn::failed(error),
-        };
-        let events = std::panic::catch_unwind(|| Events::parse(&capture.stdout));
+        let capture = runner.capture_settled_with_stdin(cas, &command, input);
+        let events = Events::parse(&capture.stdout);
         let mut returned = ModelWorkerReturn {
             message: Err("Codex Worker framing failed".into()),
             usage: None,
-            raw_artifact_ids: vec![capture.raw_artifact],
-        };
-        let Ok(events) = events else {
-            return returned;
+            raw_artifact_ids: capture.raw_artifact_ids,
         };
         if events.usage.input_tokens.is_some() {
             returned.usage = Some(events.usage);
         }
-        if !capture.status.success() || events.error.is_some() {
-            returned.message = Err(format!("Codex Worker failed with {}", capture.status));
+        if !capture.status.as_ref().is_ok_and(|status| status.success()) || events.error.is_some() {
+            returned.message = Err(format!("Codex Worker failed with {:?}", capture.status));
             return returned;
         }
         let read_final = || -> Result<Option<Vec<u8>>, String> {

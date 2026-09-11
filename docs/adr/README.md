@@ -110,3 +110,5 @@ options you rejected and why — that is the part future-you needs.
   Attempts](0049-run-task-workers-through-shared-durable-attempts.md)
 - [0050 — Reduce Review Tasks with the canonical domain
   Ledger](0050-reduce-review-tasks-with-the-canonical-domain-ledger.md)
+- [0051 — Compile fixed implementation Tasks into the common
+  runtime](0051-compile-fixed-implementation-tasks-into-the-common-runtime.md)

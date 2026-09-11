@@ -27,6 +27,8 @@ use review_store::store::task::{TaskLease, TaskProjection};
 use review_store::{Cas, EventStore, validate_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+mod legacy;
+pub(super) use legacy::start_legacy;
 
 pub(super) struct StartOptions {
     pub file: PathBuf,
@@ -327,7 +329,10 @@ fn restore_compiler(
     }
     for name in authority.packages.keys() {
         if let Some(worker) = compiler.worker(name) {
-            if !matches!(worker.runner, TaskWorkerRunner::Command { .. }) {
+            if !matches!(
+                worker.runner,
+                TaskWorkerRunner::Command { .. } | TaskWorkerRunner::LegacyTaskCommand { .. }
+            ) {
                 continue;
             }
             compiler.bind_worker(
@@ -449,7 +454,7 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
     let (repo, state) = state_path(&options.repo, options.state.as_deref())?;
     std::fs::create_dir_all(&state).map_err(|e| e.to_string())?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
-    let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    let store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
     if store
         .task_projection(&cas, &file.task_id)
         .map_err(|e| e.to_string())?
@@ -465,7 +470,7 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
     let policy_source = Capture::new(&source_repo, &cas)
         .committed(&options.authority)
         .map_err(|e| e.to_string())?;
-    let (authority_id, authority, mut compiler) = capture_authority(&cas, &policy_source.manifest)?;
+    let authority = capture_authority(&cas, &policy_source.manifest)?;
     let source = if options.uncommitted {
         Capture::new(&source_repo, &cas)
             .dirty()
@@ -473,17 +478,40 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
     } else {
         policy_source
     };
+    start_captured(
+        options, file, bytes, started, cas, store, source, authority, None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn start_captured(
+    options: StartOptions,
+    file: TaskFile,
+    bytes: Vec<u8>,
+    started: u64,
+    cas: Cas,
+    mut store: EventStore,
+    source: review_source_git::Snapshot,
+    (authority_id, authority, mut compiler): (String, RunAuthority, TaskPlanCompiler),
+    legacy_budget: Option<u64>,
+) -> Result<i32, String> {
     let origin=cas.put_json(&json!({"schema":"af.task-source-origin/1","repository_id":source.repository_id,"source_revision":source.source_revision,"content_digest":source.content_digest})).map_err(|e|e.to_string())?;
     let snapshot = capture_snapshot(&cas, &source.manifest, &origin, None)?;
     let source_port = source_tree(&cas, producer(), &snapshot, vec![origin])?;
     let input_file = cas.put(&bytes).map_err(|e| e.to_string())?;
+    let requirements_payload = match legacy_budget {
+        Some(tokens) => {
+            json!({"text":file.goal,"task_id":file.task_id,"budget":{"reserved_tokens":tokens}})
+        }
+        None => json!({"text":file.goal}),
+    };
     let requirements = cas
         .put_artifact(
             "af/Requirements@1",
             producer(),
             vec![input_file.clone()],
             None,
-            json!({"text":file.goal}),
+            requirements_payload,
         )
         .map_err(|e| e.to_string())?
         .0;
@@ -863,6 +891,37 @@ fn present(
     };
     let mut value = json!({"schema":"af/task-inspection@2","task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
+    let events = store
+        .replay(&review_store::store::task::task_run_id(id).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    let mut history = Vec::new();
+    let mut execution = Vec::new();
+    for event in events {
+        let transition: review_core::task::event::TaskTransitionV1 =
+            serde_json::from_value(event.payload).map_err(|e| e.to_string())?;
+        if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
+            &transition.change
+        {
+            let record: review_core::task::execution::TaskExecutionRecordV1 = artifact(
+                cas,
+                record_id,
+                review_core::task::execution::TASK_EXECUTION_RECORD_V1,
+            )?;
+            let mut entry = json!({"artifact_id":record_id,"record":record});
+            if let review_core::task::execution::TaskExecutionRecordV1::Settled {
+                result:
+                    review_core::task::execution::TaskAttemptResultV1::Failed { diagnostic_id, .. },
+                ..
+            } = &record
+            {
+                entry["diagnostic"] = cas.get_json(diagnostic_id).map_err(|e| e.to_string())?;
+            }
+            execution.push(entry);
+        }
+        history.push(json!({"sequence":event.sequence,"transition":transition}));
+    }
+    value["history"] = json!(history);
+    value["execution_records"] = json!(execution);
     if let Some(delivery) = delivery_view(cas, &state)? {
         value["delivery"] = delivery;
     }

@@ -190,16 +190,18 @@ fn worker_inputs(ports: &[&str]) -> Value {
 
 #[test]
 fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator() {
-    for case in ["passed", "failed", "inconclusive"] {
+    for case in ["passed", "failed", "inconclusive", "process_timeout"] {
         let dir = tempfile::tempdir().unwrap();
         let cas = Cas::open(dir.path().join("cas")).unwrap();
         let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
         let command: review_core::Command = match case {
             "passed" => serde_json::from_value(json!({"program":"/usr/bin/python3","args":[{"value":"-B","provenance":"literal"},{"value":"-c","provenance":"literal"},{"value":"import pagination; assert pagination.paginate(list(range(7)),2,3) == [2,3,4]","provenance":"literal"}]})).unwrap(),
             "failed" => review_core::Command::new("/usr/bin/false",vec![]),
+            "process_timeout" => review_core::Command::new("/bin/sh",vec![review_core::Arg::literal("-c"),review_core::Arg::literal("sleep 1; exit 0")]),
             _ => review_core::Command::new("/no-such-af-check",vec![]),
         };
         let policy = CodeTaskPolicy {
+            check_process_wall_ms: (case == "process_timeout").then_some(100),
             schema: "af.code-task-policy/1".into(),
             checks: BTreeMap::from([(
                 "pagination".into(),

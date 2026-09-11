@@ -13,6 +13,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{ContextManifest, ModelRunner, RunnerError, TokenUsage};
+pub mod legacy;
+use legacy::LegacyTaskProtocol;
 
 pub const TASK_CONTEXT_V1: &str = "af/TaskContext@1";
 pub const MAX_WORKER_BYTES: usize = 1024 * 1024;
@@ -68,6 +70,7 @@ pub struct WorkerContract {
     output_schemas: BTreeMap<String, Value>,
     input: jsonschema::Validator,
     outputs: BTreeMap<String, jsonschema::Validator>,
+    legacy: Option<LegacyTaskProtocol>,
 }
 
 /// Contracts are local captured data. External schema resolution would add undeclared
@@ -127,7 +130,20 @@ impl WorkerContract {
             output_schemas: outputs,
             input: input_validator,
             outputs: output_validators,
+            legacy: None,
         })
+    }
+
+    /// The transport version is part of the captured contract identity. Legacy reply
+    /// translation still undergoes exactly the same output schema and port admission.
+    pub fn with_legacy_protocol(
+        mut self,
+        cas: &Cas,
+        protocol: LegacyTaskProtocol,
+    ) -> Result<Self, String> {
+        self.id = cas.put_json(&serde_json::json!({"schema":"af.worker-compatibility/1","contract_id":self.id,"protocol":protocol})).map_err(|e|e.to_string())?;
+        self.legacy = Some(protocol);
+        Ok(self)
     }
 
     pub fn id(&self) -> &str {
@@ -135,6 +151,20 @@ impl WorkerContract {
     }
 
     pub fn validate_reply(&self, bytes: &[u8]) -> Result<WorkerReply, String> {
+        if bytes.len() > MAX_WORKER_BYTES {
+            return Err("Worker reply exceeds byte bound".into());
+        }
+        match self.legacy {
+            Some(protocol) => self.validate_typed_reply(
+                &serde_json::to_vec(&protocol.reply(bytes)?).map_err(|e| e.to_string())?,
+            ),
+            None => self.validate_typed_reply(bytes),
+        }
+    }
+
+    /// Durable artifacts are already normalized. Never translate an admitted reply a second
+    /// time when checking the Store publication boundary or replaying its evidence.
+    pub fn validate_typed_reply(&self, bytes: &[u8]) -> Result<WorkerReply, String> {
         if bytes.len() > MAX_WORKER_BYTES {
             return Err("Worker reply exceeds byte bound".into());
         }
@@ -240,7 +270,10 @@ impl WorkerContract {
             None,
             WORKER_REPLY_FORMAT.len(),
         );
-        let bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
+        let bytes = match self.legacy {
+            Some(protocol) => protocol.render(cas, invocation, &request, &mut manifest)?,
+            None => serde_json::to_vec(&request).map_err(|e| e.to_string())?,
+        };
         if bytes.len() > MAX_WORKER_BYTES {
             return Err("Worker context exceeds byte bound; narrow the declared input".into());
         }

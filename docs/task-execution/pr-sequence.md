@@ -5,14 +5,19 @@ package numbers remain the acceptance checklist; they are not separate PRs.
 
 | PR | Repository | Scope | Required demonstration |
 |---|---|---|---|
-| 1 | afactory | P00–P06: contracts, compiler, Store, approvals and shared execution | Local implementation and standalone review use the same scheduler and durable Attempt path |
-| 2 | afactory | P07–P13 and kernel P14: packages, embedding, repair, selection, generation, export, starters, Jira/document and release preparation | Implement a ticket with embedded review; generate, approve, export and reuse a no-fit plan |
+| 1 | afactory | P00–P05 and standalone P06 runtime: contracts, compiler, Store, approval guard, implementation cutover and Task-file review | Local implementation and standalone review use the same scheduler and durable Attempt path |
+| 2 | afactory | Legacy P06 review cutover, P07–P13 and kernel P14: packages, embedding, repair, selection, generation, authenticated approval, export, starters, Jira/document and release preparation | Implement a ticket with embedded review; generate, approve, export and reuse a no-fit plan |
 | 3 | afactory-hub | Accepted design, examples, tracking and P14 consumer migration | Supported released binary and exact consumer lock validate together |
 
 PR 2 depends on PR 1. PR 3's active release pin moves only after the corresponding release
 exists with verified checksums. The owner requested PR delivery; release merging remains the
 final publication decision. A missing released asset cannot be replaced by a development build
 or an invented digest.
+
+The legacy Review entry-point conversion is grouped with PR 2's final composition and repair
+semantics. PR 1 already runs standalone Review Task files through the common runtime; it retains
+the original runner for existing Review format entry points. This boundary changes neither the
+full-plan acceptance checklist nor the requirement to complete Review migration before release.
 
 Each PR receives one light external `af review` Round: Fable 5.1/high on `claude-personal`
 for correctness and architecture, Opus 5/xhigh on `claude-personal` for performance, and
