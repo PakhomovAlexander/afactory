@@ -46,6 +46,11 @@ acceptance requires current source/content checks and an independent evaluation;
 code Snapshot identity. Captured source text supplies requirements and evidence, never execution
 authority.
 
+**Task Review Continuation**:
+Exact independently verified repair evidence projected into the next admitted discovery Round.
+It retains the original Round and claim identities, grants no complete-Review coverage and does
+not create legacy Resolution authority. Later discovery can reopen a previously fixed claim.
+
 ### What is reviewed
 
 **Snapshot**:

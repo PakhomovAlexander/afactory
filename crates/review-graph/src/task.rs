@@ -1214,8 +1214,10 @@ impl Compiler<'_> {
                         {
                             return Err(format!("{qualified} binds an unknown operator input"));
                         }
-                        if matches!(operator, TaskOperatorV1::RepairAccept {})
-                            && !bound.contains_key("verification")
+                        if matches!(
+                            operator,
+                            TaskOperatorV1::RepairAccept {} | TaskOperatorV1::ReviewContinue {}
+                        ) && !bound.contains_key("verification")
                         {
                             return Err(
                                 "Repair acceptance must bind its reserved fix verifier".into()
@@ -1476,6 +1478,7 @@ fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
         TaskOperatorV1::ReviewAccept {} => Ok("review-accept"),
         TaskOperatorV1::AttestFixes {} => Ok("attest-fixes"),
         TaskOperatorV1::RepairAccept {} => Ok("repair-accept"),
+        TaskOperatorV1::ReviewContinue {} => Ok("review-continue"),
         _ => Err("Operator requires package expansion".into()),
     }
 }

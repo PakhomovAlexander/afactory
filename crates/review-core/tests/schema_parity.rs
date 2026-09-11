@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 89] = [
+const SCHEMAS: [&str; 90] = [
     "document-sources-v1.json",
     "document-draft-v1.json",
     "document-v1.json",
@@ -59,6 +59,7 @@ const SCHEMAS: [&str; 89] = [
     "task-fix-verification-v1.json",
     "task-fix-receipt-v1.json",
     "task-review-claims-v1.json",
+    "task-review-continuation-v1.json",
     "task-snapshot-v1.json",
     "source-tree-v1.json",
     "candidate-tree-v1.json",
@@ -426,6 +427,41 @@ fn review_task_round_contracts_preserve_completeness() {
                 .is_err()
         );
     }
+}
+
+#[test]
+fn review_continuation_keeps_repair_evidence_distinct_from_closed_rounds() {
+    use review_core::task::{repair::TaskReviewContinuationV1, review::TaskReviewSubjectV1};
+    let id = format!("sha256:{}", "a".repeat(64));
+    let value = json!({"invocation":{"plan_id":id,"node":"root.continue","inputs":{}},
+        "original_round_report_id":id,"prior_history_id":id,
+        "assessment":{"continuation_id":id,"current_subject_id":id,"current_snapshot_id":id,
+            "check_receipt_id":id,"scope":"targeted_fixes","claims":{"finding":{
+                "expected_view_id":id,"attestation_id":id,"receipt_id":id,"outcome":"positive"}}}});
+    assert_valid("task-review-continuation-v1.json", &value);
+    serde_json::from_value::<TaskReviewContinuationV1>(value.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let mut forged = value;
+    forged["assessment"]["scope"] = json!("complete_review");
+    assert!(!validator("task-review-continuation-v1.json").is_valid(&forged));
+    assert!(serde_json::from_value::<TaskReviewContinuationV1>(forged).is_err());
+    let mut subject = json!({"subject_id":id,"snapshot_id":id,"prior_history_id":id,
+        "continuation_id":id,"round":2,"subject":{"kind":"whole-tree","head_snapshot_id":id}});
+    assert_valid("task-review-subject-v1.json", &subject);
+    serde_json::from_value::<TaskReviewSubjectV1>(subject.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    subject["round"] = json!(1);
+    assert!(!validator("task-review-subject-v1.json").is_valid(&subject));
+    assert!(
+        serde_json::from_value::<TaskReviewSubjectV1>(subject)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
 }
 
 #[test]

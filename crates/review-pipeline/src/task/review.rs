@@ -22,6 +22,7 @@ use super::code::CodeTaskDomain;
 use super::host::TaskDomain;
 use super::source::{invocation_producer, source_input};
 use super::{TaskOperatorHost, TaskWorkOutput, envelope};
+mod continuation;
 mod implementation;
 mod repair;
 
@@ -108,6 +109,14 @@ pub fn review_signatures(
                 port(SOURCE_TREE_V1, PortAffinityV1::Unbound {}, true),
             ),
             ("history".into(), history.clone()),
+            (
+                "continuation".into(),
+                port(
+                    review_core::task::repair::TASK_REVIEW_CONTINUATION_V1,
+                    same(),
+                    true,
+                ),
+            ),
         ]),
         BTreeMap::from([(
             "subject".into(),
@@ -167,6 +176,7 @@ pub fn review_signatures(
         ),
     ]);
     installed.extend(repair::signatures(policy_id, policy.allow_targeted_repairs));
+    installed.insert("operator/review-continue".into(), continuation::signature());
     Ok(installed)
 }
 
@@ -204,6 +214,7 @@ impl ReviewTaskDomain {
                         | TaskOperatorV1::ReviewAccept {}
                         | TaskOperatorV1::AttestFixes {}
                         | TaskOperatorV1::RepairAccept {}
+                        | TaskOperatorV1::ReviewContinue {}
                 )
                 && installed
                     .get(signature)
@@ -246,7 +257,7 @@ impl ReviewTaskDomain {
             if matches!(
                 node.operator,
                 CompiledOperator::Primitive {
-                    operator: TaskOperatorV1::RepairAccept {},
+                    operator: TaskOperatorV1::RepairAccept {} | TaskOperatorV1::ReviewContinue {},
                     ..
                 }
             ) {
@@ -428,9 +439,16 @@ impl ReviewTaskDomain {
             change_set,
             snapshot_id: snapshot.clone(),
             prior_history_id: history_id,
+            continuation_id: input
+                .inputs
+                .get("continuation")
+                .map(|p| p.artifact_ids[0].clone()),
             round,
         };
         bound.validate()?;
+        if let Some(id) = &bound.continuation_id {
+            self.restore_continuation(cas, id, &bound, input)?;
+        }
         self.put(
             cas,
             input,
@@ -484,6 +502,9 @@ impl ReviewTaskDomain {
         {
             return Err("Review context changed its captured Subject or Change Set bytes".into());
         }
+        if let Some(id) = &subject.continuation_id {
+            self.restore_continuation(cas, id, &subject, input)?;
+        }
         Ok(subject)
     }
 
@@ -514,6 +535,20 @@ impl ReviewTaskDomain {
                     || prior.demand_set_id.as_ref() != Some(&demand_set_id)
                 {
                     return Err("Review history changed its original closed Round and views".into());
+                }
+                ledger
+                    .bind_task_subject(cas, &subject.subject_id, prior.round)
+                    .map_err(|e| e.to_string())?;
+                if let Some(id) = &subject.continuation_id {
+                    let continuation = self.restore_continuation(cas, id, subject, input)?;
+                    // A failed or unavailable current check cannot promote any positive claim.
+                    if self.code.review_checks(cas, &continuation.invocation)?
+                        == ReceiptOutcomeV1::Passed
+                    {
+                        ledger
+                            .project_task_fixes(cas, &continuation.assessment)
+                            .map_err(|e| e.to_string())?;
+                    }
                 }
                 ledger
                     .bind_task_subject(cas, &subject.subject_id, subject.round)
@@ -1023,6 +1058,7 @@ impl TaskOperatorHost for ReviewTaskDomain {
             Ok(TaskOperatorV1::ReviewAccept {}) => self.accept_implementation(cas, input),
             Ok(TaskOperatorV1::AttestFixes {}) => self.attest_fixes(cas, input),
             Ok(TaskOperatorV1::RepairAccept {}) => self.accept_repair(cas, input),
+            Ok(TaskOperatorV1::ReviewContinue {}) => self.continue_review(cas, input),
             _ => return self.code.execute(cas, input, attempt),
         };
         TaskWorkOutput {
@@ -1078,6 +1114,7 @@ impl TaskDomain for ReviewTaskDomain {
             TaskOperatorV1::ReviewAccept {} => Some(self.accept_implementation(cas, input)?),
             TaskOperatorV1::AttestFixes {} => Some(self.attest_fixes(cas, input)?),
             TaskOperatorV1::RepairAccept {} => Some(self.accept_repair(cas, input)?),
+            TaskOperatorV1::ReviewContinue {} => Some(self.continue_review(cas, input)?),
             _ => None,
         };
         if let Some(expected) = expected {

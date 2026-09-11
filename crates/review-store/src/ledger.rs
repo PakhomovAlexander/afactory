@@ -276,6 +276,8 @@ pub struct Ledger {
     resolutions: BTreeMap<String, RecordedResolution>,
     resolution_authority: BTreeMap<String, String>,
     resolution_history: Vec<ResolutionEvidence>,
+    /// Task-only projection evidence. Never serialized as legacy FindingResolution authority.
+    task_fixed_subjects: BTreeMap<String, String>,
     policy_time: u64,
     pub round: u32,
 }
@@ -466,6 +468,21 @@ impl Ledger {
             return Err(crate::StoreError::Conflict("Task review Subject requires canonical identity and a nondecreasing positive Round".into()));
         }
         let resolved = crate::resolve_subject_scope(cas, subject_id)?;
+        for (key, fixed_subject) in &self.task_fixed_subjects {
+            if fixed_subject != subject_id {
+                let finding = self.findings.get_mut(key).ok_or_else(|| {
+                    crate::StoreError::Conflict("Task fix projection lost its Finding".into())
+                })?;
+                if finding.status == Status::Fixed {
+                    finding.status = Status::Open;
+                    finding.history.push(Transition {
+                        round,
+                        kind: TransitionKind::Reopened,
+                        note: Some("Task fix verification belongs to an earlier Subject".into()),
+                    });
+                }
+            }
+        }
         for id in std::iter::once(&resolved.subject.head_snapshot_id)
             .chain(resolved.subject.base_snapshot_id.iter())
         {
@@ -491,6 +508,73 @@ impl Ledger {
             subject: scope,
         });
         self.round = round;
+        Ok(())
+    }
+
+    /// Apply already-admitted Task evidence to an in-memory projection. The Task domain must
+    /// first recompute the assessment, prove current checks and the independent selected Attempt.
+    /// This method additionally checks exact receipt bytes and current views before any mutation.
+    /// It emits no Campaign event and creates no legacy resolution or discovery Round.
+    pub fn project_task_fixes(
+        &mut self,
+        cas: &Cas,
+        assessment: &review_core::task::review::RepairAssessmentV1,
+    ) -> Result<(), crate::StoreError> {
+        use review_core::task::repair::{TASK_FIX_RECEIPT_V1, TaskFixReceiptV1};
+        use review_core::task::review::VerificationOutcomeV1;
+        let conflict = |message: &str| crate::StoreError::Conflict(message.into());
+        assessment.validate().map_err(|e| conflict(&e))?;
+        if self.active_subject_id() != Some(&assessment.current_subject_id)
+            || self.active_head_snapshot_id() != Some(&assessment.current_snapshot_id)
+        {
+            return Err(conflict(
+                "Task fix assessment belongs to another active Subject",
+            ));
+        }
+        let mut changes = Vec::new();
+        for (finding_id, claim) in &assessment.claims {
+            let value = cas
+                .get_json(&claim.receipt_id)
+                .map_err(|e| crate::StoreError::Artifact(e.to_string()))?;
+            let artifact: review_core::ArtifactEnvelope =
+                serde_json::from_value(value).map_err(|e| conflict(&e.to_string()))?;
+            let receipt: TaskFixReceiptV1 =
+                serde_json::from_value(artifact.payload).map_err(|e| conflict(&e.to_string()))?;
+            receipt.validate().map_err(|e| conflict(&e))?;
+            if artifact.artifact_type != TASK_FIX_RECEIPT_V1
+                || artifact.subject_snapshot_id.as_ref() != Some(&assessment.current_snapshot_id)
+                || receipt.finding_id != *finding_id
+                || receipt.subject_id != assessment.current_subject_id
+                || receipt.continuation_id != assessment.continuation_id
+                || receipt.decision.expected_view_id != claim.expected_view_id
+                || receipt.decision.attestation_id != claim.attestation_id
+                || receipt.decision.outcome != claim.outcome
+                || self.finding_view_id(finding_id).as_ref() != Some(&claim.expected_view_id)
+            {
+                return Err(conflict(
+                    "Task fix receipt changed its original Finding or current view",
+                ));
+            }
+            if claim.outcome == VerificationOutcomeV1::Positive {
+                for key in self.finding_member_keys(finding_id)? {
+                    changes.push((key, claim.receipt_id.clone()));
+                }
+            }
+        }
+        for (key, receipt_id) in changes {
+            let finding = self
+                .findings
+                .get_mut(&key)
+                .expect("validated Finding member");
+            finding.status = Status::Fixed;
+            finding.history.push(Transition {
+                round: self.round,
+                kind: TransitionKind::Resolved(Status::Fixed),
+                note: Some(format!("Verified on current Task Subject by {receipt_id}")),
+            });
+            self.task_fixed_subjects
+                .insert(key, assessment.current_subject_id.clone());
+        }
         Ok(())
     }
 

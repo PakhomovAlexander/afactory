@@ -285,7 +285,7 @@ impl ReviewTaskDomain {
         Ok(BTreeMap::from([("repair".into(), port)]))
     }
 
-    fn current_repair(
+    pub(super) fn current_repair(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
@@ -355,9 +355,6 @@ impl ReviewTaskDomain {
         cas: &Cas,
         input: &TaskInvocationV1,
     ) -> Result<(ReviewedImplementationV1, RepairAssessmentV1), String> {
-        if !self.policy.allow_targeted_repairs {
-            return Err("Trusted Review policy does not permit targeted repair acceptance".into());
-        }
         let context = self.current_repair(cas, input)?;
         let checks = self.code.review_checks(cas, input)?;
         let verification = if input.inputs.contains_key("verification") {
@@ -495,6 +492,9 @@ impl ReviewTaskDomain {
         cas: &Cas,
         input: &TaskInvocationV1,
     ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
+        if !self.policy.allow_targeted_repairs {
+            return Err("Trusted Review policy does not permit targeted repair acceptance".into());
+        }
         let (receipt, assessment) = self.repair_acceptance(cas, input)?;
         let assessment_port = self.put(
             cas,

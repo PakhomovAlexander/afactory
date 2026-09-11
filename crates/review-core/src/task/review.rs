@@ -23,6 +23,14 @@ pub struct TaskReviewSubjectV1 {
     pub change_set: Option<crate::ChangeSetV1>,
     pub snapshot_id: String,
     pub prior_history_id: String,
+    /// Exact independent repair evidence applied before this discovery Round. Omission retains
+    /// the original history semantics; it never infers that a prior Finding was repaired.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub continuation_id: Option<String>,
     pub round: u32,
 }
 impl TaskReviewSubjectV1 {
@@ -50,7 +58,9 @@ impl TaskReviewSubjectV1 {
             [&self.subject_id, &self.snapshot_id, &self.prior_history_id]
                 .into_iter()
                 .all(|id| is_digest(id))
-                && (1..=16).contains(&self.round),
+                && (1..=16).contains(&self.round)
+                && self.continuation_id.as_deref().is_none_or(is_digest)
+                && (self.continuation_id.is_none() || self.round > 1),
             "Review Subject requires bounded Round and exact Subject, Snapshot and history",
         )
     }

@@ -31,6 +31,9 @@
     },
     "change_set": {
       "$ref": "urn:review-kernel:schema:change-set:1"
+    },
+    "continuation_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
     }
   },
   "allOf": [
@@ -56,6 +59,20 @@
           "required": [
             "change_set"
           ]
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "continuation_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "round": {
+            "minimum": 2
+          }
         }
       }
     }

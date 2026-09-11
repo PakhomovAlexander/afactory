@@ -107,3 +107,12 @@ links, stale evaluation, a negative verdict and an unavailable verifier. The ful
 **779 tests, zero failures, 15 ignored**, across 104 suites, plus formatting, Clippy and frozen
 reproduction. The remaining starters, Jira adapter, Review migration and release evidence are
 still required; no external PR 2 reviewer has run.
+
+The heavy continuation checkpoint adds a typed, recomputed bridge from independent S2 repair
+receipts into the next admitted discovery Round. It preserves the original S1 Round and claim
+identity; full S2 acceptance still requires all reviewers and current checks. It works with
+targeted acceptance disabled. Negative, unavailable, stale and rediscovered claims prevent
+acceptance, while a later changed Subject reopens previously fixed Task claims. The complete
+gate passes **783 tests, zero failures, 15 ignored**, across 105 suites, plus formatting, Clippy,
+frozen reproduction and Markdown checks. Starter packaging and legacy Review CLI migration
+remain separate work; no external PR 2 reviewer has run.

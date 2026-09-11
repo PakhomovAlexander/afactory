@@ -122,3 +122,4 @@ options you rejected and why — that is the part future-you needs.
 - [0056 — Share planning accounting and authenticate generated plan decisions](0056-share-planning-accounting-and-authenticate-generated-plan-decisions.md)
 - [0057 — Export portable Task definitions without execution authority](0057-export-portable-task-definitions-without-execution-authority.md)
 - [0058 — Verify document artifacts through the common Task runtime](0058-verify-document-artifacts-through-the-common-task-runtime.md)
+- [0059 — Carry Task fix evidence into bounded heavy Review](0059-carry-task-fix-evidence-into-bounded-heavy-review.md)

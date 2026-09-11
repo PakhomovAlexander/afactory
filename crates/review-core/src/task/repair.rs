@@ -7,6 +7,28 @@ use std::collections::BTreeMap;
 pub const TASK_REPAIR_CONTEXT_V1: &str = "af/TaskRepairContext@1";
 pub const TASK_FIX_VERIFICATION_V1: &str = "af/TaskFixVerification@1";
 pub const TASK_FIX_RECEIPT_V1: &str = "af/TaskFixReceipt@1";
+pub const TASK_REVIEW_CONTINUATION_V1: &str = "af/TaskReviewContinuation@1";
+
+/// A projection bridge into another explicitly admitted discovery Round. This is not a
+/// complete Review of S2 and does not close or rewrite the original discovery Round.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskReviewContinuationV1 {
+    pub invocation: TaskInvocationV1,
+    pub original_round_report_id: String,
+    pub prior_history_id: String,
+    pub assessment: RepairAssessmentV1,
+}
+impl TaskReviewContinuationV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        self.invocation.validate()?;
+        self.assessment.validate()?;
+        require(
+            is_digest(&self.original_round_report_id) && is_digest(&self.prior_history_id),
+            "Review continuation requires its original closed Round and exact history",
+        )
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -27,8 +27,8 @@ supplement it. Claude calls use only `claude-personal`.
 - [ ] P04–P06: common implementation and Review command execution, Task-file CLI and verified
   local delivery pass real-process fixtures. Fixed command implementation now uses the common
   runtime; legacy Review entry-point cutover and live probes remain.
-- [ ] P07–P09: local Worker replacement, Git catalog sync, Task-kind packages and embedded Review
-  and bounded targeted repair are implemented; heavy history continuation remains.
+- [ ] P07–P09: local Worker replacement, Git catalog sync, Task-kind packages, embedded Review
+  and bounded repair are implemented. Heavy history continuation passes the full gate.
 - [ ] P10: deterministic captured selection and CLI routing pass the full gate; PR integration pending.
 - [ ] P11: bounded generation, shared planning accounting and signed developer decisions are
   implemented and pass the full gate; PR integration pending.
@@ -44,6 +44,8 @@ and [embedded Review](task-execution/embedded-review.md).
 The [shared catalog walkthrough](task-execution/shared-catalogs.md) describes explicit Git sync
 and immutable Task-kind profiles. The [bounded repair walkthrough](task-execution/bounded-repair.md)
 records distinct complete-Review and targeted-fix acceptance guarantees.
+The [heavy Review walkthrough](task-execution/heavy-review.md) carries independent repair evidence
+into the next discovery Round while preserving original claims and history.
 The [selection walkthrough](task-execution/selection.md) explains fallback, automatic ranking and
 persisted reasons without Planner calls.
 The [generated-plan walkthrough](task-execution/generated-plans.md) describes the fixed Planner,
@@ -95,8 +97,9 @@ allowance. Complete finding-bearing Review Tasks retain `changes_requested` and 
 reviewers remain incomplete without authoritative partial sets. Both initial execution and
 replay preserve the domain exit. See the [Review Task walkthrough](task-execution/review-task.md).
 
-The document checkpoint deterministic gate passed with **779 tests, zero failures and 15 existing opt-in
-probes ignored**, across 104 suites. Formatting, Clippy and frozen synthetic reproduction passed.
+The heavy continuation checkpoint deterministic gate passed with **783 tests, zero failures and
+15 existing opt-in probes ignored**, across 105 suites. Formatting, Clippy and frozen synthetic
+reproduction passed.
 All eleven implementation/delivery behavior cases now pass through the common Store, with their
 original source preserved as a compatibility fixture. Native timeout and storage-failure tests
 retain reported usage. The final compatibility gate also covers preserved per-Check process

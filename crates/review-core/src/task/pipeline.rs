@@ -195,6 +195,7 @@ pub enum TaskOperatorV1 {
     ReviewAccept {},
     AttestFixes {},
     RepairAccept {},
+    ReviewContinue {},
     FixVerify {
         slot: String,
     },
