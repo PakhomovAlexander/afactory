@@ -96,6 +96,15 @@ impl TaskEnvironment for EmptyTaskEnvironment {
 /// Domain operators retain their own receipt semantics. This interface cannot create an
 /// Attempt, execute a child graph, authorize a plan, or change the parent's allowance.
 pub trait TaskDomain: TaskOperatorHost {
+    /// Domain-specific conclusion assembled from this Task's common execution projection.
+    fn assemble_result(
+        &self,
+        _cas: &Cas,
+        _state: &review_store::store::task::TaskProjection,
+        _report: &review_graph::RunReport,
+    ) -> Result<TaskResultV1, String> {
+        Err("This Task domain has no installed final-result assembler".into())
+    }
     fn validate_context(
         &self,
         cas: &Cas,

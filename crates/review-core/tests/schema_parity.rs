@@ -32,7 +32,9 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 66] = [
+const SCHEMAS: [&str; 68] = [
+    "task-review-subject-v1.json",
+    "task-review-round-v1.json",
     "task-check-receipt-v1.json",
     "task-evaluation-v1.json",
     "verification-result-v1.json",
@@ -318,6 +320,70 @@ fn task_verification_contracts_preserve_negative_results_and_require_positive_ev
     );
 }
 
+#[test]
+fn review_task_round_contracts_preserve_completeness() {
+    use review_core::task::review::*;
+    let id = format!("sha256:{}", "a".repeat(64));
+    let subject = json!({"subject_id":id,"snapshot_id":id,"prior_history_id":id,"round":1,"subject":{"kind":"whole-tree","head_snapshot_id":id}});
+    assert_valid("task-review-subject-v1.json", &subject);
+    serde_json::from_value::<TaskReviewSubjectV1>(subject)
+        .unwrap()
+        .validate()
+        .unwrap();
+    for (conclusion, outcome, complete) in [
+        ("pass", "passed", true),
+        ("changes_requested", "failed", true),
+        ("convergence_exhausted", "failed", true),
+        ("incomplete", "inconclusive", false),
+    ] {
+        let mut value = json!({"invocation":{"plan_id":id,"node":"root.nodes.reduce","inputs":{}},"policy_id":id,
+            "subject_id":id,"snapshot_id":id,"round":1,"outcome":outcome,"conclusion":conclusion,
+            "selected_results":{"correctness":id},"missing_reviewers":[]});
+        if complete {
+            value["finding_set_id"] = json!(id);
+            value["demand_set_id"] = json!(id);
+        }
+        assert_valid("task-review-round-v1.json", &value);
+        serde_json::from_value::<TaskReviewRoundV1>(value.clone())
+            .unwrap()
+            .validate()
+            .unwrap();
+        let mut changed = value.clone();
+        changed["outcome"] = json!(if outcome == "passed" {
+            "failed"
+        } else {
+            "passed"
+        });
+        assert_invalid(
+            "task-review-round-v1.json",
+            &changed,
+            "conclusion/outcome mismatch",
+        );
+        assert!(
+            serde_json::from_value::<TaskReviewRoundV1>(changed)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        if complete {
+            value.as_object_mut().unwrap().remove("finding_set_id");
+        } else {
+            value["finding_set_id"] = json!(id);
+        }
+        assert_invalid(
+            "task-review-round-v1.json",
+            &value,
+            "partial sets must not close a Review Round",
+        );
+        assert!(
+            serde_json::from_value::<TaskReviewRoundV1>(value)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+}
+
 fn validator(name: &str) -> &'static jsonschema::Validator {
     type Validators =
         std::collections::BTreeMap<String, std::sync::OnceLock<jsonschema::Validator>>;
@@ -338,13 +404,15 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     "finding-report-v1.json",
                     "reviewer-result-v1.json",
                     "task-contracts-v1.json",
+                    "task-invocation-v1.json",
+                    "subject-v1.json",
+                    "change-set-v1.json",
                 ]
                 .into_iter()
                 .map(schema)
                 .collect()
             });
             let root = schema(name);
-            let task_schema = root["$id"].as_str().unwrap().starts_with("urn:af:");
             let mut options = jsonschema::options();
             options.with_resource(
                 "urn:af:schema:task-transition:1".to_owned(),
@@ -352,7 +420,7 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
             );
             for resource in resources {
                 let id = resource["$id"].as_str().unwrap();
-                if id.starts_with("urn:af:") == task_schema {
+                {
                     options.with_resource(
                         id.to_owned(),
                         jsonschema::Resource::from_contents(resource.clone()).unwrap(),

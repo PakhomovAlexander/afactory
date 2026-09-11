@@ -18,11 +18,15 @@ fn copy_tree(source: &Path, destination: &Path) {
 }
 
 fn fixture(root: &Path) -> (PathBuf, PathBuf) {
+    fixture_named(root, "pagination")
+}
+
+fn fixture_named(root: &Path, name: &str) -> (PathBuf, PathBuf) {
     let repo = root.join("repo");
     let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
-    copy_tree(&workspace.join("fixtures/task-runtime/pagination"), &repo);
+    copy_tree(&workspace.join("fixtures/task-runtime").join(name), &repo);
     for args in [
         vec!["init", "-q", "-b", "main"],
         vec!["config", "user.name", "Fixture"],
@@ -44,6 +48,71 @@ fn fixture(root: &Path) -> (PathBuf, PathBuf) {
         );
     }
     (repo, root.join("state"))
+}
+
+#[test]
+fn review_file_uses_common_task_state_and_keeps_changes_requested_exit() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, state) = fixture_named(directory.path(), "review");
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(&repo)
+        .args([
+            "review",
+            "run",
+            "--file",
+            "review.json",
+            "--json",
+            "--state",
+        ])
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "{}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(result["result"]["acceptance"], "satisfied");
+    assert_eq!(result["result"]["domain_conclusion"], "changes_requested");
+    assert_eq!(result["attempts"], 3);
+    assert_eq!(
+        result["review_rounds"][0]["selected_results"]
+            .as_object()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert!(state.join("events.sqlite").is_file());
+    assert!(!state.join("tasks.sqlite").exists());
+    let replay = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(&repo)
+        .args(["task", "run", "review-cli", "--json", "--state"])
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert_eq!(replay.status.code(), Some(3));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&replay.stdout).unwrap(),
+        result
+    );
+    let wrong_kind = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(&repo)
+        .args([
+            "review",
+            "run",
+            "--file",
+            "review.json",
+            "--heavy",
+            "--json",
+            "--state",
+        ])
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert_eq!(wrong_kind.status.code(), Some(2));
 }
 
 fn af(repo: &Path, state: &Path, args: &[&str]) -> Value {

@@ -8,13 +8,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use review_config::task::catalog::*;
 use review_core::task::plan::*;
+use review_core::task::review::{TASK_REVIEW_ROUND_V1, TaskReviewRoundV1};
 use review_core::task::verification::VERIFICATION_RESULT_V1;
 use review_core::task::*;
 use review_core::{ArtifactEnvelope, PortCardinality, Producer};
 use review_graph::task::CompiledTask;
 use review_pipeline::task::TaskRuntime;
 use review_pipeline::task::code::{CodeTaskDomain, CodeTaskPolicy, code_signatures};
-use review_pipeline::task::host::{CapturedTaskAuthority, CommandTaskHost, NoTaskDeveloper};
+use review_pipeline::task::host::{
+    CapturedTaskAuthority, CommandTaskHost, NoTaskDeveloper, TaskDomain,
+};
+use review_pipeline::task::review::{ReviewTaskDomain, ReviewTaskPolicy, review_signatures};
 use review_pipeline::task::source::SnapshotTaskEnvironment;
 use review_source_git::task::{SOURCE_TREE_V1, capture_snapshot, source_tree};
 use review_source_git::{Capture, EntryKind, Manifest, Repo};
@@ -62,8 +66,23 @@ struct FileLimits {
 struct TaskCatalog {
     schema: String,
     code_policy: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    review: Option<ReviewSettings>,
     packages: BTreeMap<String, TaskPackagePin>,
     independence: IndependencePolicyV1,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewSettings {
+    reviewers: BTreeMap<String, review_core::DemandRequirement>,
+    gate: review_core::Severity,
+    clean_rounds: u32,
+    max_rounds: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +98,12 @@ struct RunAuthority {
     schema: String,
     engine_id: String,
     code_policy_id: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    review_policy_id: Option<String>,
     catalog_id: String,
     packages: BTreeMap<String, CapturedPackage>,
     independence: IndependencePolicyV1,
@@ -227,7 +252,23 @@ fn capture_authority(
     let authority = RunAuthority {
         schema: "af.task-run-authority/1".into(),
         engine_id,
-        code_policy_id: policy_id,
+        code_policy_id: policy_id.clone(),
+        review_policy_id: catalog
+            .review
+            .map(|review| {
+                let review = ReviewTaskPolicy {
+                    schema: "af.review-task-policy/1".into(),
+                    check_policy_id: policy_id.clone(),
+                    reviewers: review.reviewers,
+                    gate: review.gate,
+                    clean_rounds: review.clean_rounds,
+                    max_rounds: review.max_rounds,
+                };
+                review.validate()?;
+                cas.put_json(&serde_json::to_value(review).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())
+            })
+            .transpose()?,
         catalog_id: cas.put(&bytes).map_err(|e| e.to_string())?,
         packages,
         independence: catalog.independence,
@@ -256,11 +297,23 @@ fn restore_compiler(
             .map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
+    let mut signatures = code_signatures(&authority.code_policy_id, &policy)?;
+    let mut coverage = BTreeMap::from([("verified".into(), "snapshot".into())]);
+    if let Some(id) = &authority.review_policy_id {
+        let review: ReviewTaskPolicy =
+            serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?;
+        if review.check_policy_id != authority.code_policy_id {
+            return Err("Review policy changed its captured checks".into());
+        }
+        signatures.extend(review_signatures(id, &review)?);
+        coverage.insert("reviewed".into(), "review".into());
+    }
     let mut compiler = TaskPlanCompiler::new(
         authority.engine_id.clone(),
         id.into(),
-        code_signatures(&authority.code_policy_id, &policy)?,
-        BTreeMap::from([("verified".into(), "snapshot".into())]),
+        signatures,
+        coverage,
         authority.independence,
     )?;
     for (name, package) in &authority.packages {
@@ -286,6 +339,14 @@ fn restore_compiler(
 }
 
 pub(super) fn start(options: StartOptions) -> Result<i32, String> {
+    start_kind(options, None)
+}
+
+pub(super) fn start_review(options: StartOptions) -> Result<i32, String> {
+    start_kind(options, Some("review"))
+}
+
+fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32, String> {
     let started = clock()?;
     let mut bytes = Vec::new();
     std::fs::File::open(&options.file)
@@ -294,12 +355,15 @@ pub(super) fn start(options: StartOptions) -> Result<i32, String> {
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     let file: TaskFile = parse(&options.file, &bytes)?;
+    if expected_kind.is_some_and(|kind| kind != file.kind) {
+        return Err("af review --file requires a review Task definition".into());
+    }
     if file.schema != "af.task-file/1"
         || !is_name(&file.task_id)
-        || file.kind != "implement"
+        || !matches!(file.kind.as_str(), "implement" | "review")
         || file.goal.trim().is_empty()
     {
-        return Err("Task file requires schema af.task-file/1, a valid ID, implement kind and nonempty goal".into());
+        return Err("Task file requires schema af.task-file/1, a valid ID, supported kind and nonempty goal".into());
     }
     let (repo, state) = state_path(&options.repo, options.state.as_deref())?;
     std::fs::create_dir_all(&state).map_err(|e| e.to_string())?;
@@ -360,6 +424,21 @@ pub(super) fn start(options: StartOptions) -> Result<i32, String> {
         limits:TaskLimitsV1 {tokens:file.limits.tokens,max_attempts:file.limits.max_attempts,deadline_unix_ms:started.checked_add(wall).ok_or("Task deadline overflow")?,verification:file.limits.verification},
         strategy:file.strategy,pipeline:Some(file.pipeline),facts:file.facts,
     };
+    if revision.kind == "review" {
+        revision.inputs.remove("requirements");
+        revision.authority.allowed_effects.remove("write-source");
+        revision.required_outputs = serde_json::from_value(json!({"review":{"artifact_type":TASK_REVIEW_ROUND_V1,"cardinality":"one"},"history":{"artifact_type":REVIEW_HISTORY_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?;
+        revision.acceptance = BTreeMap::from([(
+            "reviewed".into(),
+            AcceptanceObligationV1 {
+                evidence_type: TASK_REVIEW_ROUND_V1.into(),
+                verifier_policy: authority
+                    .review_policy_id
+                    .clone()
+                    .ok_or("Review Task requires configured Review policy")?,
+            },
+        )]);
+    }
     revision.inputs = compiler.normalize_root_inputs(
         &cas,
         &revision
@@ -404,7 +483,7 @@ pub(super) fn start(options: StartOptions) -> Result<i32, String> {
         )
         .map_err(|e| e.to_string())?
         .0;
-    let domain = CodeTaskDomain::captured(&cas, &authority.code_policy_id, graph.clone())?;
+    let domain = captured_domain(&cas, &authority, &revision.kind, graph.clone())?;
     let policy: CodeTaskPolicy = serde_json::from_value(
         cas.get_json(&authority.code_policy_id)
             .map_err(|e| e.to_string())?,
@@ -420,7 +499,7 @@ pub(super) fn start(options: StartOptions) -> Result<i32, String> {
         &plan,
         graph,
         &environment,
-        &domain,
+        domain.as_ref(),
     )?;
     let trusted = CapturedTaskAuthority {
         compiler: &compiler,
@@ -445,7 +524,7 @@ pub(super) fn start(options: StartOptions) -> Result<i32, String> {
         store
             .admit_task_plan(&cas, &lease, &trusted)
             .map_err(|e| e.to_string())?;
-        execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
+        execute(&cas, &mut store, &lease, &trusted, &host, domain.as_ref())?;
         Ok(())
     })();
     release(&cas, &mut store, &lease, outcome)?;
@@ -476,17 +555,41 @@ fn release(
     }
 }
 
+fn captured_domain(
+    cas: &Cas,
+    authority: &RunAuthority,
+    kind: &str,
+    graph: CompiledTask,
+) -> Result<Box<dyn TaskDomain>, String> {
+    match kind {
+        "implement" => Ok(Box::new(CodeTaskDomain::captured(
+            cas,
+            &authority.code_policy_id,
+            graph,
+        )?)),
+        "review" => Ok(Box::new(ReviewTaskDomain::captured(
+            cas,
+            authority
+                .review_policy_id
+                .as_deref()
+                .ok_or("Review Task lost its captured policy")?,
+            graph,
+        )?)),
+        _ => Err("Task has no installed domain adapter".into()),
+    }
+}
+
 fn execute(
     cas: &Cas,
     store: &mut EventStore,
     lease: &TaskLease,
     authority: &CapturedTaskAuthority<'_>,
     host: &CommandTaskHost<'_>,
-    domain: &CodeTaskDomain,
+    domain: &dyn TaskDomain,
 ) -> Result<(), String> {
     let runtime = TaskRuntime::new(store, cas, lease.clone(), authority, host)?;
     let report = runtime.execute()?;
-    let result = domain.result(cas, &runtime.projection()?, &report)?;
+    let result = domain.assemble_result(cas, &runtime.projection()?, &report)?;
     let result_id = cas
         .put_artifact(
             TASK_RESULT_V1,
@@ -529,7 +632,7 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
         EXECUTION_PLAN_V1,
     )?;
     let graph: CompiledTask = artifact(&cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
-    let domain = CodeTaskDomain::captured(&cas, &authority.code_policy_id, graph.clone())?;
+    let domain = captured_domain(&cas, &authority, &projection.revision.kind, graph.clone())?;
     let policy: CodeTaskPolicy = serde_json::from_value(
         cas.get_json(&authority.code_policy_id)
             .map_err(|e| e.to_string())?,
@@ -545,7 +648,7 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
         &plan,
         graph,
         &environment,
-        &domain,
+        domain.as_ref(),
     )?;
     let trusted = CapturedTaskAuthority {
         compiler: &compiler,
@@ -564,7 +667,7 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
                 .admit_task_plan(&cas, &lease, &trusted)
                 .map_err(|e| e.to_string())?;
         }
-        execute(&cas, &mut store, &lease, &trusted, &host, &domain)?;
+        execute(&cas, &mut store, &lease, &trusted, &host, domain.as_ref())?;
         Ok(())
     })();
     release(&cas, &mut store, &lease, outcome)?;
@@ -645,6 +748,16 @@ fn present(
     }
     if let Some(result) = &result {
         value["result"] = serde_json::to_value(result).map_err(|e| e.to_string())?;
+        if state.revision.kind == "review" {
+            let rounds: Vec<_> = result
+                .outputs
+                .values()
+                .filter(|p| p.artifact_type == TASK_REVIEW_ROUND_V1)
+                .flat_map(|p| p.artifact_ids.iter())
+                .map(|id| artifact::<TaskReviewRoundV1>(cas, id, TASK_REVIEW_ROUND_V1))
+                .collect::<Result<_, _>>()?;
+            value["review_rounds"] = serde_json::to_value(rounds).map_err(|e| e.to_string())?;
+        }
     }
     if explain && let Some(id) = &state.plan_id {
         let plan: ExecutionPlanV1 = artifact(cas, id, EXECUTION_PLAN_V1)?;
@@ -678,6 +791,13 @@ fn present(
                 serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?
             );
         }
+    }
+    if state.revision.kind == "review" {
+        return Ok(result.map_or(0, |r| match r.domain_conclusion.as_str() {
+            "pass" => 0,
+            "changes_requested" | "convergence_exhausted" => 3,
+            _ => 4,
+        }));
     }
     Ok(result.map_or(0, |r| match r.acceptance {
         TaskAcceptanceV1::Satisfied => 0,

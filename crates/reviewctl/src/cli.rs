@@ -219,6 +219,9 @@ pub(crate) struct ReviewNamespace {
 #[derive(Debug, Args, Clone)]
 #[command(group = ArgGroup::new("mode").args(["light", "heavy"]))]
 pub(crate) struct RunArgs {
+    /// Versioned Review Task file, executed through the shared Task runtime
+    #[arg(long = "file", value_name = "FILE", help_heading = "Selector", conflicts_with_all = ["pipeline", "campaign", "base", "candidate", "focus", "node", "light", "heavy", "restart_round", "provider", "resume_provider", "git_timeout_secs"])]
+    pub(crate) task_file: Option<PathBuf>,
     /// Repository to review
     #[arg(
         long,

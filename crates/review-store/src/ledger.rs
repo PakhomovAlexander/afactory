@@ -16,10 +16,11 @@ use std::{
 };
 
 use review_core::{
-    ArtifactEnvelope, CampaignManifestV1, CampaignOpenedPayloadV1, ChangeAttestationV1,
-    DemandSetEntryV1, DemandStatus, DemandV1, DemandWaiverV1, EventType, EvidenceReuseAdmissionV1,
-    EvidenceSatisfactionV1, EvidenceV1, FindingGroupingAction, FindingGroupingEventPayloadV1,
-    FindingGroupingV1, FindingResolutionOutcome, FindingResolutionV1, FixVerificationV1,
+    ArtifactEnvelope, CANONICAL_FINDING_IDENTITY_POLICY, CampaignManifestV1,
+    CampaignOpenedPayloadV1, ChangeAttestationV1, DemandSetEntryV1, DemandStatus, DemandV1,
+    DemandWaiverV1, EventType, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1, EvidenceV1,
+    FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1,
+    FindingResolutionOutcome, FindingResolutionV1, FixVerificationV1,
     LEGACY_FINDING_IDENTITY_POLICY, PolicyTimeV1, RecordedArtifactPayloadV1, Relation,
     ResolutionChallengeV1, RoundStartedPayloadV1, Severity, SubjectKind,
 };
@@ -435,6 +436,64 @@ pub struct Convergence {
 }
 
 impl Ledger {
+    /// Projection initialization for the Task Review domain. It grants no execution or Store
+    /// authority. The Task host separately verifies sealed Snapshot and plan provenance.
+    pub fn for_task_subject(
+        cas: &Cas,
+        subject_id: &str,
+        round: u32,
+    ) -> Result<Self, crate::StoreError> {
+        let mut ledger = Self {
+            finding_identity_policy: CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            ..Self::default()
+        };
+        ledger.bind_task_subject(cas, subject_id, round)?;
+        Ok(ledger)
+    }
+
+    /// Keep original claims and resolution history while an admitted Task continuation changes
+    /// the current Subject. This is a projection operation, not a discovery Round closeout.
+    pub fn bind_task_subject(
+        &mut self,
+        cas: &Cas,
+        subject_id: &str,
+        round: u32,
+    ) -> Result<(), crate::StoreError> {
+        if round == 0
+            || round < self.round
+            || self.finding_identity_policy() != Some(CANONICAL_FINDING_IDENTITY_POLICY)
+        {
+            return Err(crate::StoreError::Conflict("Task review Subject requires canonical identity and a nondecreasing positive Round".into()));
+        }
+        let resolved = crate::resolve_subject_scope(cas, subject_id)?;
+        for id in std::iter::once(&resolved.subject.head_snapshot_id)
+            .chain(resolved.subject.base_snapshot_id.iter())
+        {
+            cas.verify(id)
+                .map_err(|e| crate::StoreError::Artifact(e.to_string()))?;
+        }
+        let scope = match resolved.changed_paths {
+            Some(paths) => Arc::new(SubjectScope::Diff(paths)),
+            None => Arc::new(SubjectScope::WholeTree),
+        };
+        self.subject_scope_cache.insert(
+            subject_id.into(),
+            CachedSubjectScope {
+                scope: Arc::clone(&scope),
+                change_set_id: resolved.subject.change_set_id,
+                head_snapshot_id: resolved.subject.head_snapshot_id.clone(),
+            },
+        );
+        self.active_scope = Some(ActiveScope {
+            round,
+            subject_id: subject_id.into(),
+            head_snapshot_id: resolved.subject.head_snapshot_id,
+            subject: scope,
+        });
+        self.round = round;
+        Ok(())
+    }
+
     pub fn finding_identity_policy(&self) -> Option<&str> {
         if self.finding_identity_policy_unavailable {
             None

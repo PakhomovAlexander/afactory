@@ -789,6 +789,22 @@ pub(crate) fn campaign_names_for_completion() -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn task_review_options(args: cli::RunArgs, plan_only: bool) -> task_execution::StartOptions {
+    task_execution::StartOptions {
+        file: args.task_file.expect("Task file path was checked"),
+        repo: args.repo,
+        state: args.state,
+        authority: args
+            .policy_rev
+            .or(args.authority)
+            .unwrap_or_else(|| "HEAD".into()),
+        uncommitted: args.uncommitted,
+        json: args.json,
+        plan_only,
+        timeout_secs: args.timeout_secs,
+    }
+}
+
 fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
     use cli::ReviewCommand as R;
     let command = match namespace.command {
@@ -797,6 +813,9 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
     };
     match command {
         R::Run(args) => {
+            if args.task_file.is_some() {
+                return task_execution::start_review(task_review_options(args, false));
+            }
             init_review_workers();
             let verdict = run(&run_options(args, "review run"))?;
             Ok(match verdict {
@@ -805,9 +824,26 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
                 RunVerdict::Incomplete { .. } => 4,
             })
         }
-        R::Plan(args) => print_plan(&run_options(args, "review plan")).map(|()| 0),
-        R::Render(args) => print_render(&run_options(args, "review render")).map(|()| 0),
+        R::Plan(args) => {
+            if args.task_file.is_some() {
+                return task_execution::start_review(task_review_options(args, true));
+            }
+            print_plan(&run_options(args, "review plan")).map(|()| 0)
+        }
+        R::Render(args) => {
+            if args.task_file.is_some() {
+                return Err(
+                    "Use af review plan --file, then af task explain for Task inspection".into(),
+                );
+            }
+            print_render(&run_options(args, "review render")).map(|()| 0)
+        }
         R::Tui(args) => {
+            if args.task_file.is_some() {
+                return Err(
+                    "Task-file execution is available through review run and review plan".into(),
+                );
+            }
             init_review_workers();
             tui::launch(run_options(args, "review tui")).map(|()| 0)
         }
@@ -1121,7 +1157,14 @@ fn main() {
                     Ok(0)
                 }
                 cli::ProviderCommand::Doctor(args) => {
-                    provider_doctor(&run_options(args, "provider doctor")).map(|()| 0)
+                    if args.task_file.is_some() {
+                        Err(
+                            "Task Provider admission does not use the Campaign doctor adapter"
+                                .into(),
+                        )
+                    } else {
+                        provider_doctor(&run_options(args, "provider doctor")).map(|()| 0)
+                    }
                 }
             },
         ),

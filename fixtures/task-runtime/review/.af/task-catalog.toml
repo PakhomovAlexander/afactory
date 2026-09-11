@@ -1,0 +1,32 @@
+schema = "af.task-catalog/1"
+code_policy = ".af/code-policy.toml"
+
+[packages."fixture/bugs"]
+version = "1.0.0"
+digest = "sha256:3e59b4d64418464d194ffa8aad6816fd828f8337fd8d511db3321ac7f3da008d"
+path = ".af/task-packages/fixture/bugs"
+
+[packages."fixture/correctness"]
+version = "1.0.0"
+digest = "sha256:115160c1cc30fefb89b206fabdfc6df2457999b8e0e9cd8c829d7ca154ce321f"
+path = ".af/task-packages/fixture/correctness"
+
+[packages."fixture/review"]
+version = "1.0.0"
+digest = "sha256:6b5820136c7decdebbf621f89eb91386964d0e5e55e6de758235f74a1fd180a2"
+path = ".af/task-packages/fixture/review"
+
+[independence]
+command_workers_by_package = true
+distinct_principals = true
+distinct_providers = false
+distinct_models = false
+
+[review]
+gate = "major"
+clean_rounds = 1
+max_rounds = 1
+
+[review.reviewers]
+bugs = "required"
+correctness = "required"

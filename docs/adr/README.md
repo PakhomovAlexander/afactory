@@ -108,3 +108,5 @@ options you rejected and why — that is the part future-you needs.
   decisions](0048-compile-task-ports-and-fence-developer-plan-decisions.md)
 - [0049 — Run Task Workers through shared durable
   Attempts](0049-run-task-workers-through-shared-durable-attempts.md)
+- [0050 — Reduce Review Tasks with the canonical domain
+  Ledger](0050-reduce-review-tasks-with-the-canonical-domain-ledger.md)

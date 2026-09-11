@@ -445,6 +445,22 @@ impl CodeTaskDomain {
         Ok(result)
     }
 
+    /// Review uses the same current-Snapshot check validation without requiring an additional
+    /// implementation evaluator. This grants no review or generic Task acceptance by itself.
+    pub(super) fn review_checks(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+    ) -> Result<ReceiptOutcomeV1, String> {
+        let mut checks_only = input.clone();
+        checks_only.inputs.remove("evaluation");
+        let validated = self.verification(cas, &checks_only)?;
+        let receipt: TaskCheckReceiptV1 =
+            serde_json::from_value(envelope(cas, &validated.check_receipt_id)?.payload)
+                .map_err(|e| e.to_string())?;
+        Ok(receipt.outcome)
+    }
+
     fn accept(
         &self,
         cas: &Cas,
@@ -769,6 +785,14 @@ impl TaskOperatorHost for CodeTaskDomain {
 }
 
 impl TaskDomain for CodeTaskDomain {
+    fn assemble_result(
+        &self,
+        cas: &Cas,
+        state: &TaskProjection,
+        report: &RunReport,
+    ) -> Result<TaskResultV1, String> {
+        self.result(cas, state, report)
+    }
     fn validate_context(
         &self,
         cas: &Cas,

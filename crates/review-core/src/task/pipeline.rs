@@ -184,6 +184,8 @@ pub enum TaskOperatorV1 {
         bindings: BTreeMap<String, String>,
     },
     ReviewBind {},
+    /// One atomic gather/reducer barrier over the captured set of required reviewers.
+    ReviewReduce {},
     AttestFixes {},
     FixVerify {
         slot: String,

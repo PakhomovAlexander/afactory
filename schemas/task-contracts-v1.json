@@ -856,7 +856,10 @@
           ],
           "properties": {
             "op": {
-              "enum": ["seal", "accept"]
+              "enum": [
+                "seal",
+                "accept"
+              ]
             }
           }
         },
@@ -974,6 +977,18 @@
           "properties": {
             "op": {
               "const": "select"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "review_reduce"
             }
           }
         }

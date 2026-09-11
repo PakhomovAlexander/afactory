@@ -5,6 +5,129 @@ use crate::is_digest;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub const TASK_REVIEW_SUBJECT_V1: &str = "af/TaskReviewSubject@1";
+pub const TASK_REVIEW_ROUND_V1: &str = "af/TaskReviewRound@1";
+
+/// A Review invocation binds the immutable Subject separately from the execution plan.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskReviewSubjectV1 {
+    pub subject_id: String,
+    /// Declared Worker context contains the actual scope, not inaccessible CAS pointers alone.
+    pub subject: crate::SubjectV1,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub change_set: Option<crate::ChangeSetV1>,
+    pub snapshot_id: String,
+    pub prior_history_id: String,
+    pub round: u32,
+}
+impl TaskReviewSubjectV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        self.subject.validate()?;
+        require(
+            self.subject.head_snapshot_id == self.snapshot_id,
+            "Review Subject has a stale Snapshot",
+        )?;
+        match (&self.subject.kind, &self.change_set) {
+            (crate::SubjectKind::WholeTree, None) => (),
+            (crate::SubjectKind::Diff, Some(changes)) => {
+                changes.validate()?;
+                require(
+                    changes.head_snapshot_id == self.snapshot_id
+                        && self.subject.base_snapshot_id.as_ref()
+                            == Some(&changes.base_snapshot_id)
+                        && !changes.changed_paths.is_empty(),
+                    "Review Diff requires exact nonempty scope",
+                )?;
+            }
+            _ => return Err("Review Subject must retain its exact Change Set".into()),
+        }
+        require(
+            [&self.subject_id, &self.snapshot_id, &self.prior_history_id]
+                .into_iter()
+                .all(|id| is_digest(id))
+                && (1..=16).contains(&self.round),
+            "Review Subject requires bounded Round and exact Subject, Snapshot and history",
+        )
+    }
+}
+
+/// A complete Round exposes canonical views. An incomplete gather retains selected raw
+/// results for inspection but never creates a partial Ledger or claims a closed Round.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskReviewRoundV1 {
+    pub invocation: super::execution::TaskInvocationV1,
+    pub policy_id: String,
+    pub subject_id: String,
+    pub snapshot_id: String,
+    pub round: u32,
+    pub outcome: super::pipeline::ReceiptOutcomeV1,
+    pub conclusion: ReviewConclusionV1,
+    pub selected_results: BTreeMap<String, String>,
+    #[serde(deserialize_with = "super::unique_set")]
+    pub missing_reviewers: std::collections::BTreeSet<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub finding_set_id: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub demand_set_id: Option<String>,
+}
+impl TaskReviewRoundV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        self.invocation.validate()?;
+        require(
+            [&self.policy_id, &self.subject_id, &self.snapshot_id]
+                .into_iter()
+                .all(|id| is_digest(id))
+                && (1..=16).contains(&self.round)
+                && self.selected_results.len() <= 64
+                && self.missing_reviewers.len() <= 64
+                && self
+                    .selected_results
+                    .iter()
+                    .all(|(name, id)| super::is_name(name) && is_digest(id))
+                && self
+                    .missing_reviewers
+                    .iter()
+                    .all(|name| super::is_name(name) && !self.selected_results.contains_key(name))
+                && self.finding_set_id.as_deref().is_none_or(is_digest)
+                && self.demand_set_id.as_deref().is_none_or(is_digest),
+            "Review Round requires exact bounded current evidence",
+        )?;
+        let complete = self.conclusion != ReviewConclusionV1::Incomplete;
+        require(
+            complete == (self.finding_set_id.is_some() && self.demand_set_id.is_some())
+                && (complete || (self.finding_set_id.is_none() && self.demand_set_id.is_none()))
+                && (!complete
+                    || (self.missing_reviewers.is_empty() && !self.selected_results.is_empty()))
+                && self.outcome
+                    == match self.conclusion {
+                        ReviewConclusionV1::Pass => super::pipeline::ReceiptOutcomeV1::Passed,
+                        ReviewConclusionV1::ChangesRequested
+                        | ReviewConclusionV1::ConvergenceExhausted => {
+                            super::pipeline::ReceiptOutcomeV1::Failed
+                        }
+                        ReviewConclusionV1::Incomplete => {
+                            super::pipeline::ReceiptOutcomeV1::Inconclusive
+                        }
+                    },
+            "Incomplete Review cannot expose authoritative sets or a passing outcome",
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ReviewHistoryV1 {

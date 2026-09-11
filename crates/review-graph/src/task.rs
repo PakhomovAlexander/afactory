@@ -916,6 +916,13 @@ impl Compiler<'_> {
                         {
                             return Err(format!("{qualified} binds an unknown operator input"));
                         }
+                        if matches!(operator, TaskOperatorV1::ReviewReduce {})
+                            && !bound.keys().eq(signature.contract.inputs.keys())
+                        {
+                            return Err(format!(
+                                "{qualified} must bind every configured reviewer and check; missing runtime results remain typed incomplete evidence"
+                            ));
+                        }
                         if self.graph.nodes.len() > self.context.max_nodes {
                             return Err("Expanded Task exceeds the node limit".into());
                         }
@@ -956,7 +963,12 @@ impl Compiler<'_> {
                                     tokens_per_attempt: cost.tokens,
                                     wall_ms_per_attempt: cost.wall_ms,
                                     max_attempts: slot.map_or(1, |s| s.max_attempts),
-                                    verification_attempts: if signature
+                                    verification_attempts: if matches!(
+                                        operator,
+                                        TaskOperatorV1::Verify { .. }
+                                            | TaskOperatorV1::FixVerify { .. }
+                                            | TaskOperatorV1::Check { .. }
+                                    ) || signature
                                         .evidence
                                         .values()
                                         .any(|policies| !policies.is_empty())
@@ -1116,6 +1128,7 @@ fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
         TaskOperatorV1::Accept {} => Ok("accept"),
         TaskOperatorV1::Check { .. } => Ok("check"),
         TaskOperatorV1::ReviewBind {} => Ok("review-bind"),
+        TaskOperatorV1::ReviewReduce {} => Ok("review-reduce"),
         TaskOperatorV1::AttestFixes {} => Ok("attest-fixes"),
         _ => Err("Operator requires package expansion".into()),
     }

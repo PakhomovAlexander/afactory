@@ -3,6 +3,7 @@
 
 pub mod code;
 pub mod host;
+pub mod review;
 pub mod source;
 
 use std::collections::{BTreeMap, BTreeSet};
