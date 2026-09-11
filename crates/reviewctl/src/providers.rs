@@ -2679,7 +2679,7 @@ fn normalize_codex_auth(value: &str) -> &'static str {
     }
 }
 
-fn resolve_program(program: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_program(program: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())

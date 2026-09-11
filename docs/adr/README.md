@@ -118,3 +118,4 @@ options you rejected and why — that is the part future-you needs.
   sync](0053-resolve-shared-catalogs-only-during-explicit-sync.md)
 
 - [0054 — Keep targeted repair distinct from complete Review](0054-keep-targeted-repair-distinct-from-complete-review.md)
+- [0055 — Select captured Pipelines before generation](0055-select-captured-pipelines-before-generation.md)

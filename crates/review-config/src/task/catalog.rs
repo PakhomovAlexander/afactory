@@ -604,6 +604,144 @@ impl TaskPlanCompiler {
         self.packages.get(name).map(|package| &package.bytes.files)
     }
 
+    /// Read-only routing preflight. Resource refusals are distinct from a malformed graph;
+    /// neither result constitutes Store admission or a generated-plan developer decision.
+    pub fn candidate_structure(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        root: &str,
+    ) -> Result<(TaskRevisionV1, CompiledTask, Vec<String>), String> {
+        if task.authority.policy_id != self.policy_id {
+            return Err("Task does not belong to captured authority".into());
+        }
+        if self
+            .active_kind
+            .as_ref()
+            .is_some_and(|kind| self.kinds[kind].kind != task.kind)
+        {
+            return Err("Task kind differs from its captured kind package".into());
+        }
+        let mut normalized = task.clone();
+        normalized.inputs = self.normalize_root_inputs(cas, root, normalized.inputs)?;
+        let (graph, mut resources) = review_graph::task::compile_task_structure(
+            &normalized,
+            root,
+            &CompileContext {
+                pipelines: &self.pipelines,
+                signatures: &self.signatures,
+                slot_workers: self.slot_workers.clone(),
+                acceptance_outputs: self.acceptance_outputs.clone(),
+                max_nodes: 64,
+                max_depth: 4,
+            },
+        )?;
+        self.validate_replacement_schemas(&graph)?;
+        if let Err(reason) = graph.budget(task.limits.clone()) {
+            resources.push(reason);
+        }
+        Ok((normalized, graph, resources))
+    }
+
+    fn effective_bindings(
+        &self,
+        cas: &Cas,
+        graph: &CompiledTask,
+    ) -> Result<BTreeMap<String, EffectiveWorkerBindingV1>, String> {
+        let mut bindings = BTreeMap::new();
+        for (slot, declaration) in &graph.slots {
+            let package = self
+                .packages
+                .get(&declaration.worker)
+                .ok_or("Compiled Worker is not captured")?;
+            let settings = self
+                .settings
+                .get(&declaration.worker)
+                .ok_or("Worker lacks trusted runtime admission")?;
+            cas.verify(&settings.invocation_policy_id)
+                .map_err(|e| e.to_string())?;
+            bindings.insert(
+                slot.clone(),
+                EffectiveWorkerBindingV1 {
+                    package_digest: package.bytes.digest.clone(),
+                    package_artifact_id: package.dependency.artifact_id.clone(),
+                    execution: settings.execution.clone(),
+                    invocation_policy_id: settings.invocation_policy_id.clone(),
+                },
+            );
+        }
+        Ok(bindings)
+    }
+
+    /// Account identities are captured by the host before this check. Provider admission is
+    /// still a paid runtime operation, whose full reservation must fit the selected Task.
+    pub fn candidate_resources(
+        &self,
+        cas: &Cas,
+        mut graph: CompiledTask,
+        limits: &review_core::task::TaskLimitsV1,
+        now_unix_ms: u64,
+    ) -> Result<Vec<String>, String> {
+        let bindings = self.effective_bindings(cas, &graph)?;
+        if let Some(cost) = &self.provider_admission {
+            graph.install_provider_admission(&bindings, cost)?;
+        }
+        let mut reasons = Vec::new();
+        if let Err(reason) = graph.budget(limits.clone()) {
+            reasons.push(reason);
+        }
+        let remaining = limits.deadline_unix_ms.saturating_sub(now_unix_ms);
+        // Bound mandatory non-verifier time along the dependency path; independent Workers
+        // may overlap. Verification keeps its separately protected aggregate allocation.
+        let mut path_wall: BTreeMap<String, u64> = BTreeMap::new();
+        for name in &graph.order {
+            let node = &graph.nodes[name];
+            let prior = node
+                .inputs
+                .values()
+                .map(|address| &address.node)
+                .chain(
+                    node.conditions
+                        .iter()
+                        .map(|condition| &condition.source.node),
+                )
+                .filter_map(|source| path_wall.get(source))
+                .copied()
+                .max()
+                .unwrap_or(0);
+            let own = graph
+                .allowances
+                .get(name)
+                .filter(|a| a.verification_attempts == 0)
+                .filter(|_| {
+                    node.conditions.iter().all(|condition| {
+                        matches!(
+                            graph.nodes[&condition.source.node].operator,
+                            CompiledOperator::ProviderAdmission { .. }
+                        )
+                    })
+                })
+                .map_or(0, |a| a.wall_ms_per_attempt);
+            path_wall.insert(
+                name.clone(),
+                prior.checked_add(own).ok_or("Task wall path overflow")?,
+            );
+        }
+        let required = path_wall
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .checked_add(limits.verification.wall_ms)
+            .ok_or("Task wall reservation overflow")?;
+        if now_unix_ms >= limits.deadline_unix_ms || remaining < required {
+            reasons.push(
+                "Remaining Task deadline cannot protect verification and declared Attempts".into(),
+            );
+        }
+        Ok(reasons)
+    }
+
     pub fn compile(
         &self,
         cas: &Cas,
@@ -689,7 +827,7 @@ impl TaskPlanCompiler {
             },
         )?;
         self.validate_replacement_schemas(&graph)?;
-        let mut bindings = BTreeMap::new();
+        let bindings = self.effective_bindings(cas, &graph)?;
         let mut used: BTreeSet<String> = graph
             .calls
             .values()
@@ -697,28 +835,7 @@ impl TaskPlanCompiler {
             .collect();
         used.extend(graph.replaced_workers.values().flatten().cloned());
         used.extend(self.active_kind.iter().cloned());
-        for (slot, declaration) in &graph.slots {
-            let package = self
-                .packages
-                .get(&declaration.worker)
-                .ok_or("Compiled Worker is not captured")?;
-            let settings = self
-                .settings
-                .get(&declaration.worker)
-                .ok_or("Worker lacks trusted runtime admission")?;
-            cas.verify(&settings.invocation_policy_id)
-                .map_err(|e| e.to_string())?;
-            bindings.insert(
-                slot.clone(),
-                EffectiveWorkerBindingV1 {
-                    package_digest: package.bytes.digest.clone(),
-                    package_artifact_id: package.dependency.artifact_id.clone(),
-                    execution: settings.execution.clone(),
-                    invocation_policy_id: settings.invocation_policy_id.clone(),
-                },
-            );
-            used.insert(declaration.worker.clone());
-        }
+        used.extend(graph.slots.values().map(|slot| slot.worker.clone()));
         for (slot, declaration) in &graph.slots {
             for other in &declaration.independent_from {
                 validate_independent_bindings(

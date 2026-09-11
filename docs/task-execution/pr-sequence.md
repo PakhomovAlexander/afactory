@@ -61,3 +61,11 @@ personal authentication remains unavailable; no PR 2 reviewer has run.
 An additional real-process interruption test kills the CLI during a started fix-verifier
 Attempt, waits for its fenced lease to expire, and resumes the same continuation. The original
 Round and attestation IDs remain identical; the lost Attempt remains charged (eight total).
+
+CI for `2c37b00` passed Check, CLI smoke and live container probes in run `34633787737`.
+The P10 working checkpoint adds deterministic selection with preserved request/decision
+provenance, automatic trusted ranking, explicit fallback and captured-root resume. Selection
+refusals distinguish unknown facts, ambiguity, budget, capabilities and semantic no-fit.
+The complete gate passes **754 tests, zero failures, 15 ignored**, across 101 suites, with
+formatting, Clippy and frozen reproduction. The additional critical-path deadline check passes
+the real CLI selection matrix; final Clippy and Markdown checks also pass.

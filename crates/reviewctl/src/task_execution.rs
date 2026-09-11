@@ -31,6 +31,7 @@ use serde_json::json;
 mod bindings;
 pub(crate) mod catalog;
 mod legacy;
+mod selection;
 pub(super) use legacy::start_legacy;
 
 pub(super) struct StartOptions {
@@ -52,7 +53,12 @@ struct TaskFile {
     task_id: String,
     kind: String,
     goal: String,
-    pipeline: PipelineChoiceV1,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    pipeline: Option<PipelineChoiceV1>,
     strategy: String,
     /// The requested acceptance profile is Task input, captured before selecting a Pipeline.
     #[serde(
@@ -89,6 +95,11 @@ struct FileLimits {
 struct TaskCatalog {
     schema: String,
     code_policy: String,
+    /// Lower numbers win within a strategy; missing entries have equal last priority.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    selection: BTreeMap<String, BTreeMap<String, u32>>,
+    #[serde(default)]
+    no_match: review_config::task::selection::NoMatchPolicy,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -136,6 +147,10 @@ struct RunAuthority {
     )]
     review_policy_id: Option<String>,
     catalog_id: String,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    selection: BTreeMap<String, BTreeMap<String, u32>>,
+    #[serde(default)]
+    no_match: review_config::task::selection::NoMatchPolicy,
     packages: BTreeMap<String, CapturedPackage>,
     independence: IndependencePolicyV1,
     #[serde(default)]
@@ -325,6 +340,19 @@ fn capture_authority(
             ));
         }
     }
+    if catalog.selection.len() > 32
+        || catalog.selection.iter().any(|(strategy, priorities)| {
+            !is_name(strategy)
+                || priorities.len() > 128
+                || priorities
+                    .keys()
+                    .any(|name| !capture.pipelines().contains_key(name))
+        })
+    {
+        return Err(
+            "Selection priorities require bounded strategies and captured Pipelines".into(),
+        );
+    }
     let local = local.map(bindings::read).transpose()?;
     let local_bindings_id = local
         .as_ref()
@@ -382,6 +410,8 @@ fn capture_authority(
             })
             .transpose()?,
         catalog_id: cas.put(&bytes).map_err(|e| e.to_string())?,
+        selection: catalog.selection,
+        no_match: catalog.no_match,
         packages,
         independence: catalog.independence,
         providers,
@@ -659,7 +689,7 @@ fn start_captured(
         provenance:TaskProvenanceV1 {adapter_id:adapter,input_artifact_ids:vec![requirements]},
         authority:TaskAuthorityV1 {policy_id:authority_id,allowed_effects:BTreeSet::from(["read-source".into(),"write-source".into(),"execute-checks".into()]),data_destinations:BTreeSet::new()},
         limits:TaskLimitsV1 {tokens:file.limits.tokens,max_attempts:file.limits.max_attempts,deadline_unix_ms:started.checked_add(wall).ok_or("Task deadline overflow")?,verification:file.limits.verification},
-        strategy:file.strategy,pipeline:Some(file.pipeline),facts:file.facts,
+        strategy:file.strategy,pipeline:file.pipeline,facts:file.facts,
     };
     if profile == TaskKindProfile::Review {
         revision.inputs.remove("requirements");
@@ -703,51 +733,19 @@ fn start_captured(
             },
         );
     }
-    revision.inputs = compiler.normalize_root_inputs(
-        &cas,
-        &revision
-            .pipeline
-            .as_ref()
-            .ok_or("Task has no selected Pipeline")?
-            .name,
-        revision.inputs,
-    )?;
-    revision.provenance.input_artifact_ids = revision
-        .inputs
-        .values()
-        .flat_map(|port| port.artifact_ids.iter().cloned())
-        .collect();
-    revision.validate()?;
-    let revision_id = cas
-        .put_artifact(
-            TASK_REVISION_V1,
-            producer(),
-            vec![],
-            None,
-            serde_json::to_value(&revision).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?
-        .0;
-    let adapters = bind_models(
-        &cas,
-        &mut compiler,
-        &authority,
-        &revision_id,
-        &revision
-            .pipeline
-            .as_ref()
-            .ok_or("Task has no selected Pipeline")?
-            .name,
-    )?;
-    let (plan, graph) = compiler.compile(
-        &cas,
-        &revision_id,
-        &revision
-            .pipeline
-            .as_ref()
-            .ok_or("Task has no selected Pipeline")?
-            .name,
-    )?;
+    let Some(selected) = selection::prepare(&cas, &authority, &compiler, revision, options.json)?
+    else {
+        return Ok(1);
+    };
+    let selection::SelectedTask {
+        revision,
+        revision_id,
+        compiler: selected_compiler,
+        adapters,
+        plan,
+        graph,
+    } = selected;
+    compiler = selected_compiler;
     let plan_id = cas
         .put_artifact(
             EXECUTION_PLAN_V1,
@@ -974,12 +972,11 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
         &mut compiler,
         &authority,
         &projection.revision_id,
-        &projection
-            .revision
-            .pipeline
-            .as_ref()
-            .ok_or("Task has no selected Pipeline")?
-            .name,
+        &graph
+            .calls
+            .get("root")
+            .ok_or("Task has no captured root Pipeline")?
+            .pipeline,
     )?;
     compiler.validate_plan(&cas, &projection.revision, &plan)?;
     let verification = projection
@@ -1123,6 +1120,9 @@ fn present(
     };
     let mut value = json!({"schema":"af/task-inspection@2","task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
+    if let Some(selection) = selection::recorded(cas, &state.revision)? {
+        value["selection"] = selection;
+    }
     let events = store
         .replay(&review_store::store::task::task_run_id(id).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;

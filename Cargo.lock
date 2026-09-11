@@ -1318,6 +1318,7 @@ dependencies = [
 name = "review-config"
 version = "0.8.0"
 dependencies = [
+ "jsonschema",
  "review-check",
  "review-core",
  "review-graph",

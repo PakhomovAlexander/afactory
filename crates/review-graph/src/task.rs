@@ -142,6 +142,17 @@ impl CompiledTask {
         cost: &OperatorAttemptCost,
         limits: &review_core::task::TaskLimitsV1,
     ) -> Result<(), String> {
+        self.install_provider_admission(bindings, cost)?;
+        self.budget(limits.clone())?;
+        Ok(())
+    }
+
+    /// Structural admission expansion, without conflating capacity refusal with an invalid DAG.
+    pub fn install_provider_admission(
+        &mut self,
+        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV1>,
+        cost: &OperatorAttemptCost,
+    ) -> Result<(), String> {
         use review_core::task::plan::WorkerExecutionV1;
         if cost.tokens == 0 || cost.wall_ms == 0 {
             return Err("Provider admission requires a bounded paid reservation".into());
@@ -225,7 +236,6 @@ impl CompiledTask {
             self.order.insert(index, name);
         }
         self.order = self.scheduler_plan()?.order;
-        self.budget(limits.clone())?;
         Ok(())
     }
 
@@ -260,6 +270,46 @@ impl CompiledTask {
     }
 
     pub fn budget(&self, limits: review_core::task::TaskLimitsV1) -> Result<TaskBudget, String> {
+        // Before dispatch, protect the declared verifier reserve and one Attempt for every
+        // unconditional non-verifier. Provider admission guards cannot hide mandatory work.
+        let mut minimum_tokens = limits.verification.tokens;
+        let mut minimum_attempts = u64::from(limits.verification.attempts);
+        let mut root_attempts = self
+            .allowances
+            .values()
+            .map(|a| u64::from(a.verification_attempts))
+            .sum::<u64>();
+        for (name, allowance) in &self.allowances {
+            let node = self
+                .nodes
+                .get(name)
+                .ok_or("Allowance has no compiled node")?;
+            if allowance.verification_attempts == 0
+                && node.conditions.iter().all(|condition| {
+                    self.nodes
+                        .get(&condition.source.node)
+                        .is_some_and(|source| {
+                            matches!(source.operator, CompiledOperator::ProviderAdmission { .. })
+                        })
+                })
+            {
+                minimum_tokens = minimum_tokens
+                    .checked_add(allowance.tokens_per_attempt)
+                    .ok_or("Task resource total overflow")?;
+                minimum_attempts += 1;
+                root_attempts += 1;
+            }
+        }
+        if minimum_tokens > limits.tokens || minimum_attempts > u64::from(limits.max_attempts) {
+            return Err("Task cannot retain verification reserves and mandatory work within its token and Attempt allowance".into());
+        }
+        if self
+            .calls
+            .get("root")
+            .is_some_and(|call| root_attempts > u64::from(call.max_attempts))
+        {
+            return Err("Root Pipeline cannot retain verification and mandatory Provider admission within its Attempt bound".into());
+        }
         TaskBudget::new(limits, self.allowances.clone())?.with_call_limits(
             self.calls
                 .iter()
@@ -436,6 +486,7 @@ struct Compiler<'a> {
     availability: BTreeMap<Address, Vec<CompiledCondition>>,
     outcomes: BTreeSet<Address>,
     retained: BTreeMap<Address, BTreeSet<Address>>,
+    resource_refusals: Vec<String>,
 }
 
 pub fn compile_task(
@@ -443,6 +494,21 @@ pub fn compile_task(
     root: &str,
     context: &CompileContext<'_>,
 ) -> Result<CompiledTask, String> {
+    let (graph, refusals) = compile_task_structure(task, root, context)?;
+    if !refusals.is_empty() {
+        return Err(refusals.join("; "));
+    }
+    graph.budget(task.limits.clone())?;
+    Ok(graph)
+}
+
+/// Token-free selection separates structural validity from resource feasibility. This does
+/// not admit execution: the Store always revalidates through the full compiler above.
+pub fn compile_task_structure(
+    task: &TaskRevisionV1,
+    root: &str,
+    context: &CompileContext<'_>,
+) -> Result<(CompiledTask, Vec<String>), String> {
     task.validate()?;
     if context.max_nodes == 0
         || context.max_nodes > 64
@@ -474,6 +540,7 @@ pub fn compile_task(
         availability: BTreeMap::new(),
         outcomes: BTreeSet::new(),
         retained: BTreeMap::new(),
+        resource_refusals: Vec::new(),
         graph: CompiledTask {
             schema: "af.compiled-task/1".into(),
             nodes: BTreeMap::new(),
@@ -598,8 +665,7 @@ pub fn compile_task(
     compiler.graph.outputs = outputs;
     compiler.graph.coverage = coverage;
     compiler.graph.order = compiler.graph.scheduler_plan()?.order;
-    compiler.graph.budget(task.limits.clone())?;
-    Ok(compiler.graph)
+    Ok((compiler.graph, compiler.resource_refusals))
 }
 
 type Boundary = (BTreeMap<String, Address>, BTreeMap<String, Address>);
@@ -1286,10 +1352,7 @@ impl Compiler<'_> {
                     .ok_or("Pipeline minimum Attempt count overflow")
             })?;
         if required_attempts > definition.max_attempts {
-            return Err(format!(
-                "Pipeline {name} cannot retain its verification reserves and mandatory work within {} Attempts",
-                definition.max_attempts
-            ));
+            self.resource_refusals.push(format!("Pipeline {name} cannot retain its verification reserves and mandatory work within {} Attempts",definition.max_attempts));
         }
         let mut outputs = BTreeMap::new();
         let mut coverage = BTreeMap::new();

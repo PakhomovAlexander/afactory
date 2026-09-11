@@ -193,6 +193,8 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
     }
     let catalog = TaskCatalog {
         schema: "af.task-catalog/1".into(),
+        selection: BTreeMap::new(),
+        no_match: review_config::task::selection::NoMatchPolicy::Refuse,
         code_policy: ".af/task-compat/code-policy.toml".into(),
         review: None,
         packages: pins,
@@ -237,10 +239,10 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         kind: "implement".into(),
         verification: Some(FileVerification::Evaluation),
         goal: options.goal,
-        pipeline: PipelineChoiceV1 {
+        pipeline: Some(PipelineChoiceV1 {
             name: pipeline.name,
             fallback: PipelineFallbackV1::Refuse,
-        },
+        }),
         strategy: "light".into(),
         facts: BTreeMap::new(),
         limits: FileLimits {
