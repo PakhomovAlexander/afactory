@@ -164,6 +164,10 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 65536
+            },
+            "revocation_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
             }
           }
         },
@@ -265,6 +269,38 @@
               "const": "delivery_recorded"
             },
             "record_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "bootstrap_plan_id",
+            "proposal_id",
+            "revision_id",
+            "plan_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "planning_completed"
+            },
+            "bootstrap_plan_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "proposal_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "revision_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "plan_id": {
               "type": "string",
               "pattern": "^sha256:[0-9a-f]{64}$"
             }

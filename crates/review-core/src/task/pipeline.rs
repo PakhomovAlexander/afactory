@@ -168,6 +168,8 @@ pub enum TaskOperatorV1 {
     Worker {
         slot: String,
     },
+    /// Fixed bootstrap context constructed from captured Task and installed signatures.
+    PlanningContext {},
     Seal {},
     /// Kernel receipt assembly: preserves negative/inconclusive checks without invoking a
     /// conditional evaluator, and admits success only from current independent evidence.

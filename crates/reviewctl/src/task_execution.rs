@@ -30,7 +30,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 mod bindings;
 pub(crate) mod catalog;
+pub(super) mod developer;
 mod legacy;
+mod planning;
 mod selection;
 pub(super) use legacy::start_legacy;
 
@@ -105,6 +107,18 @@ struct TaskCatalog {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present_option"
     )]
+    developers: Option<developer::DeveloperPolicy>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    planner: Option<review_config::task::catalog::planning::PlannerSettings>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
     review: Option<ReviewSettings>,
     packages: BTreeMap<String, TaskPackagePin>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -151,6 +165,18 @@ struct RunAuthority {
     selection: BTreeMap<String, BTreeMap<String, u32>>,
     #[serde(default)]
     no_match: review_config::task::selection::NoMatchPolicy,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    developers: Option<developer::DeveloperPolicy>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    planner: Option<review_config::task::catalog::planning::PlannerSettings>,
     packages: BTreeMap<String, CapturedPackage>,
     independence: IndependencePolicyV1,
     #[serde(default)]
@@ -353,6 +379,17 @@ fn capture_authority(
             "Selection priorities require bounded strategies and captured Pipelines".into(),
         );
     }
+    if let Some(developers) = &catalog.developers {
+        developers.validate()?;
+    }
+    if let Some(planner) = &catalog.planner {
+        planner.validate()?;
+        if catalog.developers.is_none() || capture.worker(&planner.worker).is_none() {
+            return Err(
+                "Planning requires a captured Planner Worker and developer signing keys".into(),
+            );
+        }
+    }
     let local = local.map(bindings::read).transpose()?;
     let local_bindings_id = local
         .as_ref()
@@ -412,6 +449,8 @@ fn capture_authority(
         catalog_id: cas.put(&bytes).map_err(|e| e.to_string())?,
         selection: catalog.selection,
         no_match: catalog.no_match,
+        developers: catalog.developers,
+        planner: catalog.planner,
         packages,
         independence: catalog.independence,
         providers,
@@ -508,9 +547,18 @@ fn bind_models(
     revision_id: &str,
     root: &str,
 ) -> Result<BTreeMap<String, Box<dyn review_runner::task::WorkerModelAdapter>>, String> {
+    let required = compiler.required_worker_packages(cas, revision_id, root)?;
+    bind_named_models(compiler, authority, required)
+}
+
+fn bind_named_models(
+    compiler: &mut TaskPlanCompiler,
+    authority: &RunAuthority,
+    required: BTreeSet<String>,
+) -> Result<BTreeMap<String, Box<dyn review_runner::task::WorkerModelAdapter>>, String> {
     let mut identities = BTreeMap::new();
     let mut adapters = BTreeMap::new();
-    for name in compiler.required_worker_packages(cas, revision_id, root)? {
+    for name in required {
         let worker = compiler.worker(&name).ok_or("Required Worker is absent")?;
         let TaskWorkerRunner::Model {
             provider_kind,
@@ -737,6 +785,23 @@ fn start_captured(
     else {
         return Ok(1);
     };
+    let selected = match selected {
+        selection::PreparedSelection::Selected(selected) => selected,
+        selection::PreparedSelection::Generation {
+            revision,
+            revision_id,
+        } => {
+            return planning::start(
+                options,
+                cas,
+                store,
+                authority,
+                compiler,
+                *revision,
+                revision_id,
+            );
+        }
+    };
     let selection::SelectedTask {
         revision,
         revision_id,
@@ -744,7 +809,7 @@ fn start_captured(
         adapters,
         plan,
         graph,
-    } = selected;
+    } = *selected;
     compiler = selected_compiler;
     let plan_id = cas
         .put_artifact(
@@ -781,10 +846,11 @@ fn start_captured(
         &domain,
         &models,
     )?;
+    let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority {
         compiler: &compiler,
         domain: &host,
-        developer: &NoTaskDeveloper,
+        developer: developer.as_ref(),
     };
     let lease = store
         .open_task(
@@ -956,8 +1022,7 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
             .map_err(|e| e.to_string())?,
     )
     .map_err(|e| e.to_string())?;
-    let mut compiler =
-        restore_compiler(&cas, &projection.revision.authority.policy_id, &authority)?;
+    let mut compiler = planning::restore(&cas, &projection, &authority)?;
     let plan: ExecutionPlanV1 = artifact(
         &cas,
         projection
@@ -967,6 +1032,11 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
         EXECUTION_PLAN_V1,
     )?;
     let graph: CompiledTask = artifact(&cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
+    if plan.preparation.is_some() {
+        return planning::resume(
+            cas, store, authority, compiler, projection, plan, graph, json,
+        );
+    }
     let adapters = bind_models(
         &cas,
         &mut compiler,
@@ -1027,10 +1097,11 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
         &domain,
         &models,
     )?;
+    let developer = developer::host(&cas, &authority, None);
     let trusted = CapturedTaskAuthority {
         compiler: &compiler,
         domain: &host,
-        developer: &NoTaskDeveloper,
+        developer: developer.as_ref(),
     };
     let lease = store
         .take_task_lease(&cas, id, &format!("cli-{}", std::process::id()), 15_000)
@@ -1123,11 +1194,15 @@ fn present(
     if let Some(selection) = selection::recorded(cas, &state.revision)? {
         value["selection"] = selection;
     }
+    if let Some(proof) = &state.planning {
+        value["planning"] = json!({"bootstrap_plan_id":proof.bootstrap_plan_id(), "proposal_id":proof.proposal_id(), "request_revision_id":proof.revision_id()});
+    }
     let events = store
         .replay(&review_store::store::task::task_run_id(id).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     let mut history = Vec::new();
     let mut execution = Vec::new();
+    let mut decisions = Vec::new();
     for event in events {
         let transition: review_core::task::event::TaskTransitionV1 =
             serde_json::from_value(event.payload).map_err(|e| e.to_string())?;
@@ -1150,7 +1225,18 @@ fn present(
             }
             execution.push(entry);
         }
+        if let review_core::task::event::TaskChangeV1::PlanDecided {
+            decision_id,
+            valid_until_unix_ms,
+        } = &transition.change
+        {
+            let decision: PlanDecisionV1 = artifact(cas, decision_id, PLAN_DECISION_V1)?;
+            decisions.push(json!({"artifact_id":decision_id, "decision":decision, "valid_until_unix_ms":valid_until_unix_ms}));
+        }
         history.push(json!({"sequence":event.sequence,"transition":transition}));
+    }
+    if !decisions.is_empty() {
+        value["plan_decisions"] = json!(decisions);
     }
     value["history"] = json!(history);
     value["execution_records"] = json!(execution);
@@ -1159,6 +1245,17 @@ fn present(
     }
     if let Some(result) = &result {
         value["result"] = serde_json::to_value(result).map_err(|e| e.to_string())?;
+        if let TaskPhaseV1::Finished { result_id } = &state.phase {
+            let envelope: ArtifactEnvelope =
+                serde_json::from_value(cas.get_json(result_id).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            for id in &envelope.input_artifacts {
+                let diagnostic = cas.get_json(id).map_err(|e| e.to_string())?;
+                if diagnostic["schema"] == "af.planning-diagnostic/1" {
+                    value["planning_diagnostic"] = diagnostic;
+                }
+            }
+        }
         if let Some(execution) = &state.execution {
             let rounds: Vec<_> = execution
                 .outputs
@@ -1210,9 +1307,18 @@ fn present(
         println!(
             "Task {}: {}",
             state.task_id,
-            result
-                .as_ref()
-                .map_or("planned", |r| r.domain_conclusion.as_str())
+            result.as_ref().map_or(
+                if state.phase
+                    == (TaskPhaseV1::Waiting {
+                        reason: TaskWaitingReasonV1::NeedsPlanReview
+                    })
+                {
+                    "needs-plan-review"
+                } else {
+                    "planned"
+                },
+                |r| r.domain_conclusion.as_str()
+            )
         );
         if let Some(id) = state.plan_id {
             println!("Plan {id}");

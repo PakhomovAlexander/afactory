@@ -1249,6 +1249,49 @@ fn main() {
                     plan_only: true,
                     timeout_secs: None,
                 }),
+                cli::TaskCommand::DecisionPayload {
+                    task_id,
+                    developer,
+                    decision,
+                    reason,
+                    output,
+                    inspect,
+                } => task_execution::developer::payload_file(
+                    &task_id,
+                    &developer,
+                    if decision == "approved" {
+                        review_core::task::plan::PlanDecisionKindV1::Approved
+                    } else {
+                        review_core::task::plan::PlanDecisionKindV1::Rejected
+                    },
+                    &reason,
+                    &output,
+                    &inspect,
+                ),
+                cli::TaskCommand::Approve {
+                    task_id,
+                    payload,
+                    signature,
+                    inspect,
+                } => task_execution::developer::apply(
+                    &task_id,
+                    review_core::task::plan::PlanDecisionKindV1::Approved,
+                    &payload,
+                    &signature,
+                    &inspect,
+                ),
+                cli::TaskCommand::Reject {
+                    task_id,
+                    payload,
+                    signature,
+                    inspect,
+                } => task_execution::developer::apply(
+                    &task_id,
+                    review_core::task::plan::PlanDecisionKindV1::Rejected,
+                    &payload,
+                    &signature,
+                    &inspect,
+                ),
                 cli::TaskCommand::Run { task_id, inspect } => task_execution::run(
                     &task_id,
                     &inspect.repo,

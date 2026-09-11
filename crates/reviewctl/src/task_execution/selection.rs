@@ -15,6 +15,14 @@ pub(super) struct SelectedTask {
     pub graph: CompiledTask,
 }
 
+pub(super) enum PreparedSelection {
+    Selected(Box<SelectedTask>),
+    Generation {
+        revision: Box<TaskRevisionV1>,
+        revision_id: String,
+    },
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SelectedAdapter {
@@ -24,7 +32,7 @@ struct SelectedAdapter {
     request_revision_id: String,
 }
 
-fn capture_revision(cas: &Cas, revision: &TaskRevisionV1) -> Result<String, String> {
+pub(super) fn capture_revision(cas: &Cas, revision: &TaskRevisionV1) -> Result<String, String> {
     revision.validate()?;
     cas.put_artifact(
         TASK_REVISION_V1,
@@ -37,7 +45,7 @@ fn capture_revision(cas: &Cas, revision: &TaskRevisionV1) -> Result<String, Stri
     .map_err(|e| e.to_string())
 }
 
-fn available_tools(
+pub(super) fn available_tools(
     cas: &Cas,
     compiler: &TaskPlanCompiler,
     authority: &RunAuthority,
@@ -93,7 +101,7 @@ pub(super) fn prepare(
     compiler: &TaskPlanCompiler,
     mut request: TaskRevisionV1,
     json_output: bool,
-) -> Result<Option<SelectedTask>, String> {
+) -> Result<Option<PreparedSelection>, String> {
     request.provenance.input_artifact_ids = request
         .inputs
         .values()
@@ -169,6 +177,26 @@ pub(super) fn prepare(
         .map_err(|e| e.to_string())?
         .0;
     let SelectionDecision::Selected { pipeline } = &selection.decision else {
+        if selection.decision == (SelectionDecision::NeedsGeneration {})
+            && authority.planner.is_some()
+        {
+            request.provenance.adapter_id = cas
+                .put_json(
+                    &serde_json::to_value(SelectedAdapter {
+                        schema: "af.selected-task-adapter/1".into(),
+                        source_adapter_id: request.provenance.adapter_id,
+                        selection_id,
+                        request_revision_id: request_id,
+                    })
+                    .map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+            let revision_id = capture_revision(cas, &request)?;
+            return Ok(Some(PreparedSelection::Generation {
+                revision: Box::new(request),
+                revision_id,
+            }));
+        }
         let view = json!({"schema":"af/task-selection@1", "task_id":request.task_id,
             "selection_id": selection_id, "request_revision_id":request_id,
             "attempts":0, "chargeable_tokens":0, "selection":selection});
@@ -205,14 +233,14 @@ pub(super) fn prepare(
         .map_err(|e| e.to_string())?;
     let revision_id = capture_revision(cas, &revision)?;
     let (plan, graph) = compiler.compile(cas, &revision_id, pipeline)?;
-    Ok(Some(SelectedTask {
+    Ok(Some(PreparedSelection::Selected(Box::new(SelectedTask {
         revision,
         revision_id,
         compiler,
         adapters,
         plan,
         graph,
-    }))
+    }))))
 }
 
 pub(super) fn recorded(

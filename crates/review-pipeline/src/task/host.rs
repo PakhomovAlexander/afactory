@@ -162,6 +162,16 @@ pub struct CapturedTaskAuthority<'a> {
 }
 
 impl TaskAuthority for CapturedTaskAuthority<'_> {
+    fn validate_planning_inputs(
+        &self,
+        cas: &Cas,
+        previous: &TaskRevisionV1,
+        next: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+    ) -> Result<(), String> {
+        self.compiler
+            .validate_planning_inputs(cas, previous, next, plan)
+    }
     fn validate_plan(
         &self,
         cas: &Cas,
@@ -506,6 +516,7 @@ impl<'a> CapturedTaskHost<'a> {
                 attempt_id: attempt.id().into(),
                 contract_id: worker.contract.id().into(),
                 code: feedback_code.unwrap_or(TaskFeedbackCodeV1::OutputAdmissionRejected),
+                compiler: None,
             };
             feedback
                 .validate()

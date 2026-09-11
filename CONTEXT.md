@@ -8,6 +8,30 @@ defines only the terms.
 
 ## Language
 
+### Task execution
+
+**Task**:
+The durable business request, with immutable revisions, typed inputs and required outputs,
+acceptance obligations, captured authority and bounded resources. Review is one Task kind.
+
+**Execution Plan**:
+The exact compiled Pipeline closure for one Task revision, including expanded child calls,
+effective Workers, input identities, allowed effects, acceptance coverage and resource limits.
+A Pipeline is the reusable public input/output definition from which a plan is compiled.
+
+**Preparation Plan**:
+An engine-installed fixed plan that runs the captured Planner Worker on the same Task ledger.
+It protects future verification reserves and cannot satisfy business acceptance.
+
+**Pipeline Proposal**:
+A Planner's bounded generated Pipeline TOML. Compiler admission and durable selection establish
+its provenance; the proposal itself grants no execution or developer authority.
+
+**Developer Plan Decision**:
+An authenticated approval or rejection of an exact Task revision, Execution Plan and captured
+policy. Generated dependencies require approval before dispatch. A model response, writer label
+or unsigned decision object cannot supply this authority.
+
 ### What is reviewed
 
 **Snapshot**:

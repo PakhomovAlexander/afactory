@@ -509,6 +509,26 @@ pub fn compile_task_structure(
     root: &str,
     context: &CompileContext<'_>,
 ) -> Result<(CompiledTask, Vec<String>), String> {
+    compile_structure_mode(task, root, context, false)
+}
+
+/// Only the installed bootstrap compiler may use this mode. It proves a proposal's public
+/// port and structure without pretending that preparing a plan fulfills business acceptance.
+/// The common Store separately requires a fixed preparation plan and deferred verification.
+pub fn compile_task_preparation(
+    task: &TaskRevisionV1,
+    root: &str,
+    context: &CompileContext<'_>,
+) -> Result<(CompiledTask, Vec<String>), String> {
+    compile_structure_mode(task, root, context, true)
+}
+
+fn compile_structure_mode(
+    task: &TaskRevisionV1,
+    root: &str,
+    context: &CompileContext<'_>,
+    preparation: bool,
+) -> Result<(CompiledTask, Vec<String>), String> {
     task.validate()?;
     if context.max_nodes == 0
         || context.max_nodes > 64
@@ -617,49 +637,76 @@ pub fn compile_task_structure(
     {
         return Err("Local Worker binding names an unknown physical slot".into());
     }
-    for (name, required) in &task.required_outputs {
+    if preparation {
+        if !coverage.is_empty() || outputs.len() != 1 {
+            return Err(
+                "Planning bootstrap must expose only its proposal and no business coverage".into(),
+            );
+        }
         let address = outputs
-            .get(name)
-            .ok_or_else(|| format!("Pipeline lacks required output {name}"))?;
-        let produced = compiler.port(address)?;
-        if produced.optional
+            .get("proposal")
+            .ok_or("Planning bootstrap has no proposal output")?;
+        let port = compiler.port(address)?;
+        if port.optional
             || !compiler.available(address, &[])
-            || produced.artifact_type != required.artifact_type
-            || produced.cardinality != required.cardinality
+            || port.cardinality != review_core::PortCardinality::One
+            || port.artifact_type != review_core::task::planning::PIPELINE_PROPOSAL_V1
         {
-            return Err(format!(
-                "Pipeline output {name} cannot satisfy the Task contract"
-            ));
+            return Err("Planning bootstrap requires one guaranteed typed proposal".into());
         }
-    }
-    for (name, obligation) in &task.acceptance {
-        let address = coverage
-            .get(name)
-            .ok_or_else(|| format!("Pipeline lacks acceptance coverage {name}"))?;
-        let produced = compiler.port(address)?;
-        if produced.optional
-            || !compiler.available(address, &[])
-            || produced.artifact_type != obligation.evidence_type
-            || !compiler
-                .evidence
-                .get(address)
-                .is_some_and(|ids| ids.contains(&obligation.verifier_policy))
+        if compiler
+            .graph
+            .allowances
+            .values()
+            .any(|a| a.verification_attempts != 0)
         {
-            return Err(format!("Coverage {name} lacks a trusted evidence producer"));
+            return Err("Planner cannot consume business verifier credit".into());
         }
-        let target_name = context
-            .acceptance_outputs
-            .get(name)
-            .ok_or_else(|| format!("Task-kind policy has no final output for {name}"))?;
-        let target = outputs
-            .get(target_name)
-            .ok_or_else(|| format!("Task-kind acceptance target {target_name} is unavailable"))?;
-        if !task.required_outputs.contains_key(target_name)
-            || compiler.lineage.get(address) != compiler.lineage.get(target)
-        {
-            return Err(format!(
-                "Coverage {name} does not judge the required final output {target_name}"
-            ));
+    } else {
+        for (name, required) in &task.required_outputs {
+            let address = outputs
+                .get(name)
+                .ok_or_else(|| format!("Pipeline lacks required output {name}"))?;
+            let produced = compiler.port(address)?;
+            if produced.optional
+                || !compiler.available(address, &[])
+                || produced.artifact_type != required.artifact_type
+                || produced.cardinality != required.cardinality
+            {
+                return Err(format!(
+                    "Pipeline output {name} cannot satisfy the Task contract"
+                ));
+            }
+        }
+        for (name, obligation) in &task.acceptance {
+            let address = coverage
+                .get(name)
+                .ok_or_else(|| format!("Pipeline lacks acceptance coverage {name}"))?;
+            let produced = compiler.port(address)?;
+            if produced.optional
+                || !compiler.available(address, &[])
+                || produced.artifact_type != obligation.evidence_type
+                || !compiler
+                    .evidence
+                    .get(address)
+                    .is_some_and(|ids| ids.contains(&obligation.verifier_policy))
+            {
+                return Err(format!("Coverage {name} lacks a trusted evidence producer"));
+            }
+            let target_name = context
+                .acceptance_outputs
+                .get(name)
+                .ok_or_else(|| format!("Task-kind policy has no final output for {name}"))?;
+            let target = outputs.get(target_name).ok_or_else(|| {
+                format!("Task-kind acceptance target {target_name} is unavailable")
+            })?;
+            if !task.required_outputs.contains_key(target_name)
+                || compiler.lineage.get(address) != compiler.lineage.get(target)
+            {
+                return Err(format!(
+                    "Coverage {name} does not judge the required final output {target_name}"
+                ));
+            }
         }
     }
     compiler.graph.outputs = outputs;
@@ -1415,6 +1462,7 @@ fn resolve(
 
 fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
     match operator {
+        TaskOperatorV1::PlanningContext {} => Ok("planning-context"),
         TaskOperatorV1::Seal {} => Ok("seal"),
         TaskOperatorV1::Accept {} => Ok("accept"),
         TaskOperatorV1::Check { .. } => Ok("check"),

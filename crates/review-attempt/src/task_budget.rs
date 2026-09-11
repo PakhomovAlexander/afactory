@@ -54,6 +54,8 @@ pub struct TaskBudget {
     last_time: u64,
     breached: bool,
     call_limits: BTreeMap<String, u32>,
+    retired_attempts: u64,
+    deferred_verification: bool,
 }
 
 fn add(a: u64, b: u64) -> Result<u64, String> {
@@ -128,7 +130,74 @@ impl TaskBudget {
             last_time: 0,
             breached: false,
             call_limits: BTreeMap::new(),
+            retired_attempts: 0,
+            deferred_verification: false,
         })
+    }
+
+    /// A fixed planning bootstrap has not installed the business verifier nodes yet. Its
+    /// absence never releases the verification allocation owed by the business Task.
+    pub fn with_deferred_verification(mut self) -> Result<Self, String> {
+        if !self.reservations.is_empty()
+            || self.deferred_verification
+            || self
+                .nodes
+                .values()
+                .any(|node| node.allowance.verification_attempts != 0)
+        {
+            return Err("Deferred verification must be captured before planning dispatch".into());
+        }
+        self.deferred_verification = true;
+        Ok(self)
+    }
+
+    /// Capacity available to a newly compiled graph, without creating an execution ledger.
+    /// Earlier spend and the original absolute deadline remain authoritative.
+    pub fn remaining_limits(&self) -> TaskLimitsV1 {
+        let mut limits = self.limits.clone();
+        limits.tokens = self.tokens.remaining(&Scope::Run).unwrap_or(0);
+        limits.max_attempts =
+            u64::from(limits.max_attempts).saturating_sub(self.begun_attempts()) as u32;
+        limits
+    }
+
+    /// The single bootstrap-to-execution barrier keeps the token ledger, reservation IDs,
+    /// late-usage authority and all begun Attempts. A caller must separately admit its exact
+    /// compiled graph and generated origins through the common Store.
+    pub fn enter_execution(
+        &mut self,
+        allowances: BTreeMap<String, NodeAllowance>,
+        call_limits: BTreeMap<String, u32>,
+        now_unix_ms: u64,
+    ) -> Result<(), String> {
+        if !self.deferred_verification
+            || self.breached
+            || now_unix_ms < self.last_time
+            || now_unix_ms >= self.limits.deadline_unix_ms
+            || self
+                .reservations
+                .values()
+                .any(|held| !held.released && held.settled.is_none())
+        {
+            return Err(
+                "Planning cannot advance with pending work, expired authority or a spent barrier"
+                    .into(),
+            );
+        }
+        let remaining = self.remaining_limits();
+        if remaining.tokens < self.limits.verification.tokens
+            || remaining.max_attempts < self.limits.verification.attempts
+            || self.limits.deadline_unix_ms - now_unix_ms < self.limits.verification.wall_ms
+        {
+            return Err("Planning spent capacity still owed to business verification".into());
+        }
+        let next = Self::new(remaining, allowances)?.with_call_limits(call_limits)?;
+        self.retired_attempts = self.begun_attempts();
+        self.nodes = next.nodes;
+        self.call_limits = next.call_limits;
+        self.deferred_verification = false;
+        self.last_time = now_unix_ms;
+        Ok(())
     }
 
     /// Child Pipelines constrain the same ledger. They do not allocate a fresh allowance.
@@ -157,6 +226,9 @@ impl TaskBudget {
     /// Protect the declared allocation until its corresponding verification Attempts start.
     /// Any extra Task-kind reserve remains held while at least one verifier is still owed work.
     fn protected_after(&self, candidate: &str) -> Result<VerificationReserveV1, String> {
+        if self.deferred_verification {
+            return Ok(self.limits.verification.clone());
+        }
         let mut consumed = VerificationReserveV1 {
             tokens: 0,
             attempts: 0,
@@ -234,11 +306,12 @@ impl TaskBudget {
             return Err(format!("Task node {node} exhausted its Attempt limit"));
         }
         let protected = self.protected_after(node)?;
-        let used_attempts: u64 = self
-            .nodes
-            .values()
-            .map(|a| u64::from(a.begun) + u64::from(a.prepared))
-            .sum();
+        let used_attempts: u64 = self.retired_attempts
+            + self
+                .nodes
+                .values()
+                .map(|a| u64::from(a.begun) + u64::from(a.prepared))
+                .sum::<u64>();
         if used_attempts + 1 + u64::from(protected.attempts) > u64::from(self.limits.max_attempts) {
             return Err("Task Attempt limit protects still-required verification".into());
         }
@@ -402,7 +475,7 @@ impl TaskBudget {
         self.tokens.reserved(&Scope::Run)
     }
     pub fn begun_attempts(&self) -> u64 {
-        self.nodes.values().map(|a| u64::from(a.begun)).sum()
+        self.retired_attempts + self.nodes.values().map(|a| u64::from(a.begun)).sum::<u64>()
     }
     pub fn breached(&self) -> bool {
         self.breached

@@ -76,3 +76,15 @@ kills the CLI immediately on the target Started record, and validates the full p
 then. Its wait uses the admitted Task deadline; Worker deadlines, the Task budget, original
 Round identity and eight-Attempt recovery assertions remain intact. The targeted crash test
 passes locally with this observer.
+
+CI for `0feeefc` passes Check, CLI smoke and live container probes in run `34638391894`.
+The P11 working checkpoint adds bounded generation, typed compiler repair, signed developer
+approval/rejection/revocation and an atomic planning-to-execution barrier on the common ledger.
+Targeted CLI tests prove nested generation, the approval pause, captured replay, bounded failure
+and refusal when earlier planning leaves insufficient resources. Store tests retain paid Planner
+charges and late usage while rejecting changed business inputs, limits and predecessor identity.
+The full gate passes **772 tests, zero failures, 15 ignored**, across 103 suites, plus formatting,
+Clippy and byte-identical frozen reproduction. Full binding-independence errors participate in
+bounded compiler repair. The generated implementation fixture embeds Review and adds only the
+admitted empty-history constructor before exact approval. Claude personal remains signed out;
+external PR reviews are paused, and no PR 2 reviewer has run.

@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-operator-signature:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "effects",
+    "evidence",
+    "roles"
+  ],
+  "properties": {
+    "contract": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/contract"
+    },
+    "effects": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "uniqueItems": true
+    },
+    "evidence": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "uniqueItems": true
+      }
+    },
+    "retains": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "uniqueItems": true
+      }
+    },
+    "roles": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "uniqueItems": true
+    },
+    "worker_input_type": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/artifactType"
+    },
+    "worker_output_type": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/artifactType"
+    },
+    "outcome_port": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "attempt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens",
+        "wall_ms"
+      ],
+      "properties": {
+        "tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "wall_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  }
+}

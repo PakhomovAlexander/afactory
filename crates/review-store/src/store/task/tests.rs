@@ -1,6 +1,7 @@
 use super::*;
 use review_core::Producer;
 use review_core::task::plan::PlanDependencyV1;
+mod planning;
 
 struct Authority {
     generated: Vec<GeneratedOriginV1>,
@@ -12,6 +13,18 @@ struct Authority {
 }
 
 impl TaskAuthority for Authority {
+    fn validate_planning_inputs(
+        &self,
+        _: &Cas,
+        previous: &TaskRevisionV1,
+        next: &TaskRevisionV1,
+        _: &ExecutionPlanV1,
+    ) -> Result<(), String> {
+        if previous.inputs != next.inputs {
+            return Err("Fixture has no root input constructors".into());
+        }
+        Ok(())
+    }
     fn validate_context(
         &self,
         _: &Cas,
@@ -575,6 +588,7 @@ fn rejection_expiry_and_revocation_all_prevent_plan_admission() {
                         TaskChangeV1::ApprovalRevoked {
                             decision_id,
                             reason: "Developer revoked this exact decision".into(),
+                            revocation_id: None,
                         },
                         now().unwrap(),
                     )

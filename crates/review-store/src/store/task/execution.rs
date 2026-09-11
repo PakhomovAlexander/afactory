@@ -21,6 +21,7 @@ pub struct TaskExecutionProjection {
 #[derive(Debug, Clone)]
 struct RecordedAttempt {
     invocation_id: String,
+    plan_id: String,
     reservation: TaskReservation,
     prepared_epoch: u64,
     started: bool,
@@ -130,11 +131,41 @@ pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError>
 }
 
 impl TaskExecutionProjection {
+    pub(super) fn enter_execution(
+        &mut self,
+        graph: CompiledTask,
+        time: u64,
+    ) -> Result<(), StoreError> {
+        if !self.pending_attempts().is_empty() {
+            return Err(conflict("Planning handoff has pending Attempts"));
+        }
+        // Feasibility uses remaining capacity, while the existing ledger retains all spent
+        // reservations, late usage and the original deadline. Never create a second budget.
+        graph
+            .budget(self.budget.remaining_limits())
+            .map_err(conflict)?;
+        self.budget
+            .enter_execution(
+                graph.allowances.clone(),
+                graph
+                    .calls
+                    .iter()
+                    .map(|(name, call)| (name.clone(), call.max_attempts))
+                    .collect(),
+                time,
+            )
+            .map_err(conflict)?;
+        self.graph = graph;
+        self.invocations.clear();
+        self.outputs.clear();
+        Ok(())
+    }
     /// Settlement selects a result durably before the scheduler publishes its ports. A new
     /// writer may finish that publication without starting another paid Attempt.
     pub fn reusable_output(&self, node: &str) -> Option<(String, String)> {
         self.attempts.iter().find_map(|(id, attempt)| {
             if attempt.reservation.node != node
+                || self.invocations.get(node).map(|(_, i)| &i.plan_id) != Some(&attempt.plan_id)
                 || self.ledger.attempt(&AttemptId(id.clone()))?.state
                     != review_attempt::AttemptState::Selected
             {
@@ -153,7 +184,10 @@ impl TaskExecutionProjection {
     pub fn retry_feedback(&self, node: &str) -> Vec<String> {
         self.attempts
             .values()
-            .filter(|a| a.reservation.node == node)
+            .filter(|a| {
+                a.reservation.node == node
+                    && self.invocations.get(node).map(|(_, i)| &i.plan_id) == Some(&a.plan_id)
+            })
             .filter_map(|a| match &a.settlement {
                 Some(TaskExecutionRecordV1::Settled {
                     result:
@@ -190,6 +224,11 @@ impl TaskExecutionProjection {
         let budget = graph
             .budget(state.revision.limits.clone())
             .map_err(conflict)?;
+        let budget = if plan.preparation.is_some() {
+            budget.with_deferred_verification().map_err(conflict)?
+        } else {
+            budget
+        };
         Ok(Self {
             graph,
             budget,
@@ -508,6 +547,7 @@ impl TaskProjection {
                     attempt_id.clone(),
                     RecordedAttempt {
                         invocation_id: invocation_id.clone(),
+                        plan_id: input.plan_id.clone(),
                         reservation,
                         prepared_epoch: self.epoch,
                         started: false,

@@ -585,3 +585,74 @@ fn evidence_from_an_earlier_output_cannot_validate_a_later_final_output() {
             .contains("does not judge the required final output")
     );
 }
+
+#[test]
+fn planning_compilation_has_a_proposal_contract_without_business_coverage_or_verifier_credit() {
+    use review_core::task::planning::PIPELINE_PROPOSAL_V1;
+    let (task, mut pipelines, mut signatures) = fixture();
+    let mut definition = pipelines.remove("builtin/document").unwrap();
+    definition.name = "af-internal/planning".into();
+    definition.coverage.clear();
+    let mut port = definition.contract.outputs.remove("document").unwrap();
+    port.artifact_type = PIPELINE_PROPOSAL_V1.into();
+    port.covers.clear();
+    definition
+        .contract
+        .outputs
+        .insert("proposal".into(), port.clone());
+    let output = definition.outputs.remove("document").unwrap();
+    definition.outputs.insert("proposal".into(), output);
+    for slot in definition.slots.values_mut() {
+        slot.role = "plan".into();
+        slot.output_type = PIPELINE_PROPOSAL_V1.into();
+    }
+    let signature = signatures
+        .get_mut("worker/builtin/document-author")
+        .unwrap();
+    signature.contract.outputs.insert("output".into(), port);
+    signature.evidence.clear();
+    signature.roles = BTreeSet::from(["plan".into()]);
+    signature.worker_output_type = Some(PIPELINE_PROPOSAL_V1.into());
+    pipelines.insert(definition.name.clone(), definition);
+    let context = CompileContext {
+        pipelines: &pipelines,
+        signatures: &signatures,
+        slot_workers: BTreeMap::new(),
+        acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
+        max_nodes: 64,
+        max_depth: 4,
+    };
+    let (graph, resources) =
+        review_graph::task::compile_task_preparation(&task, "af-internal/planning", &context)
+            .unwrap();
+    assert!(resources.is_empty());
+    assert!(graph.coverage.is_empty());
+    assert_eq!(graph.inputs, task.inputs);
+    assert_eq!(graph.outputs.len(), 1);
+    assert!(graph.outputs.contains_key("proposal"));
+    assert!(
+        graph
+            .allowances
+            .values()
+            .all(|a| a.verification_attempts == 0)
+    );
+    assert!(
+        compile_task(&task, "af-internal/planning", &context).is_err(),
+        "Proposal pretended to satisfy business acceptance"
+    );
+    let mut unavailable = signatures.clone();
+    unavailable
+        .get_mut("worker/builtin/document-author")
+        .unwrap()
+        .effects
+        .insert("undeclared-effect".into());
+    let context = CompileContext {
+        signatures: &unavailable,
+        ..context
+    };
+    assert!(
+        review_graph::task::compile_task_preparation(&task, "af-internal/planning", &context)
+            .is_err(),
+        "Preparation widened effect authority"
+    );
+}

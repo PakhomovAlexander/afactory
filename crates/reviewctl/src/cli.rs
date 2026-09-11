@@ -873,6 +873,40 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
         #[arg(long)]
         json: bool,
     },
+    /// Write exact bytes for an external developer signature; this does not approve execution
+    DecisionPayload {
+        task_id: String,
+        #[arg(long)]
+        developer: String,
+        #[arg(long, value_parser = ["approved", "rejected"])]
+        decision: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long, value_name = "ABSENT_FILE")]
+        output: PathBuf,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Record an exact plan approval signed by a captured developer key
+    Approve {
+        task_id: String,
+        #[arg(long)]
+        payload: PathBuf,
+        #[arg(long)]
+        signature: PathBuf,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Record an exact plan rejection signed by a captured developer key
+    Reject {
+        task_id: String,
+        #[arg(long)]
+        payload: PathBuf,
+        #[arg(long)]
+        signature: PathBuf,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
     /// Run or resume a captured Task using its exact recorded plan and authority
     Run {
         task_id: String,

@@ -1015,6 +1015,18 @@
               "const": "repair_accept"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "planning_context"
+            }
+          }
         }
       ]
     },
@@ -1405,9 +1417,47 @@
             "minItems": 1,
             "$comment": "Canonical ascending order is required by semantic admission."
           },
-          "minProperties": 1
+          "minProperties": 0
+        },
+        "preparation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "planning"
+            }
+          }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "preparation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "acceptance": {
+                "maxProperties": 0
+              },
+              "generated_origins": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "acceptance": {
+                "minProperties": 1
+              }
+            }
+          }
+        }
+      ]
     },
     "planDecision": {
       "type": "object",

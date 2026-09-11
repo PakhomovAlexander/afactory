@@ -19,6 +19,38 @@ fn fixture(name: &str) -> Value {
 #[path = "../support/task_fixtures.rs"]
 mod corpus;
 
+#[test]
+fn compiler_feedback_retains_a_bounded_exact_proposal_and_closes_its_fields() {
+    use review_core::task::feedback::*;
+    let id = format!("sha256:{}", "1".repeat(64));
+    let value = json!({"attempt_id":"01AAAAAAAAAAAAAAAAAAAAAAAA","contract_id":id,"code":"compiler_rejected",
+        "compiler":{"proposal_id":id,"proposal":{"schema":"af.pipeline-proposal/1","root":"generated/task","definitions":{"generated/task":"invalid TOML awaits compiler repair"}},"diagnostics":["Missing public output verification"]}});
+    assert_valid("task-retry-feedback-v1.json", &value);
+    serde_json::from_value::<TaskRetryFeedbackV1>(value.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    for case in ["missing", "null", "extra", "wrong_code", "diagnostics"] {
+        let mut invalid = value.clone();
+        match case {
+            "missing" => {
+                invalid.as_object_mut().unwrap().remove("compiler");
+            }
+            "null" => invalid["compiler"] = Value::Null,
+            "extra" => invalid["compiler"]["transcript"] = json!("undeclared history"),
+            "wrong_code" => invalid["code"] = json!("provider_failure"),
+            _ => invalid["compiler"]["diagnostics"] = json!([]),
+        }
+        assert_invalid("task-retry-feedback-v1.json", &invalid, case);
+        assert!(
+            serde_json::from_value::<TaskRetryFeedbackV1>(invalid)
+                .map_err(|e| e.to_string())
+                .and_then(|f| f.validate())
+                .is_err()
+        );
+    }
+}
+
 fn typed(contract: &str, value: Value) -> Result<(), String> {
     corpus::typed_round_trip(contract, value).map(|_| ())
 }
@@ -538,5 +570,106 @@ fn repair_context_and_decisions_bind_every_current_view_and_keep_original_proven
     assert_valid(
         "task-review-claims-v1.json",
         &serde_json::to_value(claims).unwrap(),
+    );
+}
+
+#[test]
+fn fixed_planning_preparation_cannot_claim_business_acceptance_or_generated_authority() {
+    use review_core::task::plan::PlanPreparationV1;
+    let original = fixture("execution-plan");
+    let mut plan: ExecutionPlanV1 = serde_json::from_value(original.clone()).unwrap();
+    assert!(plan.preparation.is_none());
+    assert_eq!(
+        serde_json::to_value(&plan).unwrap(),
+        original,
+        "Adding preparation changed frozen execution identity"
+    );
+    let original_coverage = plan.acceptance.clone();
+    let original_origins = plan.generated_origins.clone();
+    plan.preparation = Some(PlanPreparationV1::Planning {});
+    plan.acceptance.clear();
+    plan.generated_origins.clear();
+    plan.validate().unwrap();
+    let valid = serde_json::to_value(&plan).unwrap();
+    assert_valid("execution-plan-v1.json", &valid);
+    let mut invalid = valid.clone();
+    invalid["preparation"] = Value::Null;
+    assert_invalid(
+        "execution-plan-v1.json",
+        &invalid,
+        "Present preparation cannot be null",
+    );
+    assert!(serde_json::from_value::<ExecutionPlanV1>(invalid).is_err());
+    let mut invalid = valid;
+    invalid["preparation"]["auto_approved"] = json!(true);
+    assert_invalid(
+        "execution-plan-v1.json",
+        &invalid,
+        "Preparation cannot smuggle approval",
+    );
+    assert!(serde_json::from_value::<ExecutionPlanV1>(invalid).is_err());
+    plan.acceptance = original_coverage;
+    assert!(plan.validate().is_err());
+    assert_invalid(
+        "execution-plan-v1.json",
+        &serde_json::to_value(&plan).unwrap(),
+        "Preparation cannot certify business acceptance",
+    );
+    plan.acceptance.clear();
+    plan.generated_origins = original_origins;
+    assert!(!plan.generated_origins.is_empty());
+    assert!(plan.validate().is_err());
+    assert_invalid(
+        "execution-plan-v1.json",
+        &serde_json::to_value(&plan).unwrap(),
+        "Bootstrap is fixed, never generated",
+    );
+}
+
+#[test]
+fn proposals_are_bounded_pipeline_toml_and_never_worker_installation_or_approval() {
+    use review_core::task::planning::PipelineProposalV1;
+    let proposal = PipelineProposalV1 {
+        schema: "af.pipeline-proposal/1".into(),
+        root: "generated/implementation".into(),
+        definitions: std::collections::BTreeMap::from([(
+            "generated/implementation".into(),
+            "schema = \"af.pipeline/1\"\n".into(),
+        )]),
+    };
+    proposal.validate().unwrap();
+    let value = serde_json::to_value(&proposal).unwrap();
+    assert_valid("pipeline-proposal-v1.json", &value);
+    for field in ["workers", "approved", "limits"] {
+        let mut invalid = value.clone();
+        invalid[field] = json!({});
+        assert_invalid(
+            "pipeline-proposal-v1.json",
+            &invalid,
+            "Proposal cannot install other authority",
+        );
+        assert!(serde_json::from_value::<PipelineProposalV1>(invalid).is_err());
+    }
+    let mut invalid = proposal.clone();
+    invalid.root = "generated/absent".into();
+    assert!(invalid.validate().is_err());
+    let mut invalid = proposal.clone();
+    invalid.definitions.clear();
+    assert!(invalid.validate().is_err());
+    assert_invalid(
+        "pipeline-proposal-v1.json",
+        &serde_json::to_value(invalid).unwrap(),
+        "Proposal must contain a definition",
+    );
+    let mut invalid = proposal;
+    invalid.root = "project/existing".into();
+    invalid
+        .definitions
+        .insert("project/existing".into(), "name = 'existing'".into());
+    assert!(invalid.validate().is_err());
+    assert_invalid(
+        "pipeline-proposal-v1.json",
+        &serde_json::to_value(invalid).unwrap(),
+        "Generated code cannot shadow captured package names",
     );
 }

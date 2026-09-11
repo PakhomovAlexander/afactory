@@ -1,7 +1,9 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
 **Active increment:** [Task execution](task-execution.md), P00–P14. The owner approved
-implementation on 2026-09-10; baseline checks pass and contract work is next. The completed
+implementation on 2026-09-10. Contracts, common execution, sharing, embedding, bounded repair,
+selection and generated-plan approval are implemented in the stacked PRs; export, starters,
+remaining Review compatibility and the P14 release evidence are next. The completed
 M0–M9 record below remains the compatibility foundation.
 
 **Status:** M0–M9 are complete and shipped in private release `v0.6.0` from exact `main` commit

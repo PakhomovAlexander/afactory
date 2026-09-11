@@ -26,6 +26,13 @@ pub enum TaskChangeV1 {
     PlanProposed {
         plan_id: String,
     },
+    /// One atomic barrier retains planning charges and proposes the exact generated plan.
+    PlanningCompleted {
+        bootstrap_plan_id: String,
+        proposal_id: String,
+        revision_id: String,
+        plan_id: String,
+    },
     PlanDecided {
         decision_id: String,
         valid_until_unix_ms: u64,
@@ -33,6 +40,13 @@ pub enum TaskChangeV1 {
     ApprovalRevoked {
         decision_id: String,
         reason: String,
+        /// Historical records lacked a retained proof. New trusted writes always include it.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "super::present_option"
+        )]
+        revocation_id: Option<String>,
     },
     PlanAdmitted {
         plan_id: String,
@@ -105,13 +119,25 @@ impl TaskTransitionV1 {
 
     pub fn artifact_refs(&self) -> Vec<&str> {
         match &self.change {
+            TaskChangeV1::PlanningCompleted {
+                bootstrap_plan_id,
+                proposal_id,
+                revision_id,
+                plan_id,
+            } => vec![bootstrap_plan_id, proposal_id, revision_id, plan_id],
             TaskChangeV1::Opened { revision_id, .. }
             | TaskChangeV1::RevisionRecorded { revision_id } => vec![revision_id],
             TaskChangeV1::PlanProposed { plan_id } | TaskChangeV1::PlanAdmitted { plan_id } => {
                 vec![plan_id]
             }
-            TaskChangeV1::PlanDecided { decision_id, .. }
-            | TaskChangeV1::ApprovalRevoked { decision_id, .. } => vec![decision_id],
+            TaskChangeV1::PlanDecided { decision_id, .. } => vec![decision_id],
+            TaskChangeV1::ApprovalRevoked {
+                decision_id,
+                revocation_id,
+                ..
+            } => std::iter::once(decision_id.as_str())
+                .chain(revocation_id.as_deref())
+                .collect(),
             TaskChangeV1::Finished { result_id } => vec![result_id],
             TaskChangeV1::ExecutionRecorded { record_id }
             | TaskChangeV1::DeliveryRecorded { record_id } => vec![record_id],

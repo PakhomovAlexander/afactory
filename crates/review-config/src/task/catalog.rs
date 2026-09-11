@@ -22,6 +22,7 @@ use crate::{CommandSpec, lock::package_digest_from_files};
 pub const TASK_PACKAGE_V1: &str = "af/TaskPackage@1";
 pub const COMPILED_TASK_V1: &str = "af/CompiledTask@1";
 
+pub mod planning;
 #[cfg(test)]
 mod tests;
 
@@ -110,6 +111,7 @@ pub struct TaskPlanCompiler {
     acceptance_outputs: BTreeMap<String, String>,
     independence: IndependencePolicyV1,
     provider_admission: Option<review_graph::task::OperatorAttemptCost>,
+    preparation_roots: BTreeSet<String>,
 }
 
 fn safe_path(path: &str) -> bool {
@@ -240,6 +242,7 @@ impl TaskPlanCompiler {
             acceptance_outputs,
             independence,
             provider_admission: None,
+            preparation_roots: BTreeSet::new(),
         })
     }
 
@@ -772,18 +775,7 @@ impl TaskPlanCompiler {
         {
             return Err("Task kind differs from its captured kind package".into());
         }
-        let graph = compile_task(
-            &task,
-            root,
-            &CompileContext {
-                pipelines: &self.pipelines,
-                signatures: &self.signatures,
-                slot_workers: self.slot_workers.clone(),
-                acceptance_outputs: self.acceptance_outputs.clone(),
-                max_nodes: 64,
-                max_depth: 4,
-            },
-        )?;
+        let graph = self.compile_graph(&task, root)?;
         self.validate_replacement_schemas(&graph)?;
         Ok(graph
             .slots
@@ -814,18 +806,7 @@ impl TaskPlanCompiler {
         }
         cas.verify(&self.engine_id).map_err(|e| e.to_string())?;
         cas.verify(&self.policy_id).map_err(|e| e.to_string())?;
-        let mut graph = compile_task(
-            &task,
-            root,
-            &CompileContext {
-                pipelines: &self.pipelines,
-                signatures: &self.signatures,
-                slot_workers: self.slot_workers.clone(),
-                acceptance_outputs: self.acceptance_outputs.clone(),
-                max_nodes: 64,
-                max_depth: 4,
-            },
-        )?;
+        let mut graph = self.compile_graph(&task, root)?;
         self.validate_replacement_schemas(&graph)?;
         let bindings = self.effective_bindings(cas, &graph)?;
         let mut used: BTreeSet<String> = graph
@@ -932,6 +913,10 @@ impl TaskPlanCompiler {
             .0
         };
         let plan = ExecutionPlanV1 {
+            preparation: self
+                .preparation_roots
+                .contains(root)
+                .then_some(review_core::task::plan::PlanPreparationV1::Planning {}),
             task_revision_id: task_revision_id.into(),
             engine_id: self.engine_id.clone(),
             pipeline_id: self.packages[root].dependency.artifact_id.clone(),

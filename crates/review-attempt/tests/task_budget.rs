@@ -263,3 +263,142 @@ fn command_workers_consume_attempts_and_wall_capacity_with_zero_tokens() {
     assert_eq!(ledger.begun_attempts(), 2);
     assert_eq!(ledger.committed_tokens(), 0);
 }
+
+fn planning_budget(tokens: u64, attempts: u32, deadline: u64) -> TaskBudget {
+    TaskBudget::new(
+        TaskLimitsV1 {
+            tokens,
+            max_attempts: attempts,
+            deadline_unix_ms: deadline,
+            verification: VerificationReserveV1 {
+                tokens: 30,
+                attempts: 1,
+                wall_ms: 200,
+            },
+        },
+        BTreeMap::from([(
+            "root.nodes.plan".into(),
+            NodeAllowance {
+                tokens_per_attempt: 40,
+                wall_ms_per_attempt: 100,
+                max_attempts: 2,
+                verification_attempts: 0,
+            },
+        )]),
+    )
+    .unwrap()
+    .with_deferred_verification()
+    .unwrap()
+}
+fn business_allowances() -> BTreeMap<String, NodeAllowance> {
+    BTreeMap::from([
+        (
+            "root.nodes.implement".into(),
+            NodeAllowance {
+                tokens_per_attempt: 40,
+                wall_ms_per_attempt: 100,
+                max_attempts: 2,
+                verification_attempts: 0,
+            },
+        ),
+        (
+            "root.nodes.verify".into(),
+            NodeAllowance {
+                tokens_per_attempt: 30,
+                wall_ms_per_attempt: 200,
+                max_attempts: 1,
+                verification_attempts: 1,
+            },
+        ),
+    ])
+}
+
+#[test]
+fn planning_protects_future_verification_and_cannot_reset_spend_at_the_execution_barrier() {
+    for mut blocked in [
+        planning_budget(60, 3, 1000),
+        planning_budget(200, 1, 1000),
+        planning_budget(200, 3, 250),
+    ] {
+        assert!(
+            blocked.prepare("root.nodes.plan", 1).is_err(),
+            "Planner consumed a future verifier's reservation"
+        );
+        assert_eq!(blocked.begun_attempts(), 0);
+    }
+    let mut budget = planning_budget(120, 3, 1000);
+    let planner = spend(&mut budget, "root.nodes.plan", 1, 20);
+    assert_eq!(budget.remaining_limits().tokens, 100);
+    assert_eq!(budget.remaining_limits().max_attempts, 2);
+    budget
+        .enter_execution(
+            business_allowances(),
+            BTreeMap::from([("root".into(), 3)]),
+            2,
+        )
+        .unwrap();
+    assert_eq!(budget.committed_tokens(), 20);
+    assert_eq!(budget.begun_attempts(), 1);
+    assert!(
+        budget
+            .enter_execution(business_allowances(), BTreeMap::new(), 3)
+            .is_err()
+    );
+    let implementation = spend(&mut budget, "root.nodes.implement", 3, 10);
+    assert_ne!(planner, implementation);
+    assert!(
+        budget.prepare("root.nodes.implement", 4).is_err(),
+        "Earlier Planner Attempt was reset"
+    );
+    spend(&mut budget, "root.nodes.verify", 4, 5);
+    assert_eq!(budget.begun_attempts(), 3);
+    assert_eq!(budget.committed_tokens(), 35);
+    budget.observe_charge(&planner, 50).unwrap();
+    assert_eq!(budget.committed_tokens(), 65);
+    assert!(budget.breached());
+}
+
+#[test]
+fn planning_barrier_requires_settled_attempts_and_keeps_expiry_and_late_overrun_authority() {
+    let mut budget = planning_budget(200, 4, 1000);
+    let reservation = budget.prepare("root.nodes.plan", 1).unwrap();
+    assert!(
+        budget
+            .enter_execution(business_allowances(), BTreeMap::new(), 2)
+            .is_err()
+    );
+    budget.begin(&reservation.id, 2).unwrap();
+    assert!(
+        budget
+            .enter_execution(business_allowances(), BTreeMap::new(), 3)
+            .is_err()
+    );
+    budget.settle(&reservation.id, 10).unwrap();
+    assert!(
+        budget
+            .enter_execution(business_allowances(), BTreeMap::new(), 1000)
+            .is_err()
+    );
+    assert!(
+        budget
+            .enter_execution(business_allowances(), BTreeMap::new(), 900)
+            .is_err()
+    );
+    budget
+        .enter_execution(
+            business_allowances(),
+            BTreeMap::from([("root".into(), 3)]),
+            3,
+        )
+        .unwrap();
+    assert_eq!(budget.remaining_limits().deadline_unix_ms, 1000);
+    budget.observe_charge(&reservation.id, 41).unwrap();
+    assert!(
+        budget.prepare("root.nodes.implement", 4).is_err(),
+        "Late Planner overrun did not fence new work"
+    );
+    assert!(
+        budget.begin(&reservation.id, 4).is_err(),
+        "Old settled reservation was restarted"
+    );
+}

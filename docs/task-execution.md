@@ -30,7 +30,9 @@ supplement it. Claude calls use only `claude-personal`.
 - [ ] P07–P09: local Worker replacement, Git catalog sync, Task-kind packages and embedded Review
   and bounded targeted repair are implemented; heavy history continuation remains.
 - [ ] P10: deterministic captured selection and CLI routing pass the full gate; PR integration pending.
-- [ ] P11–P12: bounded generation, developer approval, export and starters.
+- [ ] P11: bounded generation, shared planning accounting and signed developer decisions are
+  implemented and pass the full gate; PR integration pending.
+- [ ] P12: export and starters.
 - [ ] P13/P14: Jira/document demonstrations, compatibility, benchmark and consumer release.
 
 The owner authorized the complete plan in [three PRs](task-execution/pr-sequence.md).
@@ -41,6 +43,8 @@ and immutable Task-kind profiles. The [bounded repair walkthrough](task-executio
 records distinct complete-Review and targeted-fix acceptance guarantees.
 The [selection walkthrough](task-execution/selection.md) explains fallback, automatic ranking and
 persisted reasons without Planner calls.
+The [generated-plan walkthrough](task-execution/generated-plans.md) describes the fixed Planner,
+typed compiler repair, one-budget handoff and exact signed approval before generated execution.
 Each PR receives one light Round with Fable 5.1/high on `claude-personal` for correctness
 and architecture, Opus 5/xhigh on `claude-personal` for performance, and GPT-5.6-Sol/high on
 `codex-personal` for bug bounty. These replace the P01 reviewer selection for future PRs.
@@ -84,13 +88,13 @@ allowance. Complete finding-bearing Review Tasks retain `changes_requested` and 
 reviewers remain incomplete without authoritative partial sets. Both initial execution and
 replay preserve the domain exit. See the [Review Task walkthrough](task-execution/review-task.md).
 
-The current deterministic gate passed with **754 tests, zero failures and 15 existing opt-in
-probes ignored**, across 101 suites. Formatting, Clippy and frozen synthetic reproduction passed.
+The P11 deterministic gate passed with **772 tests, zero failures and 15 existing opt-in
+probes ignored**, across 103 suites. Formatting, Clippy and frozen synthetic reproduction passed.
 All eleven implementation/delivery behavior cases now pass through the common Store, with their
 original source preserved as a compatibility fixture. Native timeout and storage-failure tests
 retain reported usage. The final compatibility gate also covers preserved per-Check process
-deadlines inside the aggregate check Attempt. The authenticated developer command boundary,
-live Provider boundary probes and legacy Review entry-point cutover belong to the remaining
+deadlines inside the aggregate check Attempt. P11 adds the authenticated developer command
+boundary and generated execution. Live Provider boundary probes and legacy Review entry-point cutover belong to the remaining
 increment. See the
 [Task-file walkthrough](task-execution/task-file.md),
 [ADR-0048](adr/0048-compile-task-ports-and-fence-developer-plan-decisions.md) and

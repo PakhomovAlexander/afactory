@@ -195,6 +195,8 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         schema: "af.task-catalog/1".into(),
         selection: BTreeMap::new(),
         no_match: review_config::task::selection::NoMatchPolicy::Refuse,
+        developers: None,
+        planner: None,
         code_policy: ".af/task-compat/code-policy.toml".into(),
         review: None,
         packages: pins,

@@ -23,6 +23,7 @@ mod tests;
 
 mod delivery;
 pub mod execution;
+pub mod planning;
 
 fn conflict(message: impl Into<String>) -> StoreError {
     StoreError::Conflict(message.into())
@@ -95,6 +96,16 @@ pub trait TaskAuthority: Sync {
         decision: PlanDecisionKindV1,
     ) -> Result<DeveloperGrant, String>;
     fn authorization_current(&self, decision: &PlanDecisionV1) -> Result<(), String>;
+    /// Recompute only admitted root input constructors at the preparation/execution barrier.
+    fn validate_planning_inputs(
+        &self,
+        _cas: &Cas,
+        _previous: &TaskRevisionV1,
+        _next: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+    ) -> Result<(), String> {
+        Err("Planning input normalization is not configured".into())
+    }
     /// Match the exact rendered context to captured schemas, instructions, invocation and
     /// admitted retry feedback before any Attempt reservation can become executable.
     fn validate_context(
@@ -154,6 +165,7 @@ pub struct TaskProjection {
     resume_phase: Option<TaskPhaseV1>,
     decisions: BTreeMap<String, Decision>,
     pub execution: Option<execution::TaskExecutionProjection>,
+    pub planning: Option<planning::TaskPlanningProof>,
     pub deliveries: Vec<(String, task::delivery::TaskDeliveryRecordV1)>,
 }
 
@@ -217,7 +229,8 @@ fn plan(cas: &Cas, id: &str, state: &TaskProjection) -> Result<ExecutionPlanV1, 
         || plan.authority != state.revision.authority
         || plan.limits != state.revision.limits
         || plan.inputs != state.revision.inputs
-        || !plan.acceptance.keys().eq(state.revision.acceptance.keys())
+        || (plan.preparation.is_none()
+            && !plan.acceptance.keys().eq(state.revision.acceptance.keys()))
     {
         return Err(conflict(
             "Plan does not bind the exact Task revision, inputs, authority and limits",
@@ -252,7 +265,49 @@ fn references(
     state: Option<&TaskProjection>,
 ) -> Result<Vec<String>, StoreError> {
     let mut refs = BTreeSet::new();
+    if let TaskChangeV1::ApprovalRevoked {
+        revocation_id: Some(id),
+        ..
+    } = change
+    {
+        let value: PlanDecisionV1 = payload(cas, id, task::PLAN_DECISION_V1)?;
+        value.validate().map_err(conflict)?;
+        refs.extend([
+            id.clone(),
+            value.task_revision_id,
+            value.plan_id,
+            value.policy_id,
+            value.authorization_id,
+        ]);
+    }
     match change {
+        TaskChangeV1::PlanningCompleted {
+            bootstrap_plan_id,
+            proposal_id,
+            revision_id,
+            plan_id,
+        } => {
+            let mut next = state
+                .ok_or_else(|| conflict("Planning precedes Task"))?
+                .clone();
+            next.revision = revision(cas, revision_id)?;
+            next.revision_id = revision_id.clone();
+            refs.extend(references(
+                cas,
+                &TaskChangeV1::RevisionRecorded {
+                    revision_id: revision_id.clone(),
+                },
+                None,
+            )?);
+            refs.extend(references(
+                cas,
+                &TaskChangeV1::PlanProposed {
+                    plan_id: plan_id.clone(),
+                },
+                Some(&next),
+            )?);
+            refs.extend([bootstrap_plan_id.clone(), proposal_id.clone()]);
+        }
         TaskChangeV1::DeliveryRecorded { record_id } => {
             let value: task::delivery::TaskDeliveryRecordV1 =
                 payload(cas, record_id, task::delivery::TASK_DELIVERY_RECORD_V1)?;
@@ -334,6 +389,7 @@ fn references(
             ]);
         }
         TaskChangeV1::Finished { result_id } => {
+            refs.extend(envelope(cas, result_id, task::TASK_RESULT_V1)?.input_artifacts);
             let result: TaskResultV1 = payload(cas, result_id, task::TASK_RESULT_V1)?;
             result.validate().map_err(conflict)?;
             refs.extend([result_id.clone(), result.task_revision_id]);
@@ -348,6 +404,9 @@ fn references(
 }
 
 impl TaskProjection {
+    pub fn plan_decision(&self, plan_id: &str) -> Option<PlanDecisionKindV1> {
+        self.decisions.get(plan_id).map(|d| d.value.decision)
+    }
     fn check_lease(&self, transition: &TaskTransitionV1) -> Result<(), StoreError> {
         if transition.writer != self.writer
             || transition.epoch != self.epoch
@@ -475,6 +534,21 @@ impl TaskProjection {
                     self.plan_id = Some(plan_id.clone());
                     self.resume_phase = None;
                 }
+                TaskChangeV1::PlanningCompleted {
+                    bootstrap_plan_id,
+                    proposal_id,
+                    revision_id,
+                    plan_id,
+                } => {
+                    self.apply_planning_completed(
+                        cas,
+                        bootstrap_plan_id,
+                        proposal_id,
+                        revision_id,
+                        plan_id,
+                        transition.now_unix_ms,
+                    )?;
+                }
                 TaskChangeV1::PlanDecided {
                     decision_id,
                     valid_until_unix_ms,
@@ -503,12 +577,30 @@ impl TaskProjection {
                         },
                     );
                 }
-                TaskChangeV1::ApprovalRevoked { decision_id, .. } => {
+                TaskChangeV1::ApprovalRevoked {
+                    decision_id,
+                    reason,
+                    revocation_id,
+                } => {
                     let decision = self
                         .decisions
                         .values_mut()
                         .find(|d| &d.artifact_id == decision_id)
                         .ok_or_else(|| conflict("Unknown Task approval"))?;
+                    if let Some(id) = revocation_id {
+                        let revocation: PlanDecisionV1 = payload(cas, id, task::PLAN_DECISION_V1)?;
+                        revocation.validate().map_err(conflict)?;
+                        if revocation.decision != PlanDecisionKindV1::Rejected
+                            || revocation.task_revision_id != self.revision_id
+                            || revocation.plan_id != decision.value.plan_id
+                            || revocation.policy_id != self.revision.authority.policy_id
+                            || revocation.reason != *reason
+                        {
+                            return Err(conflict(
+                                "Revocation proof changed its exact plan, Task, authority or reason",
+                            ));
+                        }
+                    }
                     decision.revoked = true;
                     if self.plan_id.as_ref() == Some(&decision.value.plan_id) {
                         self.admitted = false;
@@ -609,6 +701,18 @@ impl TaskProjection {
                         return Err(conflict("Task result is stale"));
                     }
                     if result.acceptance == TaskAcceptanceV1::Satisfied {
+                        let current = plan(
+                            cas,
+                            self.plan_id
+                                .as_deref()
+                                .ok_or_else(|| conflict("Task has no plan"))?,
+                            self,
+                        )?;
+                        if current.preparation.is_some() {
+                            return Err(conflict(
+                                "Planning cannot satisfy business Task acceptance",
+                            ));
+                        }
                         if !self.admitted {
                             return Err(conflict("Unadmitted Task cannot satisfy acceptance"));
                         }
@@ -704,6 +808,9 @@ impl EventStore {
         // Cached prefix is only a parse memo. Revalidate current revision/plan bytes on every
         // access; a removed or corrupted active artifact must never inherit cached authority.
         if let Some(state) = &state {
+            if state.planning.is_some() {
+                state.planning_proof(cas)?;
+            }
             let mut active_refs: BTreeSet<String> = references(
                 cas,
                 &TaskChangeV1::RevisionRecorded {
@@ -819,6 +926,7 @@ impl EventStore {
                     resume_phase: None,
                     decisions: BTreeMap::new(),
                     execution: None,
+                    planning: None,
                     deliveries: Vec::new(),
                 });
             } else {
@@ -1223,12 +1331,44 @@ impl EventStore {
         if now()? >= grant.valid_until_unix_ms {
             return Err(conflict("Developer revocation authorization has expired"));
         }
+        let revocation = PlanDecisionV1 {
+            task_revision_id: state.revision_id.clone(),
+            plan_id: plan_id.into(),
+            policy_id: state.revision.authority.policy_id.clone(),
+            developer: grant.developer,
+            authorization_id: grant.authorization_id,
+            decision: PlanDecisionKindV1::Rejected,
+            reason: reason.into(),
+        };
+        revocation.validate().map_err(conflict)?;
+        authority
+            .authorization_current(&revocation)
+            .map_err(conflict)?;
+        let (revocation_id, _) = cas
+            .put_artifact(
+                task::PLAN_DECISION_V1,
+                review_core::Producer::KernelOperation {
+                    run_id: task_run_id(&state.task_id)?,
+                    node_id: None,
+                    operation_id: "task-plan-revocation@1".into(),
+                },
+                vec![
+                    revocation.task_revision_id.clone(),
+                    revocation.plan_id.clone(),
+                    revocation.policy_id.clone(),
+                    revocation.authorization_id.clone(),
+                ],
+                None,
+                serde_json::to_value(revocation)?,
+            )
+            .map_err(|e| StoreError::Artifact(e.to_string()))?;
         self.task_change(
             cas,
             lease,
             TaskChangeV1::ApprovalRevoked {
                 decision_id: decision.artifact_id.clone(),
                 reason: reason.into(),
+                revocation_id: Some(revocation_id),
             },
             now()?,
         )

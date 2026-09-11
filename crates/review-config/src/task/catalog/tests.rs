@@ -2,6 +2,58 @@ use super::*;
 use review_core::task::pipeline::PipelineContractV1;
 use serde_json::json;
 
+#[test]
+fn proposal_feedback_uses_full_effective_binding_independence_without_installing_a_plan() {
+    use review_core::task::pipeline::*;
+    use review_core::task::planning::PipelineProposalV1;
+    let mut f = Fixture::new();
+    // This proposal declares two evidence Workers. Give this new test an explicit reserve
+    // for both so the intended independence rejection is reached after resource admission.
+    f.task.limits.verification.attempts = 2;
+    f.task.limits.verification.wall_ms = 2000;
+    let mut pipeline = f.compiler.pipelines["builtin/document"].clone();
+    pipeline.name = "generated/document".into();
+    let mut second = pipeline.slots["author"].clone();
+    second.independent_from = BTreeSet::from(["author".into()]);
+    second.min_attempts = 1;
+    second.max_attempts = 1;
+    pipeline.slots.insert("second".into(), second);
+    pipeline.nodes.push(TaskNodeV1 {
+        id: "second".into(),
+        operator: TaskOperatorV1::Worker {
+            slot: "second".into(),
+        },
+        inputs: pipeline.nodes[0].inputs.clone(),
+        when: None,
+    });
+    let mut proposal = PipelineProposalV1 {
+        schema: "af.pipeline-proposal/1".into(),
+        root: pipeline.name.clone(),
+        definitions: BTreeMap::from([(pipeline.name.clone(), toml::to_string(&pipeline).unwrap())]),
+    };
+    f.compiler
+        .check_proposal_structure(&f.cas, &f.task, &proposal)
+        .unwrap();
+    let error = f
+        .compiler
+        .check_pipeline_proposal(&f.cas, &f.task, &proposal)
+        .unwrap_err();
+    assert!(error.contains("Independent slots"), "{error}");
+    assert!(!f.compiler.pipelines.contains_key(&pipeline.name));
+    pipeline.nodes.pop();
+    pipeline.slots.remove("second");
+    proposal
+        .definitions
+        .insert(pipeline.name.clone(), toml::to_string(&pipeline).unwrap());
+    f.compiler
+        .check_pipeline_proposal(&f.cas, &f.task, &proposal)
+        .unwrap();
+    assert!(
+        !f.compiler.pipelines.contains_key(&pipeline.name),
+        "A preview cannot install executable authority"
+    );
+}
+
 struct Fixture {
     _dir: tempfile::TempDir,
     cas: Cas,
@@ -482,5 +534,156 @@ fn restored_packages_keep_identity_and_missing_graph_is_not_recreated_during_val
     assert!(
         !path.exists(),
         "validation must not repair missing authority"
+    );
+}
+
+#[test]
+fn installed_planner_bootstrap_is_exact_fixed_and_cannot_be_reclassified_by_wire_text() {
+    use review_core::task::planning::{PIPELINE_PROPOSAL_V1, PLANNING_REQUEST_V1};
+    let mut f = Fixture::new();
+    let mut worker = f.compiler.workers["builtin/document-author"].clone();
+    worker.name = "builtin/planner".into();
+    let request = planning::planning_context_signature().contract.outputs["request"].clone();
+    let mut proposal = request.clone();
+    proposal.artifact_type = PIPELINE_PROPOSAL_V1.into();
+    worker.signature.contract = PipelineContractV1 {
+        inputs: BTreeMap::from([("request".into(), request)]),
+        outputs: BTreeMap::from([("proposal".into(), proposal)]),
+    };
+    worker.signature.effects.clear();
+    worker.signature.evidence.clear();
+    worker.signature.roles = BTreeSet::from(["plan".into()]);
+    worker.signature.retains =
+        BTreeMap::from([("proposal".into(), BTreeSet::from(["request".into()]))]);
+    worker.signature.worker_input_type = Some("af/PlannerInput@1".into());
+    worker.signature.worker_output_type = Some(PIPELINE_PROPOSAL_V1.into());
+    let bytes = toml::to_string(&worker).unwrap().into_bytes();
+    let files = BTreeMap::from([("worker.toml".into(), bytes.clone())]);
+    let pin = TaskPackagePin {
+        version: "1.0.0".into(),
+        digest: package_digest_from_files(&files),
+        path: "planner".into(),
+    };
+    f.compiler
+        .capture_package(
+            &f.cas,
+            "builtin/planner",
+            &pin,
+            &BTreeMap::from([("planner/worker.toml".into(), bytes)]),
+        )
+        .unwrap();
+    f.compiler
+        .bind_worker(
+            "builtin/planner",
+            AdmittedWorkerSettings {
+                execution: WorkerExecutionV1::Command {},
+                invocation_policy_id: f.task.authority.policy_id.clone(),
+            },
+        )
+        .unwrap();
+    let settings = planning::PlannerSettings {
+        worker: "builtin/planner".into(),
+        max_attempts: 2,
+    };
+    let name = f
+        .compiler
+        .install_planning_bootstrap(&f.cas, &f.task, &settings)
+        .unwrap();
+    assert_eq!(
+        f.compiler
+            .install_planning_bootstrap(&f.cas, &f.task, &settings)
+            .unwrap(),
+        name
+    );
+    assert_eq!(
+        f.compiler
+            .required_worker_packages(&f.cas, &f.revision_id, &name)
+            .unwrap(),
+        BTreeSet::from(["builtin/planner".into()])
+    );
+    let (plan, graph) = f.compiler.compile(&f.cas, &f.revision_id, &name).unwrap();
+    assert!(plan.preparation.is_some());
+    assert!(plan.acceptance.is_empty());
+    assert!(plan.generated_origins.is_empty());
+    assert_eq!(plan.inputs, f.task.inputs);
+    assert_eq!(graph.inputs, f.task.inputs);
+    assert_eq!(
+        graph.nodes["root.nodes.context"].contract.outputs["request"].artifact_type,
+        PLANNING_REQUEST_V1
+    );
+    f.compiler.validate_plan(&f.cas, &f.task, &plan).unwrap();
+    let request = f.compiler.planning_request(&f.task).unwrap();
+    let mut options = jsonschema::options();
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let schema = |name: &str| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(root.join("schemas").join(name)).unwrap()).unwrap()
+    };
+    for name in ["task-contracts-v1.json", "task-operator-signature-v1.json"] {
+        let value = schema(name);
+        options.with_resource(
+            value["$id"].as_str().unwrap().to_owned(),
+            jsonschema::Resource::from_contents(value).unwrap(),
+        );
+    }
+    let validator = options.build(&schema("planning-request-v1.json")).unwrap();
+    assert!(
+        validator.is_valid(&request),
+        "{:?}",
+        validator
+            .iter_errors(&request)
+            .map(|e| e.to_string())
+            .collect::<Vec<_>>()
+    );
+    assert!(request["workers"]["builtin/planner"].is_null());
+    assert!(request["pipelines"][planning::PLANNER_PIPELINE].is_null());
+    for pointer in [
+        "",
+        "/task",
+        "/workers/builtin~1document-author",
+        "/pipelines/builtin~1document",
+    ] {
+        let mut invalid = request.clone();
+        invalid.pointer_mut(pointer).unwrap()["private_worker_instructions"] =
+            json!("undeclared context");
+        assert!(!validator.is_valid(&invalid));
+    }
+    let mut stripped = plan.clone();
+    stripped.preparation = None;
+    assert!(
+        f.compiler
+            .validate_plan(&f.cas, &f.task, &stripped)
+            .is_err()
+    );
+    let mut forged = f.compiler.clone();
+    forged.preparation_roots.clear();
+    assert!(
+        forged.validate_plan(&f.cas, &f.task, &plan).is_err(),
+        "Pipeline text supplied the preparation capability"
+    );
+    assert!(
+        f.compiler
+            .install_planning_bootstrap(
+                &f.cas,
+                &f.task,
+                &planning::PlannerSettings {
+                    max_attempts: 3,
+                    ..settings
+                }
+            )
+            .is_err()
+    );
+    assert!(
+        f.compiler
+            .install_planning_bootstrap(
+                &f.cas,
+                &f.task,
+                &planning::PlannerSettings {
+                    worker: "builtin/document-author".into(),
+                    max_attempts: 1
+                }
+            )
+            .is_err()
     );
 }

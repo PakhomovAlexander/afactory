@@ -32,7 +32,11 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 75] = [
+const SCHEMAS: [&str; 79] = [
+    "planning-request-v1.json",
+    "task-planner-settings-v1.json",
+    "task-operator-signature-v1.json",
+    "pipeline-proposal-v1.json",
     "task-provider-admission-v1.json",
     "task-review-subject-v1.json",
     "task-review-round-v1.json",
@@ -229,6 +233,7 @@ fn task_retry_feedback_has_only_a_bounded_code_and_exact_attempt_contract() {
             attempt_id: "01AAAAAAAAAAAAAAAAAAAAAAAA".into(),
             contract_id: format!("sha256:{}", "1".repeat(64)),
             code,
+            compiler: None,
         };
         feedback.validate().unwrap();
         let mut value = serde_json::to_value(feedback).unwrap();
@@ -465,6 +470,7 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     "finding-report-v1.json",
                     "reviewer-result-v1.json",
                     "task-contracts-v1.json",
+                    "task-operator-signature-v1.json",
                     "task-invocation-v1.json",
                     "subject-v1.json",
                     "change-set-v1.json",
@@ -2068,6 +2074,12 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
         TaskChangeV1::PlanProposed {
             plan_id: id.clone(),
         },
+        TaskChangeV1::PlanningCompleted {
+            bootstrap_plan_id: id.clone(),
+            proposal_id: id.clone(),
+            revision_id: id.clone(),
+            plan_id: id.clone(),
+        },
         TaskChangeV1::PlanDecided {
             decision_id: id.clone(),
             valid_until_unix_ms: 200,
@@ -2075,6 +2087,7 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
         TaskChangeV1::ApprovalRevoked {
             decision_id: id.clone(),
             reason: "Revoked by developer".into(),
+            revocation_id: Some(id.clone()),
         },
         TaskChangeV1::PlanAdmitted {
             plan_id: id.clone(),

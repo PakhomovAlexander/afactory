@@ -157,9 +157,22 @@ pub fn validate_independent_bindings(
     }
 }
 
+/// A fixed preparation plan can propose execution, but cannot satisfy business acceptance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum PlanPreparationV1 {
+    Planning {},
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPlanV1 {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub preparation: Option<PlanPreparationV1>,
     pub task_revision_id: String,
     pub engine_id: String,
     pub pipeline_id: String,
@@ -244,14 +257,21 @@ impl ExecutionPlanV1 {
             )?;
         }
         require(
-            !self.acceptance.is_empty()
-                && self.acceptance.iter().all(|(name, producers)| {
-                    is_name(name)
-                        && !producers.is_empty()
-                        && producers
-                            .iter()
-                            .all(|p| p.split('.').count() >= 2 && p.split('.').all(is_name))
-                }),
+            if self.preparation.is_some() {
+                self.acceptance.is_empty() && self.generated_origins.is_empty()
+            } else {
+                !self.acceptance.is_empty()
+            },
+            "Preparation must be fixed and cannot claim business acceptance",
+        )?;
+        require(
+            self.acceptance.iter().all(|(name, producers)| {
+                is_name(name)
+                    && !producers.is_empty()
+                    && producers
+                        .iter()
+                        .all(|p| p.split('.').count() >= 2 && p.split('.').all(is_name))
+            }),
             "Plan requires named acceptance producers",
         )?;
         Ok(())
