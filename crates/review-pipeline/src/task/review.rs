@@ -789,6 +789,8 @@ impl ReviewTaskDomain {
                     finding.key,
                     review_core::task::repair::TaskReviewClaimV1 {
                         view_id,
+                        file: finding.file,
+                        line: finding.line,
                         title: finding.title,
                         body: finding.body,
                         remedy: finding.fix.unwrap_or_default(),
@@ -796,16 +798,18 @@ impl ReviewTaskDomain {
                 );
             }
         }
+        let claim_context = review_core::task::repair::TaskReviewClaimsV1 {
+            round_report_id: result.artifact_ids[0].clone(),
+            snapshot_id: receipt.snapshot_id.clone(),
+            claims,
+        };
+        claim_context.validate()?;
         let findings = self.put(
             cas,
             input,
             review_core::task::repair::TASK_REVIEW_CLAIMS_V1,
             Some(&receipt.snapshot_id),
-            &review_core::task::repair::TaskReviewClaimsV1 {
-                round_report_id: result.artifact_ids[0].clone(),
-                snapshot_id: receipt.snapshot_id.clone(),
-                claims,
-            },
+            &claim_context,
             result.artifact_ids.clone(),
         )?;
         let (_, prior): (_, ReviewHistoryV1) =

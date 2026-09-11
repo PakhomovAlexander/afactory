@@ -210,6 +210,8 @@ impl ReviewTaskDomain {
                 TaskRepairClaimV1 {
                     original_view_id,
                     current_view_id,
+                    file: original.file,
+                    line: original.line,
                     title: original.title,
                     body: original.body,
                     remedy: original.fix.unwrap_or_default(),

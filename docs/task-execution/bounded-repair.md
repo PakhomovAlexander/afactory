@@ -35,7 +35,9 @@ Task: implement this Jira ticket                  one parent allowance: 7 Attemp
 
 The repair call has a three-Attempt ceiling: repair, checks, and fix verification. The parent
 protects five verification Attempts before implementation starts: three for initial Review
-and two for repair. Conditional paths retain their bounds and selected values across resume.
+and two for repair. Conditional paths retain their bounds and selected values across resume. A real-process
+interruption test kills the CLI during a started verifier Attempt and resumes after lease expiry;
+the original Round and repair context retain their IDs, and the lost Attempt remains charged.
 A call that cannot hold its protected verification plus unconditional paid work is refused.
 Neither a child call nor a retry creates another budget.
 
@@ -55,7 +57,7 @@ must explicitly admit another discovery Round to obtain that stronger guarantee.
 ## Evidence and history
 
 Review exposes a typed `af/TaskReviewClaims@1` repair input containing the original claim text,
-remedy, view IDs and closed Round ID. Repair Workers receive these declared inputs without a
+file/line, remedy, view IDs and closed Round ID. Repair Workers receive these declared inputs without a
 parent transcript or ambient Ledger access.
 
 `attest_fixes` checks that S2 is the direct sealed descendant of S1 and computes the S1-to-S2

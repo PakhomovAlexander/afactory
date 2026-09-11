@@ -28,7 +28,7 @@ supplement it. Claude calls use only `claude-personal`.
   local delivery pass real-process fixtures. Fixed command implementation now uses the common
   runtime; legacy Review entry-point cutover and live probes remain.
 - [ ] P07–P09: local Worker replacement, Git catalog sync, Task-kind packages and embedded Review
-  and bounded targeted repair are implemented; heavy continuation and interruption evidence remain.
+  and bounded targeted repair are implemented; heavy history continuation remains.
 - [ ] P10–P12: selection, bounded generation, developer approval, export and starters.
 - [ ] P13/P14: Jira/document demonstrations, compatibility, benchmark and consumer release.
 

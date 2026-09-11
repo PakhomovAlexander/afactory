@@ -46,7 +46,8 @@
           "body",
           "remedy",
           "attestation_id",
-          "attestation"
+          "attestation",
+          "file"
         ],
         "properties": {
           "original_view_id": {
@@ -69,6 +70,12 @@
           },
           "attestation": {
             "$ref": "urn:review-kernel:schema:change-attestation:1"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
           }
         }
       }

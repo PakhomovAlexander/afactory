@@ -435,6 +435,8 @@ fn repair_context_and_decisions_bind_every_current_view_and_keep_original_proven
         claims: std::collections::BTreeMap::from([(
             "finding-one".into(),
             TaskRepairClaimV1 {
+                file: "pagination.py".into(),
+                line: Some(1),
                 original_view_id: id('9'),
                 current_view_id: id('b'),
                 title: "Negative offset".into(),
@@ -523,6 +525,8 @@ fn repair_context_and_decisions_bind_every_current_view_and_keep_original_proven
         claims: std::collections::BTreeMap::from([(
             "finding-one".into(),
             TaskReviewClaimV1 {
+                file: "pagination.py".into(),
+                line: Some(1),
                 view_id: id('9'),
                 title: "Negative offset".into(),
                 body: "Original claim".into(),
@@ -530,6 +534,7 @@ fn repair_context_and_decisions_bind_every_current_view_and_keep_original_proven
             },
         )]),
     };
+    claims.validate().unwrap();
     assert_valid(
         "task-review-claims-v1.json",
         &serde_json::to_value(claims).unwrap(),

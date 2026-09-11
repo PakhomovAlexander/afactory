@@ -13,6 +13,13 @@ pub const TASK_FIX_RECEIPT_V1: &str = "af/TaskFixReceipt@1";
 pub struct TaskRepairClaimV1 {
     pub original_view_id: String,
     pub current_view_id: String,
+    pub file: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub line: Option<i64>,
     pub title: String,
     pub body: String,
     pub remedy: String,
@@ -144,8 +151,28 @@ pub struct TaskReviewClaimsV1 {
 #[serde(deny_unknown_fields)]
 pub struct TaskReviewClaimV1 {
     pub view_id: String,
+    pub file: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub line: Option<i64>,
     pub title: String,
     pub body: String,
     pub remedy: String,
+}
+impl TaskReviewClaimsV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            is_digest(&self.round_report_id)
+                && is_digest(&self.snapshot_id)
+                && self.claims.len() <= 4096
+                && self.claims.iter().all(|(finding, claim)| {
+                    !finding.trim().is_empty() && is_digest(&claim.view_id)
+                }),
+            "Review claim context requires bounded exact original Round and views",
+        )
+    }
 }
 pub const TASK_REVIEW_CLAIMS_V1: &str = "af/TaskReviewClaims@1";

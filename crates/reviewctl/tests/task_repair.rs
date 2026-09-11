@@ -280,3 +280,118 @@ fn clean_review_selects_s1_without_spending_the_repair_allowance() {
         "complete_review"
     );
 }
+
+#[test]
+fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_attempt() {
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, state) = task_cli::fixture_named(directory.path(), "bounded-repair");
+    let package = repo.join(".af/task-packages/fixture");
+    let worker = package.join("fix-verifier/worker.py");
+    let source = std::fs::read_to_string(&worker).unwrap();
+    std::fs::write(&worker, format!("import time\ntime.sleep(2)\n{source}")).unwrap();
+    for name in ["implementation", "repair"] {
+        let path = package.join(name).join("pipeline.toml");
+        let mut value: review_core::task::pipeline::PipelineDefinitionV1 =
+            review_config::task::parse_task_pipeline(&std::fs::read_to_string(&path).unwrap())
+                .unwrap();
+        value.max_attempts += 1;
+        value.slots.get_mut("fix-verifier").unwrap().max_attempts = 2;
+        std::fs::write(path, toml::to_string(&value).unwrap()).unwrap();
+    }
+    let ticket = repo.join("ticket.json");
+    let mut value: Value = serde_json::from_slice(&std::fs::read(&ticket).unwrap()).unwrap();
+    value["limits"]["max_attempts"] = 8.into();
+    std::fs::write(ticket, serde_json::to_vec(&value).unwrap()).unwrap();
+    commit_fixture(&repo);
+    let (code, plan) = run(&repo, &state, &["task", "plan", "--file", "ticket.json"]);
+    assert_eq!(code, 0, "{plan:#}");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(&repo)
+        .args(["task", "run", "repair-cli", "--json", "--state"])
+        .arg(&state)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let store = review_store::EventStore::open(state.join("events.sqlite")).unwrap();
+    let until = Instant::now() + Duration::from_secs(40);
+    let frozen = loop {
+        let projection = store.task_projection(&cas, "repair-cli").unwrap().unwrap();
+        if let Some(execution) = &projection.execution
+            && execution.budget.begun_attempts() == 7
+            && execution
+                .outputs
+                .contains_key("root.nodes.repair.nodes.attest")
+            && !execution.pending_attempts().is_empty()
+        {
+            let pending = execution.pending_attempts();
+            let started = store
+                .replay(&review_store::store::task::task_run_id("repair-cli").unwrap())
+                .unwrap()
+                .into_iter()
+                .any(|event| {
+                    let transition: review_core::task::event::TaskTransitionV1 =
+                        serde_json::from_value(event.payload).unwrap();
+                    if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
+                        transition.change
+                    {
+                        let record = cas.get_json(&record_id).unwrap();
+                        record["payload"]["kind"] == "started"
+                            && record["payload"]["attempt_id"]
+                                .as_str()
+                                .is_some_and(|id| pending.iter().any(|p| p == id))
+                    } else {
+                        false
+                    }
+                });
+            if started {
+                break projection;
+            }
+        }
+        if Instant::now() > until || child.try_wait().unwrap().is_some() {
+            let _ = child.kill();
+            let _ = child.wait();
+            panic!("No pending fix-verifier Attempt at the intended crash boundary");
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let final_lease = store
+        .task_projection(&cas, "repair-cli")
+        .unwrap()
+        .unwrap()
+        .lease_until_unix_ms();
+    let execution = frozen.execution.as_ref().unwrap();
+    let context = execution.outputs["root.nodes.repair.nodes.attest"].clone();
+    let original = execution.outputs["root.nodes.review.nodes.reduce"].clone();
+    // Recovery uses the real fenced lease boundary. The already-running command has only
+    // read authority and exits after its bounded two-second fixture delay.
+    loop {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+        if now > final_lease {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let (code, result) = run(&repo, &state, &["task", "run", "repair-cli"]);
+    assert_eq!(code, 0, "{result:#}");
+    assert_eq!(
+        result["attempts"], 8,
+        "The abandoned verifier still consumes its parent and child allowance"
+    );
+    let resumed = store.task_projection(&cas, "repair-cli").unwrap().unwrap();
+    let outputs = &resumed.execution.as_ref().unwrap().outputs;
+    assert_eq!(outputs["root.nodes.repair.nodes.attest"], context);
+    assert_eq!(outputs["root.nodes.review.nodes.reduce"], original);
+    assert_eq!(result["review_rounds"].as_array().unwrap().len(), 1);
+    assert_eq!(result["repair_assessments"].as_array().unwrap().len(), 1);
+    let (code, again) = run(&repo, &state, &["task", "run", "repair-cli"]);
+    assert_eq!(code, 0);
+    assert_eq!(again, result);
+}

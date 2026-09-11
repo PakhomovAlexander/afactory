@@ -52,8 +52,12 @@ disables incremental object caches; the smoke command and all checks remain inta
 The P09 checkpoint adds bounded repair, exact current-S2 per-Finding decisions, a distinct
 repair-allowed acceptance type and captured project permission. The repair fixture preserves
 one original Round and seven parent Attempts, including five protected verification Attempts.
-Heavy continuation and interrupted repair remain part of the full-plan checklist.
+Heavy history continuation remains part of the full-plan checklist.
 
 The bounded-repair checkpoint passes the complete gate: **745 tests, zero failures, 15 ignored**
 across 99 suites, plus formatting, Clippy, frozen reproduction and Markdown checks. Claude
 personal authentication remains unavailable; no PR 2 reviewer has run.
+
+An additional real-process interruption test kills the CLI during a started fix-verifier
+Attempt, waits for its fenced lease to expire, and resumes the same continuation. The original
+Round and attestation IDs remain identical; the lost Attempt remains charged (eight total).

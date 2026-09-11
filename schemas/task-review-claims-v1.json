@@ -31,7 +31,8 @@
           "view_id",
           "title",
           "body",
-          "remedy"
+          "remedy",
+          "file"
         ],
         "properties": {
           "view_id": {
@@ -45,6 +46,12 @@
           },
           "remedy": {
             "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
           }
         }
       }
