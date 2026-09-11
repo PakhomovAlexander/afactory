@@ -202,7 +202,14 @@ impl ReviewConclusionV1 {
         self,
         execution: TaskExecutionV1,
         acceptance: TaskAcceptanceV1,
+        required_nodes_complete: bool,
     ) -> Result<(), String> {
+        // The adapter derives this fact from the recorded review receipts. Task acceptance
+        // cannot distinguish a complete finding-bearing review from missing reviewer output.
+        require(
+            required_nodes_complete != (self == Self::Incomplete),
+            "Missing required review output must retain the Incomplete conclusion",
+        )?;
         match self {
             Self::Pass => require(
                 execution == TaskExecutionV1::Completed
@@ -217,8 +224,9 @@ impl ReviewConclusionV1 {
                 matches!(
                     execution,
                     TaskExecutionV1::Completed | TaskExecutionV1::Exhausted
-                ) && acceptance != TaskAcceptanceV1::Satisfied,
-                "Convergence exhausted cannot approve a change",
+                ) && (execution == TaskExecutionV1::Completed
+                    || acceptance != TaskAcceptanceV1::Satisfied),
+                "Satisfied acceptance requires completed Task execution even when review convergence is exhausted",
             ),
             Self::Incomplete => require(
                 execution != TaskExecutionV1::Completed

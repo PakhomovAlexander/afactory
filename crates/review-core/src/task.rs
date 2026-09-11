@@ -65,9 +65,12 @@ where
     let items = Vec::<T>::deserialize(deserializer)?;
     let mut set = BTreeSet::new();
     for item in items {
-        if !set.insert(item) {
-            return Err(serde::de::Error::custom("duplicate set entry"));
+        if set.last().is_some_and(|previous| previous >= &item) {
+            return Err(serde::de::Error::custom(
+                "set entries must be sorted and unique",
+            ));
         }
+        set.insert(item);
     }
     Ok(set)
 }
@@ -260,7 +263,6 @@ pub struct TaskRevisionV1 {
         deserialize_with = "present_option"
     )]
     pub pipeline: Option<PipelineChoiceV1>,
-    #[serde(default)]
     pub facts: BTreeMap<String, TaskFactV1>,
 }
 
@@ -412,7 +414,8 @@ impl TaskResultV1 {
             require(
                 self.execution == TaskExecutionV1::Completed
                     && self.missing_obligations.is_empty()
-                    && !self.evidence.is_empty(),
+                    && !self.evidence.is_empty()
+                    && !self.outputs.is_empty(),
                 "Satisfied acceptance requires completed execution and evidence with no missing obligations",
             )?;
         }
@@ -427,6 +430,10 @@ impl TaskResultV1 {
         for (name, value) in &self.outputs {
             require(is_name(name), "Invalid Task output name")?;
             value.validate()?;
+            require(
+                !value.artifact_ids.is_empty(),
+                "A present Task result output must contain an artifact",
+            )?;
         }
         Ok(())
     }

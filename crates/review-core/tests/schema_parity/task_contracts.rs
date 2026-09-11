@@ -1,7 +1,6 @@
 use super::{assert_invalid, assert_valid, workspace_root};
 use review_core::task::{
-    ArtifactInputV1, TaskAcceptanceV1, TaskExecutionV1, TaskPhaseV1, TaskResultV1, TaskRevisionV1,
-    pipeline::PipelineDefinitionV1,
+    ArtifactInputV1, TaskAcceptanceV1, TaskExecutionV1, TaskPhaseV1,
     plan::{
         EffectiveWorkerBindingV1, ExecutionPlanV1, IndependencePolicyV1, PlanDecisionV1,
         WorkerExecutionV1, validate_independent_bindings,
@@ -17,27 +16,11 @@ fn fixture(name: &str) -> Value {
     serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
 }
 
+#[path = "../support/task_fixtures.rs"]
+mod corpus;
+
 fn typed(contract: &str, value: Value) -> Result<(), String> {
-    review_core::json::admit(&value).map_err(|e| e.to_string())?;
-    macro_rules! check {
-        ($ty:ty) => {
-            serde_json::from_value::<$ty>(value)
-                .map_err(|e| e.to_string())?
-                .validate()
-        };
-    }
-    match contract {
-        "task-revision" => check!(TaskRevisionV1),
-        "pipeline-definition" => check!(PipelineDefinitionV1),
-        "execution-plan" => check!(ExecutionPlanV1),
-        "plan-decision" => check!(PlanDecisionV1),
-        "task-result" => check!(TaskResultV1),
-        "task-phase" => check!(TaskPhaseV1),
-        "review-history" => check!(ReviewHistoryV1),
-        "verification-continuation" => check!(VerificationContinuationV1),
-        "repair-assessment" => check!(RepairAssessmentV1),
-        _ => panic!("unregistered Task contract: {contract}"),
-    }
+    corpus::typed_round_trip(contract, value).map(|_| ())
 }
 
 #[test]
@@ -52,9 +35,11 @@ fn task_contract_positive_and_negative_fixtures() {
     for case in fixture("negative").as_array().unwrap() {
         let contract = case["contract"].as_str().unwrap();
         let why = case["why"].as_str().unwrap();
-        let value = &case["value"];
-        if case["layer"] == "shape" {
-            assert_invalid(&format!("{contract}-v1.json"), value, why);
+        let value = corpus::expand(&fixture(contract), case);
+        match case["layer"].as_str() {
+            Some("shape") => assert_invalid(&format!("{contract}-v1.json"), &value, why),
+            Some("semantic") => assert_valid(&format!("{contract}-v1.json"), &value),
+            _ => panic!("unknown negative fixture layer"),
         }
         assert!(
             typed(contract, value.clone()).is_err(),
@@ -189,7 +174,8 @@ fn provider_aliases_and_multi_role_packages_cannot_bypass_independence() {
             IndependencePolicyV1 {
                 distinct_principals: false,
                 distinct_providers: true,
-                distinct_models: false
+                distinct_models: false,
+                ..policy
             }
         )
         .is_err()
@@ -215,7 +201,31 @@ fn provider_aliases_and_multi_role_packages_cannot_bypass_independence() {
     }
     assert!(validate_independent_bindings(&a, &b, policy).is_ok());
     b.execution = WorkerExecutionV1::Command {};
-    assert!(validate_independent_bindings(&a, &b, policy).is_err());
+    assert!(validate_independent_bindings(&a, &b, policy).is_ok());
+    a.execution = WorkerExecutionV1::Command {};
+    assert!(validate_independent_bindings(&a, &b, policy).is_ok());
+    assert!(
+        validate_independent_bindings(
+            &a,
+            &b,
+            IndependencePolicyV1 {
+                command_workers_by_package: false,
+                ..policy
+            }
+        )
+        .is_err()
+    );
+    assert!(
+        validate_independent_bindings(
+            &a,
+            &b,
+            IndependencePolicyV1 {
+                distinct_models: true,
+                ..policy
+            }
+        )
+        .is_err()
+    );
 }
 
 #[test]
@@ -241,6 +251,12 @@ fn review_exit_preserves_findings_and_missing_output_precedence() {
         ),
         (
             ReviewConclusionV1::ConvergenceExhausted,
+            TaskExecutionV1::Completed,
+            TaskAcceptanceV1::Satisfied,
+            3,
+        ),
+        (
+            ReviewConclusionV1::ConvergenceExhausted,
             TaskExecutionV1::Exhausted,
             TaskAcceptanceV1::Unsatisfied,
             3,
@@ -259,17 +275,40 @@ fn review_exit_preserves_findings_and_missing_output_precedence() {
         ),
     ];
     for (conclusion, execution, acceptance, exit) in cases {
-        conclusion.validate_result(execution, acceptance).unwrap();
+        conclusion
+            .validate_result(
+                execution,
+                acceptance,
+                conclusion != ReviewConclusionV1::Incomplete,
+            )
+            .unwrap();
         assert_eq!(conclusion.exit_code(), exit);
     }
     assert!(
         ReviewConclusionV1::Incomplete
-            .validate_result(TaskExecutionV1::Incomplete, TaskAcceptanceV1::Satisfied)
+            .validate_result(
+                TaskExecutionV1::Incomplete,
+                TaskAcceptanceV1::Satisfied,
+                false
+            )
             .is_err()
     );
     assert!(
         ReviewConclusionV1::ChangesRequested
-            .validate_result(TaskExecutionV1::Incomplete, TaskAcceptanceV1::Unsatisfied)
+            .validate_result(
+                TaskExecutionV1::Incomplete,
+                TaskAcceptanceV1::Unsatisfied,
+                false
+            )
+            .is_err()
+    );
+    assert!(
+        ReviewConclusionV1::ConvergenceExhausted
+            .validate_result(
+                TaskExecutionV1::Exhausted,
+                TaskAcceptanceV1::Satisfied,
+                false
+            )
             .is_err()
     );
 }
@@ -307,4 +346,49 @@ fn repair_receipts_cannot_change_snapshot_or_drop_original_claims() {
             .validate_continuation(&id, &continuation)
             .is_err()
     );
+}
+
+#[test]
+fn missing_review_receipts_cannot_be_relabeled_as_convergence_exhaustion() {
+    for execution in [
+        TaskExecutionV1::Completed,
+        TaskExecutionV1::Incomplete,
+        TaskExecutionV1::Blocked,
+        TaskExecutionV1::Exhausted,
+        TaskExecutionV1::Cancelled,
+    ] {
+        for acceptance in [
+            TaskAcceptanceV1::Satisfied,
+            TaskAcceptanceV1::Unsatisfied,
+            TaskAcceptanceV1::Inconclusive,
+        ] {
+            for conclusion in [
+                ReviewConclusionV1::Pass,
+                ReviewConclusionV1::ChangesRequested,
+                ReviewConclusionV1::ConvergenceExhausted,
+                ReviewConclusionV1::Incomplete,
+            ] {
+                let expected = conclusion == ReviewConclusionV1::Incomplete
+                    && execution != TaskExecutionV1::Completed
+                    && acceptance != TaskAcceptanceV1::Satisfied;
+                assert_eq!(
+                    conclusion
+                        .validate_result(execution, acceptance, false)
+                        .is_ok(),
+                    expected,
+                    "{conclusion:?}/{execution:?}/{acceptance:?}"
+                );
+                if expected {
+                    assert_eq!(conclusion.exit_code(), 4);
+                }
+                if conclusion == ReviewConclusionV1::Incomplete {
+                    assert!(
+                        conclusion
+                            .validate_result(execution, acceptance, true)
+                            .is_err()
+                    );
+                }
+            }
+        }
+    }
 }

@@ -102,3 +102,5 @@ options you rejected and why — that is the part future-you needs.
   bytes](0045-one-release-train-and-a-pin-that-binds-bytes.md)
 - [0046 — Add versioned Task contracts with exact-plan
   approval](0046-add-versioned-task-contracts-with-exact-plan-approval.md)
+- [0047 — Preserve Task wire identity and review
+  completeness](0047-preserve-task-wire-identity-and-review-completeness.md)

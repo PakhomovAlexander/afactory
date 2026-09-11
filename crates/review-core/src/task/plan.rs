@@ -82,6 +82,9 @@ impl EffectiveWorkerBindingV1 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IndependencePolicyV1 {
+    /// Deterministic Command slots can establish independence by distinct packages. This
+    /// never relaxes the principal rule between two Model slots or explicit model diversity.
+    pub command_workers_by_package: bool,
     pub distinct_principals: bool,
     pub distinct_providers: bool,
     pub distinct_models: bool,
@@ -90,6 +93,7 @@ pub struct IndependencePolicyV1 {
 impl Default for IndependencePolicyV1 {
     fn default() -> Self {
         Self {
+            command_workers_by_package: true,
             distinct_principals: true,
             distinct_providers: false,
             distinct_models: false,
@@ -139,8 +143,10 @@ pub fn validate_independent_bindings(
             )
         }
         _ => require(
-            !policy.distinct_principals && !policy.distinct_providers && !policy.distinct_models,
-            "Command Workers cannot establish model Provider diversity",
+            policy.command_workers_by_package
+                && !policy.distinct_providers
+                && !policy.distinct_models,
+            "Trusted policy does not permit Command package independence for these slots",
         ),
     }
 }

@@ -20,8 +20,8 @@ supplement it. Claude calls use only `claude-personal`.
 ## Progress
 
 - [x] P00: unchanged-source baseline gate and fixture identities recorded below.
-- [ ] P01: contracts, schemas, ADR-0046 and fixtures implemented; deterministic gates pass;
-  external review is running under the approved personal Provider bindings before package closure.
+- [ ] P01: contracts, schemas, ADR-0046/0047 and fixtures implemented; one review Round
+  completed, Findings corrected and final gate passed locally; main integration remains pending.
 - [ ] P02/P03: common Store lifecycle and approvals; typed Pipeline compilation.
 - [ ] P04–P06: shared execution, implementation Task, review Task and legacy parity.
 - [ ] P07–P09: shared packages, embedded Review, bounded repair and fix verification.
@@ -40,45 +40,37 @@ a reviewer, alongside cross-review and performance review.
 The additive `review-core::task` contracts cover immutable Task revisions, typed public Pipeline
 boundaries, bounded static operator declarations, exact plans and developer decisions, Worker
 independence, review history and targeted repair continuation. No new execution is admitted yet;
-compiler, Store authority and runtime checks remain P02–P06 work.
+compiler, Store authority and runtime checks remain P02–P06 work. The implementation branch is
+`agent/task-execution`; this checkpoint does not claim integration into main or a release.
 
-`make check` passes with **664 tests, zero failures and 15 existing ignored probes**. The original
-synthetic fixtures still reproduce byte-for-byte. New schema/type fixtures include forbidden
-approval identities, duplicate inputs, hidden tagged-variant fields, missing evidence and stale
-repair claims; canonical content IDs use the existing digest domain. Markdownlint passes after
-removing two pre-existing extra blank lines from the workstream archive. External review is the
-remaining P01 check.
+The requested three-reviewer light Round completed on `066b392`, using installed `af 0.8.0`
+and trusted policy/base `98bb904`. Result: **8 Findings (5 major, 3 minor; one duplicated issue)**
+and **1 required identity-test Demand**, `Fail(Exhausted)` at the one-Round cap. All concrete
+corrections are implemented locally, including canonical wire ordering, typed round-trip identity,
+nonempty result outputs, receipt-derived incomplete precedence, Command-worker independence,
+compact negative fixtures, and cached schema validators. The original positive fixture IDs and
+frozen review artifacts remain unchanged. See [ADR-0047](adr/0047-preserve-task-wire-identity-and-review-completeness.md).
 
-The review candidate is `d1873733987c1392c4a27df60ee6162e7d77aa58`; policy and Diff base are
-`98bb904630c1c9f8e1b151fd359c874b465211a2`. Installed `af 0.8.0` successfully planned the three
-bindings with 300,000 tokens per Attempt and 1,000,000 per Round. Each first input is about
-49,800 tokens; the planned focus is P01 contracts and compatibility, with later compiler/Store
-execution explicitly outside this candidate.
+The [audit and dispositions](task-execution/p01-review.md) include the exact
+[Campaign report](task-execution/p01-campaign-report.md), three preliminary Gate failures,
+corrections to pre-existing test isolation, and all usage. The report's review wall-clock is
+**7m45s** and total chargeable usage is **483,057 tokens**, including **48,969** Provider-admission
+tokens across Gate recovery. The original Subject still has eight open Findings and one open
+Demand; post-review code/test changes are not current-Subject verification receipts. No second
+review Campaign is authorized or planned.
 
-The initial launch on 2026-09-10 was rejected before execution because automatic approval review
-required explicit `codex-personal` destination authorization. The owner supplied that approval on
-2026-09-11 for both Sol reviewers; Fable continues to use only `claude-personal`.
+Final deterministic gate: **667 tests passed, zero failures, 15 existing opt-in probes ignored**
+across 89 suites; formatting, Clippy and synthetic fixture reproduction passed. Markdownlint
+checked 96 files with zero errors. Prior candidate gates also passed on read-only archives and
+with the exact cleared Gate environment. No model review was repeated after these corrections.
 
-Campaign `task-contracts-p01-20260910` started under installed `af 0.8.0`, with external state at
-the workspace's `.review-state/task-contracts-p01-20260910`. Round 1, epoch 1 stopped Incomplete
-at the required test Gate: a pre-existing consumer compatibility test copied a read-only fixture
-with its permissions intact and then tried to edit that copy. Markdownlint passed, and no
-reviewer Attempt ran. Provider admission spent **14,691 tokens**: bugs 5,710, correctness 3,271,
-performance 5,710. These are preflight costs, not review findings or a review pass.
-
-The correction shares a fixture-copy helper among the consumer, migration and render tests. It
-adds owner-write permission only to disposable copies, preserves source fixture bytes and modes,
-and resolves fixture roots through `AF_WORKSPACE_ROOT` for cached review builds. The corrected
-candidate also rejects explicit nulls in optional Task/Pipeline fields, matching the schemas.
-Resume the same incomplete light Round using a recorded replacement candidate and
-`--restart-round`; retain the previous epoch and spend. Do not start a replacement Campaign.
-
-The next implementation step is P02/P03. Store integration must use `EventStore::append_batch`'s
-existing CAS publication barrier and immediate transaction, with a separate Task transition
-validator; the legacy Campaign validator's permissive tail is not Task admission. Add fenced
-writer leases and exact authorized decisions before enabling new-format dispatch. P03 lowers
-the public typed boundaries into the existing graph scheduler; it must not introduce a second
-executor. ADR-0046 records the remaining contract-to-runtime obligations.
+**Resume:** P02/P03 after this local checkpoint. Use `EventStore::append_batch`'s CAS publication
+barrier and immediate transaction with a dedicated Task transition validator; the legacy Campaign
+validator's permissive tail is not Task admission. Implement fenced writer leases and authenticated,
+exact-plan decisions before enabling new dispatch. Compile public typed boundaries into the existing
+graph scheduler, with explicit root-input nodes and per-node Snapshot lineage. Preserve the permanent
+review and historical Task readers. General Task sealing cannot reuse the Integration-specific
+`SourceSnapshot@1::Capture::Derived` meaning.
 
 ## P00 baseline evidence
 

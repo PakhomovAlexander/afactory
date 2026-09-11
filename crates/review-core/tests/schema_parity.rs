@@ -99,23 +99,47 @@ fn schema(name: &str) -> Value {
         .unwrap_or_else(|e| panic!("{name}: {e}"))
 }
 
-fn validator(name: &str) -> jsonschema::Validator {
-    let mut options = jsonschema::options();
-    for resource_name in [
-        "finding-report-v1.json",
-        "reviewer-result-v1.json",
-        "task-contracts-v1.json",
-    ] {
-        let resource = schema(resource_name);
-        let id = resource["$id"]
-            .as_str()
-            .expect("schema resource ID")
-            .to_owned();
-        options.with_resource(id, jsonschema::Resource::from_contents(resource).unwrap());
-    }
-    options
-        .build(&schema(name))
-        .unwrap_or_else(|e| panic!("{name}: {e}"))
+fn validator(name: &str) -> &'static jsonschema::Validator {
+    type Validators =
+        std::collections::BTreeMap<String, std::sync::OnceLock<jsonschema::Validator>>;
+    static VALIDATORS: std::sync::OnceLock<Validators> = std::sync::OnceLock::new();
+    static RESOURCES: std::sync::OnceLock<Vec<Value>> = std::sync::OnceLock::new();
+    let validators = VALIDATORS.get_or_init(|| {
+        SCHEMAS
+            .into_iter()
+            .map(|name| (name.to_owned(), std::sync::OnceLock::new()))
+            .collect()
+    });
+    validators
+        .get(name)
+        .unwrap_or_else(|| panic!("unregistered schema: {name}"))
+        .get_or_init(|| {
+            let resources = RESOURCES.get_or_init(|| {
+                [
+                    "finding-report-v1.json",
+                    "reviewer-result-v1.json",
+                    "task-contracts-v1.json",
+                ]
+                .into_iter()
+                .map(schema)
+                .collect()
+            });
+            let root = schema(name);
+            let task_schema = root["$id"].as_str().unwrap().starts_with("urn:af:");
+            let mut options = jsonschema::options();
+            for resource in resources {
+                let id = resource["$id"].as_str().unwrap();
+                if id.starts_with("urn:af:") == task_schema {
+                    options.with_resource(
+                        id.to_owned(),
+                        jsonschema::Resource::from_contents(resource.clone()).unwrap(),
+                    );
+                }
+            }
+            options
+                .build(&root)
+                .unwrap_or_else(|e| panic!("{name}: {e}"))
+        })
 }
 
 fn assert_valid(name: &str, instance: &Value) {

@@ -38,7 +38,7 @@ pub struct PipelinePortV1 {
         deserialize_with = "super::present_option"
     )]
     pub root_default: Option<RootDefaultV1>,
-    #[serde(default, deserialize_with = "super::unique_set")]
+    #[serde(deserialize_with = "super::unique_set")]
     pub covers: BTreeSet<String>,
 }
 

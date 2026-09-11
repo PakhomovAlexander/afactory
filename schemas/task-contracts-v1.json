@@ -112,7 +112,8 @@
             "$ref": "#/$defs/name"
           },
           "uniqueItems": true,
-          "minItems": 0
+          "minItems": 0,
+          "$comment": "Canonical ascending order is required by semantic admission; typed round-trips preserve identity."
         },
         "data_destinations": {
           "type": "array",
@@ -120,7 +121,8 @@
             "$ref": "#/$defs/name"
           },
           "uniqueItems": true,
-          "minItems": 0
+          "minItems": 0,
+          "$comment": "Canonical ascending order is required by semantic admission; typed round-trips preserve identity."
         }
       }
     },
@@ -267,7 +269,8 @@
         "provenance",
         "authority",
         "limits",
-        "strategy"
+        "strategy",
+        "facts"
       ],
       "properties": {
         "task_id": {
@@ -522,7 +525,7 @@
             "$ref": "#/$defs/name"
           },
           "additionalProperties": {
-            "$ref": "#/$defs/artifactInput"
+            "$ref": "#/$defs/resultOutput"
           },
           "minProperties": 0
         },
@@ -532,7 +535,8 @@
             "$ref": "#/$defs/digest"
           },
           "uniqueItems": true,
-          "minItems": 0
+          "minItems": 0,
+          "$comment": "Canonical ascending order is required by semantic admission; typed round-trips preserve identity."
         },
         "missing_obligations": {
           "type": "array",
@@ -540,7 +544,8 @@
             "$ref": "#/$defs/name"
           },
           "uniqueItems": true,
-          "minItems": 0
+          "minItems": 0,
+          "$comment": "Canonical ascending order is required by semantic admission; typed round-trips preserve identity."
         }
       },
       "allOf": [
@@ -562,6 +567,9 @@
               },
               "evidence": {
                 "minItems": 1
+              },
+              "outputs": {
+                "minProperties": 1
               }
             }
           }
@@ -623,7 +631,8 @@
         "artifact_type",
         "cardinality",
         "optional",
-        "affinity"
+        "affinity",
+        "covers"
       ],
       "properties": {
         "artifact_type": {
@@ -649,7 +658,8 @@
             "$ref": "#/$defs/name"
           },
           "uniqueItems": true,
-          "minItems": 0
+          "minItems": 0,
+          "$comment": "Canonical ascending order is required by semantic admission; typed round-trips preserve identity."
         }
       },
       "allOf": [
@@ -815,7 +825,8 @@
             "$ref": "#/$defs/name"
           },
           "uniqueItems": true,
-          "minItems": 0
+          "minItems": 0,
+          "$comment": "Canonical ascending order is required by semantic admission; typed round-trips preserve identity."
         }
       }
     },
@@ -866,7 +877,8 @@
                 "$ref": "#/$defs/name"
               },
               "uniqueItems": true,
-              "minItems": 1
+              "minItems": 1,
+              "$comment": "Canonical ascending order is required by semantic admission."
             }
           }
         },
@@ -1031,7 +1043,8 @@
             "$ref": "#/$defs/package"
           },
           "uniqueItems": true,
-          "minItems": 1
+          "minItems": 1,
+          "$comment": "Canonical ascending order is required by semantic admission; typed round-trips preserve identity."
         },
         "required_facts": {
           "type": "object",
@@ -1206,7 +1219,8 @@
       "required": [
         "distinct_principals",
         "distinct_providers",
-        "distinct_models"
+        "distinct_models",
+        "command_workers_by_package"
       ],
       "properties": {
         "distinct_principals": {
@@ -1216,6 +1230,9 @@
           "type": "boolean"
         },
         "distinct_models": {
+          "type": "boolean"
+        },
+        "command_workers_by_package": {
           "type": "boolean"
         }
       }
@@ -1346,7 +1363,8 @@
               "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})+$"
             },
             "uniqueItems": true,
-            "minItems": 1
+            "minItems": 1,
+            "$comment": "Canonical ascending order is required by semantic admission."
           },
           "minProperties": 1
         }
@@ -1559,6 +1577,20 @@
         "changes_requested",
         "convergence_exhausted",
         "incomplete"
+      ]
+    },
+    "resultOutput": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/artifactInput"
+        },
+        {
+          "properties": {
+            "artifact_ids": {
+              "minItems": 1
+            }
+          }
+        }
       ]
     }
   }
