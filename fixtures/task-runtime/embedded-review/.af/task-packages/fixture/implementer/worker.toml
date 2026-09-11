@@ -1,0 +1,69 @@
+schema = "af.worker/1"
+name = "fixture/implementer"
+version = "1.0.0"
+
+[signature]
+effects = ["write-source"]
+roles = ["implement"]
+worker_input_type = "af/ImplementationInput@1"
+worker_output_type = "af/ImplementationReport@1"
+
+[signature.contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.source.affinity]
+kind = "unbound"
+
+[signature.contract.outputs.candidate]
+artifact_type = "af/CandidateTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.outputs.candidate.affinity]
+kind = "same_as"
+input = "source"
+
+[signature.contract.outputs.report]
+artifact_type = "af/ImplementationReport@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.outputs.report.affinity]
+kind = "same_as"
+input = "source"
+
+[signature.evidence]
+
+[signature.retains]
+
+[signature.attempt]
+tokens = 0
+wall_ms = 5000
+
+[runner]
+kind = "command"
+
+[runner.command]
+program = "/usr/bin/python3"
+
+[[runner.command.args]]
+value = "-B"
+provenance = "literal"
+
+[[runner.command.args]]
+value = "@package/worker.py"
+provenance = "literal"

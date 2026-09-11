@@ -27,11 +27,13 @@ use review_store::store::task::{TaskLease, TaskProjection};
 use review_store::{Cas, EventStore, validate_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+mod bindings;
 mod legacy;
 pub(super) use legacy::start_legacy;
 
 pub(super) struct StartOptions {
     pub file: PathBuf,
+    pub bindings: Option<PathBuf>,
     pub repo: PathBuf,
     pub state: Option<PathBuf>,
     pub authority: String,
@@ -50,9 +52,20 @@ struct TaskFile {
     goal: String,
     pipeline: PipelineChoiceV1,
     strategy: String,
+    /// The requested acceptance profile is Task input, captured before selecting a Pipeline.
+    #[serde(default)]
+    verification: FileVerification,
     #[serde(default)]
     facts: BTreeMap<String, TaskFactV1>,
     limits: FileLimits,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum FileVerification {
+    #[default]
+    Evaluation,
+    Review,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,6 +127,14 @@ struct RunAuthority {
     independence: IndependencePolicyV1,
     #[serde(default)]
     providers: BTreeMap<String, String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    local_bindings_id: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    slot_workers: BTreeMap<String, String>,
 }
 
 fn clock() -> Result<u64, String> {
@@ -162,11 +183,20 @@ fn captured_file(cas: &Cas, manifest: &Manifest, path: &str) -> Result<Vec<u8>, 
 }
 
 fn engine(cas: &Cas) -> Result<String, String> {
-    let executable = std::fs::File::open(std::env::current_exe().map_err(|e| e.to_string())?)
-        .map_err(|e| e.to_string())?;
-    let (digest, _) =
-        review_source_git::digest_reader_with_buffer(executable, &mut vec![0; 64 * 1024])
-            .map_err(|e| e.to_string())?;
+    // Process-local only: every fresh process proves its running engine bytes. Reconstructing
+    // the compiler within one capture must not reread a large debug executable a second time.
+    static DIGEST: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    let digest = DIGEST
+        .get_or_init(|| {
+            let executable =
+                std::fs::File::open(std::env::current_exe().map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+            review_source_git::digest_reader_with_buffer(executable, &mut vec![0; 64 * 1024])
+                .map(|(digest, _)| digest)
+                .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
     cas.put_json(&json!({"schema":"af.task-engine/1","binary_digest":digest,"version":env!("CARGO_PKG_VERSION"),"graph":"af.compiled-task/1"})).map_err(|e|e.to_string())
 }
 
@@ -204,6 +234,7 @@ fn artifact<T: serde::de::DeserializeOwned>(cas: &Cas, id: &str, kind: &str) -> 
 fn capture_authority(
     cas: &Cas,
     manifest: &Manifest,
+    local: Option<&Path>,
 ) -> Result<(String, RunAuthority, TaskPlanCompiler), String> {
     let bytes = captured_file(cas, manifest, ".af/task-catalog.toml")?;
     let catalog: TaskCatalog = parse(Path::new(".af/task-catalog.toml"), &bytes)?;
@@ -256,6 +287,41 @@ fn capture_authority(
             },
         );
     }
+    let local = local.map(bindings::read).transpose()?;
+    let local_bindings_id = local
+        .as_ref()
+        .map(|local| {
+            cas.put_json(&serde_json::to_value(&local.definition).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())
+        })
+        .transpose()?;
+    let mut providers = catalog.providers;
+    let mut slot_workers = BTreeMap::new();
+    if let Some(local) = local {
+        if packages.len() + local.definition.packages.len() > 128
+            || total + local.files.values().map(Vec::len).sum::<usize>() > 64 * 1024 * 1024
+        {
+            return Err("Combined Task catalog exceeds capture bounds".into());
+        }
+        for (name, pin) in &local.definition.packages {
+            if packages.contains_key(name) {
+                return Err(format!("Local package {name} shadows a captured package"));
+            }
+            let artifact_id = capture.capture_package(cas, name, pin, &local.files)?;
+            if capture.worker(name).is_none() {
+                return Err("Local bindings can add Worker packages only".into());
+            }
+            packages.insert(
+                name.clone(),
+                CapturedPackage {
+                    digest: pin.digest.clone(),
+                    artifact_id,
+                },
+            );
+        }
+        providers.extend(local.definition.providers);
+        slot_workers = local.definition.slots;
+    }
     let authority = RunAuthority {
         schema: "af.task-run-authority/1".into(),
         engine_id,
@@ -279,7 +345,9 @@ fn capture_authority(
         catalog_id: cas.put(&bytes).map_err(|e| e.to_string())?,
         packages,
         independence: catalog.independence,
-        providers: catalog.providers,
+        providers,
+        local_bindings_id,
+        slot_workers,
     };
     let id = cas
         .put_json(&serde_json::to_value(&authority).map_err(|e| e.to_string())?)
@@ -300,6 +368,9 @@ fn restore_compiler(
     }
     cas.verify(&authority.catalog_id)
         .map_err(|e| e.to_string())?;
+    if let Some(local) = &authority.local_bindings_id {
+        cas.verify(local).map_err(|e| e.to_string())?;
+    }
     let policy: CodeTaskPolicy = serde_json::from_value(
         cas.get_json(&authority.code_policy_id)
             .map_err(|e| e.to_string())?,
@@ -327,6 +398,7 @@ fn restore_compiler(
     for (name, package) in &authority.packages {
         compiler.restore_package(cas, name, &package.digest, &package.artifact_id)?;
     }
+    compiler.replace_slot_workers(authority.slot_workers.clone())?;
     for name in authority.packages.keys() {
         if let Some(worker) = compiler.worker(name) {
             if !matches!(
@@ -448,6 +520,7 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
         || !is_name(&file.task_id)
         || !matches!(file.kind.as_str(), "implement" | "review")
         || file.goal.trim().is_empty()
+        || (file.kind == "review" && file.verification != FileVerification::Evaluation)
     {
         return Err("Task file requires schema af.task-file/1, a valid ID, supported kind and nonempty goal".into());
     }
@@ -470,7 +543,7 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
     let policy_source = Capture::new(&source_repo, &cas)
         .committed(&options.authority)
         .map_err(|e| e.to_string())?;
-    let authority = capture_authority(&cas, &policy_source.manifest)?;
+    let authority = capture_authority(&cas, &policy_source.manifest, options.bindings.as_deref())?;
     let source = if options.uncommitted {
         Capture::new(&source_repo, &cas)
             .dirty()
@@ -547,6 +620,23 @@ fn start_captured(
                     .ok_or("Review Task requires configured Review policy")?,
             },
         )]);
+    } else if file.verification == FileVerification::Review {
+        use review_core::task::verification::REVIEWED_IMPLEMENTATION_V1;
+        revision
+            .required_outputs
+            .get_mut("verification")
+            .expect("implementation output")
+            .artifact_type = REVIEWED_IMPLEMENTATION_V1.into();
+        revision.acceptance.insert(
+            "verified".into(),
+            AcceptanceObligationV1 {
+                evidence_type: REVIEWED_IMPLEMENTATION_V1.into(),
+                verifier_policy: authority
+                    .review_policy_id
+                    .clone()
+                    .ok_or("Review acceptance requires configured Review policy")?,
+            },
+        );
     }
     revision.inputs = compiler.normalize_root_inputs(
         &cas,
@@ -689,12 +779,10 @@ fn captured_domain(
     graph: CompiledTask,
 ) -> Result<Box<dyn TaskDomain>, String> {
     match kind {
-        "implement" => Ok(Box::new(CodeTaskDomain::captured(
-            cas,
-            &authority.code_policy_id,
-            graph,
-        )?)),
-        "review" => Ok(Box::new(ReviewTaskDomain::captured(
+        "implement" if authority.review_policy_id.is_none() => Ok(Box::new(
+            CodeTaskDomain::captured(cas, &authority.code_policy_id, graph)?,
+        )),
+        "review" | "implement" => Ok(Box::new(ReviewTaskDomain::captured(
             cas,
             authority
                 .review_policy_id
@@ -927,15 +1015,18 @@ fn present(
     }
     if let Some(result) = &result {
         value["result"] = serde_json::to_value(result).map_err(|e| e.to_string())?;
-        if state.revision.kind == "review" {
-            let rounds: Vec<_> = result
+        if let Some(execution) = &state.execution {
+            let rounds: Vec<_> = execution
                 .outputs
                 .values()
+                .flat_map(|(_, output)| output.outputs.values())
                 .filter(|p| p.artifact_type == TASK_REVIEW_ROUND_V1)
                 .flat_map(|p| p.artifact_ids.iter())
                 .map(|id| artifact::<TaskReviewRoundV1>(cas, id, TASK_REVIEW_ROUND_V1))
                 .collect::<Result<_, _>>()?;
-            value["review_rounds"] = serde_json::to_value(rounds).map_err(|e| e.to_string())?;
+            if state.revision.kind == "review" || !rounds.is_empty() {
+                value["review_rounds"] = serde_json::to_value(rounds).map_err(|e| e.to_string())?;
+            }
         }
     }
     if explain && let Some(id) = &state.plan_id {

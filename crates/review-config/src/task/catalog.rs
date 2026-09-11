@@ -96,6 +96,7 @@ pub struct TaskPlanCompiler {
     workers: BTreeMap<String, TaskWorkerManifest>,
     signatures: BTreeMap<String, OperatorSignature>,
     settings: BTreeMap<String, AdmittedWorkerSettings>,
+    slot_workers: BTreeMap<String, String>,
     generated: BTreeMap<String, GeneratedOriginV1>,
     acceptance_outputs: BTreeMap<String, String>,
     independence: IndependencePolicyV1,
@@ -223,6 +224,7 @@ impl TaskPlanCompiler {
             workers: BTreeMap::new(),
             signatures: installed,
             settings: BTreeMap::new(),
+            slot_workers: BTreeMap::new(),
             generated: BTreeMap::new(),
             acceptance_outputs,
             independence,
@@ -443,6 +445,45 @@ impl TaskPlanCompiler {
         Ok(())
     }
 
+    /// The caller captures these local settings as part of Run authority. Replacement is
+    /// checked against every Pipeline boundary by the compiler, then against payload schemas.
+    pub fn replace_slot_workers(&mut self, slots: BTreeMap<String, String>) -> Result<(), String> {
+        if slots.len() > 64
+            || slots.iter().any(|(slot, worker)| {
+                !slot.starts_with("root.")
+                    || slot
+                        .split('.')
+                        .any(|part| !review_core::task::is_name(part))
+                    || !self.workers.contains_key(worker)
+            })
+        {
+            return Err(
+                "Local bindings require qualified slots and captured Worker packages".into(),
+            );
+        }
+        self.slot_workers = slots;
+        Ok(())
+    }
+
+    fn validate_replacement_schemas(&self, graph: &CompiledTask) -> Result<(), String> {
+        for (slot, defaults) in &graph.replaced_workers {
+            let effective = &self.packages[&graph.slots[slot].worker].bytes.files;
+            for original in defaults {
+                let files = &self.packages[original].bytes.files;
+                let schemas = |files: &BTreeMap<String, Vec<u8>>| -> Result<BTreeMap<String, serde_json::Value>, String> {
+                    files.iter().filter(|(path, _)| path.as_str() == "input.schema.json" || (path.starts_with("outputs/") && path.ends_with(".schema.json")))
+                        .map(|(path, bytes)| Ok((path.clone(), serde_json::from_slice(bytes).map_err(|e| format!("Worker schema {path}: {e}"))?))).collect()
+                };
+                if schemas(files)? != schemas(effective)? {
+                    return Err(format!(
+                        "Replacement for {slot} changes its payload schemas"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn pipelines(&self) -> &BTreeMap<String, PipelineDefinitionV1> {
         &self.pipelines
     }
@@ -482,11 +523,13 @@ impl TaskPlanCompiler {
             &CompileContext {
                 pipelines: &self.pipelines,
                 signatures: &self.signatures,
+                slot_workers: self.slot_workers.clone(),
                 acceptance_outputs: self.acceptance_outputs.clone(),
                 max_nodes: 64,
                 max_depth: 4,
             },
         )?;
+        self.validate_replacement_schemas(&graph)?;
         Ok(graph
             .slots
             .values()
@@ -515,17 +558,20 @@ impl TaskPlanCompiler {
             &CompileContext {
                 pipelines: &self.pipelines,
                 signatures: &self.signatures,
+                slot_workers: self.slot_workers.clone(),
                 acceptance_outputs: self.acceptance_outputs.clone(),
                 max_nodes: 64,
                 max_depth: 4,
             },
         )?;
+        self.validate_replacement_schemas(&graph)?;
         let mut bindings = BTreeMap::new();
         let mut used: BTreeSet<String> = graph
             .calls
             .values()
             .map(|call| call.pipeline.clone())
             .collect();
+        used.extend(graph.replaced_workers.values().flatten().cloned());
         for (slot, declaration) in &graph.slots {
             let package = self
                 .packages
@@ -555,6 +601,35 @@ impl TaskPlanCompiler {
                     &bindings[other],
                     self.independence,
                 )?;
+            }
+        }
+        // An author cannot remove mandatory independence by omitting a slot annotation.
+        // All verification Workers are independent from every source-writing Worker in this
+        // Task, including embedded calls and bounded repair paths, under captured policy.
+        let writers: BTreeSet<_> = graph
+            .slots
+            .iter()
+            .filter(|(_, slot)| {
+                self.workers[&slot.worker]
+                    .signature
+                    .effects
+                    .contains("write-source")
+            })
+            .map(|(name, _)| name)
+            .collect();
+        for node in graph.nodes.values() {
+            if let CompiledOperator::Primitive {
+                operator: TaskOperatorV1::Verify { slot } | TaskOperatorV1::FixVerify { slot },
+                ..
+            } = &node.operator
+            {
+                for writer in &writers {
+                    validate_independent_bindings(
+                        &bindings[slot],
+                        &bindings[*writer],
+                        self.independence,
+                    )?;
+                }
             }
         }
         // A syntactically declared but unused slot cannot smuggle an unrelated package into

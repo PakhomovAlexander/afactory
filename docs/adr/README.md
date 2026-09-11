@@ -112,3 +112,5 @@ options you rejected and why — that is the part future-you needs.
   Ledger](0050-reduce-review-tasks-with-the-canonical-domain-ledger.md)
 - [0051 — Compile fixed implementation Tasks into the common
   runtime](0051-compile-fixed-implementation-tasks-into-the-common-runtime.md)
+- [0052 — Capture local bindings and compose Review
+  acceptance](0052-capture-local-bindings-and-compose-review-acceptance.md)

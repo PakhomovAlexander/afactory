@@ -792,6 +792,7 @@ pub(crate) fn campaign_names_for_completion() -> Vec<String> {
 fn task_review_options(args: cli::RunArgs, plan_only: bool) -> task_execution::StartOptions {
     task_execution::StartOptions {
         file: args.task_file.expect("Task file path was checked"),
+        bindings: args.bindings,
         repo: args.repo,
         state: args.state,
         authority: args
@@ -1176,6 +1177,7 @@ fn main() {
                     kind: _,
                     goal,
                     file,
+                    bindings,
                     repo,
                     pipeline,
                     state,
@@ -1187,6 +1189,7 @@ fn main() {
                     if let Some(file) = file {
                         task_execution::start(task_execution::StartOptions {
                             file,
+                            bindings,
                             repo,
                             state,
                             authority,
@@ -1214,6 +1217,7 @@ fn main() {
                 }
                 cli::TaskCommand::Plan {
                     file,
+                    bindings,
                     repo,
                     state,
                     authority,
@@ -1221,6 +1225,7 @@ fn main() {
                     json,
                 } => task_execution::start(task_execution::StartOptions {
                     file,
+                    bindings,
                     repo,
                     state,
                     authority,

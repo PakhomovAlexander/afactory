@@ -221,7 +221,7 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         });
     }
     let authority_manifest = Manifest::new(entries).map_err(|e| e.to_string())?;
-    let authority = capture_authority(&cas, &authority_manifest)?;
+    let authority = capture_authority(&cas, &authority_manifest, None)?;
     let source = if options.uncommitted {
         Capture::new(&source_repo, &cas)
             .dirty()
@@ -233,6 +233,7 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         schema: "af.task-file/1".into(),
         task_id: crate::task::task_id(&repo, &source.content_digest, &loaded.pipeline_artifact_id),
         kind: "implement".into(),
+        verification: FileVerification::Evaluation,
         goal: options.goal,
         pipeline: PipelineChoiceV1 {
             name: pipeline.name,
@@ -262,6 +263,7 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
     let bytes = serde_json::to_vec(&file).map_err(|e| e.to_string())?;
     let options = StartOptions {
         file: PathBuf::new(),
+        bindings: None,
         repo,
         state: Some(state),
         authority: options.authority,

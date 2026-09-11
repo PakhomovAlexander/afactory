@@ -222,6 +222,14 @@ pub(crate) struct RunArgs {
     /// Versioned Review Task file, executed through the shared Task runtime
     #[arg(long = "file", value_name = "FILE", help_heading = "Selector", conflicts_with_all = ["pipeline", "campaign", "base", "candidate", "focus", "node", "light", "heavy", "restart_round", "provider", "resume_provider", "git_timeout_secs"])]
     pub(crate) task_file: Option<PathBuf>,
+    /// Explicit local Worker packages, slot replacements and Provider aliases
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "task_file",
+        help_heading = "Selector"
+    )]
+    pub(crate) bindings: Option<PathBuf>,
     /// Repository to review
     #[arg(
         long,
@@ -786,6 +794,9 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
         /// Versioned Task JSON/TOML file, processed by the common Task runtime
         #[arg(long, value_name = "FILE")]
         file: Option<PathBuf>,
+        /// Capture local Worker tuning for this Task
+        #[arg(long, value_name = "FILE", requires = "file")]
+        bindings: Option<PathBuf>,
         /// Repository to work in
         #[arg(
             long,
@@ -823,6 +834,8 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
     Plan {
         #[arg(long, value_name = "FILE")]
         file: PathBuf,
+        #[arg(long, value_name = "FILE")]
+        bindings: Option<PathBuf>,
         #[arg(long, value_name = "DIR", default_value = ".")]
         repo: PathBuf,
         #[arg(long, value_name = "DIR")]

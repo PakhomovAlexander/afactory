@@ -27,11 +27,14 @@ supplement it. Claude calls use only `claude-personal`.
 - [ ] P04–P06: common implementation and Review command execution, Task-file CLI and verified
   local delivery pass real-process fixtures. Fixed command implementation now uses the common
   runtime; legacy Review entry-point cutover and live probes remain.
-- [ ] P07–P09: shared packages, embedded Review, bounded repair and fix verification.
+- [ ] P07–P09: local Worker replacement and embedded Review are implemented; Git catalog sync,
+  Task-kind packages, bounded repair and current-Snapshot fix verification remain.
 - [ ] P10–P12: selection, bounded generation, developer approval, export and starters.
 - [ ] P13/P14: Jira/document demonstrations, compatibility, benchmark and consumer release.
 
 The owner authorized the complete plan in [three PRs](task-execution/pr-sequence.md).
+PR 2's current composition checkpoint is described in [local bindings](task-execution/local-bindings.md)
+and [embedded Review](task-execution/embedded-review.md).
 Each PR receives one light Round with Fable 5.1/high on `claude-personal` for correctness
 and architecture, Opus 5/xhigh on `claude-personal` for performance, and GPT-5.6-Sol/high on
 `codex-personal` for bug bounty. These replace the P01 reviewer selection for future PRs.

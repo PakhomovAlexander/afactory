@@ -576,7 +576,7 @@ impl CodeTaskDomain {
         Ok(result)
     }
 
-    fn assess(
+    pub(super) fn assess(
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,

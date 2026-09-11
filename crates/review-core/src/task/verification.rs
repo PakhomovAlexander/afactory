@@ -10,6 +10,26 @@ use std::collections::BTreeMap;
 pub const TASK_CHECK_RECEIPT_V1: &str = "af/TaskCheckReceipt@1";
 pub const TASK_EVALUATION_V1: &str = "af/TaskEvaluation@1";
 pub const VERIFICATION_RESULT_V1: &str = "af/VerificationResult@1";
+pub const REVIEWED_IMPLEMENTATION_V1: &str = "af/ReviewedImplementation@1";
+
+/// Retains the exact acceptance invocation, including the child Review and exposed checks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewedImplementationV1 {
+    pub invocation: super::execution::TaskInvocationV1,
+    pub snapshot_id: String,
+    pub policy_id: String,
+    pub outcome: ReceiptOutcomeV1,
+}
+impl ReviewedImplementationV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        self.invocation.validate()?;
+        require(
+            is_digest(&self.snapshot_id) && is_digest(&self.policy_id),
+            "Reviewed implementation needs exact Snapshot and Review policy",
+        )
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

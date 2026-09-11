@@ -111,6 +111,8 @@ pub struct CompiledCall {
     pub pipeline: String,
     pub inputs: BTreeMap<String, Address>,
     pub outputs: BTreeMap<String, Address>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub coverage: BTreeMap<String, Address>,
     pub max_attempts: u32,
     pub max_parallel: u32,
 }
@@ -126,6 +128,9 @@ pub struct CompiledTask {
     pub coverage: BTreeMap<String, Address>,
     pub calls: BTreeMap<String, CompiledCall>,
     pub slots: BTreeMap<String, WorkerSlotV1>,
+    /// Every default whose contract constrained a replacement, including mapped child slots.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub replaced_workers: BTreeMap<String, BTreeSet<String>>,
     pub max_parallel: u32,
     pub allowances: BTreeMap<String, NodeAllowance>,
 }
@@ -364,6 +369,8 @@ impl CompiledTask {
 pub struct CompileContext<'a> {
     pub pipelines: &'a BTreeMap<String, PipelineDefinitionV1>,
     pub signatures: &'a BTreeMap<String, OperatorSignature>,
+    /// Explicit captured local settings keyed by physical qualified slot, never model input.
+    pub slot_workers: BTreeMap<String, String>,
     /// Trusted Task-kind policy: each obligation identifies the public final output whose
     /// Snapshot its evidence must judge. Pipeline authors cannot redirect this obligation.
     pub acceptance_outputs: BTreeMap<String, String>,
@@ -446,6 +453,7 @@ pub fn compile_task(
             coverage: BTreeMap::new(),
             calls: BTreeMap::new(),
             slots: BTreeMap::new(),
+            replaced_workers: BTreeMap::new(),
             max_parallel: definition.max_parallel,
             allowances: BTreeMap::new(),
         },
@@ -505,6 +513,13 @@ pub fn compile_task(
         },
     );
     let (outputs, coverage) = compiler.expand(root, "root", &root_inputs, &BTreeMap::new(), &[])?;
+    if context
+        .slot_workers
+        .keys()
+        .any(|slot| !compiler.graph.slots.contains_key(slot))
+    {
+        return Err("Local Worker binding names an unknown physical slot".into());
+    }
     for (name, required) in &task.required_outputs {
         let address = outputs
             .get(name)
@@ -799,8 +814,50 @@ impl Compiler<'_> {
                 }
             } else {
                 let mut resolved = slot.clone();
+                if let Some(worker) = self.context.slot_workers.get(&qualified) {
+                    resolved.worker = worker.clone();
+                }
                 resolved.independent_from.clear();
                 self.graph.slots.insert(qualified.clone(), resolved);
+            }
+            let effective = &self.graph.slots[&qualified].worker;
+            if effective != &slot.worker {
+                if !slot.allow_local_replacement {
+                    return Err(format!("Slot {qualified} forbids Worker replacement"));
+                }
+                let original = self
+                    .context
+                    .signatures
+                    .get(&format!("worker/{}", slot.worker))
+                    .ok_or("Default Worker signature is missing")?;
+                let replacement = self
+                    .context
+                    .signatures
+                    .get(&format!("worker/{effective}"))
+                    .ok_or("Replacement Worker signature is missing")?;
+                if original.contract != replacement.contract
+                    || original.worker_input_type != replacement.worker_input_type
+                    || original.worker_output_type != replacement.worker_output_type
+                    || original.outcome_port != replacement.outcome_port
+                    || !replacement.roles.contains(&slot.role)
+                    || !replacement.effects.is_subset(&original.effects)
+                    || original.evidence.iter().any(|(port, policies)| {
+                        !policies
+                            .is_subset(replacement.evidence.get(port).unwrap_or(&BTreeSet::new()))
+                    })
+                    || original.retains.iter().any(|(port, inputs)| {
+                        !inputs.is_subset(replacement.retains.get(port).unwrap_or(&BTreeSet::new()))
+                    })
+                {
+                    return Err(format!(
+                        "Replacement Worker violates slot {qualified}'s public contract or authority"
+                    ));
+                }
+                self.graph
+                    .replaced_workers
+                    .entry(qualified.clone())
+                    .or_default()
+                    .insert(slot.worker.clone());
             }
             slots.insert(local.clone(), qualified);
         }
@@ -1021,6 +1078,17 @@ impl Compiler<'_> {
                                 "{qualified} must bind every configured reviewer and check; missing runtime results remain typed incomplete evidence"
                             ));
                         }
+                        if matches!(operator, TaskOperatorV1::ReviewAccept {})
+                            && !self.graph.calls.values().any(|call| {
+                                call.coverage.get("reviewed") == bound.get("review")
+                                    && call
+                                        .outputs
+                                        .values()
+                                        .any(|address| Some(address) == bound.get("review"))
+                            })
+                        {
+                            return Err("Implementation requires a child Pipeline's public reviewed coverage".into());
+                        }
                         if self.graph.nodes.len() > self.context.max_nodes {
                             return Err("Expanded Task exceeds the node limit".into());
                         }
@@ -1200,6 +1268,7 @@ impl Compiler<'_> {
                 pipeline: name.into(),
                 inputs: inputs.clone(),
                 outputs: outputs.clone(),
+                coverage: coverage.clone(),
                 max_attempts: definition.max_attempts,
                 max_parallel: definition.max_parallel,
             },
@@ -1227,6 +1296,7 @@ fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
         TaskOperatorV1::Check { .. } => Ok("check"),
         TaskOperatorV1::ReviewBind {} => Ok("review-bind"),
         TaskOperatorV1::ReviewReduce {} => Ok("review-reduce"),
+        TaskOperatorV1::ReviewAccept {} => Ok("review-accept"),
         TaskOperatorV1::AttestFixes {} => Ok("attest-fixes"),
         _ => Err("Operator requires package expansion".into()),
     }

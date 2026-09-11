@@ -1,0 +1,251 @@
+"schema" = "af.pipeline/1"
+"name" = "fixture/review"
+"version" = "1.0.0"
+"max_attempts" = 3
+"max_parallel" = 2
+
+["contract"]
+
+["contract"."inputs"]
+
+["contract"."inputs"."history"]
+"artifact_type" = "af/ReviewHistory@1"
+"cardinality" = "one"
+"optional" = false
+"root_default" = "empty_review_history"
+"covers" = []
+
+["contract"."inputs"."history"."affinity"]
+"kind" = "unbound"
+
+["contract"."inputs"."source"]
+"artifact_type" = "af/SourceTree@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["contract"."inputs"."source"."affinity"]
+"kind" = "unbound"
+
+["contract"."inputs"."base"]
+"artifact_type" = "af/SourceTree@1"
+"cardinality" = "one"
+"optional" = true
+"covers" = []
+
+["contract"."inputs"."base"."affinity"]
+"kind" = "unbound"
+
+["contract"."outputs"]
+
+["contract"."outputs"."history"]
+"artifact_type" = "af/ReviewHistory@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["contract"."outputs"."history"."affinity"]
+"kind" = "unbound"
+
+["contract"."outputs"."review"]
+"artifact_type" = "af/TaskReviewRound@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = ["reviewed"]
+
+["contract"."outputs"."review"."affinity"]
+"kind" = "same_as"
+"input" = "source"
+
+["contract"."outputs"."checks"]
+"artifact_type" = "af/TaskCheckReceipt@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["contract"."outputs"."checks"."affinity"]
+"kind" = "same_as"
+"input" = "source"
+
+["accepts"]
+"kinds" = ["review"]
+
+["accepts"."required_facts"]
+
+
+["slots"]
+
+["slots"."bugs"]
+"worker" = "fixture/bugs"
+"role" = "review"
+"input_type" = "af/ReviewInput@1"
+"output_type" = "review.kernel/ReviewerResult@1"
+"min_attempts" = 1
+"max_attempts" = 1
+"allow_local_replacement" = false
+"independent_from" = []
+
+["slots"."correctness"]
+"worker" = "fixture/correctness"
+"role" = "review"
+"input_type" = "af/ReviewInput@1"
+"output_type" = "review.kernel/ReviewerResult@1"
+"min_attempts" = 1
+"max_attempts" = 1
+"allow_local_replacement" = false
+"independent_from" = []
+
+[["nodes"]]
+"id" = "bind"
+
+["nodes"."operator"]
+"op" = "review_bind"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."history"]
+"kind" = "input"
+"port" = "history"
+
+["nodes"."inputs"."source"]
+"kind" = "input"
+"port" = "source"
+
+["nodes"."inputs"."base"]
+"kind" = "input"
+"port" = "base"
+
+[["nodes"]]
+"id" = "check"
+
+["nodes"."operator"]
+"op" = "check"
+"checks" = ["pagination"]
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."source"]
+"kind" = "input"
+"port" = "source"
+
+[["nodes"]]
+"id" = "bugs"
+
+["nodes"."operator"]
+"op" = "verify"
+"slot" = "bugs"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."checks"]
+"kind" = "node"
+"node" = "check"
+"port" = "result"
+
+["nodes"."inputs"."history"]
+"kind" = "input"
+"port" = "history"
+
+["nodes"."inputs"."source"]
+"kind" = "input"
+"port" = "source"
+
+["nodes"."inputs"."subject"]
+"kind" = "node"
+"node" = "bind"
+"port" = "subject"
+
+["nodes"."when"]
+"node" = "check"
+"outcome" = "passed"
+
+[["nodes"]]
+"id" = "correctness"
+
+["nodes"."operator"]
+"op" = "verify"
+"slot" = "correctness"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."checks"]
+"kind" = "node"
+"node" = "check"
+"port" = "result"
+
+["nodes"."inputs"."history"]
+"kind" = "input"
+"port" = "history"
+
+["nodes"."inputs"."source"]
+"kind" = "input"
+"port" = "source"
+
+["nodes"."inputs"."subject"]
+"kind" = "node"
+"node" = "bind"
+"port" = "subject"
+
+["nodes"."when"]
+"node" = "check"
+"outcome" = "passed"
+
+[["nodes"]]
+"id" = "reduce"
+
+["nodes"."operator"]
+"op" = "review_reduce"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."bugs"]
+"kind" = "node"
+"node" = "bugs"
+"port" = "result"
+
+["nodes"."inputs"."checks"]
+"kind" = "node"
+"node" = "check"
+"port" = "result"
+
+["nodes"."inputs"."correctness"]
+"kind" = "node"
+"node" = "correctness"
+"port" = "result"
+
+["nodes"."inputs"."history"]
+"kind" = "input"
+"port" = "history"
+
+["nodes"."inputs"."source"]
+"kind" = "input"
+"port" = "source"
+
+["nodes"."inputs"."subject"]
+"kind" = "node"
+"node" = "bind"
+"port" = "subject"
+
+["outputs"]
+
+["outputs"."history"]
+"kind" = "node"
+"node" = "reduce"
+"port" = "history"
+
+["outputs"."review"]
+"kind" = "node"
+"node" = "reduce"
+"port" = "result"
+
+["outputs"."checks"]
+"kind" = "node"
+"node" = "check"
+"port" = "result"
+
+["coverage"]
+
+["coverage"."reviewed"]
+"kind" = "node"
+"node" = "reduce"
+"port" = "result"

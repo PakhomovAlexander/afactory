@@ -22,6 +22,7 @@ use super::code::CodeTaskDomain;
 use super::host::TaskDomain;
 use super::source::{invocation_producer, source_input};
 use super::{TaskOperatorHost, TaskWorkOutput, envelope};
+mod implementation;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -149,6 +150,10 @@ pub fn review_signatures(
     Ok(BTreeMap::from([
         ("operator/review-bind".into(), bind),
         ("operator/review-reduce".into(), reduce),
+        (
+            "operator/review-accept".into(),
+            implementation::signature(policy_id),
+        ),
     ]))
 }
 
@@ -172,7 +177,9 @@ impl ReviewTaskDomain {
             } = &node.operator
                 && matches!(
                     operator,
-                    TaskOperatorV1::ReviewBind {} | TaskOperatorV1::ReviewReduce {}
+                    TaskOperatorV1::ReviewBind {}
+                        | TaskOperatorV1::ReviewReduce {}
+                        | TaskOperatorV1::ReviewAccept {}
                 )
                 && installed
                     .get(signature)
@@ -781,7 +788,7 @@ impl ReviewTaskDomain {
         result: &mut TaskResultV1,
     ) -> Result<(), String> {
         if task.kind != "review" {
-            return self.code.validate_result(cas, task, result);
+            return self.assess_implementation(cas, task, result);
         }
         let mut conclusions = Vec::new();
         let mut missing = BTreeSet::new();
@@ -896,6 +903,7 @@ impl TaskOperatorHost for ReviewTaskDomain {
                 .bind(cas, input)
                 .map(|v| BTreeMap::from([("subject".into(), v)])),
             Ok(TaskOperatorV1::ReviewReduce {}) => self.reduce_outputs(cas, input),
+            Ok(TaskOperatorV1::ReviewAccept {}) => self.accept_implementation(cas, input),
             _ => return self.code.execute(cas, input, attempt),
         };
         TaskWorkOutput {
@@ -945,6 +953,7 @@ impl TaskDomain for ReviewTaskDomain {
                 Some(BTreeMap::from([("subject".into(), self.bind(cas, input)?)]))
             }
             TaskOperatorV1::ReviewReduce {} => Some(self.reduce_outputs(cas, input)?),
+            TaskOperatorV1::ReviewAccept {} => Some(self.accept_implementation(cas, input)?),
             _ => None,
         };
         if let Some(expected) = expected {

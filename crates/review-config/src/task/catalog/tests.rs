@@ -13,6 +13,50 @@ struct Fixture {
 }
 
 impl Fixture {
+    fn replacement(
+        &mut self,
+        edit: impl FnOnce(&mut TaskWorkerManifest, &mut BTreeMap<String, Vec<u8>>),
+    ) {
+        let mut worker = self.compiler.workers["builtin/document-author"].clone();
+        let mut files = self.compiler.packages["builtin/document-author"]
+            .bytes
+            .files
+            .clone();
+        worker.name = "local/author".into();
+        edit(&mut worker, &mut files);
+        files.insert(
+            "worker.toml".into(),
+            toml::to_string(&worker).unwrap().into_bytes(),
+        );
+        let pin = TaskPackagePin {
+            version: "1.0.0".into(),
+            digest: package_digest_from_files(&files),
+            path: "packages/local".into(),
+        };
+        let project = files
+            .into_iter()
+            .map(|(name, bytes)| (format!("packages/local/{name}"), bytes))
+            .collect();
+        self.compiler
+            .capture_package(&self.cas, "local/author", &pin, &project)
+            .unwrap();
+        self.compiler
+            .bind_worker(
+                "local/author",
+                AdmittedWorkerSettings {
+                    execution: WorkerExecutionV1::Command {},
+                    invocation_policy_id: self.task.authority.policy_id.clone(),
+                },
+            )
+            .unwrap();
+        self.compiler
+            .replace_slot_workers(BTreeMap::from([(
+                "root.slots.author".into(),
+                "local/author".into(),
+            )]))
+            .unwrap();
+    }
+
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let cas = Cas::open(dir.path().join("cas")).unwrap();
@@ -144,6 +188,96 @@ impl Fixture {
             project,
             pins,
         }
+    }
+}
+
+#[test]
+fn local_worker_replacement_preserves_default_authority_and_exact_replay() {
+    let mut f = Fixture::new();
+    f.replacement(|worker, _| worker.signature.attempt.as_mut().unwrap().wall_ms = 500);
+    let (plan, graph) = f
+        .compiler
+        .compile(&f.cas, &f.revision_id, "builtin/document")
+        .unwrap();
+    assert_eq!(graph.slots["root.slots.author"].worker, "local/author");
+    assert_eq!(
+        graph.replaced_workers["root.slots.author"],
+        BTreeSet::from(["builtin/document-author".into()])
+    );
+    assert_eq!(
+        plan.dependencies
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "builtin/document",
+            "builtin/document-author",
+            "local/author"
+        ]
+    );
+    f.compiler.validate_plan(&f.cas, &f.task, &plan).unwrap();
+    f.compiler.replace_slot_workers(BTreeMap::new()).unwrap();
+    assert!(f.compiler.validate_plan(&f.cas, &f.task, &plan).is_err());
+}
+
+#[test]
+fn local_worker_cannot_weaken_schema_evidence_role_effects_or_slot_permission() {
+    for case in [
+        "schema",
+        "evidence",
+        "role",
+        "effects",
+        "type",
+        "forbidden",
+        "unknown_slot",
+    ] {
+        let mut f = Fixture::new();
+        f.replacement(|worker, files| match case {
+            "schema" => {
+                files.insert("input.schema.json".into(), b"{}".to_vec());
+            }
+            "evidence" => worker.signature.evidence.clear(),
+            "role" => {
+                worker.signature.roles = BTreeSet::from(["another".into()]);
+            }
+            "effects" => {
+                worker.signature.effects.insert("write-source".into());
+            }
+            "type" => {
+                worker.signature.worker_input_type = Some("af/Other@1".into());
+            }
+            _ => (),
+        });
+        if case == "forbidden" {
+            f.compiler
+                .pipelines
+                .get_mut("builtin/document")
+                .unwrap()
+                .slots
+                .get_mut("author")
+                .unwrap()
+                .allow_local_replacement = false;
+        }
+        if case == "unknown_slot" {
+            f.compiler
+                .replace_slot_workers(BTreeMap::from([(
+                    "root.slots.misspelled".into(),
+                    "local/author".into(),
+                )]))
+                .unwrap();
+        }
+        assert!(
+            f.compiler
+                .required_worker_packages(&f.cas, &f.revision_id, "builtin/document")
+                .is_err(),
+            "{case} reached account admission"
+        );
+        assert!(
+            f.compiler
+                .compile(&f.cas, &f.revision_id, "builtin/document")
+                .is_err(),
+            "{case} compiled"
+        );
     }
 }
 

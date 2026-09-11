@@ -53,6 +53,7 @@ fn fixture() -> (
 fn compilation_is_deterministic_and_root_business_inputs_are_explicit_nodes() {
     let (task, pipelines, signatures) = fixture();
     let context = CompileContext {
+        slot_workers: BTreeMap::new(),
         acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
         pipelines: &pipelines,
         signatures: &signatures,
@@ -91,6 +92,7 @@ fn declarations_cannot_invent_worker_contracts_evidence_or_effect_authority() {
             &task,
             "builtin/document",
             &CompileContext {
+                slot_workers: BTreeMap::new(),
                 acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
                 pipelines: &pipelines,
                 signatures: &wrong,
@@ -111,6 +113,7 @@ fn declarations_cannot_invent_worker_contracts_evidence_or_effect_authority() {
             &task,
             "builtin/document",
             &CompileContext {
+                slot_workers: BTreeMap::new(),
                 acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
                 pipelines: &pipelines,
                 signatures: &wrong,
@@ -127,6 +130,7 @@ fn declarations_cannot_invent_worker_contracts_evidence_or_effect_authority() {
             &task,
             "builtin/document",
             &CompileContext {
+                slot_workers: BTreeMap::new(),
                 acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
                 pipelines: &pipelines,
                 signatures: &signatures,
@@ -172,6 +176,7 @@ fn embedding_checks_the_child_interface_without_applying_its_root_kind_selector(
         BTreeSet::from(["review".into()]);
     pipelines.insert(parent.name.clone(), parent);
     let context = CompileContext {
+        slot_workers: BTreeMap::new(),
         acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
         pipelines: &pipelines,
         signatures: &signatures,
@@ -243,6 +248,7 @@ fn missing_inputs_cycles_unknown_ports_and_recursive_calls_fail_before_dispatch(
                 &task,
                 "builtin/document",
                 &CompileContext {
+                    slot_workers: BTreeMap::new(),
                     acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
                     pipelines: &broken,
                     signatures: &signatures,
@@ -318,6 +324,7 @@ fn bounded_branches_execute_only_the_selected_arm_and_keep_evidence_coverage() {
         &task,
         "builtin/document",
         &CompileContext {
+            slot_workers: BTreeMap::new(),
             pipelines: &pipelines,
             signatures: &signatures,
             acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
@@ -442,6 +449,7 @@ fn branch_contracts_reject_missing_paths_wrong_arms_and_untyped_conditions() {
                 &task,
                 "builtin/document",
                 &CompileContext {
+                    slot_workers: BTreeMap::new(),
                     pipelines: &pipes,
                     signatures: &sigs,
                     acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
@@ -500,6 +508,7 @@ fn composite_public_results_must_retain_the_exact_verifier_receipt() {
             &task,
             "builtin/document",
             &CompileContext {
+                slot_workers: BTreeMap::new(),
                 pipelines: &pipelines,
                 signatures,
                 acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
@@ -562,6 +571,7 @@ fn evidence_from_an_earlier_output_cannot_validate_a_later_final_output() {
         &task,
         "builtin/document",
         &CompileContext {
+            slot_workers: BTreeMap::new(),
             pipelines: &pipelines,
             signatures: &signatures,
             acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),

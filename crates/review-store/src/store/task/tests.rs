@@ -276,6 +276,7 @@ impl Fixture {
             &self.revision,
             "builtin/document",
             &CompileContext {
+                slot_workers: BTreeMap::new(),
                 pipelines: &pipelines,
                 signatures: &signatures,
                 acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),

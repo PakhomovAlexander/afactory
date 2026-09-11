@@ -1,0 +1,44 @@
+"schema" = "af.task-catalog/1"
+"code_policy" = ".af/code-policy.toml"
+
+["packages"]
+
+["packages"."fixture/bugs"]
+"version" = "1.0.0"
+"digest" = "sha256:d31c0aef17c9ce2b148c7df796cb96ec031e335653c1b6add495b017c6f57811"
+"path" = ".af/task-packages/fixture/bugs"
+
+["packages"."fixture/correctness"]
+"version" = "1.0.0"
+"digest" = "sha256:da83aaa5a9d9af3aacf9d23f7fb62147249ad79371eef4aa3cd3cede468dfe60"
+"path" = ".af/task-packages/fixture/correctness"
+
+["packages"."fixture/implementation"]
+"version" = "1.0.0"
+"digest" = "sha256:c1eb9e40254125fdd98045c51ca635f73eaddfedd0637e3ab079ddfc2007af67"
+"path" = ".af/task-packages/fixture/implementation"
+
+["packages"."fixture/implementer"]
+"version" = "1.0.0"
+"digest" = "sha256:2cb281039434ea0273af7390db032a2a823ece9acfad4243b6095d8f0c2f2fb1"
+"path" = ".af/task-packages/fixture/implementer"
+
+["packages"."fixture/review"]
+"version" = "1.0.0"
+"digest" = "sha256:efb4874daa11e7f33d92aa12251759bfd40ee1c0ebde5b9de89440f399c9049c"
+"path" = ".af/task-packages/fixture/review"
+
+["independence"]
+"command_workers_by_package" = true
+"distinct_principals" = true
+"distinct_providers" = false
+"distinct_models" = false
+
+["review"]
+"gate" = "major"
+"clean_rounds" = 1
+"max_rounds" = 1
+
+["review"."reviewers"]
+"bugs" = "required"
+"correctness" = "required"

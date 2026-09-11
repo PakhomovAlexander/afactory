@@ -991,6 +991,18 @@
               "const": "review_reduce"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "review_accept"
+            }
+          }
         }
       ]
     },

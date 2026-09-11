@@ -186,6 +186,8 @@ pub enum TaskOperatorV1 {
     ReviewBind {},
     /// One atomic gather/reducer barrier over the captured set of required reviewers.
     ReviewReduce {},
+    /// Accept implementation only from the embedded current-Snapshot Review and its checks.
+    ReviewAccept {},
     AttestFixes {},
     FixVerify {
         slot: String,

@@ -32,13 +32,14 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 69] = [
+const SCHEMAS: [&str; 70] = [
     "task-provider-admission-v1.json",
     "task-review-subject-v1.json",
     "task-review-round-v1.json",
     "task-check-receipt-v1.json",
     "task-evaluation-v1.json",
     "verification-result-v1.json",
+    "reviewed-implementation-v1.json",
     "task-snapshot-v1.json",
     "source-tree-v1.json",
     "candidate-tree-v1.json",
@@ -302,6 +303,27 @@ fn task_verification_contracts_preserve_negative_results_and_require_positive_ev
         result.validate().unwrap();
         let value = serde_json::to_value(&result).unwrap();
         assert_valid("verification-result-v1.json", &value);
+        let reviewed = review_core::task::verification::ReviewedImplementationV1 {
+            invocation: review_core::task::execution::TaskInvocationV1 {
+                plan_id: id.clone(),
+                node: "root.nodes.accept".into(),
+                inputs: std::collections::BTreeMap::new(),
+            },
+            snapshot_id: id.clone(),
+            policy_id: id.clone(),
+            outcome,
+        };
+        reviewed.validate().unwrap();
+        let mut reviewed_value = serde_json::to_value(reviewed).unwrap();
+        assert_valid("reviewed-implementation-v1.json", &reviewed_value);
+        reviewed_value["approved"] = json!(true);
+        assert!(!validator("reviewed-implementation-v1.json").is_valid(&reviewed_value));
+        assert!(
+            serde_json::from_value::<review_core::task::verification::ReviewedImplementationV1>(
+                reviewed_value
+            )
+            .is_err()
+        );
         let mut unknown = value.clone();
         unknown["approved"] = json!(true);
         assert!(!validator("verification-result-v1.json").is_valid(&unknown));
