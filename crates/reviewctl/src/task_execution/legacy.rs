@@ -196,6 +196,8 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         code_policy: ".af/task-compat/code-policy.toml".into(),
         review: None,
         packages: pins,
+        kinds: BTreeMap::new(),
+        imports: BTreeSet::new(),
         independence: IndependencePolicyV1::default(),
         providers: BTreeMap::new(),
     };
@@ -221,7 +223,7 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         });
     }
     let authority_manifest = Manifest::new(entries).map_err(|e| e.to_string())?;
-    let authority = capture_authority(&cas, &authority_manifest, None)?;
+    let authority = capture_authority(&cas, &authority_manifest, None, "implement")?;
     let source = if options.uncommitted {
         Capture::new(&source_repo, &cas)
             .dirty()
@@ -233,7 +235,7 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         schema: "af.task-file/1".into(),
         task_id: crate::task::task_id(&repo, &source.content_digest, &loaded.pipeline_artifact_id),
         kind: "implement".into(),
-        verification: FileVerification::Evaluation,
+        verification: Some(FileVerification::Evaluation),
         goal: options.goal,
         pipeline: PipelineChoiceV1 {
             name: pipeline.name,

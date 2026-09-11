@@ -26,6 +26,7 @@ and journaled.
 Namespaces:
   review     plan, run, and work a review Campaign
   task       start, inspect, and deliver an implement Task
+  catalog    capture shared Pipeline, Worker and Task-kind packages from Git
   provider   inspect and preflight the configured model providers
   onboard    generate or validate `.af/` review authority for a repository
   config     show the effective configuration and where each value came from
@@ -69,6 +70,11 @@ pub(crate) struct Af {
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Command {
+    /// Capture shared Pipeline, Worker and Task-kind packages from an exact Git revision
+    Catalog {
+        #[command(subcommand)]
+        command: CatalogCommand,
+    },
     /// Plan, run, and work a review Campaign
     #[command(
         long_about = "Plan, run, and work a review Campaign.\n\n\
@@ -767,6 +773,26 @@ pub(crate) enum RunnerArg {
     Mixed,
     Claude,
     Codex,
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum CatalogCommand {
+    /// Explicitly sync a Git catalog into an absent directory; runs no Workers or installers
+    Sync {
+        /// Local Git checkout or public HTTPS Git URL
+        #[arg(long)]
+        source: String,
+        #[arg(long, default_value = "HEAD")]
+        revision: String,
+        #[arg(long, default_value = "catalog.toml")]
+        manifest: String,
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        destination: String,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Debug, Subcommand)]

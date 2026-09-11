@@ -158,6 +158,7 @@ pub fn review_signatures(
 }
 
 pub struct ReviewTaskDomain {
+    review_task: bool,
     policy_id: String,
     policy: ReviewTaskPolicy,
     graph: CompiledTask,
@@ -220,11 +221,17 @@ impl ReviewTaskDomain {
         }
         let code = CodeTaskDomain::captured(cas, &policy.check_policy_id, graph.clone())?;
         Ok(Self {
+            review_task: true,
             policy_id: policy_id.into(),
             policy,
             graph,
             code,
         })
+    }
+    /// Chosen by the captured Task-kind profile, never by a Worker response or display name.
+    pub fn with_review_task(mut self, review: bool) -> Self {
+        self.review_task = review;
+        self
     }
 
     fn operator(&self, input: &TaskInvocationV1) -> Result<&TaskOperatorV1, String> {
@@ -787,7 +794,7 @@ impl ReviewTaskDomain {
         task: &TaskRevisionV1,
         result: &mut TaskResultV1,
     ) -> Result<(), String> {
-        if task.kind != "review" {
+        if !self.review_task {
             return self.assess_implementation(cas, task, result);
         }
         let mut conclusions = Vec::new();

@@ -114,3 +114,5 @@ options you rejected and why — that is the part future-you needs.
   runtime](0051-compile-fixed-implementation-tasks-into-the-common-runtime.md)
 - [0052 — Capture local bindings and compose Review
   acceptance](0052-capture-local-bindings-and-compose-review-acceptance.md)
+- [0053 — Resolve shared catalogs only during explicit
+  sync](0053-resolve-shared-catalogs-only-during-explicit-sync.md)

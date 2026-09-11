@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use review_config::task::catalog::*;
+use review_config::task::kind::TaskKindProfile;
 use review_core::task::plan::*;
 use review_core::task::review::{TASK_REVIEW_ROUND_V1, TaskReviewRoundV1};
 use review_core::task::verification::VERIFICATION_RESULT_V1;
@@ -28,6 +29,7 @@ use review_store::{Cas, EventStore, validate_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 mod bindings;
+pub(crate) mod catalog;
 mod legacy;
 pub(super) use legacy::start_legacy;
 
@@ -53,8 +55,12 @@ struct TaskFile {
     pipeline: PipelineChoiceV1,
     strategy: String,
     /// The requested acceptance profile is Task input, captured before selecting a Pipeline.
-    #[serde(default)]
-    verification: FileVerification,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    verification: Option<FileVerification>,
     #[serde(default)]
     facts: BTreeMap<String, TaskFactV1>,
     limits: FileLimits,
@@ -89,6 +95,10 @@ struct TaskCatalog {
     )]
     review: Option<ReviewSettings>,
     packages: BTreeMap<String, TaskPackagePin>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    kinds: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    imports: BTreeSet<String>,
     independence: IndependencePolicyV1,
     #[serde(default)]
     providers: BTreeMap<String, String>,
@@ -135,6 +145,14 @@ struct RunAuthority {
     local_bindings_id: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     slot_workers: BTreeMap<String, String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    kind_package: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    import_locks: BTreeSet<String>,
 }
 
 fn clock() -> Result<u64, String> {
@@ -235,12 +253,19 @@ fn capture_authority(
     cas: &Cas,
     manifest: &Manifest,
     local: Option<&Path>,
+    task_kind: &str,
 ) -> Result<(String, RunAuthority, TaskPlanCompiler), String> {
     let bytes = captured_file(cas, manifest, ".af/task-catalog.toml")?;
-    let catalog: TaskCatalog = parse(Path::new(".af/task-catalog.toml"), &bytes)?;
+    let mut catalog: TaskCatalog = parse(Path::new(".af/task-catalog.toml"), &bytes)?;
+    let import_locks = catalog::restore_imports(cas, manifest, &mut catalog)?;
     if catalog.schema != "af.task-catalog/1"
         || catalog.packages.is_empty()
         || catalog.packages.len() > 128
+        || catalog.kinds.len() > 128
+        || catalog
+            .kinds
+            .iter()
+            .any(|(kind, name)| !is_package_name(kind) || !is_package_name(name))
     {
         return Err("Task catalog requires one to 128 exactly pinned packages".into());
     }
@@ -286,6 +311,16 @@ fn capture_authority(
                 artifact_id,
             },
         );
+    }
+    for (kind, package) in &catalog.kinds {
+        if capture
+            .task_kind(package)
+            .is_none_or(|definition| &definition.kind != kind)
+        {
+            return Err(format!(
+                "Task kind {kind} has no matching captured kind package"
+            ));
+        }
     }
     let local = local.map(bindings::read).transpose()?;
     let local_bindings_id = local
@@ -348,6 +383,8 @@ fn capture_authority(
         providers,
         local_bindings_id,
         slot_workers,
+        kind_package: catalog.kinds.get(task_kind).cloned(),
+        import_locks,
     };
     let id = cas
         .put_json(&serde_json::to_value(&authority).map_err(|e| e.to_string())?)
@@ -370,6 +407,9 @@ fn restore_compiler(
         .map_err(|e| e.to_string())?;
     if let Some(local) = &authority.local_bindings_id {
         cas.verify(local).map_err(|e| e.to_string())?;
+    }
+    for lock in &authority.import_locks {
+        cas.verify(lock).map_err(|e| e.to_string())?;
     }
     let policy: CodeTaskPolicy = serde_json::from_value(
         cas.get_json(&authority.code_policy_id)
@@ -399,6 +439,9 @@ fn restore_compiler(
         compiler.restore_package(cas, name, &package.digest, &package.artifact_id)?;
     }
     compiler.replace_slot_workers(authority.slot_workers.clone())?;
+    if let Some(kind) = &authority.kind_package {
+        compiler.select_task_kind(kind)?;
+    }
     for name in authority.packages.keys() {
         if let Some(worker) = compiler.worker(name) {
             if !matches!(
@@ -513,14 +556,10 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
     let file: TaskFile = parse(&options.file, &bytes)?;
-    if expected_kind.is_some_and(|kind| kind != file.kind) {
-        return Err("af review --file requires a review Task definition".into());
-    }
     if file.schema != "af.task-file/1"
         || !is_name(&file.task_id)
-        || !matches!(file.kind.as_str(), "implement" | "review")
+        || !is_package_name(&file.kind)
         || file.goal.trim().is_empty()
-        || (file.kind == "review" && file.verification != FileVerification::Evaluation)
     {
         return Err("Task file requires schema af.task-file/1, a valid ID, supported kind and nonempty goal".into());
     }
@@ -543,7 +582,18 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
     let policy_source = Capture::new(&source_repo, &cas)
         .committed(&options.authority)
         .map_err(|e| e.to_string())?;
-    let authority = capture_authority(&cas, &policy_source.manifest, options.bindings.as_deref())?;
+    let authority = capture_authority(
+        &cas,
+        &policy_source.manifest,
+        options.bindings.as_deref(),
+        &file.kind,
+    )?;
+    if expected_kind.is_some()
+        && selected_profile(&authority.2, &authority.1, &file.kind, file.verification)?
+            != TaskKindProfile::Review
+    {
+        return Err("af review --file requires a Review Task profile".into());
+    }
     let source = if options.uncommitted {
         Capture::new(&source_repo, &cas)
             .dirty()
@@ -568,6 +618,7 @@ fn start_captured(
     (authority_id, authority, mut compiler): (String, RunAuthority, TaskPlanCompiler),
     legacy_budget: Option<u64>,
 ) -> Result<i32, String> {
+    let profile = selected_profile(&compiler, &authority, &file.kind, file.verification)?;
     let origin=cas.put_json(&json!({"schema":"af.task-source-origin/1","repository_id":source.repository_id,"source_revision":source.source_revision,"content_digest":source.content_digest})).map_err(|e|e.to_string())?;
     let snapshot = capture_snapshot(&cas, &source.manifest, &origin, None)?;
     let source_port = source_tree(&cas, producer(), &snapshot, vec![origin])?;
@@ -606,7 +657,7 @@ fn start_captured(
         limits:TaskLimitsV1 {tokens:file.limits.tokens,max_attempts:file.limits.max_attempts,deadline_unix_ms:started.checked_add(wall).ok_or("Task deadline overflow")?,verification:file.limits.verification},
         strategy:file.strategy,pipeline:Some(file.pipeline),facts:file.facts,
     };
-    if revision.kind == "review" {
+    if profile == TaskKindProfile::Review {
         revision.inputs.remove("requirements");
         revision.authority.allowed_effects.remove("write-source");
         revision.required_outputs = serde_json::from_value(json!({"review":{"artifact_type":TASK_REVIEW_ROUND_V1,"cardinality":"one"},"history":{"artifact_type":REVIEW_HISTORY_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?;
@@ -620,7 +671,7 @@ fn start_captured(
                     .ok_or("Review Task requires configured Review policy")?,
             },
         )]);
-    } else if file.verification == FileVerification::Review {
+    } else if profile == TaskKindProfile::ReviewedImplementation {
         use review_core::task::verification::REVIEWED_IMPLEMENTATION_V1;
         revision
             .required_outputs
@@ -693,7 +744,7 @@ fn start_captured(
         )
         .map_err(|e| e.to_string())?
         .0;
-    let inner = captured_domain(&cas, &authority, &revision.kind, graph.clone())?;
+    let inner = captured_domain(&cas, &authority, profile, graph.clone())?;
     let models = model_bindings(&plan, &graph, &adapters)?;
     let domain = ProviderTaskDomain {
         graph: &graph,
@@ -772,24 +823,73 @@ fn release(
     }
 }
 
+fn selected_profile(
+    compiler: &TaskPlanCompiler,
+    authority: &RunAuthority,
+    kind: &str,
+    verification: Option<FileVerification>,
+) -> Result<TaskKindProfile, String> {
+    let profile = if let Some(name) = &authority.kind_package {
+        let definition = compiler
+            .task_kind(name)
+            .ok_or("Captured Task-kind package is absent")?;
+        if definition.kind != kind {
+            return Err("Task-kind mapping changed its business kind".into());
+        }
+        definition.profile
+    } else {
+        match kind {
+            "implement" if verification == Some(FileVerification::Review) => {
+                TaskKindProfile::ReviewedImplementation
+            }
+            "implement" => TaskKindProfile::Implementation,
+            "review" => TaskKindProfile::Review,
+            _ => return Err("Task requires a configured kind package".into()),
+        }
+    };
+    if verification.is_some_and(|requested| {
+        !matches!(
+            (profile, requested),
+            (
+                TaskKindProfile::Implementation,
+                FileVerification::Evaluation
+            ) | (
+                TaskKindProfile::ReviewedImplementation,
+                FileVerification::Review
+            )
+        )
+    }) {
+        return Err("Task verification request contradicts its captured kind profile".into());
+    }
+    if profile == TaskKindProfile::Document {
+        return Err("Document profile requires the document domain capability".into());
+    }
+    Ok(profile)
+}
+
 fn captured_domain(
     cas: &Cas,
     authority: &RunAuthority,
-    kind: &str,
+    profile: TaskKindProfile,
     graph: CompiledTask,
 ) -> Result<Box<dyn TaskDomain>, String> {
-    match kind {
-        "implement" if authority.review_policy_id.is_none() => Ok(Box::new(
+    match profile {
+        TaskKindProfile::Implementation if authority.review_policy_id.is_none() => Ok(Box::new(
             CodeTaskDomain::captured(cas, &authority.code_policy_id, graph)?,
         )),
-        "review" | "implement" => Ok(Box::new(ReviewTaskDomain::captured(
-            cas,
-            authority
-                .review_policy_id
-                .as_deref()
-                .ok_or("Review Task lost its captured policy")?,
-            graph,
-        )?)),
+        TaskKindProfile::Review
+        | TaskKindProfile::Implementation
+        | TaskKindProfile::ReviewedImplementation => Ok(Box::new(
+            ReviewTaskDomain::captured(
+                cas,
+                authority
+                    .review_policy_id
+                    .as_deref()
+                    .ok_or("Review Task lost its captured policy")?,
+                graph,
+            )?
+            .with_review_task(profile == TaskKindProfile::Review),
+        )),
         _ => Err("Task has no installed domain adapter".into()),
     }
 }
@@ -861,7 +961,19 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
             .name,
     )?;
     compiler.validate_plan(&cas, &projection.revision, &plan)?;
-    let inner = captured_domain(&cas, &authority, &projection.revision.kind, graph.clone())?;
+    let verification = projection
+        .revision
+        .acceptance
+        .values()
+        .any(|a| a.evidence_type == review_core::task::verification::REVIEWED_IMPLEMENTATION_V1)
+        .then_some(FileVerification::Review);
+    let profile = selected_profile(
+        &compiler,
+        &authority,
+        &projection.revision.kind,
+        verification,
+    )?;
+    let inner = captured_domain(&cas, &authority, profile, graph.clone())?;
     let models = model_bindings(&plan, &graph, &adapters)?;
     let domain = ProviderTaskDomain {
         graph: &graph,
@@ -1062,7 +1174,12 @@ fn present(
             );
         }
     }
-    if state.revision.kind == "review" {
+    if result.as_ref().is_some_and(|r| {
+        matches!(
+            r.domain_conclusion.as_str(),
+            "pass" | "changes_requested" | "convergence_exhausted" | "incomplete"
+        )
+    }) {
         return Ok(result.map_or(0, |r| match r.domain_conclusion.as_str() {
             "pass" => 0,
             "changes_requested" | "convergence_exhausted" => 3,

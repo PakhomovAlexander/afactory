@@ -4,50 +4,12 @@ use std::process::Command;
 
 use serde_json::Value;
 
-fn copy_tree(source: &Path, destination: &Path) {
-    std::fs::create_dir_all(destination).unwrap();
-    for entry in std::fs::read_dir(source).unwrap() {
-        let entry = entry.unwrap();
-        let target = destination.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_tree(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), target).unwrap();
-        }
-    }
-}
+#[path = "support/task_cli.rs"]
+mod task_cli;
+use task_cli::{copy_tree, fixture_named};
 
 fn fixture(root: &Path) -> (PathBuf, PathBuf) {
     fixture_named(root, "pagination")
-}
-
-fn fixture_named(root: &Path, name: &str) -> (PathBuf, PathBuf) {
-    let repo = root.join("repo");
-    let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
-    copy_tree(&workspace.join("fixtures/task-runtime").join(name), &repo);
-    for args in [
-        vec!["init", "-q", "-b", "main"],
-        vec!["config", "user.name", "Fixture"],
-        vec!["config", "user.email", "fixture@example.invalid"],
-        vec!["add", "-A"],
-        vec!["commit", "-qm", "fixture"],
-    ] {
-        let output = Command::new("git")
-            .current_dir(&repo)
-            .env("GIT_CONFIG_GLOBAL", "/dev/null")
-            .env("GIT_CONFIG_NOSYSTEM", "1")
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-    (repo, root.join("state"))
 }
 
 #[test]
@@ -270,6 +232,93 @@ fn af(repo: &Path, state: &Path, args: &[&str]) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn captured_task_kind_packages_keep_business_names_and_domain_acceptance() {
+    for (fixture_name, file_name, profile, kind, root, exit) in [
+        (
+            "embedded-review",
+            "ticket.json",
+            "reviewed_implementation",
+            "team/feature",
+            "implementation",
+            0,
+        ),
+        (
+            "review",
+            "review.json",
+            "review",
+            "team/security-review",
+            "review",
+            3,
+        ),
+    ] {
+        let directory = tempfile::tempdir().unwrap();
+        let (repo, state) = fixture_named(directory.path(), fixture_name);
+        let package_name = "team/task-kind";
+        let package = repo.join(".af/task-packages/team/task-kind");
+        std::fs::create_dir_all(&package).unwrap();
+        std::fs::write(package.join("kind.toml"), toml::to_string(&serde_json::json!({"schema":"af.task-kind/1","name":package_name,"version":"1.0.0","kind":kind,"profile":profile})).unwrap()).unwrap();
+        let file = repo.join(file_name);
+        let mut ticket: Value = serde_json::from_slice(&std::fs::read(&file).unwrap()).unwrap();
+        ticket["kind"] = Value::String(kind.into());
+        ticket.as_object_mut().unwrap().remove("verification");
+        std::fs::write(&file, serde_json::to_vec(&ticket).unwrap()).unwrap();
+        let pipeline_dir = repo.join(format!(".af/task-packages/fixture/{root}"));
+        let mut pipeline = review_config::task::parse_task_pipeline(
+            &std::fs::read_to_string(pipeline_dir.join("pipeline.toml")).unwrap(),
+        )
+        .unwrap();
+        pipeline.accepts.kinds = std::collections::BTreeSet::from([kind.into()]);
+        std::fs::write(
+            pipeline_dir.join("pipeline.toml"),
+            toml::to_string(&pipeline).unwrap(),
+        )
+        .unwrap();
+        let catalog_path = repo.join(".af/task-catalog.toml");
+        let mut catalog: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+        catalog["packages"].as_table_mut().unwrap().insert(package_name.into(), toml::Value::try_from(serde_json::json!({"version":"1.0.0","digest":review_config::lock::package_digest(package_name,&package).unwrap(),"path":".af/task-packages/team/task-kind"})).unwrap());
+        catalog["packages"][format!("fixture/{root}")]["digest"] = toml::Value::String(
+            review_config::lock::package_digest(&format!("fixture/{root}"), &pipeline_dir).unwrap(),
+        );
+        catalog.as_table_mut().unwrap().insert(
+            "kinds".into(),
+            toml::Value::try_from(serde_json::json!({kind:package_name})).unwrap(),
+        );
+        std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+        for args in [vec!["add", "-A"], vec!["commit", "-qm", "kind package"]] {
+            assert!(
+                Command::new("git")
+                    .current_dir(&repo)
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
+        let plan = af(&repo, &state, &["plan", "--file", file_name]);
+        assert!(plan["plan"]["dependencies"][package_name].is_object());
+        let task_id = ticket["task_id"].as_str().unwrap();
+        std::fs::write(package.join("kind.toml"), "modified after capture").unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_af"))
+            .current_dir(&repo)
+            .args(["task", "run", task_id, "--json", "--state"])
+            .arg(&state)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(exit),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["result"]["acceptance"], "satisfied");
+        assert_eq!(result["plan_id"], plan["plan_id"]);
+    }
 }
 
 #[test]

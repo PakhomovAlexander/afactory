@@ -317,36 +317,11 @@ impl<'a> CapturedTaskHost<'a> {
             let files = compiler
                 .package_files(name)
                 .ok_or("Missing captured Worker files")?;
-            let schema = |path: &str| -> Result<serde_json::Value, String> {
-                serde_json::from_slice(
-                    files
-                        .get(path)
-                        .ok_or_else(|| format!("Worker {name} lacks {path}"))?,
-                )
-                .map_err(|e| e.to_string())
-            };
-            let output_schemas = manifest
-                .signature
-                .contract
-                .outputs
-                .keys()
-                .filter(|port| {
-                    !environment
-                        .kernel_outputs(&manifest.signature)
-                        .contains(*port)
-                })
-                .map(|port| {
-                    schema(&format!("outputs/{port}.schema.json")).map(|s| (port.clone(), s))
-                })
-                .collect::<Result<_, _>>()?;
-            let contract =
-                WorkerContract::capture(cas, schema("input.schema.json")?, output_schemas)?;
-            let contract = match &manifest.runner {
-                TaskWorkerRunner::LegacyTaskCommand { protocol, .. } => {
-                    contract.with_legacy_protocol(cas, *protocol)?
-                }
-                _ => contract,
-            };
+            let contract = compiler.worker_contract(
+                cas,
+                name,
+                &environment.kernel_outputs(&manifest.signature),
+            )?;
             let instructions =
                 String::from_utf8(files.get("instructions.md").cloned().unwrap_or_default())
                     .map_err(|e| e.to_string())?;

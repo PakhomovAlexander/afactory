@@ -1170,6 +1170,21 @@ fn main() {
             },
         ),
         cli::Command::Onboard(args) => ("af onboard", onboard::run_cli(args).map(|()| 0)),
+        cli::Command::Catalog {
+            command:
+                cli::CatalogCommand::Sync {
+                    source,
+                    revision,
+                    manifest,
+                    repo,
+                    destination,
+                    json,
+                },
+        } => (
+            "af catalog sync",
+            task_execution::catalog::sync(&source, &revision, &manifest, &repo, &destination, json)
+                .map(|()| 0),
+        ),
         cli::Command::Task { command } => (
             "af task",
             match command {

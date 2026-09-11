@@ -35,5 +35,6 @@ CLI fixtures execute one pinned Pipeline with Alice/Bob replacements and edited 
 after capture. Composition fixtures exercise implementation, embedded Review, local delivery
 and standalone use of the same locked Review package. Negative cases cover weakened schemas,
 forbidden overrides, changed effects, missing public coverage, stale checks, Findings, missing
-reviewers and failed checks. Git import/sync, repair and legacy Review entry-point migration
-remain separate unfinished acceptance items in PR 2.
+reviewers and failed checks. Git import/sync and Task-kind profile capture are implemented in
+the following P07 checkpoint. Repair and legacy Review entry-point migration remain unfinished
+acceptance items in PR 2.

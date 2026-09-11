@@ -59,5 +59,5 @@ Review package for standalone use; the integration test runs that package on the
 source with three Attempts. Standalone Review keeps its own business meaning: a complete
 finding-bearing Review can satisfy the Review Task while still requesting changes.
 
-Bounded repair, generated plan approval and Git catalog sync remain subsequent implementation
-packages. This checkpoint proves composition and local binding without claiming those features.
+Bounded repair and generated plan approval remain subsequent implementation packages.
+[Git catalog sync](shared-catalogs.md) can share this composition and its Workers.

@@ -16,6 +16,7 @@ use review_graph::task::{
 use review_store::{Cas, validate_envelope};
 use serde::{Deserialize, Serialize};
 
+use super::kind::TaskKindManifest;
 use crate::{CommandSpec, lock::package_digest_from_files};
 
 pub const TASK_PACKAGE_V1: &str = "af/TaskPackage@1";
@@ -76,6 +77,12 @@ struct Package {
     dependency: PlanDependencyV1,
 }
 
+enum ParsedPackage {
+    Pipeline(PipelineDefinitionV1),
+    Worker(TaskWorkerManifest),
+    TaskKind(TaskKindManifest),
+}
+
 /// Resolved by the host's Provider and invocation-policy admission, never by a Worker or a
 /// plan declaration. The principal in Model execution must come from Provider identity proof.
 #[derive(Debug, Clone)]
@@ -94,6 +101,8 @@ pub struct TaskPlanCompiler {
     packages: BTreeMap<String, Package>,
     pipelines: BTreeMap<String, PipelineDefinitionV1>,
     workers: BTreeMap<String, TaskWorkerManifest>,
+    kinds: BTreeMap<String, TaskKindManifest>,
+    active_kind: Option<String>,
     signatures: BTreeMap<String, OperatorSignature>,
     settings: BTreeMap<String, AdmittedWorkerSettings>,
     slot_workers: BTreeMap<String, String>,
@@ -222,6 +231,8 @@ impl TaskPlanCompiler {
             packages: BTreeMap::new(),
             pipelines: BTreeMap::new(),
             workers: BTreeMap::new(),
+            kinds: BTreeMap::new(),
+            active_kind: None,
             signatures: installed,
             settings: BTreeMap::new(),
             slot_workers: BTreeMap::new(),
@@ -309,20 +320,25 @@ impl TaskPlanCompiler {
         {
             return Err("Captured Task package does not match trusted authority".into());
         }
-        let (pipeline, worker) = Self::parse_package(&bytes)?;
+        let parsed = Self::parse_package(&bytes)?;
         if let Some(old) = self.packages.get(name) {
             if old.dependency.artifact_id == artifact_id {
                 return Ok(());
             }
             return Err("Task package cannot change inside captured authority".into());
         }
-        if let Some(pipeline) = pipeline {
-            self.pipelines.insert(name.into(), pipeline);
-        }
-        if let Some(worker) = worker {
-            self.signatures
-                .insert(format!("worker/{name}"), worker.signature.clone());
-            self.workers.insert(name.into(), worker);
+        match parsed {
+            ParsedPackage::Pipeline(pipeline) => {
+                self.pipelines.insert(name.into(), pipeline);
+            }
+            ParsedPackage::Worker(worker) => {
+                self.signatures
+                    .insert(format!("worker/{name}"), worker.signature.clone());
+                self.workers.insert(name.into(), worker);
+            }
+            ParsedPackage::TaskKind(kind) => {
+                self.kinds.insert(name.into(), kind);
+            }
         }
         self.packages.insert(
             name.into(),
@@ -338,9 +354,7 @@ impl TaskPlanCompiler {
         Ok(())
     }
 
-    fn parse_package(
-        bytes: &PackageBytes,
-    ) -> Result<(Option<PipelineDefinitionV1>, Option<TaskWorkerManifest>), String> {
+    fn parse_package(bytes: &PackageBytes) -> Result<ParsedPackage, String> {
         if bytes.schema != "af.task-package/1"
             || !is_package_name(&bytes.name)
             || !exact_version(&bytes.version)
@@ -358,8 +372,9 @@ impl TaskPlanCompiler {
         match (
             bytes.files.get("pipeline.toml"),
             bytes.files.get("worker.toml"),
+            bytes.files.get("kind.toml"),
         ) {
-            (Some(source), None) => {
+            (Some(source), None, None) => {
                 let pipeline = super::parse_task_pipeline(
                     std::str::from_utf8(source).map_err(|e| e.to_string())?,
                 )
@@ -367,9 +382,9 @@ impl TaskPlanCompiler {
                 if pipeline.name != bytes.name || pipeline.version != bytes.version {
                     return Err("Pipeline manifest disagrees with its pin".into());
                 }
-                Ok((Some(pipeline), None))
+                Ok(ParsedPackage::Pipeline(pipeline))
             }
-            (None, Some(source)) => {
+            (None, Some(source), None) => {
                 let worker: TaskWorkerManifest =
                     toml::from_str(std::str::from_utf8(source).map_err(|e| e.to_string())?)
                         .map_err(|e| e.to_string())?;
@@ -396,9 +411,21 @@ impl TaskPlanCompiler {
                     TaskWorkerRunner::Model {provider_kind, model, effort} if !review_core::task::is_name(provider_kind) || model.trim().is_empty() || !review_core::task::is_name(effort) || cost.tokens == 0 => return Err("Model Worker needs explicit Provider/model/effort and token reservation".into()),
                     _ => (),
                 }
-                Ok((None, Some(worker)))
+                Ok(ParsedPackage::Worker(worker))
             }
-            _ => Err("Task package must have exactly one pipeline.toml or worker.toml".into()),
+            (None, None, Some(source)) => {
+                let kind: TaskKindManifest =
+                    toml::from_str(std::str::from_utf8(source).map_err(|e| e.to_string())?)
+                        .map_err(|e| e.to_string())?;
+                kind.validate()?;
+                if kind.name != bytes.name || kind.version != bytes.version {
+                    return Err("Task-kind manifest disagrees with its pin".into());
+                }
+                Ok(ParsedPackage::TaskKind(kind))
+            }
+            _ => Err(
+                "Task package must have exactly one pipeline.toml, worker.toml or kind.toml".into(),
+            ),
         }
     }
 
@@ -487,8 +514,91 @@ impl TaskPlanCompiler {
     pub fn pipelines(&self) -> &BTreeMap<String, PipelineDefinitionV1> {
         &self.pipelines
     }
+    pub fn task_kind(&self, name: &str) -> Option<&TaskKindManifest> {
+        self.kinds.get(name)
+    }
+    pub fn select_task_kind(&mut self, name: &str) -> Result<(), String> {
+        if !self.kinds.contains_key(name) {
+            return Err("Task-kind package is not captured".into());
+        }
+        self.active_kind = Some(name.into());
+        Ok(())
+    }
+
+    /// A sync validates names and dependency availability without installing or running any
+    /// Worker. Exact Task compilation subsequently proves contracts, authority and resources.
+    pub fn validate_dependency_closure(&self) -> Result<(), String> {
+        for pipeline in self.pipelines.values() {
+            for slot in pipeline.slots.values() {
+                if !self.workers.contains_key(&slot.worker) {
+                    return Err(format!(
+                        "Pipeline {} requires missing Worker {}",
+                        pipeline.name, slot.worker
+                    ));
+                }
+            }
+            for node in &pipeline.nodes {
+                if let TaskOperatorV1::Call {
+                    pipeline: child, ..
+                } = &node.operator
+                    && !self.pipelines.contains_key(child)
+                {
+                    return Err(format!(
+                        "Pipeline {} requires missing child {child}",
+                        pipeline.name
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn worker(&self, name: &str) -> Option<&TaskWorkerManifest> {
         self.workers.get(name)
+    }
+    pub fn worker_contract(
+        &self,
+        cas: &Cas,
+        name: &str,
+        kernel_outputs: &BTreeSet<String>,
+    ) -> Result<review_runner::task::WorkerContract, String> {
+        let worker = self
+            .worker(name)
+            .ok_or("Missing captured Worker manifest")?;
+        let files = self
+            .package_files(name)
+            .ok_or("Missing captured Worker files")?;
+        let schema = |path: &str| -> Result<serde_json::Value, String> {
+            serde_json::from_slice(
+                files
+                    .get(path)
+                    .ok_or_else(|| format!("Worker {name} lacks {path}"))?,
+            )
+            .map_err(|e| e.to_string())
+        };
+        let outputs = worker
+            .signature
+            .contract
+            .outputs
+            .keys()
+            .filter(|port| !kernel_outputs.contains(*port))
+            .map(|port| {
+                Ok((
+                    port.clone(),
+                    schema(&format!("outputs/{port}.schema.json"))?,
+                ))
+            })
+            .collect::<Result<_, String>>()?;
+        let contract = review_runner::task::WorkerContract::capture(
+            cas,
+            schema("input.schema.json")?,
+            outputs,
+        )?;
+        match &worker.runner {
+            TaskWorkerRunner::LegacyTaskCommand { protocol, .. } => {
+                contract.with_legacy_protocol(cas, *protocol)
+            }
+            _ => Ok(contract),
+        }
     }
     pub fn package_files(&self, name: &str) -> Option<&BTreeMap<String, Vec<u8>>> {
         self.packages.get(name).map(|package| &package.bytes.files)
@@ -516,6 +626,13 @@ impl TaskPlanCompiler {
             serde_json::from_value(revision.payload).map_err(|e| e.to_string())?;
         if task.authority.policy_id != self.policy_id {
             return Err("Task does not belong to captured authority".into());
+        }
+        if self
+            .active_kind
+            .as_ref()
+            .is_some_and(|kind| self.kinds[kind].kind != task.kind)
+        {
+            return Err("Task kind differs from its captured kind package".into());
         }
         let graph = compile_task(
             &task,
@@ -550,6 +667,13 @@ impl TaskPlanCompiler {
         if task.authority.policy_id != self.policy_id {
             return Err("Task does not belong to captured project authority".into());
         }
+        if self
+            .active_kind
+            .as_ref()
+            .is_some_and(|kind| self.kinds[kind].kind != task.kind)
+        {
+            return Err("Task kind differs from its captured kind package".into());
+        }
         cas.verify(&self.engine_id).map_err(|e| e.to_string())?;
         cas.verify(&self.policy_id).map_err(|e| e.to_string())?;
         let mut graph = compile_task(
@@ -572,6 +696,7 @@ impl TaskPlanCompiler {
             .map(|call| call.pipeline.clone())
             .collect();
         used.extend(graph.replaced_workers.values().flatten().cloned());
+        used.extend(self.active_kind.iter().cloned());
         for (slot, declaration) in &graph.slots {
             let package = self
                 .packages
