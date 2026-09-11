@@ -1286,6 +1286,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "review-attempt"
 version = "0.8.0"
 dependencies = [
+ "review-core",
  "serde",
  "sha2",
 ]
@@ -1345,6 +1346,8 @@ name = "review-graph"
 version = "0.8.0"
 dependencies = [
  "review-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

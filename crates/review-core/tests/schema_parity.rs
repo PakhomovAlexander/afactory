@@ -32,9 +32,10 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 52] = [
+const SCHEMAS: [&str; 53] = [
     "artifact-envelope-v1.json",
     "task-contracts-v1.json",
+    "task-transition-v1.json",
     "task-revision-v1.json",
     "task-result-v1.json",
     "task-phase-v1.json",
@@ -127,6 +128,10 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
             let root = schema(name);
             let task_schema = root["$id"].as_str().unwrap().starts_with("urn:af:");
             let mut options = jsonschema::options();
+            options.with_resource(
+                "urn:af:schema:task-transition:1".to_owned(),
+                jsonschema::Resource::from_contents(schema("task-transition-v1.json")).unwrap(),
+            );
             for resource in resources {
                 let id = resource["$id"].as_str().unwrap();
                 if id.starts_with("urn:af:") == task_schema {
@@ -1691,3 +1696,62 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
 
 #[path = "schema_parity/task_contracts.rs"]
 mod task_contracts;
+
+#[test]
+fn task_lifecycle_events_have_closed_versioned_payloads() {
+    use review_core::task::TaskWaitingReasonV1;
+    use review_core::task::event::{TaskChangeV1, TaskTransitionV1};
+    let id = format!("sha256:{}", "a".repeat(64));
+    let changes = [
+        TaskChangeV1::Opened {
+            revision_id: id.clone(),
+            lease_until_unix_ms: 200,
+        },
+        TaskChangeV1::LeaseTaken {
+            lease_until_unix_ms: 200,
+        },
+        TaskChangeV1::LeaseRenewed {
+            lease_until_unix_ms: 200,
+        },
+        TaskChangeV1::RevisionRecorded {
+            revision_id: id.clone(),
+        },
+        TaskChangeV1::PlanProposed {
+            plan_id: id.clone(),
+        },
+        TaskChangeV1::PlanDecided {
+            decision_id: id.clone(),
+            valid_until_unix_ms: 200,
+        },
+        TaskChangeV1::ApprovalRevoked {
+            decision_id: id.clone(),
+            reason: "Revoked by developer".into(),
+        },
+        TaskChangeV1::PlanAdmitted {
+            plan_id: id.clone(),
+        },
+        TaskChangeV1::Waiting {
+            reason: TaskWaitingReasonV1::NeedsInput,
+        },
+        TaskChangeV1::Resumed {},
+        TaskChangeV1::Finished { result_id: id },
+    ];
+    for change in changes {
+        let transition = TaskTransitionV1 {
+            writer: "writer-1".into(),
+            epoch: 1,
+            now_unix_ms: 100,
+            change,
+        };
+        transition.validate().unwrap();
+        let mut value = serde_json::to_value(&transition).unwrap();
+        assert_valid("task-transition-v1.json", &value);
+        review_core::event::validate_event_payload(EventType::TaskTransitionV1, &value).unwrap();
+        value["change"]["unrecognized"] = json!(true);
+        assert!(!validator("task-transition-v1.json").is_valid(&value));
+        assert!(
+            review_core::event::validate_event_payload(EventType::TaskTransitionV1, &value)
+                .is_err()
+        );
+    }
+}

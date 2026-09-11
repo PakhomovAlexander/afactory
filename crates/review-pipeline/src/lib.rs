@@ -2243,6 +2243,11 @@ impl<'a> Kernel<'a> {
                     },
                     NodeOutcome::Suppressed { reason } => RunNodeOutcomeV2::Suppressed {
                         reason: match reason {
+                            review_graph::SuppressionReason::BranchNotSelected => {
+                                // Legacy Review plans cannot contain conditional Task nodes.
+                                // Their frozen report vocabulary has no inactive-branch outcome.
+                                RunSuppressionReasonV2::UpstreamMissing
+                            }
                             review_graph::SuppressionReason::GateBlocked => {
                                 RunSuppressionReasonV2::GateBlocked
                             }
@@ -5953,6 +5958,7 @@ impl Dispatch for Kernel<'_> {
             return self.run_generation(node);
         }
         let artifacts = match node.kind {
+            NodeKind::Task => return Err("Task operators require Task plan admission".into()),
             NodeKind::Generation => unreachable!("generation returned above"),
             NodeKind::Gate => {
                 let result = self.run_gate(&node.id);

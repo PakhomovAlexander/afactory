@@ -104,3 +104,5 @@ options you rejected and why — that is the part future-you needs.
   approval](0046-add-versioned-task-contracts-with-exact-plan-approval.md)
 - [0047 — Preserve Task wire identity and review
   completeness](0047-preserve-task-wire-identity-and-review-completeness.md)
+- [0048 — Compile Task ports and fence developer plan
+  decisions](0048-compile-task-ports-and-fence-developer-plan-decisions.md)

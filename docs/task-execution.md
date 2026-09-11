@@ -28,12 +28,23 @@ supplement it. Claude calls use only `claude-personal`.
 - [ ] P10–P12: selection, bounded generation, developer approval, export and starters.
 - [ ] P13/P14: Jira/document demonstrations, compatibility, benchmark and consumer release.
 
-The configured milestone review is one light Round with three required reviewers:
-`correctness=claude-personal` (Fable 5.1/high), `bugs=codex-personal` (GPT-5.6-Sol/high),
-and `performance=codex-personal` (GPT-5.6-Sol/high). Packages and the review Pipeline are
-content-locked using installed release `af 0.8.0`. Required checks are Markdownlint and
-`scripts/verify.sh` (the complete kernel gate). The owner confirmed that the Sol bug role is
-a reviewer, alongside cross-review and performance review.
+The owner authorized the complete plan in [three PRs](task-execution/pr-sequence.md).
+Each PR receives one light Round with Fable 5.1/high on `claude-personal` for correctness
+and architecture, Opus 5/xhigh on `claude-personal` for performance, and GPT-5.6-Sol/high on
+`codex-personal` for bug bounty. These replace the P01 reviewer selection for future PRs.
+Required checks remain Markdownlint and `scripts/verify.sh` (the complete kernel gate).
+Policy `452b752` is content-locked using installed `af 0.8.0`; all three requested models
+passed bounded Provider preflight (11,377 chargeable tokens, no Gates or reviewer Workers).
+
+PR 1 is in progress: protected Task accounting, the pure compiler, package capture and Store
+lifecycle have focused regression coverage. The compiler expands calls, proves branch
+availability and typed selection, and checks coverage against final-output lineage. Exact
+package recompilation rejects edited graphs, closures and Worker bindings. The Store persists
+plans and developer decisions under fenced writer leases, with a guard that rechecks waiting
+and revocation before dispatch. These components are not yet wired into production CLI
+execution. Host authority integration, legacy links and common invocation/settlement remain
+required before PR 1 is ready. See
+[ADR-0048](adr/0048-compile-task-ports-and-fence-developer-plan-decisions.md).
 
 ## P01 contract checkpoint
 
@@ -56,8 +67,8 @@ The [audit and dispositions](task-execution/p01-review.md) include the exact
 corrections to pre-existing test isolation, and all usage. The report's review wall-clock is
 **7m45s** and total chargeable usage is **483,057 tokens**, including **48,969** Provider-admission
 tokens across Gate recovery. The original Subject still has eight open Findings and one open
-Demand; post-review code/test changes are not current-Subject verification receipts. No second
-review Campaign is authorized or planned.
+Demand; post-review code/test changes are not current-Subject verification receipts. No follow-up
+P01 Campaign ran. The newly authorized PRs receive their own reviews of their complete changes.
 
 Final deterministic gate: **667 tests passed, zero failures, 15 existing opt-in probes ignored**
 across 89 suites; formatting, Clippy and synthetic fixture reproduction passed. Markdownlint

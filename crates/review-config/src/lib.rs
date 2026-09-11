@@ -16,6 +16,7 @@
 
 pub mod lock;
 pub mod pipeline_edit;
+pub mod task;
 
 use std::collections::BTreeMap;
 

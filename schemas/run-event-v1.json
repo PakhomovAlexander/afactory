@@ -19,6 +19,7 @@
       "description": "Closed event type and semantic-version vocabulary. New event kinds and payload versions are explicit additive contract changes.",
       "type": "string",
       "enum": [
+        "TaskTransition@1",
         "BrokerOperationCompleted@1",
         "AttemptAdmitted@1",
         "AttemptDispatched@1",
@@ -100,6 +101,10 @@
     }
   },
   "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "TaskTransition@1" } }, "required": ["type"] },
+      "then": { "properties": { "payload": { "$ref": "urn:af:schema:task-transition:1" } } }
+    },
     {
       "if": { "properties": { "type": { "const": "BrokerOperationCompleted@1" } }, "required": ["type"] },
       "then": { "properties": { "payload": { "$ref": "#/$defs/broker_operation_receipt" } } }

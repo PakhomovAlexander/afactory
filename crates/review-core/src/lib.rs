@@ -107,7 +107,8 @@ pub const MAX_PRIOR_FINDINGS_BYTES: usize = 64 * 1024;
 /// Maximum encoded size of one exact Change Set delivered to a reviewer.
 pub const MAX_CHANGE_SET_BYTES: usize = 4 * 1024 * 1024;
 
-pub(crate) fn is_digest(value: &str) -> bool {
+/// Canonical content-address spelling used by captured authority and persisted contracts.
+pub fn is_digest(value: &str) -> bool {
     value.strip_prefix("sha256:").is_some_and(|hex| {
         hex.len() == 64
             && hex

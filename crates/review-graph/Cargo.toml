@@ -9,6 +9,8 @@ license.workspace = true
 
 [dependencies]
 review-core = { path = "../review-core" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.149", features = ["preserve_order"] }
 
 [lints]
 workspace = true

@@ -1,0 +1,1110 @@
+//! Task lifecycle in the common event log. The public JSON contracts are data; the Rust
+//! authority interface is implemented only by the trusted host, outside every Worker sandbox.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use review_core::task::event::{TaskChangeV1, TaskTransitionV1};
+use review_core::task::plan::{
+    ExecutionPlanV1, GeneratedOriginV1, PlanDecisionKindV1, PlanDecisionV1,
+};
+use review_core::task::{
+    self, TaskAcceptanceV1, TaskPhaseV1, TaskResultV1, TaskRevisionV1, TaskWaitingReasonV1,
+};
+use review_core::{ArtifactEnvelope, EventType, RunEvent};
+use serde::de::DeserializeOwned;
+use serde_json::json;
+
+use super::{EventStore, NewEvent, StoreError};
+use crate::{Cas, content_id, validate_envelope};
+
+#[cfg(test)]
+mod tests;
+
+fn conflict(message: impl Into<String>) -> StoreError {
+    StoreError::Conflict(message.into())
+}
+fn now() -> Result<u64, StoreError> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|n| u64::try_from(n.as_millis()).ok())
+        .ok_or_else(|| conflict("Host clock is unavailable"))
+}
+
+pub fn task_run_id(task_id: &str) -> Result<String, StoreError> {
+    if !task::is_name(task_id) {
+        return Err(conflict("Invalid Task ID"));
+    }
+    content_id(&json!({"namespace":"af/task-log/1", "task_id":task_id}))
+        .map(|id| format!("task:{id}"))
+        .map_err(|e| conflict(e.to_string()))
+}
+
+/// A capability returned only after a successful lease transaction. It cannot be deserialized
+/// from Worker output. The Store still checks its owner and epoch on every mutation.
+#[derive(Debug, Clone)]
+pub struct TaskLease {
+    task_id: String,
+    writer: String,
+    epoch: u64,
+}
+
+impl TaskLease {
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+    pub fn epoch(&self) -> u64 {
+        self.epoch
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct DeveloperGrant {
+    pub developer: String,
+    pub authorization_id: String,
+    pub valid_until_unix_ms: u64,
+}
+
+/// Trusted application boundary, never constructed from a Task, Pipeline, or Worker result.
+/// The implementation authenticates the developer through the host and resolves exact captured
+/// package authority. Possession of actor strings or serialized PlanDecision does not implement
+/// this interface. Every execution adapter must use this same boundary on resume and dispatch.
+pub trait TaskAuthority {
+    /// Validate the compiled graph, bindings and exact dependency closure, returning the
+    /// generated origins derived from trusted package provenance, including nested Pipelines.
+    fn validate_plan(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+    ) -> Result<Vec<GeneratedOriginV1>, String>;
+    fn authorize_decision(
+        &self,
+        task: &TaskRevisionV1,
+        plan_id: &str,
+        decision: PlanDecisionKindV1,
+    ) -> Result<DeveloperGrant, String>;
+    fn authorization_current(&self, decision: &PlanDecisionV1) -> Result<(), String>;
+    /// Recompute acceptance from exact durable output/verification receipts, not result prose.
+    fn validate_result(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        result: &TaskResultV1,
+    ) -> Result<(), String>;
+}
+
+#[derive(Debug, Clone)]
+struct Decision {
+    artifact_id: String,
+    value: PlanDecisionV1,
+    valid_until: u64,
+    revoked: bool,
+    event: RunEvent,
+}
+
+#[derive(Debug, Clone)]
+pub struct TaskProjection {
+    pub task_id: String,
+    pub revision_id: String,
+    pub revision: TaskRevisionV1,
+    pub plan_id: Option<String>,
+    pub phase: TaskPhaseV1,
+    pub admitted: bool,
+    pub next_sequence: u64,
+    writer: String,
+    epoch: u64,
+    lease_until: u64,
+    last_time: u64,
+    resume_phase: Option<TaskPhaseV1>,
+    decisions: BTreeMap<String, Decision>,
+}
+
+/// Created after replay/transition validation; the shared transaction then compares sequence
+/// before append. A racing lease takeover or another writer invalidates the complete batch.
+pub(super) struct WritePermit {
+    run_id: String,
+    first: u64,
+    payloads: Vec<serde_json::Value>,
+}
+
+impl WritePermit {
+    pub(super) fn validate(
+        &self,
+        run_id: &str,
+        first: i64,
+        events: &[NewEvent],
+    ) -> Result<(), StoreError> {
+        if self.run_id != run_id
+            || u64::try_from(first).ok() != Some(self.first)
+            || events.len() != self.payloads.len()
+            || events
+                .iter()
+                .zip(&self.payloads)
+                .any(|(e, p)| e.event_type != EventType::TaskTransitionV1 || &e.payload != p)
+        {
+            return Err(conflict("Task write lost its sequence/lease comparison"));
+        }
+        Ok(())
+    }
+}
+
+fn envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope, StoreError> {
+    let value = cas
+        .get_json(id)
+        .map_err(|e| StoreError::Artifact(e.to_string()))?;
+    let envelope: ArtifactEnvelope = serde_json::from_value(value)?;
+    validate_envelope(&envelope).map_err(conflict)?;
+    if envelope.artifact_id != id || envelope.artifact_type != expected {
+        return Err(conflict(format!("Expected exact {expected} artifact {id}")));
+    }
+    Ok(envelope)
+}
+
+fn payload<T: DeserializeOwned>(cas: &Cas, id: &str, expected: &str) -> Result<T, StoreError> {
+    Ok(serde_json::from_value(
+        envelope(cas, id, expected)?.payload,
+    )?)
+}
+
+fn revision(cas: &Cas, id: &str) -> Result<TaskRevisionV1, StoreError> {
+    let revision: TaskRevisionV1 = payload(cas, id, task::TASK_REVISION_V1)?;
+    revision.validate().map_err(conflict)?;
+    Ok(revision)
+}
+
+fn plan(cas: &Cas, id: &str, state: &TaskProjection) -> Result<ExecutionPlanV1, StoreError> {
+    let plan: ExecutionPlanV1 = payload(cas, id, task::EXECUTION_PLAN_V1)?;
+    plan.validate().map_err(conflict)?;
+    if plan.task_revision_id != state.revision_id
+        || plan.authority != state.revision.authority
+        || plan.limits != state.revision.limits
+        || plan.inputs != state.revision.inputs
+        || !plan.acceptance.keys().eq(state.revision.acceptance.keys())
+    {
+        return Err(conflict(
+            "Plan does not bind the exact Task revision, inputs, authority and limits",
+        ));
+    }
+    Ok(plan)
+}
+
+fn validate_input_refs(
+    cas: &Cas,
+    input: &task::ArtifactInputV1,
+    refs: &mut BTreeSet<String>,
+) -> Result<(), StoreError> {
+    input.validate().map_err(conflict)?;
+    for id in &input.artifact_ids {
+        let value = envelope(cas, id, &input.artifact_type)?;
+        if value.subject_snapshot_id != input.snapshot_id {
+            return Err(conflict(
+                "Task port Snapshot identity contradicts its artifact envelope",
+            ));
+        }
+        refs.insert(id.clone());
+        refs.extend(value.input_artifacts);
+    }
+    refs.extend(input.snapshot_id.iter().cloned());
+    Ok(())
+}
+
+fn references(
+    cas: &Cas,
+    change: &TaskChangeV1,
+    state: Option<&TaskProjection>,
+) -> Result<Vec<String>, StoreError> {
+    let mut refs = BTreeSet::new();
+    match change {
+        TaskChangeV1::Opened { revision_id, .. }
+        | TaskChangeV1::RevisionRecorded { revision_id } => {
+            let value = revision(cas, revision_id)?;
+            refs.insert(revision_id.clone());
+            refs.insert(value.authority.policy_id);
+            refs.insert(value.provenance.adapter_id);
+            refs.extend(value.provenance.input_artifact_ids);
+            refs.extend(value.previous_revision_id);
+            refs.extend(value.acceptance.values().map(|o| o.verifier_policy.clone()));
+            for input in value.inputs.values() {
+                validate_input_refs(cas, input, &mut refs)?;
+            }
+        }
+        TaskChangeV1::PlanProposed { plan_id } | TaskChangeV1::PlanAdmitted { plan_id } => {
+            let value = plan(
+                cas,
+                plan_id,
+                state.ok_or_else(|| conflict("Plan precedes Task"))?,
+            )?;
+            refs.extend([
+                plan_id.clone(),
+                value.task_revision_id,
+                value.engine_id,
+                value.pipeline_id,
+                value.compiled_graph_id,
+                value.authority.policy_id,
+            ]);
+            for dep in value.dependencies.values() {
+                let raw = cas
+                    .get_json(&dep.artifact_id)
+                    .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                let dep_envelope: ArtifactEnvelope = serde_json::from_value(raw)?;
+                validate_envelope(&dep_envelope).map_err(conflict)?;
+                if dep_envelope.artifact_id != dep.artifact_id
+                    || dep_envelope.content_id != dep.content_digest
+                {
+                    return Err(conflict("Plan dependency content disagrees with its lock"));
+                }
+                refs.insert(dep.artifact_id.clone());
+                refs.extend(dep_envelope.input_artifacts);
+            }
+            for binding in value.bindings.values() {
+                refs.extend([
+                    binding.package_artifact_id.clone(),
+                    binding.invocation_policy_id.clone(),
+                ]);
+            }
+            for origin in value.generated_origins {
+                refs.extend([
+                    origin.pipeline_id,
+                    origin.proposal_id,
+                    origin.bootstrap_plan_id,
+                ]);
+            }
+            for input in value.inputs.values() {
+                validate_input_refs(cas, input, &mut refs)?;
+            }
+        }
+        TaskChangeV1::PlanDecided { decision_id, .. }
+        | TaskChangeV1::ApprovalRevoked { decision_id, .. } => {
+            let value: PlanDecisionV1 = payload(cas, decision_id, task::PLAN_DECISION_V1)?;
+            value.validate().map_err(conflict)?;
+            refs.extend([
+                decision_id.clone(),
+                value.task_revision_id,
+                value.plan_id,
+                value.policy_id,
+                value.authorization_id,
+            ]);
+        }
+        TaskChangeV1::Finished { result_id } => {
+            let result: TaskResultV1 = payload(cas, result_id, task::TASK_RESULT_V1)?;
+            result.validate().map_err(conflict)?;
+            refs.extend([result_id.clone(), result.task_revision_id]);
+            refs.extend(result.evidence);
+            for output in result.outputs.values() {
+                validate_input_refs(cas, output, &mut refs)?;
+            }
+        }
+        _ => (),
+    }
+    Ok(refs.into_iter().collect())
+}
+
+impl TaskProjection {
+    fn check_lease(&self, transition: &TaskTransitionV1) -> Result<(), StoreError> {
+        if transition.writer != self.writer
+            || transition.epoch != self.epoch
+            || transition.now_unix_ms >= self.lease_until
+            || transition.now_unix_ms < self.last_time
+        {
+            return Err(conflict("Task writer lease is expired or fenced"));
+        }
+        Ok(())
+    }
+
+    fn apply(
+        &mut self,
+        cas: &Cas,
+        event: &RunEvent,
+        transition: &TaskTransitionV1,
+    ) -> Result<(), StoreError> {
+        if event.sequence != self.next_sequence {
+            return Err(conflict("Task event sequence has a gap or duplicate"));
+        }
+        if transition.now_unix_ms < self.last_time
+            || matches!(self.phase, TaskPhaseV1::Finished { .. })
+        {
+            return Err(conflict(
+                "Task is finished or its policy clock moved backwards",
+            ));
+        }
+        if let TaskChangeV1::LeaseTaken {
+            lease_until_unix_ms,
+        } = transition.change
+        {
+            if transition.now_unix_ms < self.lease_until
+                || self.epoch.checked_add(1) != Some(transition.epoch)
+            {
+                return Err(conflict(
+                    "Task lease takeover is premature or has a stale epoch",
+                ));
+            }
+            self.writer = transition.writer.clone();
+            self.epoch = transition.epoch;
+            self.lease_until = lease_until_unix_ms;
+        } else {
+            self.check_lease(transition)?;
+            match &transition.change {
+                TaskChangeV1::Opened { .. } | TaskChangeV1::LeaseTaken { .. } => {
+                    return Err(conflict("Task already exists"));
+                }
+                TaskChangeV1::LeaseRenewed {
+                    lease_until_unix_ms,
+                } => {
+                    if *lease_until_unix_ms <= self.lease_until {
+                        return Err(conflict("Task lease renewal must advance expiry"));
+                    }
+                    self.lease_until = *lease_until_unix_ms;
+                }
+                TaskChangeV1::RevisionRecorded { revision_id } => {
+                    if self.admitted {
+                        return Err(conflict(
+                            "An executing Task needs a recorded replan barrier",
+                        ));
+                    }
+                    let next = revision(cas, revision_id)?;
+                    if next.task_id != self.task_id
+                        || next.previous_revision_id.as_ref() != Some(&self.revision_id)
+                        || self.revision.revision.checked_add(1) != Some(next.revision)
+                        || next.limits.tokens > self.revision.limits.tokens
+                        || next.limits.max_attempts > self.revision.limits.max_attempts
+                        || next.limits.deadline_unix_ms > self.revision.limits.deadline_unix_ms
+                    {
+                        return Err(conflict(
+                            "Task revision must retain its predecessor and remaining resource bounds",
+                        ));
+                    }
+                    self.revision_id = revision_id.clone();
+                    self.revision = next;
+                    self.plan_id = None;
+                    self.phase = TaskPhaseV1::Submitted {};
+                    self.resume_phase = None;
+                }
+                TaskChangeV1::PlanProposed { plan_id } => {
+                    if self.admitted {
+                        return Err(conflict("Cannot replace an executing Task plan"));
+                    }
+                    let plan = plan(cas, plan_id, self)?;
+                    self.phase = if plan.requires_developer_approval() {
+                        TaskPhaseV1::Waiting {
+                            reason: TaskWaitingReasonV1::NeedsPlanReview,
+                        }
+                    } else {
+                        TaskPhaseV1::Ready {}
+                    };
+                    self.plan_id = Some(plan_id.clone());
+                    self.resume_phase = None;
+                }
+                TaskChangeV1::PlanDecided {
+                    decision_id,
+                    valid_until_unix_ms,
+                } => {
+                    let decision: PlanDecisionV1 =
+                        payload(cas, decision_id, task::PLAN_DECISION_V1)?;
+                    decision.validate().map_err(conflict)?;
+                    if self.admitted
+                        || self.plan_id.as_ref() != Some(&decision.plan_id)
+                        || decision.task_revision_id != self.revision_id
+                        || decision.policy_id != self.revision.authority.policy_id
+                        || self.decisions.contains_key(&decision.plan_id)
+                    {
+                        return Err(conflict(
+                            "Developer decision is stale, duplicated or mismatched",
+                        ));
+                    }
+                    self.decisions.insert(
+                        decision.plan_id.clone(),
+                        Decision {
+                            artifact_id: decision_id.clone(),
+                            value: decision,
+                            valid_until: *valid_until_unix_ms,
+                            revoked: false,
+                            event: event.clone(),
+                        },
+                    );
+                }
+                TaskChangeV1::ApprovalRevoked { decision_id, .. } => {
+                    let decision = self
+                        .decisions
+                        .values_mut()
+                        .find(|d| &d.artifact_id == decision_id)
+                        .ok_or_else(|| conflict("Unknown Task approval"))?;
+                    decision.revoked = true;
+                    if self.plan_id.as_ref() == Some(&decision.value.plan_id) {
+                        self.admitted = false;
+                        self.phase = TaskPhaseV1::Waiting {
+                            reason: TaskWaitingReasonV1::NeedsPlanReview,
+                        };
+                        self.resume_phase = None;
+                    }
+                }
+                TaskChangeV1::PlanAdmitted { plan_id } => {
+                    if !matches!(
+                        self.phase,
+                        TaskPhaseV1::Ready {}
+                            | TaskPhaseV1::Waiting {
+                                reason: TaskWaitingReasonV1::NeedsPlanReview
+                            }
+                    ) {
+                        return Err(conflict(
+                            "Task plan admission cannot bypass another pause or restart running work",
+                        ));
+                    }
+                    if self.plan_id.as_ref() != Some(plan_id) {
+                        return Err(conflict("Task plan admission is stale"));
+                    }
+                    self.check_approval(cas, transition.now_unix_ms)?;
+                    self.admitted = true;
+                    self.phase = TaskPhaseV1::Running {};
+                    self.resume_phase = None;
+                }
+                TaskChangeV1::Waiting { reason } => {
+                    if self.resume_phase.is_some() {
+                        return Err(conflict("Task is already waiting"));
+                    }
+                    if *reason == TaskWaitingReasonV1::NeedsPlanReview {
+                        return Err(conflict(
+                            "Plan waiting is derived from a persisted proposal",
+                        ));
+                    }
+                    self.resume_phase = Some(self.phase.clone());
+                    self.phase = TaskPhaseV1::Waiting { reason: *reason };
+                }
+                TaskChangeV1::Resumed {} => {
+                    let prior = self
+                        .resume_phase
+                        .take()
+                        .ok_or_else(|| conflict("Task has no resumable pause"))?;
+                    if self.admitted {
+                        self.check_approval(cas, transition.now_unix_ms)?;
+                    }
+                    self.phase = prior;
+                }
+                TaskChangeV1::Finished { result_id } => {
+                    let result: TaskResultV1 = payload(cas, result_id, task::TASK_RESULT_V1)?;
+                    result.validate().map_err(conflict)?;
+                    if result.task_revision_id != self.revision_id {
+                        return Err(conflict("Task result is stale"));
+                    }
+                    if result.acceptance == TaskAcceptanceV1::Satisfied {
+                        if !self.admitted {
+                            return Err(conflict("Unadmitted Task cannot satisfy acceptance"));
+                        }
+                        for (name, required) in &self.revision.required_outputs {
+                            let output = result.outputs.get(name).ok_or_else(|| {
+                                conflict(format!("Task result is missing {name}"))
+                            })?;
+                            if output.artifact_type != required.artifact_type
+                                || output.cardinality != required.cardinality
+                                || output.artifact_ids.is_empty()
+                            {
+                                return Err(conflict(format!(
+                                    "Task result has incompatible output {name}"
+                                )));
+                            }
+                        }
+                    }
+                    self.phase = TaskPhaseV1::Finished {
+                        result_id: result_id.clone(),
+                    };
+                }
+            }
+        }
+        self.last_time = transition.now_unix_ms;
+        self.next_sequence = event.sequence + 1;
+        Ok(())
+    }
+
+    fn check_approval(&self, cas: &Cas, time: u64) -> Result<(), StoreError> {
+        let id = self
+            .plan_id
+            .as_ref()
+            .ok_or_else(|| conflict("Task has no plan"))?;
+        let plan = plan(cas, id, self)?;
+        if time >= plan.limits.deadline_unix_ms {
+            return Err(conflict("Task plan deadline expired"));
+        }
+        if let Some(decision) = self.decisions.get(id) {
+            if decision.revoked
+                || time >= decision.valid_until
+                || !decision.value.approves(id, &plan)
+            {
+                return Err(conflict(
+                    "Task plan approval is rejected, revoked, expired or stale",
+                ));
+            }
+        } else if plan.requires_developer_approval() {
+            return Err(conflict("Generated Task plan needs developer review"));
+        }
+        Ok(())
+    }
+}
+
+impl EventStore {
+    pub fn task_projection(
+        &self,
+        cas: &Cas,
+        task_id: &str,
+    ) -> Result<Option<TaskProjection>, StoreError> {
+        let mut state = self
+            .task_cache
+            .borrow()
+            .as_ref()
+            .filter(|state| state.task_id == task_id)
+            .cloned();
+        // Cached prefix is only a parse memo. Revalidate current revision/plan bytes on every
+        // access; a removed or corrupted active artifact must never inherit cached authority.
+        if let Some(state) = &state {
+            let mut active_refs: BTreeSet<String> = references(
+                cas,
+                &TaskChangeV1::RevisionRecorded {
+                    revision_id: state.revision_id.clone(),
+                },
+                Some(state),
+            )?
+            .into_iter()
+            .collect();
+            if revision(cas, &state.revision_id)? != state.revision {
+                return Err(conflict("Cached Task revision changed identity"));
+            }
+            if let Some(id) = &state.plan_id {
+                plan(cas, id, state)?;
+                active_refs.extend(references(
+                    cas,
+                    &TaskChangeV1::PlanProposed {
+                        plan_id: id.clone(),
+                    },
+                    Some(state),
+                )?);
+                if let Some(decision) = state.decisions.get(id) {
+                    let current: PlanDecisionV1 =
+                        payload(cas, &decision.artifact_id, task::PLAN_DECISION_V1)?;
+                    if current != decision.value {
+                        return Err(conflict("Cached approval changed identity"));
+                    }
+                    active_refs.extend(references(
+                        cas,
+                        &TaskChangeV1::PlanDecided {
+                            decision_id: decision.artifact_id.clone(),
+                            valid_until_unix_ms: decision.valid_until,
+                        },
+                        Some(state),
+                    )?);
+                }
+            }
+            if let TaskPhaseV1::Finished { result_id } = &state.phase {
+                active_refs.extend(references(
+                    cas,
+                    &TaskChangeV1::Finished {
+                        result_id: result_id.clone(),
+                    },
+                    Some(state),
+                )?);
+            }
+            for id in active_refs {
+                cas.verify(&id)
+                    .map_err(|e| StoreError::Artifact(e.to_string()))?;
+            }
+        }
+        let first = state.as_ref().map_or(0, |state| state.next_sequence);
+        let mut verified = BTreeSet::new();
+        for event in self.replay_from(&task_run_id(task_id)?, first)? {
+            if event.event_type != EventType::TaskTransitionV1 {
+                return Err(conflict("Task log contains a foreign event"));
+            }
+            let transition: TaskTransitionV1 = serde_json::from_value(event.payload.clone())?;
+            transition.validate().map_err(conflict)?;
+            let expected = references(cas, &transition.change, state.as_ref())?;
+            if expected != event.artifact_refs {
+                return Err(conflict(
+                    "Task event references disagree with its typed payload",
+                ));
+            }
+            for id in &expected {
+                if verified.insert(id.clone()) {
+                    cas.verify(id)
+                        .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                }
+            }
+            if let Some(state) = &mut state {
+                state.apply(cas, &event, &transition)?;
+            } else if let TaskChangeV1::Opened {
+                revision_id,
+                lease_until_unix_ms,
+            } = &transition.change
+            {
+                let revision = revision(cas, revision_id)?;
+                if revision.task_id != task_id
+                    || revision.revision != 1
+                    || event.sequence != 0
+                    || transition.epoch != 1
+                {
+                    return Err(conflict("Invalid Task genesis"));
+                }
+                state = Some(TaskProjection {
+                    task_id: task_id.into(),
+                    revision_id: revision_id.clone(),
+                    revision,
+                    plan_id: None,
+                    phase: TaskPhaseV1::Submitted {},
+                    admitted: false,
+                    next_sequence: 1,
+                    writer: transition.writer,
+                    epoch: 1,
+                    lease_until: *lease_until_unix_ms,
+                    last_time: transition.now_unix_ms,
+                    resume_phase: None,
+                    decisions: BTreeMap::new(),
+                });
+            } else {
+                return Err(conflict("Task transition precedes genesis"));
+            }
+        }
+        *self.task_cache.borrow_mut() = state.clone();
+        Ok(state)
+    }
+
+    fn append_task_transition(
+        &mut self,
+        cas: &Cas,
+        task_id: &str,
+        transition: TaskTransitionV1,
+    ) -> Result<RunEvent, StoreError> {
+        transition.validate().map_err(conflict)?;
+        let state = self.task_projection(cas, task_id)?;
+        let first = state.as_ref().map_or(0, |s| s.next_sequence);
+        let refs = references(cas, &transition.change, state.as_ref())?;
+        let value = serde_json::to_value(&transition)?;
+        let run_id = task_run_id(task_id)?;
+        let event = NewEvent::new(EventType::TaskTransitionV1, value.clone()).referencing(refs);
+        if let Some(mut state) = state {
+            state.apply(
+                cas,
+                &RunEvent {
+                    run_id: run_id.clone(),
+                    event_id: super::derive_event_id(&run_id, first as i64),
+                    sequence: first,
+                    event_type: event.event_type,
+                    occurred_at: event.occurred_at.clone(),
+                    node_id: None,
+                    attempt_id: None,
+                    causation_id: None,
+                    correlation_id: None,
+                    artifact_refs: event.artifact_refs.clone(),
+                    payload: value.clone(),
+                },
+                &transition,
+            )?;
+        } else {
+            let TaskChangeV1::Opened { revision_id, .. } = &transition.change else {
+                return Err(conflict("Task has not been opened"));
+            };
+            let initial = revision(cas, revision_id)?;
+            if initial.task_id != task_id || initial.revision != 1 || transition.epoch != 1 {
+                return Err(conflict("Invalid Task genesis"));
+            }
+        }
+        let permit = WritePermit {
+            run_id: run_id.clone(),
+            first,
+            payloads: vec![value],
+        };
+        self.append_batch_inner(&run_id, cas, &[event], Some(&permit))?
+            .pop()
+            .ok_or_else(|| conflict("Task transition appended no event"))
+    }
+
+    pub fn open_task(
+        &mut self,
+        cas: &Cas,
+        revision_id: &str,
+        writer: &str,
+        lease_ms: u64,
+    ) -> Result<TaskLease, StoreError> {
+        let revision = revision(cas, revision_id)?;
+        let time = now()?;
+        let until = time
+            .checked_add(lease_ms)
+            .ok_or_else(|| conflict("Task lease overflow"))?;
+        self.append_task_transition(
+            cas,
+            &revision.task_id,
+            TaskTransitionV1 {
+                writer: writer.into(),
+                epoch: 1,
+                now_unix_ms: time,
+                change: TaskChangeV1::Opened {
+                    revision_id: revision_id.into(),
+                    lease_until_unix_ms: until,
+                },
+            },
+        )?;
+        Ok(TaskLease {
+            task_id: revision.task_id,
+            writer: writer.into(),
+            epoch: 1,
+        })
+    }
+
+    pub fn take_task_lease(
+        &mut self,
+        cas: &Cas,
+        task_id: &str,
+        writer: &str,
+        lease_ms: u64,
+    ) -> Result<TaskLease, StoreError> {
+        let state = self
+            .task_projection(cas, task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        let epoch = state
+            .epoch
+            .checked_add(1)
+            .ok_or_else(|| conflict("Task epoch overflow"))?;
+        let time = now()?;
+        self.append_task_transition(
+            cas,
+            task_id,
+            TaskTransitionV1 {
+                writer: writer.into(),
+                epoch,
+                now_unix_ms: time,
+                change: TaskChangeV1::LeaseTaken {
+                    lease_until_unix_ms: time
+                        .checked_add(lease_ms)
+                        .ok_or_else(|| conflict("Task lease overflow"))?,
+                },
+            },
+        )?;
+        Ok(TaskLease {
+            task_id: task_id.into(),
+            writer: writer.into(),
+            epoch,
+        })
+    }
+
+    pub fn renew_task_lease(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        lease_ms: u64,
+    ) -> Result<RunEvent, StoreError> {
+        let time = now()?;
+        self.task_change(
+            cas,
+            lease,
+            TaskChangeV1::LeaseRenewed {
+                lease_until_unix_ms: time
+                    .checked_add(lease_ms)
+                    .ok_or_else(|| conflict("Task lease overflow"))?,
+            },
+            time,
+        )
+    }
+
+    fn task_change(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        change: TaskChangeV1,
+        time: u64,
+    ) -> Result<RunEvent, StoreError> {
+        self.append_task_transition(
+            cas,
+            &lease.task_id,
+            TaskTransitionV1 {
+                writer: lease.writer.clone(),
+                epoch: lease.epoch,
+                now_unix_ms: time,
+                change,
+            },
+        )
+    }
+
+    fn authorized_plan(
+        &self,
+        cas: &Cas,
+        state: &TaskProjection,
+        id: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<ExecutionPlanV1, StoreError> {
+        let value = plan(cas, id, state)?;
+        let expected = authority
+            .validate_plan(cas, &state.revision, &value)
+            .map_err(conflict)?;
+        if expected != value.generated_origins {
+            return Err(conflict(
+                "Plan omitted or changed generated dependency provenance",
+            ));
+        }
+        Ok(value)
+    }
+
+    pub fn propose_task_plan(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        plan_id: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<RunEvent, StoreError> {
+        let state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        self.authorized_plan(cas, &state, plan_id, authority)?;
+        self.task_change(
+            cas,
+            lease,
+            TaskChangeV1::PlanProposed {
+                plan_id: plan_id.into(),
+            },
+            now()?,
+        )
+    }
+
+    pub fn decide_task_plan(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        plan_id: &str,
+        decision: PlanDecisionKindV1,
+        reason: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<RunEvent, StoreError> {
+        let state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        self.authorized_plan(cas, &state, plan_id, authority)?;
+        if state.plan_id.as_deref() != Some(plan_id) {
+            return Err(conflict("Developer decision names a stale proposal"));
+        }
+        let grant = authority
+            .authorize_decision(&state.revision, plan_id, decision)
+            .map_err(conflict)?;
+        let time = now()?;
+        let value = PlanDecisionV1 {
+            task_revision_id: state.revision_id.clone(),
+            plan_id: plan_id.into(),
+            policy_id: state.revision.authority.policy_id.clone(),
+            developer: grant.developer,
+            authorization_id: grant.authorization_id,
+            decision,
+            reason: reason.into(),
+        };
+        value.validate().map_err(conflict)?;
+        authority.authorization_current(&value).map_err(conflict)?;
+        if let Some(old) = state.decisions.get(plan_id) {
+            state.check_lease(&TaskTransitionV1 {
+                writer: lease.writer.clone(),
+                epoch: lease.epoch,
+                now_unix_ms: time,
+                change: TaskChangeV1::Resumed {},
+            })?;
+            if old.value == value && !old.revoked && time < old.valid_until {
+                return Ok(old.event.clone());
+            }
+            return Err(conflict(
+                "Plan already has a different or expired developer decision",
+            ));
+        }
+        let (decision_id, _) = cas
+            .put_artifact(
+                task::PLAN_DECISION_V1,
+                review_core::Producer::KernelOperation {
+                    run_id: task_run_id(&state.task_id)?,
+                    node_id: None,
+                    operation_id: "task-plan-decision@1".into(),
+                },
+                vec![
+                    value.task_revision_id.clone(),
+                    value.plan_id.clone(),
+                    value.policy_id.clone(),
+                    value.authorization_id.clone(),
+                ],
+                None,
+                serde_json::to_value(value)?,
+            )
+            .map_err(|e| StoreError::Artifact(e.to_string()))?;
+        self.task_change(
+            cas,
+            lease,
+            TaskChangeV1::PlanDecided {
+                decision_id,
+                valid_until_unix_ms: grant.valid_until_unix_ms,
+            },
+            time,
+        )
+    }
+
+    pub fn admit_task_plan(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        authority: &dyn TaskAuthority,
+    ) -> Result<RunEvent, StoreError> {
+        let state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        let id = state
+            .plan_id
+            .as_ref()
+            .ok_or_else(|| conflict("Task has no proposal"))?;
+        self.authorized_plan(cas, &state, id, authority)?;
+        state.check_approval(cas, now()?)?;
+        if let Some(decision) = state.decisions.get(id) {
+            authority
+                .authorization_current(&decision.value)
+                .map_err(conflict)?;
+        }
+        self.task_change(
+            cas,
+            lease,
+            TaskChangeV1::PlanAdmitted {
+                plan_id: id.clone(),
+            },
+            now()?,
+        )
+    }
+
+    pub fn finish_task(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        result_id: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<RunEvent, StoreError> {
+        let state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        let result = payload(cas, result_id, task::TASK_RESULT_V1)?;
+        authority
+            .validate_result(cas, &state.revision, &result)
+            .map_err(conflict)?;
+        self.task_change(
+            cas,
+            lease,
+            TaskChangeV1::Finished {
+                result_id: result_id.into(),
+            },
+            now()?,
+        )
+    }
+
+    pub fn revise_task(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        revision_id: &str,
+    ) -> Result<RunEvent, StoreError> {
+        self.task_change(
+            cas,
+            lease,
+            TaskChangeV1::RevisionRecorded {
+                revision_id: revision_id.into(),
+            },
+            now()?,
+        )
+    }
+
+    pub fn wait_task(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        reason: TaskWaitingReasonV1,
+    ) -> Result<RunEvent, StoreError> {
+        self.task_change(cas, lease, TaskChangeV1::Waiting { reason }, now()?)
+    }
+
+    pub fn resume_task(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        authority: &dyn TaskAuthority,
+    ) -> Result<RunEvent, StoreError> {
+        let state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        if state.admitted {
+            self.current_task_plan(cas, &state, authority, now()?)?;
+        }
+        self.task_change(cas, lease, TaskChangeV1::Resumed {}, now()?)
+    }
+
+    pub fn revoke_task_approval(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        plan_id: &str,
+        reason: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<RunEvent, StoreError> {
+        let state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        let decision = state
+            .decisions
+            .get(plan_id)
+            .ok_or_else(|| conflict("Unknown Task approval"))?;
+        // The host authenticates revocation too. Knowing a recorded decision ID is not authority.
+        let grant = authority
+            .authorize_decision(&state.revision, plan_id, PlanDecisionKindV1::Rejected)
+            .map_err(conflict)?;
+        if now()? >= grant.valid_until_unix_ms {
+            return Err(conflict("Developer revocation authorization has expired"));
+        }
+        self.task_change(
+            cas,
+            lease,
+            TaskChangeV1::ApprovalRevoked {
+                decision_id: decision.artifact_id.clone(),
+                reason: reason.into(),
+            },
+            now()?,
+        )
+    }
+
+    fn current_task_plan(
+        &self,
+        cas: &Cas,
+        state: &TaskProjection,
+        authority: &dyn TaskAuthority,
+        time: u64,
+    ) -> Result<ExecutionPlanV1, StoreError> {
+        let id = state
+            .plan_id
+            .as_ref()
+            .ok_or_else(|| conflict("Task has no proposal"))?;
+        let plan = self.authorized_plan(cas, state, id, authority)?;
+        state.check_approval(cas, time)?;
+        if let Some(decision) = state.decisions.get(id) {
+            authority
+                .authorization_current(&decision.value)
+                .map_err(conflict)?;
+        }
+        Ok(plan)
+    }
+
+    /// Shared admission guard for Provider preparation and every initial/retry dispatch.
+    /// A runtime must perform this under the same owner lock as its durable Attempt append;
+    /// merely possessing a previously returned plan does not grant future dispatch authority.
+    pub fn check_task_dispatch(
+        &self,
+        cas: &Cas,
+        lease: &TaskLease,
+        authority: &dyn TaskAuthority,
+    ) -> Result<ExecutionPlanV1, StoreError> {
+        let state = self
+            .task_projection(cas, &lease.task_id)?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        let time = now()?;
+        state.check_lease(&TaskTransitionV1 {
+            writer: lease.writer.clone(),
+            epoch: lease.epoch,
+            now_unix_ms: time,
+            change: TaskChangeV1::Resumed {},
+        })?;
+        if !state.admitted || state.phase != (TaskPhaseV1::Running {}) {
+            return Err(conflict("Task is not admitted and running"));
+        }
+        self.current_task_plan(cas, &state, authority, time)
+    }
+}
