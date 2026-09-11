@@ -5,6 +5,8 @@ version = "0.8.0"
 
 [af.digests]
 aarch64-apple-darwin = "sha256:31ceb11cab76d180ede3da22384249f83bb026167a7f8267dcf1d012e15e55c2"
+aarch64-unknown-linux-musl = "sha256:8de2ead6650e4048107529ec63e89dbcedac025c658c35850976cc30bfb8a465"
+x86_64-unknown-linux-musl = "sha256:befe9900ca6e717dbc1510da3b09f9b9bc8e973e351013723846895644ac2f37"
 
 [reviewers]
 
@@ -34,4 +36,4 @@ digest = "sha256:93e750b071481afd9094a82ea86211143fe556b1aea44b7a227f46b9e25f245
 
 [pipelines.review]
 version = "1.0.0"
-digest = "sha256:28878329594b32c778425a162f01f2669a666503dc2930e1c517a454f33cc3b1"
+digest = "sha256:ef59d6f33eb41909d647540847f4663f2638004fb10170ca1a9f91c7041d7a5f"

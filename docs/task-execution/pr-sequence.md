@@ -29,3 +29,8 @@ Baseline: `b8b8963`, the latest observed kernel main. Its change since the recor
 baseline is documentation only. P01 fixes remain in `c286e18` and retain their test evidence.
 Default integration fixtures use command Workers. The live pilot requires its own bounded
 budget before inference; deterministic fixtures do not substantiate a live-model product claim.
+
+PR 1 preflight at `fbcffa3` measured 310,029–310,166 input tokens per specialist for the complete
+diff. Its review policy therefore reserves 400,000 tokens per Attempt and 1,400,000 for the
+Campaign, including admission and bounded failure overhead. This is one light Round; the input
+measurement does not claim that any model inference has already run.

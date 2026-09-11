@@ -122,8 +122,8 @@ to = { node = "ledger", port = "reports" }
 
 [budgets]
 unit = "tokens"
-attempt = 300000
-run = 1000000
+attempt = 400000
+run = 1400000
 
 [convergence]
 clean_rounds = 1
