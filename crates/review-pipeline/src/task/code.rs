@@ -585,9 +585,24 @@ impl CodeTaskDomain {
         let mut missing = BTreeSet::new();
         let mut failed = false;
         for (name, obligation) in &task.acceptance {
+            let address = self
+                .graph
+                .coverage
+                .get(name)
+                .ok_or("Code Task lacks named acceptance coverage")?;
+            let origins = self.graph.evidence_origins(address)?;
+            let mut found = false;
             let mut passed = false;
             for id in &result.evidence {
                 let artifact = envelope(cas, id)?;
+                if !matches!(&artifact.producer, review_core::Producer::KernelOperation {node_id:Some(node),..} if origins.iter().any(|a| &a.node == node))
+                {
+                    continue;
+                }
+                if found {
+                    return Err("Ambiguous named code acceptance evidence".into());
+                }
+                found = true;
                 if artifact.artifact_type != obligation.evidence_type {
                     continue;
                 }

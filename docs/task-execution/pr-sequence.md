@@ -42,3 +42,18 @@ SHA-2 dependency at production optimization in debug builds. Task deadlines and 
 verifier reserve remain unchanged. The corrected local gate passes 732 tests, with 15 ignored,
 plus Clippy, formatting and frozen synthetic reproduction. The external Campaign remains
 paused for `claude-personal` login at its captured candidate `456779b`; no reviewer has run.
+
+PR 2 is draft [#76](https://github.com/PakhomovAlexander/afactory/pull/76), stacked on PR 1.
+Its sharing checkpoint at `0aa8aaf` passed 740 local tests, formatting, Clippy and frozen
+reproduction. CI passed the complete Check step and live container probes, then ran out of disk
+while linking the additional CLI smoke binary. CI now keeps line-level debug information and
+disables incremental object caches; the smoke command and all checks remain intact.
+
+The P09 checkpoint adds bounded repair, exact current-S2 per-Finding decisions, a distinct
+repair-allowed acceptance type and captured project permission. The repair fixture preserves
+one original Round and seven parent Attempts, including five protected verification Attempts.
+Heavy continuation and interrupted repair remain part of the full-plan checklist.
+
+The bounded-repair checkpoint passes the complete gate: **745 tests, zero failures, 15 ignored**
+across 99 suites, plus formatting, Clippy, frozen reproduction and Markdown checks. Claude
+personal authentication remains unavailable; no PR 2 reviewer has run.

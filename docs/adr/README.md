@@ -116,3 +116,5 @@ options you rejected and why — that is the part future-you needs.
   acceptance](0052-capture-local-bindings-and-compose-review-acceptance.md)
 - [0053 — Resolve shared catalogs only during explicit
   sync](0053-resolve-shared-catalogs-only-during-explicit-sync.md)
+
+- [0054 — Keep targeted repair distinct from complete Review](0054-keep-targeted-repair-distinct-from-complete-review.md)

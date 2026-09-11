@@ -190,12 +190,18 @@ fn worker_inputs(ports: &[&str]) -> Value {
 
 #[test]
 fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator() {
-    for case in ["passed", "failed", "inconclusive", "process_timeout"] {
+    for case in [
+        "passed",
+        "failed",
+        "inconclusive",
+        "process_timeout",
+        "named_failure",
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let cas = Cas::open(dir.path().join("cas")).unwrap();
         let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
         let command: review_core::Command = match case {
-            "passed" => serde_json::from_value(json!({"program":"/usr/bin/python3","args":[{"value":"-B","provenance":"literal"},{"value":"-c","provenance":"literal"},{"value":"import pagination; assert pagination.paginate(list(range(7)),2,3) == [2,3,4]","provenance":"literal"}]})).unwrap(),
+            "passed" | "named_failure" => serde_json::from_value(json!({"program":"/usr/bin/python3","args":[{"value":"-B","provenance":"literal"},{"value":"-c","provenance":"literal"},{"value":"import pagination; assert pagination.paginate(list(range(7)),2,3) == [2,3,4]","provenance":"literal"}]})).unwrap(),
             "failed" => review_core::Command::new("/usr/bin/false",vec![]),
             "process_timeout" => review_core::Command::new("/bin/sh",vec![review_core::Arg::literal("-c"),review_core::Arg::literal("sleep 1; exit 0")]),
             _ => review_core::Command::new("/no-such-af-check",vec![]),
@@ -237,7 +243,7 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
             )
             .unwrap()
             .0;
-        let task = TaskRevisionV1 {
+        let mut task = TaskRevisionV1 {
             previous_revision_id: None,
             task_id:format!("pagination-{case}"),revision:1,kind:"implement".into(),goal:"Implement this Jira ticket: offset/limit pagination".into(),
             inputs:BTreeMap::from([("source".into(),source_input), ("requirements".into(),ArtifactInputV1 {artifact_ids:vec![requirements.clone()],artifact_type:"af/Requirements@1".into(),cardinality:PortCardinality::One,snapshot_id:None})]),
@@ -295,12 +301,65 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
         evaluate.worker_input_type = Some("af/EvaluationInput@1".into());
         evaluate.worker_output_type = Some(TASK_EVALUATION_V1.into());
         evaluate.outcome_port = Some("result".into());
-        let pipeline = pipeline(&implement, &evaluate);
+        let mut pipeline = pipeline(&implement, &evaluate);
+        if case == "named_failure" {
+            task.acceptance
+                .insert("second".into(), task.acceptance["verified"].clone());
+            task.required_outputs.insert(
+                "second_verification".into(),
+                task.required_outputs["verification"].clone(),
+            );
+            task.limits.max_attempts = 4;
+            task.limits.verification.attempts = 3;
+            task.limits.verification.wall_ms = 15000;
+            pipeline.max_attempts = 4;
+            let mut slot = pipeline.slots["evaluator"].clone();
+            slot.worker = "fixture/negative".into();
+            pipeline.slots.insert("negative".into(), slot);
+            let mut verifier = pipeline
+                .nodes
+                .iter()
+                .find(|n| n.id == "evaluate")
+                .unwrap()
+                .clone();
+            verifier.id = "evaluate_negative".into();
+            verifier.operator = TaskOperatorV1::Verify {
+                slot: "negative".into(),
+            };
+            pipeline.nodes.push(verifier);
+            let mut accept = pipeline
+                .nodes
+                .iter()
+                .find(|n| n.id == "accept")
+                .unwrap()
+                .clone();
+            accept.id = "accept_negative".into();
+            accept
+                .inputs
+                .insert("evaluation".into(), from("evaluate_negative", "result"));
+            pipeline.nodes.push(accept);
+            let mut port = pipeline.contract.outputs["verification"].clone();
+            port.covers = BTreeSet::from(["second".into()]);
+            pipeline
+                .contract
+                .outputs
+                .insert("second_verification".into(), port);
+            pipeline.outputs.insert(
+                "second_verification".into(),
+                from("accept_negative", "result"),
+            );
+            pipeline
+                .coverage
+                .insert("second".into(), from("accept_negative", "result"));
+        }
         let mut compiler = TaskPlanCompiler::new(
             policy_id.clone(),
             policy_id.clone(),
             code_signatures(&policy_id, &policy).unwrap(),
-            BTreeMap::from([("verified".into(), "snapshot".into())]),
+            task.acceptance
+                .keys()
+                .map(|name| (name.clone(), "snapshot".into()))
+                .collect(),
             IndependencePolicyV1::default(),
         )
         .unwrap();
@@ -364,6 +423,26 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
                     ("worker.py".into(), script.as_bytes().to_vec()),
                 ]),
             ));
+        }
+        if case == "named_failure" {
+            let mut files = packages
+                .iter()
+                .find(|(name, _)| name == "fixture/evaluator")
+                .unwrap()
+                .1
+                .clone();
+            let mut worker: TaskWorkerManifest =
+                toml::from_str(std::str::from_utf8(&files["worker.toml"]).unwrap()).unwrap();
+            worker.name = "fixture/negative".into();
+            files.insert(
+                "worker.toml".into(),
+                toml::to_string(&worker).unwrap().into_bytes(),
+            );
+            let script = String::from_utf8(files["worker.py"].clone())
+                .unwrap()
+                .replace("'outcome':'passed'", "'outcome':'failed'");
+            files.insert("worker.py".into(), script.into_bytes());
+            packages.push(("fixture/negative".into(), files));
         }
         if case == "passed"
             && let Some(destination) = std::env::var_os("AF_WRITE_TASK_FIXTURE")
@@ -455,22 +534,39 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
         );
         assert_eq!(
             execution.budget.begun_attempts(),
-            if case == "passed" { 3 } else { 2 },
+            if case == "named_failure" {
+                4
+            } else if case == "passed" {
+                3
+            } else {
+                2
+            },
             "{case}: {report:?}"
         );
         assert_eq!(
             execution.outputs.contains_key("root.nodes.evaluate"),
-            case == "passed"
+            matches!(case, "passed" | "named_failure")
         );
         let result = domain.result(&cas, &state, &report).unwrap();
         assert_eq!(
             result.acceptance,
             match case {
                 "passed" => TaskAcceptanceV1::Satisfied,
-                "failed" => TaskAcceptanceV1::Unsatisfied,
+                "failed" | "named_failure" => TaskAcceptanceV1::Unsatisfied,
                 _ => TaskAcceptanceV1::Inconclusive,
             }
         );
+        if case == "named_failure" {
+            assert_eq!(
+                result.missing_obligations,
+                BTreeSet::from(["second".into()])
+            );
+            assert_eq!(
+                result.evidence.len(),
+                2,
+                "The unrelated passing receipt cannot mask the named failed obligation"
+            );
+        }
         let s1 = result.outputs["snapshot"].snapshot_id.as_ref().unwrap();
         assert_ne!(s1, &s0);
         let (snapshot, manifest) = read_snapshot(&cas, s1).unwrap();

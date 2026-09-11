@@ -10,13 +10,22 @@ use std::collections::BTreeMap;
 pub const TASK_CHECK_RECEIPT_V1: &str = "af/TaskCheckReceipt@1";
 pub const TASK_EVALUATION_V1: &str = "af/TaskEvaluation@1";
 pub const VERIFICATION_RESULT_V1: &str = "af/VerificationResult@1";
+pub const REPAIR_ALLOWED_IMPLEMENTATION_V1: &str = "af/RepairAllowedImplementation@1";
 pub const REVIEWED_IMPLEMENTATION_V1: &str = "af/ReviewedImplementation@1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImplementationReviewScopeV1 {
+    CompleteReview,
+    TargetedFixes,
+}
 
 /// Retains the exact acceptance invocation, including the child Review and exposed checks.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewedImplementationV1 {
     pub invocation: super::execution::TaskInvocationV1,
+    pub scope: ImplementationReviewScopeV1,
     pub snapshot_id: String,
     pub policy_id: String,
     pub outcome: ReceiptOutcomeV1,

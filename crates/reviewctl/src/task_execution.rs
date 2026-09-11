@@ -72,6 +72,7 @@ enum FileVerification {
     #[default]
     Evaluation,
     Review,
+    ReviewOrTargetedFixes,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -111,6 +112,8 @@ struct ReviewSettings {
     gate: review_core::Severity,
     clean_rounds: u32,
     max_rounds: u32,
+    #[serde(default)]
+    allow_targeted_repairs: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -371,6 +374,7 @@ fn capture_authority(
                     gate: review.gate,
                     clean_rounds: review.clean_rounds,
                     max_rounds: review.max_rounds,
+                    allow_targeted_repairs: review.allow_targeted_repairs,
                 };
                 review.validate()?;
                 cas.put_json(&serde_json::to_value(review).map_err(|e| e.to_string())?)
@@ -671,17 +675,27 @@ fn start_captured(
                     .ok_or("Review Task requires configured Review policy")?,
             },
         )]);
-    } else if profile == TaskKindProfile::ReviewedImplementation {
-        use review_core::task::verification::REVIEWED_IMPLEMENTATION_V1;
+    } else if matches!(
+        profile,
+        TaskKindProfile::ReviewedImplementation | TaskKindProfile::RepairAllowedImplementation
+    ) {
+        use review_core::task::verification::{
+            REPAIR_ALLOWED_IMPLEMENTATION_V1, REVIEWED_IMPLEMENTATION_V1,
+        };
+        let evidence_type = if profile == TaskKindProfile::RepairAllowedImplementation {
+            REPAIR_ALLOWED_IMPLEMENTATION_V1
+        } else {
+            REVIEWED_IMPLEMENTATION_V1
+        };
         revision
             .required_outputs
             .get_mut("verification")
             .expect("implementation output")
-            .artifact_type = REVIEWED_IMPLEMENTATION_V1.into();
+            .artifact_type = evidence_type.into();
         revision.acceptance.insert(
             "verified".into(),
             AcceptanceObligationV1 {
-                evidence_type: REVIEWED_IMPLEMENTATION_V1.into(),
+                evidence_type: evidence_type.into(),
                 verifier_policy: authority
                     .review_policy_id
                     .clone()
@@ -842,6 +856,9 @@ fn selected_profile(
             "implement" if verification == Some(FileVerification::Review) => {
                 TaskKindProfile::ReviewedImplementation
             }
+            "implement" if verification == Some(FileVerification::ReviewOrTargetedFixes) => {
+                TaskKindProfile::RepairAllowedImplementation
+            }
             "implement" => TaskKindProfile::Implementation,
             "review" => TaskKindProfile::Review,
             _ => return Err("Task requires a configured kind package".into()),
@@ -856,6 +873,9 @@ fn selected_profile(
             ) | (
                 TaskKindProfile::ReviewedImplementation,
                 FileVerification::Review
+            ) | (
+                TaskKindProfile::RepairAllowedImplementation,
+                FileVerification::ReviewOrTargetedFixes
             )
         )
     }) {
@@ -879,7 +899,8 @@ fn captured_domain(
         )),
         TaskKindProfile::Review
         | TaskKindProfile::Implementation
-        | TaskKindProfile::ReviewedImplementation => Ok(Box::new(
+        | TaskKindProfile::ReviewedImplementation
+        | TaskKindProfile::RepairAllowedImplementation => Ok(Box::new(
             ReviewTaskDomain::captured(
                 cas,
                 authority
@@ -966,7 +987,18 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
         .acceptance
         .values()
         .any(|a| a.evidence_type == review_core::task::verification::REVIEWED_IMPLEMENTATION_V1)
-        .then_some(FileVerification::Review);
+        .then_some(FileVerification::Review)
+        .or_else(|| {
+            projection
+                .revision
+                .acceptance
+                .values()
+                .any(|a| {
+                    a.evidence_type
+                        == review_core::task::verification::REPAIR_ALLOWED_IMPLEMENTATION_V1
+                })
+                .then_some(FileVerification::ReviewOrTargetedFixes)
+        });
     let profile = selected_profile(
         &compiler,
         &authority,
@@ -1136,6 +1168,24 @@ fn present(
                 .flat_map(|p| p.artifact_ids.iter())
                 .map(|id| artifact::<TaskReviewRoundV1>(cas, id, TASK_REVIEW_ROUND_V1))
                 .collect::<Result<_, _>>()?;
+            let repairs: Vec<_> = execution
+                .outputs
+                .values()
+                .flat_map(|(_, output)| output.outputs.values())
+                .filter(|p| p.artifact_type == REPAIR_ASSESSMENT_V1)
+                .flat_map(|p| p.artifact_ids.iter())
+                .map(|id| {
+                    artifact::<review_core::task::review::RepairAssessmentV1>(
+                        cas,
+                        id,
+                        REPAIR_ASSESSMENT_V1,
+                    )
+                })
+                .collect::<Result<_, _>>()?;
+            if !repairs.is_empty() {
+                value["repair_assessments"] =
+                    serde_json::to_value(repairs).map_err(|e| e.to_string())?;
+            }
             if state.revision.kind == "review" || !rounds.is_empty() {
                 value["review_rounds"] = serde_json::to_value(rounds).map_err(|e| e.to_string())?;
             }

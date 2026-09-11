@@ -23,6 +23,7 @@ use super::host::TaskDomain;
 use super::source::{invocation_producer, source_input};
 use super::{TaskOperatorHost, TaskWorkOutput, envelope};
 mod implementation;
+mod repair;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -34,6 +35,8 @@ pub struct ReviewTaskPolicy {
     pub gate: Severity,
     pub clean_rounds: u32,
     pub max_rounds: u32,
+    #[serde(default)]
+    pub allow_targeted_repairs: bool,
 }
 impl ReviewTaskPolicy {
     pub fn validate(&self) -> Result<(), String> {
@@ -139,6 +142,14 @@ pub fn review_signatures(
         BTreeMap::from([
             ("result".into(), port(TASK_REVIEW_ROUND_V1, same(), false)),
             (
+                "findings".into(),
+                port(
+                    review_core::task::repair::TASK_REVIEW_CLAIMS_V1,
+                    same(),
+                    false,
+                ),
+            ),
+            (
                 "history".into(),
                 port(REVIEW_HISTORY_V1, PortAffinityV1::Unbound {}, false),
             ),
@@ -147,17 +158,27 @@ pub fn review_signatures(
         BTreeMap::from([("result".into(), retained)]),
         Some("result".into()),
     );
-    Ok(BTreeMap::from([
+    let mut installed = BTreeMap::from([
         ("operator/review-bind".into(), bind),
         ("operator/review-reduce".into(), reduce),
         (
             "operator/review-accept".into(),
-            implementation::signature(policy_id),
+            implementation::signature(policy_id, policy.allow_targeted_repairs),
         ),
-    ]))
+    ]);
+    installed.extend(repair::signatures(policy_id, policy.allow_targeted_repairs));
+    Ok(installed)
+}
+
+#[derive(Default)]
+struct ReviewMemo {
+    rounds: BTreeMap<String, (Ledger, TaskReviewRoundV1)>,
+    repairs: BTreeMap<String, review_core::task::repair::TaskRepairContextV1>,
 }
 
 pub struct ReviewTaskDomain {
+    /// Process-local memo of validated immutable CAS identities under this exact domain.
+    memo: std::sync::Mutex<ReviewMemo>,
     review_task: bool,
     policy_id: String,
     policy: ReviewTaskPolicy,
@@ -181,6 +202,8 @@ impl ReviewTaskDomain {
                     TaskOperatorV1::ReviewBind {}
                         | TaskOperatorV1::ReviewReduce {}
                         | TaskOperatorV1::ReviewAccept {}
+                        | TaskOperatorV1::AttestFixes {}
+                        | TaskOperatorV1::RepairAccept {}
                 )
                 && installed
                     .get(signature)
@@ -219,8 +242,42 @@ impl ReviewTaskDomain {
                 }
             }
         }
+        for node in graph.nodes.values() {
+            if matches!(
+                node.operator,
+                CompiledOperator::Primitive {
+                    operator: TaskOperatorV1::RepairAccept {},
+                    ..
+                }
+            ) {
+                let address = node
+                    .inputs
+                    .get("verification")
+                    .ok_or("Repair acceptance must bind a reserved fix verifier")?;
+                let verifier = graph
+                    .nodes
+                    .get(&address.node)
+                    .ok_or("Unknown repair verifier")?;
+                if !matches!(
+                    verifier.operator,
+                    CompiledOperator::Primitive {
+                        operator: TaskOperatorV1::FixVerify { .. },
+                        ..
+                    }
+                ) || ["source", "repair", "checks"]
+                    .iter()
+                    .any(|name| verifier.inputs.get(*name) != node.inputs.get(*name))
+                {
+                    return Err(
+                        "Repair acceptance requires a reserved verifier with exact current inputs"
+                            .into(),
+                    );
+                }
+            }
+        }
         let code = CodeTaskDomain::captured(cas, &policy.check_policy_id, graph.clone())?;
         Ok(Self {
+            memo: std::sync::Mutex::new(ReviewMemo::default()),
             review_task: true,
             policy_id: policy_id.into(),
             policy,
@@ -476,6 +533,16 @@ impl ReviewTaskDomain {
         if depth >= 16 {
             return Err("Review history exceeds bounded Round depth".into());
         }
+        if let Some(value) = self
+            .memo
+            .lock()
+            .map_err(|_| "Review memo poisoned")?
+            .rounds
+            .get(id)
+            .cloned()
+        {
+            return Ok(value);
+        }
         let artifact = envelope(cas, id)?;
         let receipt: TaskReviewRoundV1 =
             serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
@@ -495,10 +562,15 @@ impl ReviewTaskDomain {
         if expected != receipt {
             return Err("Review Round differs from its exact canonical reduction".into());
         }
-        Ok((
+        let value = (
             ledger.ok_or("Incomplete Review has no authoritative Ledger")?,
             receipt,
-        ))
+        );
+        let mut memo = self.memo.lock().map_err(|_| "Review memo poisoned")?;
+        if memo.rounds.len() < 64 {
+            memo.rounds.insert(id.into(), value.clone());
+        }
+        Ok(value)
     }
 
     fn reduce(
@@ -688,7 +760,7 @@ impl ReviewTaskDomain {
         cas: &Cas,
         input: &TaskInvocationV1,
     ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
-        let (receipt, _) = self.reduce(cas, input, 0)?;
+        let (receipt, ledger) = self.reduce(cas, input, 0)?;
         let refs = receipt
             .finding_set_id
             .iter()
@@ -702,6 +774,39 @@ impl ReviewTaskDomain {
             Some(&receipt.snapshot_id),
             &receipt,
             refs,
+        )?;
+        let mut claims = BTreeMap::new();
+        if let Some(ledger) = ledger {
+            for finding in ledger
+                .finding_views()
+                .into_iter()
+                .filter(|f| f.status.is_active())
+            {
+                let view_id = cas
+                    .put_json(&serde_json::to_value(&finding).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+                claims.insert(
+                    finding.key,
+                    review_core::task::repair::TaskReviewClaimV1 {
+                        view_id,
+                        title: finding.title,
+                        body: finding.body,
+                        remedy: finding.fix.unwrap_or_default(),
+                    },
+                );
+            }
+        }
+        let findings = self.put(
+            cas,
+            input,
+            review_core::task::repair::TASK_REVIEW_CLAIMS_V1,
+            Some(&receipt.snapshot_id),
+            &review_core::task::repair::TaskReviewClaimsV1 {
+                round_report_id: result.artifact_ids[0].clone(),
+                snapshot_id: receipt.snapshot_id.clone(),
+                claims,
+            },
+            result.artifact_ids.clone(),
         )?;
         let (_, prior): (_, ReviewHistoryV1) =
             self.value(cas, input, "history", REVIEW_HISTORY_V1)?;
@@ -729,6 +834,7 @@ impl ReviewTaskDomain {
         Ok(BTreeMap::from([
             ("result".into(), result),
             ("history".into(), history),
+            ("findings".into(), findings),
         ]))
     }
 
@@ -911,6 +1017,8 @@ impl TaskOperatorHost for ReviewTaskDomain {
                 .map(|v| BTreeMap::from([("subject".into(), v)])),
             Ok(TaskOperatorV1::ReviewReduce {}) => self.reduce_outputs(cas, input),
             Ok(TaskOperatorV1::ReviewAccept {}) => self.accept_implementation(cas, input),
+            Ok(TaskOperatorV1::AttestFixes {}) => self.attest_fixes(cas, input),
+            Ok(TaskOperatorV1::RepairAccept {}) => self.accept_repair(cas, input),
             _ => return self.code.execute(cas, input, attempt),
         };
         TaskWorkOutput {
@@ -938,6 +1046,9 @@ impl TaskDomain for ReviewTaskDomain {
         feedback: &[String],
         id: &str,
     ) -> Result<(), String> {
+        if matches!(self.operator(input), Ok(TaskOperatorV1::FixVerify { .. })) {
+            return self.validate_fix_context(cas, input);
+        }
         if self.reviewer(input) {
             self.current_subject(cas, input)?;
             if self.code.review_checks(cas, input)? != ReceiptOutcomeV1::Passed {
@@ -961,6 +1072,8 @@ impl TaskDomain for ReviewTaskDomain {
             }
             TaskOperatorV1::ReviewReduce {} => Some(self.reduce_outputs(cas, input)?),
             TaskOperatorV1::ReviewAccept {} => Some(self.accept_implementation(cas, input)?),
+            TaskOperatorV1::AttestFixes {} => Some(self.attest_fixes(cas, input)?),
+            TaskOperatorV1::RepairAccept {} => Some(self.accept_repair(cas, input)?),
             _ => None,
         };
         if let Some(expected) = expected {
@@ -968,6 +1081,9 @@ impl TaskDomain for ReviewTaskDomain {
                 return Err("Review output differs from its exact domain reduction".into());
             }
             return Ok(());
+        }
+        if matches!(self.operator(input), Ok(TaskOperatorV1::FixVerify { .. })) {
+            return self.validate_fix_output(cas, input, output);
         }
         if self.reviewer(input) {
             let subject = self.current_subject(cas, input)?;

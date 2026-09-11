@@ -1,8 +1,11 @@
 //! Implementation acceptance composes the same canonical Review used by standalone Tasks.
 use super::*;
-use review_core::task::verification::{REVIEWED_IMPLEMENTATION_V1, ReviewedImplementationV1};
+use review_core::task::verification::{
+    ImplementationReviewScopeV1, REPAIR_ALLOWED_IMPLEMENTATION_V1, REVIEWED_IMPLEMENTATION_V1,
+    ReviewedImplementationV1,
+};
 
-pub(super) fn signature(policy: &str) -> OperatorSignature {
+pub(super) fn signature(policy: &str, allow_targeted: bool) -> OperatorSignature {
     let retained = BTreeSet::from(["review".into(), "checks".into()]);
     OperatorSignature {
         contract: PipelineContractV1 {
@@ -20,12 +23,27 @@ pub(super) fn signature(policy: &str) -> OperatorSignature {
                     "result".into(),
                     port(REVIEWED_IMPLEMENTATION_V1, same(), false),
                 ),
+                (
+                    "repair_result".into(),
+                    port(REPAIR_ALLOWED_IMPLEMENTATION_V1, same(), false),
+                ),
             ]),
         },
         effects: BTreeSet::new(),
-        evidence: BTreeMap::from([("result".into(), BTreeSet::from([policy.into()]))]),
+        evidence: BTreeMap::from([
+            ("result".into(), BTreeSet::from([policy.into()])),
+            (
+                "repair_result".into(),
+                if allow_targeted {
+                    BTreeSet::from([policy.into()])
+                } else {
+                    BTreeSet::new()
+                },
+            ),
+        ]),
         retains: BTreeMap::from([
             ("result".into(), retained.clone()),
+            ("repair_result".into(), retained.clone()),
             ("snapshot".into(), retained),
         ]),
         roles: BTreeSet::new(),
@@ -82,6 +100,7 @@ impl ReviewTaskDomain {
         };
         let value = ReviewedImplementationV1 {
             invocation: input.clone(),
+            scope: ImplementationReviewScopeV1::CompleteReview,
             snapshot_id,
             policy_id: self.policy_id.clone(),
             outcome,
@@ -104,11 +123,20 @@ impl ReviewTaskDomain {
             &value,
             vec![],
         )?;
+        let repair_result = self.put(
+            cas,
+            input,
+            REPAIR_ALLOWED_IMPLEMENTATION_V1,
+            Some(&value.snapshot_id),
+            &value,
+            vec![],
+        )?;
         let refs = input
             .inputs
             .values()
             .flat_map(|p| p.artifact_ids.iter().cloned())
             .chain(result.artifact_ids.iter().cloned())
+            .chain(repair_result.artifact_ids.iter().cloned())
             .collect();
         let source = review_source_git::task::source_tree(
             cas,
@@ -119,6 +147,7 @@ impl ReviewTaskDomain {
         Ok(BTreeMap::from([
             ("snapshot".into(), source),
             ("result".into(), result),
+            ("repair_result".into(), repair_result),
         ]))
     }
 
@@ -128,18 +157,21 @@ impl ReviewTaskDomain {
         task: &TaskRevisionV1,
         result: &mut TaskResultV1,
     ) -> Result<(), String> {
-        if task
-            .acceptance
-            .values()
-            .all(|a| a.evidence_type != REVIEWED_IMPLEMENTATION_V1)
-        {
+        if task.acceptance.values().all(|a| {
+            !matches!(
+                a.evidence_type.as_str(),
+                REVIEWED_IMPLEMENTATION_V1 | REPAIR_ALLOWED_IMPLEMENTATION_V1
+            )
+        }) {
             return self.code.assess(cas, task, result);
         }
         let mut missing = BTreeSet::new();
         let mut failed = false;
         for (name, obligation) in &task.acceptance {
-            if obligation.evidence_type != REVIEWED_IMPLEMENTATION_V1
-                || obligation.verifier_policy != self.policy_id
+            if !matches!(
+                obligation.evidence_type.as_str(),
+                REVIEWED_IMPLEMENTATION_V1 | REPAIR_ALLOWED_IMPLEMENTATION_V1
+            ) || obligation.verifier_policy != self.policy_id
             {
                 return Err("Reviewed implementation changed its acceptance authority".into());
             }
@@ -148,15 +180,16 @@ impl ReviewTaskDomain {
                 .coverage
                 .get(name)
                 .ok_or("Implementation has no public review coverage")?;
+            let origins = self.graph.evidence_origins(address)?;
             let mut found = false;
             let mut passed = false;
             for id in &result.evidence {
                 let artifact = envelope(cas, id)?;
-                if !matches!(&artifact.producer, Producer::KernelOperation {run_id, node_id:Some(node), ..} if node == &address.node && *run_id == task_run_id(&task.task_id).map_err(|e|e.to_string())?)
+                if !matches!(&artifact.producer, Producer::KernelOperation {run_id, node_id:Some(node), ..} if origins.iter().any(|a| &a.node == node) && *run_id == task_run_id(&task.task_id).map_err(|e|e.to_string())?)
                 {
                     continue;
                 }
-                if found || artifact.artifact_type != REVIEWED_IMPLEMENTATION_V1 {
+                if found || artifact.artifact_type != obligation.evidence_type {
                     return Err(
                         "Implementation has ambiguous or incompatible acceptance evidence".into(),
                     );
@@ -171,24 +204,46 @@ impl ReviewTaskDomain {
                 if plan_artifact.artifact_type != EXECUTION_PLAN_V1
                     || plan.task_revision_id != result.task_revision_id
                     || plan.authority != task.authority
-                    || receipt.invocation.node != address.node
+                    || !origins.iter().any(|a| a.node == receipt.invocation.node)
                     || envelope(cas, &plan.compiled_graph_id)?.payload
                         != serde_json::to_value(&self.graph).map_err(|e| e.to_string())?
                     || !matches!(
                         self.operator(&receipt.invocation)?,
-                        TaskOperatorV1::ReviewAccept {}
+                        TaskOperatorV1::ReviewAccept {} | TaskOperatorV1::RepairAccept {}
                     )
-                    || self.implementation_receipt(cas, &receipt.invocation)? != receipt
+                    || (if matches!(
+                        self.operator(&receipt.invocation)?,
+                        TaskOperatorV1::RepairAccept {}
+                    ) {
+                        if obligation.evidence_type != REPAIR_ALLOWED_IMPLEMENTATION_V1 {
+                            return Err("Targeted repairs cannot satisfy complete S2 review".into());
+                        }
+                        self.repair_acceptance(cas, &receipt.invocation)?.0
+                    } else {
+                        self.implementation_receipt(cas, &receipt.invocation)?
+                    }) != receipt
                 {
                     return Err(
                         "Implementation receipt changed its exact Task, plan or Review evidence"
                             .into(),
                     );
                 }
-                let expected = self.accept_implementation(cas, &receipt.invocation)?;
-                if expected
-                    .get(&address.port)
-                    .is_none_or(|p| p.artifact_ids != [id.clone()])
+                let expected = if matches!(
+                    self.operator(&receipt.invocation)?,
+                    TaskOperatorV1::RepairAccept {}
+                ) {
+                    self.accept_repair(cas, &receipt.invocation)?
+                } else {
+                    self.accept_implementation(cas, &receipt.invocation)?
+                };
+                if !origins
+                    .iter()
+                    .filter(|a| a.node == receipt.invocation.node)
+                    .any(|a| {
+                        expected
+                            .get(&a.port)
+                            .is_some_and(|p| p.artifact_ids == [id.clone()])
+                    })
                     || result.outputs.get("snapshot") != expected.get("snapshot")
                 {
                     return Err("Implementation receipt is stale for its public Snapshot".into());

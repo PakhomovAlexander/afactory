@@ -87,6 +87,7 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
         };
         let code_id = cas.put_json(&serde_json::to_value(&code).unwrap()).unwrap();
         let policy = ReviewTaskPolicy {
+            allow_targeted_repairs: false,
             schema: "af.review-task-policy/1".into(),
             check_policy_id: code_id.clone(),
             reviewers: BTreeMap::from([

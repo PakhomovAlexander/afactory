@@ -117,7 +117,7 @@ impl Status {
     }
 
     /// Blocks convergence while at or above the gate.
-    fn is_active(self) -> bool {
+    pub fn is_active(self) -> bool {
         matches!(
             self,
             Status::Open | Status::PendingVerification | Status::Contested

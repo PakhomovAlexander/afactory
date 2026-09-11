@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 pub enum TaskKindProfile {
     Implementation,
     ReviewedImplementation,
+    RepairAllowedImplementation,
     Review,
     Document,
 }

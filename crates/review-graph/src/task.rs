@@ -229,6 +229,36 @@ impl CompiledTask {
         Ok(())
     }
 
+    /// Select transports original receipts without rewriting their producers. The Store
+    /// separately checks that the actual selected value is the admitted coverage value.
+    pub fn evidence_origins(&self, address: &Address) -> Result<BTreeSet<Address>, String> {
+        let mut pending = vec![address.clone()];
+        let mut seen = BTreeSet::new();
+        let mut leaves = BTreeSet::new();
+        while let Some(address) = pending.pop() {
+            if !seen.insert(address.clone()) {
+                continue;
+            }
+            let node = self
+                .nodes
+                .get(&address.node)
+                .ok_or("Unknown evidence producer")?;
+            if matches!(node.operator, CompiledOperator::Select) {
+                for arm in ["passed", "failed", "inconclusive"] {
+                    pending.push(
+                        node.inputs
+                            .get(arm)
+                            .ok_or("Missing evidence branch")?
+                            .clone(),
+                    );
+                }
+            } else {
+                leaves.insert(address);
+            }
+        }
+        Ok(leaves)
+    }
+
     pub fn budget(&self, limits: review_core::task::TaskLimitsV1) -> Result<TaskBudget, String> {
         TaskBudget::new(limits, self.allowances.clone())?.with_call_limits(
             self.calls
@@ -1071,6 +1101,13 @@ impl Compiler<'_> {
                         {
                             return Err(format!("{qualified} binds an unknown operator input"));
                         }
+                        if matches!(operator, TaskOperatorV1::RepairAccept {})
+                            && !bound.contains_key("verification")
+                        {
+                            return Err(
+                                "Repair acceptance must bind its reserved fix verifier".into()
+                            );
+                        }
                         if matches!(operator, TaskOperatorV1::ReviewReduce {})
                             && !bound.keys().eq(signature.contract.inputs.keys())
                         {
@@ -1230,6 +1267,30 @@ impl Compiler<'_> {
                 return Err(format!("Pipeline {name} contains a dependency cycle"));
             }
         }
+        // A call must retain all verification reservations plus its unconditional paid work.
+        // A declared child limit cannot make repair itself consume the protected verifier slot.
+        let prefix = format!("{scope}.nodes.");
+        let required_attempts = self
+            .graph
+            .allowances
+            .iter()
+            .filter(|(node, _)| node.starts_with(&prefix))
+            .try_fold(0u32, |total, (node, allowance)| {
+                let mandatory = if allowance.verification_attempts > 0 {
+                    allowance.verification_attempts
+                } else {
+                    u32::from(self.graph.nodes[node].conditions == inherited)
+                };
+                total
+                    .checked_add(mandatory)
+                    .ok_or("Pipeline minimum Attempt count overflow")
+            })?;
+        if required_attempts > definition.max_attempts {
+            return Err(format!(
+                "Pipeline {name} cannot retain its verification reserves and mandatory work within {} Attempts",
+                definition.max_attempts
+            ));
+        }
         let mut outputs = BTreeMap::new();
         let mut coverage = BTreeMap::new();
         for (public, reference) in &definition.outputs {
@@ -1298,6 +1359,7 @@ fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
         TaskOperatorV1::ReviewReduce {} => Ok("review-reduce"),
         TaskOperatorV1::ReviewAccept {} => Ok("review-accept"),
         TaskOperatorV1::AttestFixes {} => Ok("attest-fixes"),
+        TaskOperatorV1::RepairAccept {} => Ok("repair-accept"),
         _ => Err("Operator requires package expansion".into()),
     }
 }

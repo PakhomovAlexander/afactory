@@ -1003,6 +1003,18 @@
               "const": "review_accept"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "repair_accept"
+            }
+          }
         }
       ]
     },

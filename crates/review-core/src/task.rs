@@ -10,6 +10,7 @@ pub mod feedback;
 pub mod pipeline;
 pub mod plan;
 pub mod provider;
+pub mod repair;
 pub mod review;
 pub mod verification;
 

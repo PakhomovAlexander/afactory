@@ -392,3 +392,146 @@ fn missing_review_receipts_cannot_be_relabeled_as_convergence_exhaustion() {
         }
     }
 }
+
+#[test]
+fn repair_context_and_decisions_bind_every_current_view_and_keep_original_provenance() {
+    use review_core::task::repair::*;
+    use review_core::task::review::*;
+    let id = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+    let invocation = review_core::task::execution::TaskInvocationV1 {
+        plan_id: id('a'),
+        node: "root.nodes.attest".into(),
+        inputs: Default::default(),
+    };
+    let attestation = review_core::ChangeAttestationV1 {
+        finding_id: "finding-one".into(),
+        expected_finding_view_id: id('b'),
+        subject_id: id('c'),
+        change_set_id: Some(id('d')),
+        changed_regions: vec![review_core::ChangedRegionV1 {
+            path: "pagination.py".into(),
+            start_line: None,
+            end_line: None,
+        }],
+        actor: "af/attest-fixes".into(),
+        reason: "Sealed S1-to-S2 diff".into(),
+        evidence_ids: vec![id('e')],
+    };
+    let context = TaskRepairContextV1 {
+        invocation: invocation.clone(),
+        continuation_id: id('f'),
+        continuation: VerificationContinuationV1 {
+            task_revision_id: id('1'),
+            plan_id: id('a'),
+            prior_history_id: id('2'),
+            previous_subject_id: id('3'),
+            current_subject_id: id('c'),
+            current_snapshot_id: id('4'),
+            policy_id: id('5'),
+            claims: std::collections::BTreeMap::from([("finding-one".into(), id('b'))]),
+        },
+        subject: review_core::SubjectV1::diff(id('4'), id('6'), id('7')),
+        previous_snapshot_id: id('8'),
+        claims: std::collections::BTreeMap::from([(
+            "finding-one".into(),
+            TaskRepairClaimV1 {
+                original_view_id: id('9'),
+                current_view_id: id('b'),
+                title: "Negative offset".into(),
+                body: "Must reject negative offset".into(),
+                remedy: "Raise ValueError".into(),
+                attestation_id: id('0'),
+                attestation,
+            },
+        )]),
+    };
+    context.validate().unwrap();
+    assert_valid(
+        "task-repair-context-v1.json",
+        &serde_json::to_value(&context).unwrap(),
+    );
+    let decision = TaskFixDecisionV1 {
+        expected_view_id: id('b'),
+        attestation_id: id('0'),
+        outcome: VerificationOutcomeV1::Positive,
+        reason: "Executed original regression case on S2".into(),
+    };
+    let verified = TaskFixVerificationV1 {
+        continuation_id: id('f'),
+        subject_id: id('c'),
+        claims: std::collections::BTreeMap::from([("finding-one".into(), decision.clone())]),
+    };
+    verified.validate_context(&context).unwrap();
+    assert_valid(
+        "task-fix-verification-v1.json",
+        &serde_json::to_value(&verified).unwrap(),
+    );
+    for case in [
+        "missing",
+        "extra",
+        "old_view",
+        "old_subject",
+        "another_continuation",
+    ] {
+        let mut changed = verified.clone();
+        match case {
+            "missing" => changed.claims.clear(),
+            "extra" => {
+                changed
+                    .claims
+                    .insert("unrelated-finding".into(), decision.clone());
+            }
+            "old_view" => {
+                changed
+                    .claims
+                    .get_mut("finding-one")
+                    .unwrap()
+                    .expected_view_id = context.claims["finding-one"].original_view_id.clone()
+            }
+            "old_subject" => changed.subject_id = context.continuation.previous_subject_id.clone(),
+            _ => changed.continuation_id = id('1'),
+        }
+        assert!(changed.validate_context(&context).is_err(), "{case}");
+    }
+    let mut receipt = TaskFixReceiptV1 {
+        invocation,
+        finding_id: "finding-one".into(),
+        continuation_id: id('f'),
+        subject_id: id('c'),
+        decision,
+        verifier_output_id: Some(id('2')),
+    };
+    receipt.validate().unwrap();
+    assert_valid(
+        "task-fix-receipt-v1.json",
+        &serde_json::to_value(&receipt).unwrap(),
+    );
+    receipt.verifier_output_id = None;
+    assert!(
+        receipt.validate().is_err(),
+        "Missing verifier cannot certify a fix"
+    );
+    receipt.decision.outcome = VerificationOutcomeV1::Inconclusive;
+    receipt.validate().unwrap();
+    assert_valid(
+        "task-fix-receipt-v1.json",
+        &serde_json::to_value(&receipt).unwrap(),
+    );
+    let claims = TaskReviewClaimsV1 {
+        round_report_id: id('1'),
+        snapshot_id: id('8'),
+        claims: std::collections::BTreeMap::from([(
+            "finding-one".into(),
+            TaskReviewClaimV1 {
+                view_id: id('9'),
+                title: "Negative offset".into(),
+                body: "Original claim".into(),
+                remedy: "Reject negative input".into(),
+            },
+        )]),
+    };
+    assert_valid(
+        "task-review-claims-v1.json",
+        &serde_json::to_value(claims).unwrap(),
+    );
+}

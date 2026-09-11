@@ -222,7 +222,7 @@ pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets,
         review_source_git::task::read_snapshot(cas, &derived_snapshot_id)?;
     if source.parent_snapshot_id.is_some()
         || derived.origin_id != source.origin_id
-        || derived.parent_snapshot_id.as_ref() != Some(&source_snapshot_id)
+        || !review_source_git::task::descends_from(cas, &derived_snapshot_id, &source_snapshot_id)?
     {
         return Err("Task delivery requires exact source ancestry".into());
     }

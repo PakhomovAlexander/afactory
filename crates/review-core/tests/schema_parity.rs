@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 70] = [
+const SCHEMAS: [&str; 75] = [
     "task-provider-admission-v1.json",
     "task-review-subject-v1.json",
     "task-review-round-v1.json",
@@ -40,6 +40,11 @@ const SCHEMAS: [&str; 70] = [
     "task-evaluation-v1.json",
     "verification-result-v1.json",
     "reviewed-implementation-v1.json",
+    "repair-allowed-implementation-v1.json",
+    "task-repair-context-v1.json",
+    "task-fix-verification-v1.json",
+    "task-fix-receipt-v1.json",
+    "task-review-claims-v1.json",
     "task-snapshot-v1.json",
     "source-tree-v1.json",
     "candidate-tree-v1.json",
@@ -304,6 +309,7 @@ fn task_verification_contracts_preserve_negative_results_and_require_positive_ev
         let value = serde_json::to_value(&result).unwrap();
         assert_valid("verification-result-v1.json", &value);
         let reviewed = review_core::task::verification::ReviewedImplementationV1 {
+            scope: review_core::task::verification::ImplementationReviewScopeV1::CompleteReview,
             invocation: review_core::task::execution::TaskInvocationV1 {
                 plan_id: id.clone(),
                 node: "root.nodes.accept".into(),
@@ -462,6 +468,8 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     "task-invocation-v1.json",
                     "subject-v1.json",
                     "change-set-v1.json",
+                    "change-attestation-v1.json",
+                    "verification-continuation-v1.json",
                 ]
                 .into_iter()
                 .map(schema)

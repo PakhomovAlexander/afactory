@@ -177,7 +177,7 @@ pub struct VerificationContinuationV1 {
     pub current_subject_id: String,
     pub current_snapshot_id: String,
     pub policy_id: String,
-    /// Exact original claim view for each Finding being rechecked.
+    /// Current S2 view of each preserved original Finding identity being rechecked.
     pub claims: BTreeMap<String, String>,
 }
 

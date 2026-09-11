@@ -189,6 +189,7 @@ pub enum TaskOperatorV1 {
     /// Accept implementation only from the embedded current-Snapshot Review and its checks.
     ReviewAccept {},
     AttestFixes {},
+    RepairAccept {},
     FixVerify {
         slot: String,
     },
