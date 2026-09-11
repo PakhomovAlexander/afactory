@@ -33,7 +33,10 @@ fn git(repo: &Path, args: &[&str]) {
 fn af(state_home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_af"))
         .args(args)
+        .env("HOME", state_home)
+        .env("XDG_CONFIG_HOME", state_home.join("config"))
         .env("XDG_STATE_HOME", state_home)
+        .env("AF_SELF_OFFLINE", "1")
         .output()
         .unwrap()
 }
