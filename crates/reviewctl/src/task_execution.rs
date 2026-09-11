@@ -61,6 +61,13 @@ struct TaskFile {
     task_id: String,
     kind: String,
     goal: String,
+    /// Optional machine-readable business specification, captured as input data only.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    requirements: Option<serde_json::Map<String, serde_json::Value>>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -743,6 +750,16 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
     {
         return Err("Task file requires schema af.task-file/1, a valid ID, supported kind and nonempty goal".into());
     }
+    if let Some(specification) = &file.requirements {
+        if specification.is_empty()
+            || serde_json::to_vec(specification)
+                .map_err(|e| e.to_string())?
+                .len()
+                > 65536
+        {
+            return Err("Structured requirements must be nonempty and at most 64 KiB".into());
+        }
+    }
     let (repo, state) = state_path(&options.repo, options.state.as_deref())?;
     std::fs::create_dir_all(&state).map_err(|e| e.to_string())?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
@@ -815,12 +832,15 @@ fn start_captured(
         )?)
     };
     let input_file = cas.put(&bytes).map_err(|e| e.to_string())?;
-    let requirements_payload = match legacy_budget {
+    let mut requirements_payload = match legacy_budget {
         Some(tokens) => {
             json!({"text":file.goal,"task_id":file.task_id,"budget":{"reserved_tokens":tokens}})
         }
         None => json!({"text":file.goal}),
     };
+    if let Some(specification) = &file.requirements {
+        requirements_payload["specification"] = json!(specification);
+    }
     let requirements = cas
         .put_artifact(
             "af/Requirements@1",

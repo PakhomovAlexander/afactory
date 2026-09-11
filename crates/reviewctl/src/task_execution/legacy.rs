@@ -237,6 +237,7 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         policy_source
     };
     let file = TaskFile {
+        requirements: None,
         document_sources: None,
         schema: "af.task-file/1".into(),
         task_id: crate::task::task_id(&repo, &source.content_digest, &loaded.pipeline_artifact_id),

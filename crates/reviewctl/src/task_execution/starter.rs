@@ -7,6 +7,7 @@ use review_config::task::shared::{CatalogPathBase, SharedTaskCatalog, package_di
 use review_core::task::document::*;
 use review_core::task::pipeline::*;
 use review_graph::task::{OperatorAttemptCost, OperatorSignature};
+mod software;
 
 const GOAL: &str = "Publish release notes from the captured changes.";
 const AUTHOR: &str = r#"import json, sys
@@ -405,6 +406,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
         kinds: BTreeMap::from([(kind.name.clone(), kind)]),
     };
     let task = TaskFile {
+        requirements: None,
         schema: "af.task-file/1".into(),
         task_id: "release-notes".into(),
         kind: "release-note".into(),
@@ -447,18 +449,99 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
     Ok(files)
 }
 
-pub(crate) fn init(repo: &Path, destination: &str, json: bool) -> Result<(), String> {
+fn merge_files(
+    mut software: BTreeMap<String, Vec<u8>>,
+    mut document: BTreeMap<String, Vec<u8>>,
+) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    let path = ".af/task-catalog.toml";
+    let mut catalog: TaskCatalog = parse(
+        Path::new(path),
+        &software.remove(path).ok_or("Software catalog missing")?,
+    )?;
+    let docs: TaskCatalog = parse(
+        Path::new(path),
+        &document.remove(path).ok_or("Document catalog missing")?,
+    )?;
+    catalog.document_policy = docs.document_policy;
+    catalog.packages.extend(docs.packages);
+    catalog.kinds.extend(docs.kinds);
+    let path = "contracts.json";
+    let mut contracts: CatalogContractFixtures = parse(
+        Path::new(path),
+        &software.remove(path).ok_or("Software contracts missing")?,
+    )?;
+    let docs: CatalogContractFixtures = parse(
+        Path::new(path),
+        &document.remove(path).ok_or("Document contracts missing")?,
+    )?;
+    contracts.pipelines.extend(docs.pipelines);
+    contracts.workers.extend(docs.workers);
+    contracts.kinds.extend(docs.kinds);
+    let shared = SharedTaskCatalog {
+        schema: "af.shared-task-catalog/1".into(),
+        packages: catalog.packages.clone(),
+        path_base: CatalogPathBase::Repository,
+        imports: BTreeSet::new(),
+    };
+    document.remove("catalog.toml");
+    document.remove("README.md");
+    for (path, bytes) in document {
+        if software.insert(path.clone(), bytes).is_some() {
+            return Err(format!("Starter assets collide at {path}"));
+        }
+    }
+    software.insert(".af/task-catalog.toml".into(), toml_bytes(&catalog)?);
+    software.insert("catalog.toml".into(), toml_bytes(&shared)?);
+    software.insert("contracts.json".into(), json_bytes(&contracts)?);
+    software.get_mut("README.md").ok_or("Starter guide missing")?.extend_from_slice(b"\nThe document starter is also installed: run `af task start --file document.json --json`.\nSave its output with `af task output release-notes --port document --format markdown --output release-notes.md --json`.\n");
+    Ok(software)
+}
+
+pub(crate) fn init(
+    repo: &Path,
+    destination: &str,
+    profile: &str,
+    developer_public_key: Option<&Path>,
+    json: bool,
+) -> Result<(), String> {
     let target = catalog::absent_destination(repo, destination)?;
-    let files = document_files()?;
+    let key = developer_public_key
+        .map(|path| {
+            let mut bytes = Vec::new();
+            std::fs::File::open(path)
+                .map_err(|e| e.to_string())?
+                .take(4097)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            if bytes.len() > 4096 {
+                return Err("Developer public key exceeds its bound".into());
+            }
+            String::from_utf8(bytes).map_err(|e| e.to_string())
+        })
+        .transpose()?;
+    if profile == "planning" && key.is_none() {
+        return Err("Planning starter requires --developer-public-key; the private signing key stays outside Afactory".into());
+    }
+    let files = match profile {
+        "document" if key.is_none() => document_files()?,
+        "document" => {
+            return Err(
+                "Use software, planning or all to configure a Planner developer key".into(),
+            );
+        }
+        "software" | "planning" => software::files(key)?,
+        "all" => merge_files(software::files(key)?, document_files()?)?,
+        _ => return Err("Unknown starter profile".into()),
+    };
     catalog::publish_absent(&target, &files)?;
     if json {
         println!(
             "{}",
-            json!({"schema":"af.catalog-init/1","profile":"document","destination":target,"task":"document.json","attempts":0,"prerequisites":["git","python3"],"authority":"review_and_commit_required"})
+            json!({"schema":"af.catalog-init/1","profile":profile,"destination":target,"task":if profile=="document" {"document.json"} else if profile=="planning" {"planning.json"} else {"implementation-reviewed.json"},"attempts":0,"prerequisites":["git","python3"],"authority":"review_and_commit_required"})
         );
     } else {
         println!(
-            "Created document starter in {}. Review and commit its definitions before running document.json.",
+            "Created {profile} starter in {}. Review and commit its definitions before running its Task files.",
             target.display()
         );
     }

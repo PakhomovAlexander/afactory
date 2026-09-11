@@ -777,10 +777,13 @@ pub(crate) enum RunnerArg {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum CatalogCommand {
-    /// Create a credential-free document starter in an absent directory
+    /// Create supported Task and Worker starters in an absent directory
     Init {
-        #[arg(long, default_value="document", value_parser=["document"])]
+        #[arg(long, default_value="document", value_parser=["document", "software", "planning", "all"])]
         profile: String,
+        /// Existing minisign public key assigned to developer owner; enables the Planner
+        #[arg(long)]
+        developer_public_key: Option<PathBuf>,
         #[arg(long, default_value = ".")]
         repo: PathBuf,
         #[arg(long)]

@@ -1173,14 +1173,22 @@ fn main() {
         cli::Command::Catalog {
             command:
                 cli::CatalogCommand::Init {
-                    profile: _,
+                    profile,
+                    developer_public_key,
                     repo,
                     destination,
                     json,
                 },
         } => (
             "af catalog init",
-            task_execution::starter::init(&repo, &destination, json).map(|()| 0),
+            task_execution::starter::init(
+                &repo,
+                &destination,
+                &profile,
+                developer_public_key.as_deref(),
+                json,
+            )
+            .map(|()| 0),
         ),
         cli::Command::Catalog {
             command:

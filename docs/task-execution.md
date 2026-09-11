@@ -32,8 +32,8 @@ supplement it. Claude calls use only `claude-personal`.
 - [ ] P10: deterministic captured selection and CLI routing pass the full gate; PR integration pending.
 - [ ] P11: bounded generation, shared planning accounting and signed developer decisions are
   implemented and pass the full gate; PR integration pending.
-- [ ] P12: portable export, contract tests and the document starter pass the full gate; the
-  remaining starter pack is in progress.
+- [ ] P12: portable export and contract tests pass the full gate. The complete starter catalog
+  passes the full gate, including CLI execution, repair, planning, approval and reuse.
 - [ ] P13: document execution and independent acceptance pass the full gate; Jira revision capture
   and source/Provider substitution evidence remain.
 - [ ] P14: compatibility, benchmark and consumer release.
@@ -54,6 +54,8 @@ The [export walkthrough](task-execution/export.md) describes portable bundles, s
 fixtures and second-developer reuse without another Planner call.
 The [document walkthrough](task-execution/document.md) runs a credential-free release-note Task
 with captured sources, protected content checks, independent acceptance and recorded Markdown output.
+The [starter walkthrough](task-execution/starters.md) creates software, document, review and repair
+definitions plus a reusable Planner from the supported contracts and actual byte pins.
 Each PR receives one light Round with Fable 5.1/high on `claude-personal` for correctness
 and architecture, Opus 5/xhigh on `claude-personal` for performance, and GPT-5.6-Sol/high on
 `codex-personal` for bug bounty. These replace the P01 reviewer selection for future PRs.

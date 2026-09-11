@@ -116,3 +116,14 @@ acceptance, while a later changed Subject reopens previously fixed Task claims. 
 gate passes **783 tests, zero failures, 15 ignored**, across 105 suites, plus formatting, Clippy,
 frozen reproduction and Markdown checks. Starter packaging and legacy Review CLI migration
 remain separate work; no external PR 2 reviewer has run.
+
+CI for `1f0214f` passes Check, CLI smoke and live container probes in run `34652351563`.
+The P12 starter checkpoint emits software, planning and combined catalogs from supported typed
+definitions with actual package pins. The tutorial executes implementation, standalone and embedded
+Review, both repair contracts and document Tasks without credentials. Generated execution waits
+for a signed decision; a second checkout reuses the exported plan with zero Planner calls.
+Structured tutorial requirements keep private Task prose out of shared Worker code; the original
+export privacy regression remains unchanged and passes. The complete gate passes **786 tests,
+zero failures, 15 ignored**, across 106 suites, plus formatting, Clippy and frozen reproduction.
+Markdown checks pass. Jira revision capture, legacy Review migration and P14 remain required.
+Claude personal is still signed out; no external PR 2 reviewer has run.
