@@ -54,18 +54,28 @@ impl Budget {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BudgetRefusal {
+    Tokens,
+    ReservationIdentities,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BudgetError {
+    pub reason: BudgetRefusal,
     /// The scope whose limit refused. Named so an operator knows which number to change.
     pub scope: Scope,
     pub limit: u64,
-    pub committed: u64,
-    pub reserved: u64,
+    pub committed: u128,
+    pub reserved: u128,
     pub requested: u64,
 }
 
 impl std::fmt::Display for BudgetError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.reason == BudgetRefusal::ReservationIdentities {
+            return write!(f, "budget reservation identity space exhausted");
+        }
         write!(
             f,
             "{} budget exhausted: limit {}, already committed {}, reserved {}, requested {}",
@@ -93,8 +103,8 @@ impl Reservation {
 #[derive(Debug, Clone, Default)]
 struct Account {
     limit: Option<u64>,
-    committed: u64,
-    reserved: u64,
+    committed: u128,
+    reserved: u128,
 }
 
 #[derive(Debug, Clone)]
@@ -118,6 +128,11 @@ impl BudgetLedger {
 
     /// Seed committed spend reconstructed from durable attempt lifecycle events.
     pub fn with_committed(mut self, scope: Scope, committed: u64) -> Self {
+        self.accounts.entry(scope).or_default().committed = u128::from(committed);
+        self
+    }
+
+    pub(crate) fn with_exact_committed(mut self, scope: Scope, committed: u128) -> Self {
         self.accounts.entry(scope).or_default().committed = committed;
         self
     }
@@ -128,12 +143,27 @@ impl BudgetLedger {
     /// would leave a scope holding capacity for a dispatch that never happened, and the next
     /// dispatch would be refused for a spend nobody made.
     pub fn reserve(&mut self, scopes: &[Scope], amount: u64) -> Result<Reservation, BudgetError> {
-        for scope in scopes {
-            let account = self.accounts.entry(scope.clone()).or_default();
+        let next = self.next.checked_add(1).ok_or_else(|| BudgetError {
+            reason: BudgetRefusal::ReservationIdentities,
+            scope: Scope::Run,
+            limit: u64::MAX,
+            committed: u128::from(self.next),
+            reserved: 0,
+            requested: 1,
+        })?;
+        let scopes: Vec<_> = scopes
+            .iter()
+            .cloned()
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        for scope in &scopes {
+            let account = self.accounts.get(scope).cloned().unwrap_or_default();
             if let Some(limit) = account.limit
-                && account.committed + account.reserved + amount > limit
+                && account.committed + account.reserved + u128::from(amount) > u128::from(limit)
             {
                 return Err(BudgetError {
+                    reason: BudgetRefusal::Tokens,
                     scope: scope.clone(),
                     limit,
                     committed: account.committed,
@@ -142,15 +172,15 @@ impl BudgetLedger {
                 });
             }
         }
-        for scope in scopes {
-            self.accounts.entry(scope.clone()).or_default().reserved += amount;
+        for scope in &scopes {
+            self.accounts.entry(scope.clone()).or_default().reserved += u128::from(amount);
         }
 
-        self.next += 1;
+        self.next = next;
         let reservation = Reservation {
             id: format!("reservation:{}", self.next),
             amount,
-            scopes: scopes.to_vec(),
+            scopes,
         };
         self.outstanding.insert(
             reservation.id.clone(),
@@ -183,14 +213,16 @@ impl BudgetLedger {
             let account = &self.accounts[scope];
             account
                 .committed
-                .checked_add(delta)
-                .and_then(|used| used.checked_add(account.reserved.saturating_sub(consumed)))
+                .checked_add(u128::from(delta))
+                .and_then(|used| {
+                    used.checked_add(account.reserved.saturating_sub(u128::from(consumed)))
+                })
                 .ok_or("Observed budget total overflow")?;
         }
         for scope in &held.reservation.scopes {
             let account = self.accounts.get_mut(scope).expect("reserved scope");
-            account.committed += delta;
-            account.reserved -= consumed;
+            account.committed += u128::from(delta);
+            account.reserved -= u128::from(consumed);
         }
         held.observed = held.observed.max(actual);
         Ok(())
@@ -213,10 +245,10 @@ impl BudgetLedger {
         };
         for scope in &held.reservation.scopes {
             let account = self.accounts.entry(scope.clone()).or_default();
-            account.reserved = account
-                .reserved
-                .saturating_sub(held.reservation.amount.saturating_sub(held.observed));
-            account.committed += actual.saturating_sub(held.observed);
+            account.reserved = account.reserved.saturating_sub(u128::from(
+                held.reservation.amount.saturating_sub(held.observed),
+            ));
+            account.committed += u128::from(actual.saturating_sub(held.observed));
         }
     }
 
@@ -227,24 +259,24 @@ impl BudgetLedger {
         };
         for scope in &held.reservation.scopes {
             let account = self.accounts.entry(scope.clone()).or_default();
-            account.reserved = account
-                .reserved
-                .saturating_sub(held.reservation.amount.saturating_sub(held.observed));
+            account.reserved = account.reserved.saturating_sub(u128::from(
+                held.reservation.amount.saturating_sub(held.observed),
+            ));
         }
     }
 
-    pub fn committed(&self, scope: &Scope) -> u64 {
+    pub fn committed(&self, scope: &Scope) -> u128 {
         self.accounts.get(scope).map(|a| a.committed).unwrap_or(0)
     }
 
-    pub fn reserved(&self, scope: &Scope) -> u64 {
+    pub fn reserved(&self, scope: &Scope) -> u128 {
         self.accounts.get(scope).map(|a| a.reserved).unwrap_or(0)
     }
 
     pub fn remaining(&self, scope: &Scope) -> Option<u64> {
         let account = self.accounts.get(scope)?;
         let limit = account.limit?;
-        Some(limit.saturating_sub(account.committed + account.reserved))
+        Some(u128::from(limit).saturating_sub(account.committed + account.reserved) as u64)
     }
 }
 
@@ -262,9 +294,10 @@ mod tests {
         let mut ledger = run_ledger(100).with_limit(node.clone(), Budget::of(60));
         let first = ledger.reserve(&[node.clone(), Scope::Run], 40).unwrap();
         let other = ledger.reserve(&[Scope::Run], 30).unwrap();
-        // An observed total that would overflow after the other reservation is retained
-        // must not partially charge the narrower scope.
-        assert!(ledger.observe_charge(&first, u64::MAX).is_err());
+        // A forged reservation must not partially charge the narrower scope.
+        let mut forged = first.clone();
+        forged.amount += 1;
+        assert!(ledger.observe_charge(&forged, u64::MAX).is_err());
         assert_eq!(ledger.committed(&node), 0);
         assert_eq!(ledger.reserved(&Scope::Run), 70);
         ledger.observe_charge(&first, 20).unwrap();
@@ -389,5 +422,39 @@ mod tests {
             ledger.charge(&reservation, u64::MAX / 200);
         }
         assert_eq!(ledger.remaining(&Scope::Run), None);
+    }
+    #[test]
+    fn wide_spend_preserves_each_scope_and_reservation_identity_exhaustion_is_atomic() {
+        let node = Scope::Node("reviewer".into());
+        let mut ledger = run_ledger(100)
+            .with_limit(node.clone(), Budget::of(60))
+            .with_committed(Scope::Run, 7);
+        let first = ledger
+            .reserve(&[node.clone(), Scope::Run, node.clone()], 40)
+            .unwrap();
+        let sibling = ledger.reserve(&[Scope::Run], 30).unwrap();
+        ledger.observe_charge(&first, u64::MAX).unwrap();
+        assert_eq!(ledger.committed(&node), u128::from(u64::MAX));
+        assert_eq!(ledger.committed(&Scope::Run), u128::from(u64::MAX) + 7);
+        assert_eq!(ledger.reserved(&Scope::Run), 30);
+        assert_eq!(ledger.remaining(&Scope::Run), Some(0));
+        assert_eq!(
+            ledger.reserve(&[Scope::Run], 1).unwrap_err().reason,
+            BudgetRefusal::Tokens
+        );
+        ledger.charge(&first, u64::MAX);
+        ledger.release(&sibling);
+        assert_eq!(ledger.committed(&Scope::Run), u128::from(u64::MAX) + 7);
+        assert_eq!(ledger.reserved(&Scope::Run), 0);
+
+        let mut exhausted = BudgetLedger {
+            next: u64::MAX,
+            ..Default::default()
+        };
+        let error = exhausted.reserve(&[Scope::Run], 1).unwrap_err();
+        assert_eq!(error.reason, BudgetRefusal::ReservationIdentities);
+        assert_eq!(exhausted.next, u64::MAX);
+        assert!(exhausted.accounts.is_empty());
+        assert!(exhausted.outstanding.is_empty());
     }
 }

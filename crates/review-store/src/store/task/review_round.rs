@@ -2,7 +2,7 @@
 //! Compare the Review epoch under the same SQLite writer lock as new Task dispatch records.
 //! Evidence retention (settlement, late usage, release and diagnostics) remains possible.
 
-use review_core::task::execution::{TASK_EXECUTION_RECORD_V1, TaskExecutionRecordV1};
+use review_core::task::execution::TaskExecutionRecordV1;
 use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
 use review_core::{CampaignManifestV1, PortCardinality, SubjectV1};
 
@@ -92,7 +92,7 @@ pub(super) fn fence_for_transition(
             return ReviewRoundFence::capture(cas, &revision(cas, revision_id)?);
         }
         TaskChangeV1::ExecutionRecorded { record_id } => {
-            let record: TaskExecutionRecordV1 = payload(cas, record_id, TASK_EXECUTION_RECORD_V1)?;
+            let record = super::execution::read_execution_record(cas, record_id)?.record;
             match record {
                 TaskExecutionRecordV1::Invocation { .. }
                 | TaskExecutionRecordV1::Reserved { .. }

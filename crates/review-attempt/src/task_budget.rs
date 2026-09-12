@@ -508,25 +508,18 @@ impl TaskBudget {
                 Err("Conflicting Task settlement".into())
             };
         }
-        // Validate before mutating; the shared token ledger stores u64 aggregate charges.
+        // The shared token ledger retains wide aggregate charges without narrowing usage.
         let observed = self.tokens.observed_charge(&held.tokens);
         if actual < observed {
             return Err("Task settlement cannot refund already observed usage".into());
         }
-        let committed = add(self.tokens.committed(&Scope::Run), actual - observed)?;
-        add(
-            committed,
-            self.tokens
-                .reserved(&Scope::Run)
-                .saturating_sub(held.tokens.amount.saturating_sub(observed)),
-        )?;
         self.tokens.charge(&held.tokens, actual);
         self.breached |= actual > held.tokens.amount;
         held.settled = Some(actual);
         Ok(())
     }
 
-    pub fn committed_tokens(&self) -> u64 {
+    pub fn committed_tokens(&self) -> u128 {
         self.tokens.committed(&Scope::Run)
     }
 
@@ -545,9 +538,8 @@ impl TaskBudget {
             if actual > previous {
                 let mut updated = self.tokens.clone();
                 for scope in held.tokens.scopes() {
-                    let total = add(self.tokens.committed(scope), actual - previous)?;
-                    add(total, self.tokens.reserved(scope))?;
-                    updated = updated.with_committed(scope.clone(), total);
+                    let total = self.tokens.committed(scope) + u128::from(actual - previous);
+                    updated = updated.with_exact_committed(scope.clone(), total);
                 }
                 self.tokens = updated;
                 held.settled = Some(actual);
@@ -558,7 +550,7 @@ impl TaskBudget {
         self.breached |= actual > held.tokens.amount;
         Ok(())
     }
-    pub fn reserved_tokens(&self) -> u64 {
+    pub fn reserved_tokens(&self) -> u128 {
         self.tokens.reserved(&Scope::Run)
     }
     pub fn begun_attempts(&self) -> u64 {

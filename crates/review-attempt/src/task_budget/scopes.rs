@@ -68,10 +68,8 @@ impl TaskBudget {
             }
             let account = Scope::FanOut(name.clone());
             let required = self.scope_verification_after(scope, None)?;
-            if add(
-                add(tokens.committed(&account), tokens.reserved(&account))?,
-                required,
-            )? > scope.tokens
+            if tokens.committed(&account) + tokens.reserved(&account) + u128::from(required)
+                > u128::from(scope.tokens)
             {
                 return Err(format!(
                     "Task token scope {name} cannot retain required verification"
@@ -130,13 +128,13 @@ impl TaskBudget {
         Ok(scopes)
     }
 
-    pub fn scope_committed_tokens(&self, name: &str) -> Option<u64> {
+    pub fn scope_committed_tokens(&self, name: &str) -> Option<u128> {
         self.captured_token_scopes
             .contains_key(name)
             .then(|| self.tokens.committed(&Scope::FanOut(name.into())))
     }
 
-    pub fn scope_reserved_tokens(&self, name: &str) -> Option<u64> {
+    pub fn scope_reserved_tokens(&self, name: &str) -> Option<u128> {
         self.captured_token_scopes
             .contains_key(name)
             .then(|| self.tokens.reserved(&Scope::FanOut(name.into())))

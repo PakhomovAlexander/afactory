@@ -108,6 +108,7 @@ impl ProviderTaskDomain<'_> {
             Ok(value) => value,
             Err(error) => {
                 return TaskWorkOutput {
+                    usage: None,
                     outputs: Err(error),
                     charged_tokens: Some(0),
                     raw_artifact_ids: vec![],
@@ -121,17 +122,7 @@ impl ProviderTaskDomain<'_> {
                 .adapter
                 .invoke(cas, directory.path(), PROBE_INPUT.to_vec(), timeout, false);
         let charged_tokens = returned.usage.as_ref().map(|usage| usage.chargeable_tokens);
-        let usage = returned
-            .usage
-            .as_ref()
-            .map(|usage| {
-                cas.put_json(&serde_json::to_value(usage).map_err(|e| e.to_string())?)
-                    .map_err(|e| e.to_string())
-            })
-            .transpose();
-        let mut usage_id = None;
         let outputs = (|| {
-            usage_id = usage?;
             let message = returned.message?;
             if message.len() > 64
                 || !std::str::from_utf8(&message)
@@ -170,10 +161,11 @@ impl ProviderTaskDomain<'_> {
             )]))
         })();
         TaskWorkOutput {
+            usage: returned.usage,
             outputs,
             charged_tokens,
             raw_artifact_ids: returned.raw_artifact_ids,
-            usage_id,
+            usage_id: None,
             feedback_id: None,
         }
     }

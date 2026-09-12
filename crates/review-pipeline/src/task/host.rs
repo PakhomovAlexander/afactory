@@ -449,7 +449,7 @@ impl<'a> CapturedTaskHost<'a> {
         use review_core::task::feedback::*;
         let mut raw_artifact_ids = Vec::new();
         let mut charged_tokens = Some(0);
-        let mut usage_id = None;
+        let mut token_usage = None;
         let mut feedback_code = None;
         let outputs = (|| {
             let (context, _) = worker.contract.read_context(cas, attempt.context_id())?;
@@ -524,13 +524,7 @@ impl<'a> CapturedTaskHost<'a> {
             raw_artifact_ids = result.raw_artifact_ids;
             feedback_code = result.feedback_code;
             charged_tokens = result.usage.as_ref().map(|usage| usage.chargeable_tokens);
-            usage_id = result
-                .usage
-                .map(|usage| {
-                    cas.put_json(&serde_json::to_value(usage).map_err(|e| e.to_string())?)
-                        .map_err(|e| e.to_string())
-                })
-                .transpose()?;
+            token_usage = result.usage;
             let reply = result.reply?;
             let producer = Producer::Attempt {
                 run_id: self.run_id.clone(),
@@ -624,10 +618,11 @@ impl<'a> CapturedTaskHost<'a> {
             None
         };
         TaskWorkOutput {
+            usage: token_usage,
             outputs,
             charged_tokens,
             raw_artifact_ids,
-            usage_id,
+            usage_id: None,
             feedback_id,
         }
     }
@@ -687,6 +682,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         match (self.workers.get(&input.node), attempt) {
             (Some(worker), Some(attempt)) => self.worker_execute(cas, input, attempt, worker),
             (Some(_), None) => TaskWorkOutput {
+                usage: None,
                 outputs: Err("Worker has no durably started Attempt".into()),
                 charged_tokens: Some(0),
                 raw_artifact_ids: vec![],

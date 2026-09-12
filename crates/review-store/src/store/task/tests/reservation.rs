@@ -368,12 +368,9 @@ fn inflight_usage_survives_reopen_revocation_lower_settlement_and_writer_loss() 
                 let TaskChangeV1::ExecutionRecorded { record_id } = transition.change else {
                     return None;
                 };
-                let record: TaskExecutionRecordV1 = payload(
-                    &f.cas,
-                    &record_id,
-                    review_core::task::execution::TASK_EXECUTION_RECORD_V1,
-                )
-                .unwrap();
+                let record = execution::read_execution_record(&f.cas, &record_id)
+                    .unwrap()
+                    .record;
                 matches!(record, TaskExecutionRecordV1::Settled { .. }).then_some(record)
             })
             .collect();

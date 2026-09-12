@@ -325,3 +325,26 @@ serialize child creation on Apple platforms, leaving execution and drains concur
 unchanged model-supervision suite passes 20 consecutive runs; a new 12-worker process fixture
 passes 24 concurrent batches and preserves bounded execution. Focused Clippy passes. The failed
 full run remains recorded; another complete gate is required for this correction.
+
+The process-isolation checkpoint at product `d7a65ac` (identical tree at frozen `e649654`)
+passes the complete local gate: **864 tests, zero failures, 15 ignored** across 119 suites,
+plus formatting, Clippy, documentation tests and byte-identical reproduction. The product
+commit is pushed; exact-head CI run `34684161093` is being monitored. Its first watcher
+attached before the new jobs appeared, so those initial successes are not this commit's
+CI evidence. The current watcher attached to both new pending jobs.
+
+The exact-usage checkpoint adds decimal Task usage and version-2 accounting records while
+retaining original version-1 receipts. One widened aggregate ledger retains all scopes and
+sibling reservations, including historical spend followed by `u64::MAX`. The common runtime
+persists typed Worker and Provider usage before output publication; a monotonic TEXT sidecar
+survives writer loss without SQLite numeric coercion. Task inspection/list versions carry
+exact strings in JSON and text. The numeric-only pre-execution selection-refusal contract
+remains unchanged because it records no paid execution.
+
+Core, budget, Store, pipeline and runner regressions pass **405 tests, zero failures, six
+ignored**, across 44 suites. Campaign lifecycle, Task-file, implementation and source-refresh
+CLI tests pass; the corrected selection suite and both native-model CLI cases pass separately.
+The new fake-native failure proves exact wide usage in run, show and JSON/text list output,
+with one Provider call and an incomplete result. Workspace Clippy passes. This checkpoint's
+full gate follows; no external PR specialist has run. ADR-0074 separately records process
+creation isolation, and ADR-0075 records the exact usage representation and recovery boundary.

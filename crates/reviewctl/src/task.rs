@@ -1670,7 +1670,7 @@ fn print_task_list(options: &InspectOptions, tasks: Vec<serde_json::Value>) -> R
         println!(
             "{}",
             serde_json::to_string(&serde_json::json!({
-                "schema": "af/task-list@1",
+                "schema": "af/task-list@2",
                 "tasks": tasks,
             }))
             .map_err(|error| error.to_string())?
@@ -1683,7 +1683,12 @@ fn print_task_list(options: &InspectOptions, tasks: Vec<serde_json::Value>) -> R
                 "{}  {:<10} {:>8} tokens  {}",
                 task["task_id"].as_str().unwrap_or("-"),
                 task["outcome"].as_str().unwrap_or("incomplete"),
-                task["chargeable_tokens"].as_u64().unwrap_or(0),
+                task["chargeable_tokens"]
+                    .as_str()
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| task["chargeable_tokens"]
+                        .as_u64()
+                        .map_or_else(|| "-".into(), |tokens| tokens.to_string())),
                 task.pointer("/delivery/outcome/kind")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("not-delivered"),

@@ -17,6 +17,7 @@ pub mod report;
 pub mod review;
 pub mod review_compat;
 pub mod source;
+pub mod usage;
 pub mod verification;
 
 use std::collections::{BTreeMap, BTreeSet};

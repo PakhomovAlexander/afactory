@@ -80,6 +80,17 @@ fn review_file_uses_common_task_state_and_keeps_changes_requested_exit() {
 #[cfg(unix)]
 #[test]
 fn native_model_cli_admission_is_shared_and_account_changes_refuse_dispatch() {
+    native_model_case(false);
+}
+
+#[cfg(unix)]
+#[test]
+fn native_model_cli_retains_wide_failed_usage_in_json_and_text_inspection() {
+    native_model_case(true);
+}
+
+#[cfg(unix)]
+fn native_model_case(wide: bool) {
     use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
@@ -91,6 +102,9 @@ fn native_model_cli_admission_is_shared_and_account_changes_refuse_dispatch() {
     let email = home.join("account-email");
     std::fs::write(&email, "developer@example.test").unwrap();
     let calls = home.join("calls");
+    if wide {
+        std::fs::write(home.join("wide-usage"), b"fixture").unwrap();
+    }
     let stub = r#"#!/usr/bin/python3
 import os,json,sys
 home=os.environ['CLAUDE_CONFIG_DIR']
@@ -99,6 +113,9 @@ if sys.argv[1:3]==['auth','status']:
  sys.exit(0)
 request=sys.stdin.read()
 with open(home+'/calls','a') as f: f.write('model\n')
+if os.path.isfile(home+'/wide-usage'):
+ print(json.dumps({'is_error':True,'result':'fixture provider failed after reporting usage','usage':{'input_tokens':18446744073709551615,'output_tokens':0,'cache_creation_input_tokens':0}}))
+ sys.exit(0)
 if request=='Reply with exactly: OK\n':
  result='OK'
 else:
@@ -200,6 +217,43 @@ print(json.dumps({'is_error':False,'result':result,'usage':{'input_tokens':10,'o
     assert!(!calls.exists(), "Changed account reached model dispatch");
     std::fs::write(&email, "developer@example.test").unwrap();
     let output = run(&["task", "run", "review-cli"]);
+    if wide {
+        assert_eq!(
+            output.status.code(),
+            Some(4),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["schema"], "af/task-inspection@3");
+        assert_eq!(result["chargeable_tokens"], "18446744073709551615");
+        assert_eq!(result["result"]["domain_conclusion"], "incomplete");
+        assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
+        let shown = run(&["task", "show", "review-cli"]);
+        assert!(shown.status.success());
+        let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
+        assert_eq!(shown["chargeable_tokens"], result["chargeable_tokens"]);
+        let listed = run(&["task", "list"]);
+        assert!(listed.status.success());
+        let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
+        assert_eq!(listed["schema"], "af/task-list@2");
+        assert_eq!(listed["tasks"][0]["schema"], "af/task-list-entry@2");
+        assert_eq!(
+            listed["tasks"][0]["chargeable_tokens"],
+            "18446744073709551615"
+        );
+        let text = Command::new(env!("CARGO_BIN_EXE_af"))
+            .current_dir(&repo)
+            .args(["task", "list", "--state"])
+            .arg(&state)
+            .output()
+            .unwrap();
+        assert!(text.status.success());
+        assert!(String::from_utf8_lossy(&text.stdout).contains("18446744073709551615 tokens"));
+        assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
+        return;
+    }
     assert!(
         output.status.success(),
         "{}\n{}",
@@ -208,7 +262,7 @@ print(json.dumps({'is_error':False,'result':result,'usage':{'input_tokens':10,'o
     );
     let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["attempts"], 4);
-    assert_eq!(result["chargeable_tokens"], 36);
+    assert_eq!(result["chargeable_tokens"], "36");
     assert_eq!(result["result"]["domain_conclusion"], "pass");
     assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 3);
     assert!(run(&["task", "run", "review-cli"]).status.success());
@@ -638,7 +692,7 @@ fn plan_then_run_uses_captured_inputs_and_does_not_repeat_finished_attempts() {
     let temp = tempfile::tempdir().unwrap();
     let (repo, state) = fixture(temp.path());
     let planned = af(&repo, &state, &["plan", "--file", "ticket.json"]);
-    assert_eq!(planned["schema"], "af/task-inspection@2");
+    assert_eq!(planned["schema"], "af/task-inspection@3");
     assert_eq!(planned["attempts"], 0);
     assert!(planned["plan"].is_object());
     assert!(planned["graph"].is_object());

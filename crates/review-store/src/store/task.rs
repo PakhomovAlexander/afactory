@@ -506,11 +506,7 @@ impl TaskProjection {
             | TaskChangeV1::DeliveryRecorded { .. }
             | TaskChangeV1::SourceRefreshed { .. } => true,
             TaskChangeV1::ExecutionRecorded { record_id } => matches!(
-                payload::<review_core::task::execution::TaskExecutionRecordV1>(
-                    cas,
-                    record_id,
-                    review_core::task::execution::TASK_EXECUTION_RECORD_V1
-                )?,
+                execution::read_execution_record(cas, record_id)?.record,
                 review_core::task::execution::TaskExecutionRecordV1::UsageObserved { .. }
             ),
             _ => false,

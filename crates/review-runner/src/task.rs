@@ -14,6 +14,7 @@ use serde_json::Value;
 
 use crate::{ContextManifest, ModelRunner, RunnerError, TokenUsage};
 pub mod legacy;
+pub mod usage;
 use legacy::LegacyTaskProtocol;
 
 pub const TASK_CONTEXT_V1: &str = "af/TaskContext@1";

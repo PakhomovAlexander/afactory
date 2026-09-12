@@ -537,3 +537,29 @@ fn source_revision_cannot_release_pending_work_overruns_or_expired_resources() {
     assert_eq!(value.begun_attempts(), 1);
     assert_eq!(value.committed_tokens(), 10);
 }
+
+#[test]
+fn full_native_usage_is_charged_above_u64_totals_without_releasing_siblings() {
+    let mut ledger = budget(4, 200, 1000);
+    spend(&mut ledger, "implement", 1, 7);
+    let active = ledger.prepare("implement", 2).unwrap();
+    ledger.begin(&active.id, 2).unwrap();
+    let sibling = ledger.prepare("review.verify", 2).unwrap();
+    for amount in [u64::MAX, u64::MAX, 1] {
+        ledger.observe_charge(&active.id, amount).unwrap();
+        assert_eq!(ledger.committed_tokens(), u128::from(u64::MAX) + 7);
+        assert_eq!(ledger.reserved_tokens(), 30);
+        assert!(ledger.breached());
+        assert_eq!(ledger.remaining_limits().tokens, 0);
+        assert!(ledger.begin(&sibling.id, 3).is_err());
+    }
+    ledger.settle(&active.id, u64::MAX).unwrap();
+    ledger.settle(&active.id, u64::MAX).unwrap();
+    ledger.observe_charge(&active.id, u64::MAX).unwrap();
+    assert_eq!(ledger.committed_tokens(), 18_446_744_073_709_551_622_u128);
+    assert_eq!(ledger.reserved_tokens(), 30);
+    assert!(ledger.release(&active.id).is_err());
+    ledger.release(&sibling.id).unwrap();
+    assert_eq!(ledger.reserved_tokens(), 0);
+    assert_eq!(ledger.begun_attempts(), 2);
+}

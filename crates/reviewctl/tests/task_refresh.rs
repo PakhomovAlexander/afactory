@@ -285,7 +285,7 @@ fn generated_issue_refresh_reuses_definition_but_requires_a_new_exact_signature(
     assert_eq!(refreshed["phase"]["reason"], "needs_plan_review");
     assert_ne!(refreshed["plan_id"], waiting["plan_id"]);
     assert_eq!(refreshed["attempts"], 1);
-    assert_eq!(refreshed["chargeable_tokens"], 0);
+    assert_eq!(refreshed["chargeable_tokens"], "0");
     assert_eq!(refreshed["planning"], waiting["planning"]);
     let next = revision(&cas, &refreshed);
     assert_eq!(next["previous_revision_id"], waiting["revision_id"]);
@@ -408,7 +408,7 @@ fn completed_task_refresh_retains_snapshot_and_spend_then_waits_when_capacity_is
         "Earlier delivery is history, not this revision's result"
     );
     assert_eq!(waiting["attempts"], 10);
-    assert_eq!(waiting["chargeable_tokens"], 0);
+    assert_eq!(waiting["chargeable_tokens"], "0");
     let last = revision(&cas, &waiting);
     assert_eq!(last["revision"], 3);
     assert_eq!(last["limits"], original["limits"]);

@@ -63,6 +63,7 @@ impl TaskOperatorHost for IdentityHost {
             .unwrap()
             .0;
         TaskWorkOutput {
+            usage: None,
             outputs: Ok(BTreeMap::from([(
                 "output".into(),
                 ArtifactInputV1 {

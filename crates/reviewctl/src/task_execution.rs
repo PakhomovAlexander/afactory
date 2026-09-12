@@ -1402,9 +1402,9 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
             TaskPhaseV1::Finished { result_id } => Some(artifact(&cas, result_id, TASK_RESULT_V1)?),
             _ => None,
         };
-        Ok(json!({"task_id":id,"kind":task.revision.kind,"phase":task.phase,
+        Ok(json!({"schema":"af/task-list-entry@2","task_id":id,"kind":task.revision.kind,"phase":task.phase,
             "outcome":result.as_ref().map(|r| &r.domain_conclusion),
-            "chargeable_tokens":task.execution.as_ref().map_or(0,|e| e.budget.committed_tokens()),
+            "chargeable_tokens":task.execution.as_ref().map_or(0,|e| e.budget.committed_tokens()).to_string(),
             "derived_snapshot_id":result.as_ref().and_then(|r| r.outputs.get("snapshot")).and_then(|o| o.snapshot_id.as_ref()),
             "delivery":delivery_view(&cas, &task)?}))
     }).collect()
@@ -1425,8 +1425,8 @@ fn present(
         TaskPhaseV1::Finished { result_id } => Some(artifact(cas, result_id, TASK_RESULT_V1)?),
         _ => None,
     };
-    let mut value = json!({"schema":"af/task-inspection@2","task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"plan_id":state.plan_id,
-        "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
+    let mut value = json!({"schema":"af/task-inspection@3","task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"plan_id":state.plan_id,
+        "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
     if let Some(selection) = selection::recorded(cas, &state.revision)? {
         value["selection"] = selection;
     }
@@ -1445,12 +1445,11 @@ fn present(
         if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
             &transition.change
         {
-            let record: review_core::task::execution::TaskExecutionRecordV1 = artifact(
-                cas,
-                record_id,
-                review_core::task::execution::TASK_EXECUTION_RECORD_V1,
-            )?;
-            let mut entry = json!({"artifact_id":record_id,"record":record});
+            let decoded =
+                review_store::store::task::execution::read_execution_record(cas, record_id)
+                    .map_err(|error| error.to_string())?;
+            let mut entry = json!({"artifact_id":record_id,"artifact_type":decoded.envelope.artifact_type,"record":decoded.envelope.payload});
+            let record = decoded.record;
             if let review_core::task::execution::TaskExecutionRecordV1::Settled {
                 result:
                     review_core::task::execution::TaskAttemptResultV1::Failed { diagnostic_id, .. },

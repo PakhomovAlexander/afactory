@@ -39,10 +39,3 @@ adapters retain an exact `u64::MAX` usage report while refusing held-output and 
 failures. The 500 ms timeout fixture prepares its newly written executable through a bounded,
 empty readiness branch before the measured invocation; its deadline and retention assertions
 remain unchanged. First-execution delay was reproduced before the script's first instruction.
-
-On Apple platforms the pinned Rust standard library creates pipes before setting close-on-exec.
-The shared buffered and duplex spawn paths therefore serialize child creation through one short
-critical section. This prevents supervised siblings from inheriting one another's transient pipe
-ends. Execution, waiting and draining remain concurrent. It does not change unrelated callers
-of `std::process::Command`. Concurrent short-lived and timed-out process fixtures retain separate
-output and bounded lifetimes; they also check that Worker execution has not become serialized.

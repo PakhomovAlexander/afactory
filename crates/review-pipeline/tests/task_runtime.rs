@@ -20,6 +20,8 @@ mod publication;
 mod reservation;
 #[path = "task_runtime/retry.rs"]
 mod retry;
+#[path = "task_runtime/wide_usage.rs"]
+mod wide_usage;
 
 struct Fixture {
     _directory: tempfile::TempDir,
@@ -389,7 +391,7 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
                     let TaskChangeV1::ExecutionRecorded { record_id } = transition.change else {
                         return false;
                     };
-                    let record: TaskExecutionRecordV1 = serde_json::from_value(cas.get_json(&record_id).unwrap()["payload"].clone()).unwrap();
+                    let record = review_store::store::task::execution::read_execution_record(cas, &record_id).unwrap().record;
                     matches!(record, TaskExecutionRecordV1::Started { attempt_id } if attempt_id == attempt.id())
                 });
                 assert!(

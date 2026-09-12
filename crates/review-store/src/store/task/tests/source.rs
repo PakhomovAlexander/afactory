@@ -418,7 +418,7 @@ fn source_refresh_records_changed_input_when_a_valid_plan_can_no_longer_fit() {
     assert_eq!(state.revision, changed);
     assert!(state.plan_id.is_none() && !state.admitted);
     let execution = state.execution.unwrap();
-    assert_eq!(execution.budget.committed_tokens(), overrun);
+    assert_eq!(execution.budget.committed_tokens(), u128::from(overrun));
     assert_eq!(execution.budget.begun_attempts(), 1);
     assert!(
         f.store

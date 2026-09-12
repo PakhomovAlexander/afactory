@@ -201,8 +201,8 @@ impl AttemptLedger {
     }
 
     /// Everything spent, including on attempts whose output was thrown away.
-    pub fn total_charged(&self) -> u64 {
-        self.attempts.values().map(|a| a.charged).sum()
+    pub fn total_charged(&self) -> u128 {
+        self.attempts.values().map(|a| u128::from(a.charged)).sum()
     }
 
     pub fn quarantined(&self) -> Vec<&Attempt> {

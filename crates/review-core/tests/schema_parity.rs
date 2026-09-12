@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 100] = [
+const SCHEMAS: [&str; 102] = [
     "normalized-task-requirements-v1.json",
     "task-source-capture-v1.json",
     "issue-input-v1.json",
@@ -83,6 +83,8 @@ const SCHEMAS: [&str; 100] = [
     "task-run-report-v1.json",
     "task-diagnostic-v1.json",
     "task-execution-record-v1.json",
+    "task-execution-record-v2.json",
+    "task-token-usage-v1.json",
     "task-revision-v1.json",
     "task-result-v1.json",
     "task-phase-v1.json",
@@ -538,6 +540,7 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     "finding-report-v1.json",
                     "reviewer-result-v1.json",
                     "task-contracts-v1.json",
+                    "task-token-usage-v1.json",
                     "task-operator-signature-v1.json",
                     "task-kind-v1.json",
                     "task-invocation-v1.json",
@@ -2470,3 +2473,6 @@ fn legacy_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
     }
     assert!(!validator("task-review-round-v1.json").is_valid(&round));
 }
+
+#[path = "schema_parity/task_usage.rs"]
+mod task_usage;

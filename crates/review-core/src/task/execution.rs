@@ -6,6 +6,9 @@ use crate::is_digest;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+mod accounting;
+pub use accounting::{TASK_EXECUTION_RECORD_V2, TaskExecutionRecordV2};
+
 pub const TASK_INVOCATION_V1: &str = "af/TaskInvocation@1";
 pub const TASK_OUTPUT_V1: &str = "af/TaskOutput@1";
 pub const TASK_EXECUTION_RECORD_V1: &str = "af/TaskExecutionRecord@1";
@@ -199,6 +202,18 @@ impl TaskExecutionRecordV1 {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        if let Self::Settled { charged_tokens, .. } | Self::UsageObserved { charged_tokens, .. } =
+            self
+        {
+            require(
+                safe_number(*charged_tokens),
+                "Task charge exceeds safe integer bound",
+            )?;
+        }
+        self.validate_fields()
+    }
+
+    fn validate_fields(&self) -> Result<(), String> {
         require(
             self.artifact_refs().iter().all(|id| is_digest(id)),
             "Invalid Task execution artifact reference",
@@ -257,20 +272,14 @@ impl TaskExecutionRecordV1 {
             }
             Self::Settled {
                 attempt_id,
-                charged_tokens,
                 raw_artifact_ids,
                 ..
             }
             | Self::UsageObserved {
                 attempt_id,
-                charged_tokens,
                 raw_artifact_ids,
                 ..
             } => {
-                require(
-                    safe_number(*charged_tokens),
-                    "Task charge exceeds safe integer bound",
-                )?;
                 require(
                     raw_artifact_ids.len() <= 64
                         && raw_artifact_ids

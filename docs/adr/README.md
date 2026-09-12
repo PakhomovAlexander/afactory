@@ -141,3 +141,5 @@ options you rejected and why — that is the part future-you needs.
 - [0071 — Share captured Review authority and Task token scopes](0071-share-captured-review-authority-and-task-token-scopes.md)
 - [0072 — Retain process output independently of transport status](0072-retain-process-output-independently-of-transport-status.md)
 - [0073 — Check Task retry eligibility before reservation](0073-check-task-retry-eligibility-before-reservation.md)
+- [0074 — Isolate concurrent process pipe creation on Apple](0074-isolate-concurrent-process-pipe-creation-on-apple.md)
+- [0075 — Retain exact Task usage with versioned decimal counters](0075-retain-exact-task-usage-with-versioned-decimal-counters.md)

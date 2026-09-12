@@ -1593,7 +1593,7 @@ impl<'a> Kernel<'a> {
 
     /// Tokens committed so far, across every attempt including fenced ones. `None` when the
     /// run is uncapped.
-    pub fn spent(&self) -> Option<u64> {
+    pub fn spent(&self) -> Option<u128> {
         self.budgets.as_ref().map(|b| {
             b.ledger
                 .lock()
@@ -1603,7 +1603,7 @@ impl<'a> Kernel<'a> {
     }
 
     /// Charge accumulated by the dynamic reviewers owned by one captured Scatter.
-    pub fn fan_out_spent(&self, scatter: &str) -> Option<u64> {
+    pub fn fan_out_spent(&self, scatter: &str) -> Option<u128> {
         self.budgets.as_ref().map(|budgets| {
             budgets
                 .ledger
@@ -1974,7 +1974,12 @@ impl<'a> Kernel<'a> {
         report: &RunReport,
         policy: ConvergencePolicy,
     ) -> Result<RunVerdict, String> {
-        let verdict = self.domain.publish_report(report, policy, self.spent())?;
+        let spent = self
+            .spent()
+            .map(u64::try_from)
+            .transpose()
+            .map_err(|_| "Legacy RunReport cannot represent the exact token total")?;
+        let verdict = self.domain.publish_report(report, policy, spent)?;
         if verdict == RunVerdict::Pass
             && self.integration.is_some()
             && self.domain.authority.round < self.domain.authority.max_rounds

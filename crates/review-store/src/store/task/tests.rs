@@ -8,6 +8,7 @@ mod retry;
 mod review;
 mod source;
 mod token_scopes;
+mod wide_usage;
 
 struct Authority {
     generated: Vec<GeneratedOriginV1>,

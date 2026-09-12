@@ -4780,7 +4780,11 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
             open_or_stale_demand_ids.len()
         ),
     );
-    let spent_tokens = kernel.spent();
+    let spent_tokens = kernel
+        .spent()
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| "Legacy Review output cannot represent the exact token total")?;
     if let Some(spent) = spent_tokens {
         run_progress(options, format_args!("spent    {spent} tokens"));
     }

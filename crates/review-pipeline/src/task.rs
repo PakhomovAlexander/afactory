@@ -26,6 +26,8 @@ use review_store::store::task::{TaskAuthority, TaskLease, TaskProjection, task_r
 use review_store::{Cas, EventStore, SharedEventStore, validate_envelope};
 
 pub struct TaskWorkOutput {
+    /// Adapter-reported counters survive output/CAS failure until durable accounting.
+    pub usage: Option<review_runner::TokenUsage>,
     pub outputs: Result<BTreeMap<String, ArtifactInputV1>, String>,
     /// None means usage is unavailable, so the complete reservation remains charged.
     pub charged_tokens: Option<u64>,
@@ -561,10 +563,11 @@ impl Dispatch for TaskRuntime<'_> {
             }
             let started = SystemTime::now();
             let timer = Instant::now();
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 self.host.execute(self.cas, input, attempt.as_ref())
             }))
             .unwrap_or_else(|_| TaskWorkOutput {
+                usage: None,
                 outputs: Err("Task operator panicked".into()),
                 charged_tokens: None,
                 raw_artifact_ids: vec![],
@@ -575,16 +578,21 @@ impl Dispatch for TaskRuntime<'_> {
                 // Capture known charge before output CAS admission: a crash during output or
                 // diagnostic publication must not hide an already reported Provider overrun.
                 // The event ledger remains authoritative; recovery only raises its charge.
-                let usage = result
-                    .usage_id
-                    .as_deref()
-                    .and_then(|id| self.cas.get_json(id).ok())
-                    .and_then(|value| {
-                        serde_json::from_value::<review_runner::TokenUsage>(value).ok()
-                    });
+                let usage_result = match result.usage.take() {
+                    Some(usage) => Ok(Some(usage)),
+                    None => result
+                        .usage_id
+                        .as_deref()
+                        .map(|id| review_runner::task::usage::read_task_usage(self.cas, id))
+                        .transpose(),
+                };
+                let usage = usage_result.as_ref().ok().and_then(Option::as_ref);
                 let charge = result
                     .charged_tokens
-                    .or_else(|| usage.as_ref().map(|u| u.chargeable_tokens));
+                    .into_iter()
+                    .chain(usage.as_ref().map(|usage| usage.chargeable_tokens))
+                    .max();
+                result.charged_tokens = charge;
                 let wall = review_store::AttemptWall {
                     run_id: task_run_id(self.lease.task_id()).map_err(|e| e.to_string())?,
                     attempt_id: attempt.id().into(),
@@ -604,14 +612,52 @@ impl Dispatch for TaskRuntime<'_> {
                         chargeable_tokens,
                     }),
                 };
-                let _ = self
-                    .store
+                self.store
                     .lock()
                     .expect("Task Store")
-                    .record_attempt_wall(&wall);
+                    .record_attempt_wall(&wall)
+                    .map_err(|error| {
+                        format!("Cannot retain Task usage before publication: {error}")
+                    })?;
+                let usage = usage_result?;
+                if result.usage_id.is_none()
+                    && let Some(charge) = charge
+                {
+                    let usage =
+                        usage.unwrap_or_else(|| review_runner::TokenUsage::charge_only(charge));
+                    result.usage_id = Some(review_runner::task::usage::persist_task_usage(
+                        self.cas,
+                        Producer::Attempt {
+                            run_id: wall.run_id,
+                            node_id: input.node.clone(),
+                            attempt_id: attempt.id().into(),
+                        },
+                        attempt.context_id(),
+                        &usage,
+                    )?);
+                }
+                if let (Some(charged_tokens), Some(usage_id)) = (charge, &result.usage_id) {
+                    self.store
+                        .lock()
+                        .expect("Task Store")
+                        .observe_task_usage(
+                            self.cas,
+                            &self.lease,
+                            TaskExecutionRecordV1::UsageObserved {
+                                attempt_id: attempt.id().into(),
+                                charged_tokens,
+                                usage_id: usage_id.clone(),
+                                raw_artifact_ids: result.raw_artifact_ids.clone(),
+                            },
+                        )
+                        .map_err(|error| error.to_string())?;
+                }
             }
             let charged = result
                 .charged_tokens
+                .into_iter()
+                .chain(result.usage.as_ref().map(|usage| usage.chargeable_tokens))
+                .max()
                 .unwrap_or_else(|| attempt.as_ref().map_or(0, |a| a.reservation().tokens));
             if attempt.is_none() && charged != 0 {
                 return Err("Pure Task operator reported a paid operation".into());

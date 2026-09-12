@@ -825,6 +825,7 @@ impl TaskOperatorHost for CodeTaskDomain {
             _ => Err("Code operator requires its captured Worker or domain adapter".into()),
         })();
         TaskWorkOutput {
+            usage: None,
             outputs,
             charged_tokens: Some(0),
             raw_artifact_ids: vec![],

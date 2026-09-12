@@ -1,6 +1,9 @@
 //! Durable invocation/admission/settlement shared by every new Task kind. The scheduler and
 //! domain adapters call this boundary; no Worker output can bypass plan or lease admission.
 
+mod encoding;
+pub use encoding::{DecodedTaskExecutionRecord, read_execution_record};
+
 use review_attempt::task_budget::{TaskBudget, TaskReservation};
 use review_attempt::{AttemptId, AttemptLedger, Receipt, Selection};
 use review_core::task::execution::*;
@@ -145,8 +148,7 @@ fn verify_attempt_producer(
 }
 
 pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError> {
-    let record: TaskExecutionRecordV1 = payload(cas, id, TASK_EXECUTION_RECORD_V1)?;
-    record.validate().map_err(conflict)?;
+    let record = read_execution_record(cas, id)?.record;
     let mut refs: BTreeSet<_> = record
         .artifact_refs()
         .into_iter()
@@ -576,8 +578,7 @@ impl TaskProjection {
         record_id: &str,
         time: u64,
     ) -> Result<(), StoreError> {
-        let record: TaskExecutionRecordV1 = payload(cas, record_id, TASK_EXECUTION_RECORD_V1)?;
-        record.validate().map_err(conflict)?;
+        let record = read_execution_record(cas, record_id)?.record;
         let dispatching = matches!(
             record,
             TaskExecutionRecordV1::Invocation { .. }
@@ -952,12 +953,34 @@ impl EventStore {
                             .map_or(0, |a| a.charged),
                     );
                 let diagnostic_id = cas.put_json(&json!({"schema":"af.task-diagnostic/1", "reason":"previous Task writer disappeared", "attempt_id":id})).map_err(|e| StoreError::Artifact(e.to_string()))?;
+                let usage_id = walls
+                    .iter()
+                    .find(|wall| &wall.attempt_id == id)
+                    .and_then(|wall| wall.usage.as_ref())
+                    .map(|usage| {
+                        cas.put_artifact(
+                            review_core::task::usage::TASK_TOKEN_USAGE_V1,
+                            review_core::Producer::Attempt {
+                                run_id: task_run_id(&lease.task_id)?,
+                                node_id: attempt.reservation.node.clone(),
+                                attempt_id: id.clone(),
+                            },
+                            attempt.context_id.iter().cloned().collect(),
+                            None,
+                            serde_json::to_value(
+                                review_core::task::usage::TaskTokenUsageV1::from(usage),
+                            )?,
+                        )
+                        .map(|(id, _)| id)
+                        .map_err(|error| StoreError::Artifact(error.to_string()))
+                    })
+                    .transpose()?;
                 TaskExecutionRecordV1::Settled {
                     attempt_id: id.clone(),
                     charged_tokens: observed.max(attempt.reservation.tokens),
                     result: TaskAttemptResultV1::Abandoned { diagnostic_id },
                     raw_artifact_ids: vec![],
-                    usage_id: None,
+                    usage_id,
                 }
             } else {
                 TaskExecutionRecordV1::Released {
@@ -993,10 +1016,10 @@ impl EventStore {
         record: TaskExecutionRecordV1,
         time: u64,
     ) -> Result<RunEvent, StoreError> {
-        record.validate().map_err(conflict)?;
+        let (kind, payload) = encoding::encode_record(&record)?;
         let (id, _) = cas
             .put_artifact(
-                TASK_EXECUTION_RECORD_V1,
+                kind,
                 review_core::Producer::KernelOperation {
                     run_id: task_run_id(&lease.task_id)?,
                     node_id: None,
@@ -1008,7 +1031,7 @@ impl EventStore {
                     .map(str::to_owned)
                     .collect(),
                 None,
-                serde_json::to_value(record)?,
+                payload,
             )
             .map_err(|e| StoreError::Artifact(e.to_string()))?;
         self.task_change(

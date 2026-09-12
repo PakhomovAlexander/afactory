@@ -19,6 +19,7 @@ use serde_json::Value;
 
 use crate::cas::{Cas, CasError};
 
+mod attempt_wall;
 pub mod task;
 pub mod task_legacy;
 
@@ -206,9 +207,10 @@ pub struct AttemptUsage {
 
 /// Wall-clock and provider usage for one reviewer Attempt.
 ///
-/// This is a **sidecar**, not an event: it carries no identity, and nothing in replay, the
-/// Ledger, or convergence reads it — the event stream stays byte-for-byte deterministic. It
-/// exists so a person can see how long a review took and what it consumed, through
+/// This is a **sidecar**, not an event: Review replay, the Finding Ledger and convergence
+/// do not read it. Common Task recovery may raise an abandoned Attempt's canonical charge
+/// from its durable usage floor before permitting further work. It also lets a person see
+/// how long a review took and what it consumed, through
 /// `af review report`, `af review campaigns`, and `af review ledger`. An absent row means "not
 /// recorded", never "zero".
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -287,6 +289,7 @@ impl EventStore {
                  PRIMARY KEY (run_id, attempt_id)
              );",
         )?;
+        attempt_wall::migrate(&conn)?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),
@@ -745,97 +748,6 @@ impl EventStore {
             .conn
             .prepare("SELECT DISTINCT run_id FROM events ORDER BY run_id")?;
         let rows = stmt.query_map([], |row| row.get(0))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::Sqlite)
-    }
-
-    /// Records the wall-clock sidecar for one Attempt. A second write for the same Attempt
-    /// replaces the first, so a retried write cannot double-count.
-    pub fn record_attempt_wall(&self, wall: &AttemptWall) -> Result<(), StoreError> {
-        fn bounded(value: u64, what: &str) -> Result<i64, StoreError> {
-            i64::try_from(value).map_err(|_| {
-                StoreError::Conflict(format!("attempt wall {what} exceeds SQLite range"))
-            })
-        }
-        fn optional(value: Option<u64>, what: &str) -> Result<Option<i64>, StoreError> {
-            value.map(|value| bounded(value, what)).transpose()
-        }
-        let (input, output, cache_read, cache_write, reasoning, chargeable) = match &wall.usage {
-            Some(usage) => (
-                optional(usage.input_tokens, "input tokens")?,
-                optional(usage.output_tokens, "output tokens")?,
-                optional(usage.cache_read_tokens, "cache-read tokens")?,
-                optional(usage.cache_write_tokens, "cache-write tokens")?,
-                optional(usage.reasoning_tokens, "reasoning tokens")?,
-                Some(bounded(usage.chargeable_tokens, "chargeable tokens")?),
-            ),
-            None => (None, None, None, None, None, None),
-        };
-        self.conn.execute(
-            "INSERT OR REPLACE INTO attempt_wall (
-                 run_id, attempt_id, node_id, round, epoch, started_unix_ms, elapsed_ms,
-                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                 reasoning_tokens, chargeable_tokens
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            rusqlite::params![
-                wall.run_id,
-                wall.attempt_id,
-                wall.node_id,
-                i64::from(wall.round),
-                i64::from(wall.epoch),
-                bounded(wall.started_unix_ms, "start")?,
-                bounded(wall.elapsed_ms, "elapsed")?,
-                input,
-                output,
-                cache_read,
-                cache_write,
-                reasoning,
-                chargeable,
-            ],
-        )?;
-        Ok(())
-    }
-
-    /// The recorded wall-clock rows of a run, oldest first. A store written before the sidecar
-    /// existed has no table; that reads as no rows, not as an error.
-    pub fn attempt_wall(&self, run_id: &str) -> Result<Vec<AttemptWall>, StoreError> {
-        let present: i64 = self.conn.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'attempt_wall'",
-            [],
-            |row| row.get(0),
-        )?;
-        if present == 0 {
-            return Ok(Vec::new());
-        }
-        let mut stmt = self.conn.prepare(
-            "SELECT attempt_id, node_id, round, epoch, started_unix_ms, elapsed_ms,
-                    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                    reasoning_tokens, chargeable_tokens
-             FROM attempt_wall WHERE run_id = ?1
-             ORDER BY started_unix_ms, attempt_id",
-        )?;
-        let rows = stmt.query_map([run_id], |row| {
-            let unsigned = |value: i64| u64::try_from(value).unwrap_or(0);
-            let optional = |value: Option<i64>| value.map(unsigned);
-            let chargeable: Option<i64> = row.get(11)?;
-            Ok(AttemptWall {
-                run_id: run_id.to_string(),
-                attempt_id: row.get(0)?,
-                node_id: row.get(1)?,
-                round: u32::try_from(row.get::<_, i64>(2)?).unwrap_or(u32::MAX),
-                epoch: u32::try_from(row.get::<_, i64>(3)?).unwrap_or(u32::MAX),
-                started_unix_ms: unsigned(row.get(4)?),
-                elapsed_ms: unsigned(row.get(5)?),
-                usage: chargeable.map(|chargeable| AttemptUsage {
-                    input_tokens: optional(row.get(6).ok().flatten()),
-                    output_tokens: optional(row.get(7).ok().flatten()),
-                    cache_read_tokens: optional(row.get(8).ok().flatten()),
-                    cache_write_tokens: optional(row.get(9).ok().flatten()),
-                    reasoning_tokens: optional(row.get(10).ok().flatten()),
-                    chargeable_tokens: unsigned(chargeable),
-                }),
-            })
-        })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::Sqlite)
     }
