@@ -159,3 +159,4 @@ options you rejected and why — that is the part future-you needs.
 - [0087 — Control native Task invocations through the shared supervisor](0087-control-native-task-invocations-through-the-shared-supervisor.md)
 - [0088 — Retain native billing completeness with Task usage](0088-retain-native-billing-completeness-with-task-usage.md)
 - [0089 — Interrupt Task work when its writer heartbeat fails](0089-interrupt-task-work-when-its-writer-heartbeat-fails.md)
+- [0090 — Recheck native Task Provider identity before private invocation](0090-recheck-native-task-provider-identity-before-private-invocation.md)

@@ -52,6 +52,13 @@ Before a planned Task resumes, the adapter checks the current account and recomp
 the recorded binding. Account, model, package or policy changes cannot silently alter an
 admitted plan. Finished Tasks remain inspectable without Provider calls.
 
+Every native invocation also rechecks that exact local account, executable path and
+authentication context before sending private input. The token-free check shares the remaining
+Attempt deadline and cancellation control. Unavailable or changed identity refuses with zero
+new charge while preserving earlier admission and spend. Credentials can still change between
+the check and their consumption by the native client; this is not an atomic session guarantee.
+See [ADR-0090](../adr/0090-recheck-native-task-provider-identity-before-private-invocation.md).
+
 Native Task usage retains exact cumulative components and charge across multiple turns, even
 when their totals exceed u64. Output decoding, timeout, unavailable CAS or a refused final-message
 file cannot erase observed usage. The original Task budget still applies; an overrun never

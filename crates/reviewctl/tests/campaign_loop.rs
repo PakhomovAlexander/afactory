@@ -12,6 +12,8 @@ use std::process::Command;
 mod contracts;
 #[path = "campaign_loop/heartbeat.rs"]
 mod heartbeat;
+#[path = "campaign_loop/provider_currentness.rs"]
+mod provider_currentness;
 
 fn git(repo: &Path, home: &Path, args: &[&str]) {
     let out = Command::new("git")

@@ -2,12 +2,18 @@
 //! later as paid nodes by the common Task runtime. Credentials and raw account data stay local.
 use super::*;
 use review_core::task::plan::WorkerExecutionV1;
-use review_runner::task::WorkerModelAdapter;
+use review_runner::ExactBrokerClient;
+use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
 
+#[derive(Clone)]
 pub struct TaskProviderIdentity {
     spec: ProviderSpec,
     program: PathBuf,
     principal_id: String,
+    auth_method: String,
+    probe_path: std::ffi::OsString,
+    home: Option<std::ffi::OsString>,
+    user: Option<std::ffi::OsString>,
 }
 impl TaskProviderIdentity {
     pub fn probe(provider: &str, expected_kind: &str) -> Result<Self, String> {
@@ -19,40 +25,16 @@ impl TaskProviderIdentity {
             .ok_or("Task Provider executable is unavailable")?;
         let probe_path = sanitized_path();
         let cancelled = AtomicBool::new(false);
-        let principal_id = match spec.kind {
-            ProviderKind::Claude => {
-                let output = run_probe(&program, &spec, &probe_path, &cancelled)?;
-                if !output.status.success() {
-                    return Err("Claude account identity probe failed".into());
-                }
-                let status: serde_json::Value = serde_json::from_str(&output.stdout)
-                    .map_err(|_| "Claude account identity response is invalid")?;
-                claude_principal(&status)?
-            }
-            ProviderKind::Codex => {
-                #[cfg(unix)]
-                {
-                    let response = probe_codex_request(
-                        &program,
-                        &spec,
-                        &probe_path,
-                        &cancelled,
-                        &serde_json::json!({"method":"account/read","id":2,"params":{"refreshToken":false}}),
-                    )?;
-                    codex_principal(&response)?
-                }
-                #[cfg(not(unix))]
-                {
-                    return Err(
-                        "Task Provider admission requires bounded Unix process isolation".into(),
-                    );
-                }
-            }
-        };
+        let (principal_id, auth_method) =
+            probe_identity(&program, &spec, &probe_path, &cancelled, None)?;
         Ok(Self {
             spec,
             program,
             principal_id,
+            auth_method,
+            probe_path,
+            home: std::env::var_os("HOME"),
+            user: std::env::var_os("USER"),
         })
     }
     pub fn execution(&self, model: &str, effort: &str) -> Result<WorkerExecutionV1, String> {
@@ -116,19 +98,167 @@ impl TaskProviderIdentity {
             program,
             flags.into_iter().map(review_core::Arg::literal).collect(),
         );
-        match self.spec.kind {
-            ProviderKind::Claude => Ok(Box::new(
+        let inner: Box<dyn WorkerModelAdapter> = match self.spec.kind {
+            ProviderKind::Claude => Box::new(
                 review_runner_claude::task::ClaudeTaskAdapter::new(&command)?.with_auth(
                     Some(auth.into()),
-                    std::env::var("USER").map_err(|_| "Claude Provider requires USER")?,
-                    std::env::var("HOME").map_err(|_| "Claude Provider requires HOME")?,
+                    self.user
+                        .as_ref()
+                        .and_then(|s| s.to_str())
+                        .ok_or("Claude Provider requires USER")?
+                        .into(),
+                    self.home
+                        .as_ref()
+                        .and_then(|s| s.to_str())
+                        .ok_or("Claude Provider requires HOME")?
+                        .into(),
                 ),
-            )),
-            ProviderKind::Codex => Ok(Box::new(
+            ),
+            ProviderKind::Codex => Box::new(
                 review_runner_codex::task::CodexTaskAdapter::new(&command)?
                     .with_codex_home(auth.into()),
-            )),
+            ),
+        };
+        Ok(Box::new(CurrentTaskProviderAdapter {
+            identity: self.clone(),
+            inner,
+        }))
+    }
+
+    fn check_current(&self, deadline: Instant, cancelled: &AtomicBool) -> Result<(), String> {
+        check_task_probe_control(Some(deadline), cancelled)?;
+        let current = configured_spec(&self.spec.id)?;
+        if current.kind != self.spec.kind
+            || current.auth_dir != self.spec.auth_dir
+            || current.explicit_selector != self.spec.explicit_selector
+            || resolve_program(self.spec.kind.command()).as_ref() != Some(&self.program)
+            || !is_executable(&self.program)
+            || sanitized_path() != self.probe_path
+            || std::env::var_os("HOME") != self.home
+            || std::env::var_os("USER") != self.user
+        {
+            return Err("Task Provider execution or authentication context changed".into());
         }
+        let (principal, auth_method) = probe_identity(
+            &self.program,
+            &self.spec,
+            &self.probe_path,
+            cancelled,
+            Some(deadline),
+        )?;
+        check_task_probe_control(Some(deadline), cancelled)?;
+        if principal != self.principal_id || auth_method != self.auth_method {
+            return Err("Task Provider account changed".into());
+        }
+        Ok(())
+    }
+}
+
+fn probe_identity(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    deadline: Option<Instant>,
+) -> Result<(String, String), String> {
+    #[cfg(unix)]
+    match spec.kind {
+        ProviderKind::Claude => {
+            let output = run_probe_before(program, spec, probe_path, cancelled, deadline)?;
+            if !output.status.success() {
+                return Err("Claude account identity probe failed".into());
+            }
+            let status: serde_json::Value = serde_json::from_str(&output.stdout)
+                .map_err(|_| "Claude account identity response is invalid")?;
+            let principal = claude_principal(&status)?;
+            Ok((principal, status["authMethod"].as_str().unwrap().into()))
+        }
+        ProviderKind::Codex => {
+            let response = probe_codex_request_before(
+                program,
+                spec,
+                probe_path,
+                cancelled,
+                &serde_json::json!({"method":"account/read","id":2,"params":{"refreshToken":false}}),
+                deadline,
+            )?;
+            Ok((codex_principal(&response)?, "chatgpt".into()))
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (program, spec, probe_path, cancelled, deadline);
+        Err("Task Provider admission requires bounded Unix process isolation".into())
+    }
+}
+
+/// A token-free recheck before each private send. The status process and native invocation share
+/// the original remaining Attempt wall limit and cancellation. This detects between-node drift;
+/// credentials may still change between the check and the native client's auth consumption.
+struct CurrentTaskProviderAdapter {
+    identity: TaskProviderIdentity,
+    inner: Box<dyn WorkerModelAdapter>,
+}
+impl WorkerModelAdapter for CurrentTaskProviderAdapter {
+    fn credential_mode(&self) -> review_core::BrokerCredentialModeV1 {
+        self.inner.credential_mode()
+    }
+    fn provider_kind(&self) -> &'static str {
+        self.inner.provider_kind()
+    }
+    fn model_settings(&self) -> Option<(String, String)> {
+        self.inner.model_settings()
+    }
+    fn invoke(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+    ) -> ModelWorkerReturn {
+        self.invoke_controlled(cas, workdir, input, timeout, writable, None, None)
+    }
+    fn invoke_controlled(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+        broker: Option<&dyn ExactBrokerClient>,
+        cancellation: Option<&AtomicBool>,
+    ) -> ModelWorkerReturn {
+        let refused = || ModelWorkerReturn {
+            message: Err(concat!(
+                "Captured Task Provider identity is no longer current or could not be verified ",
+                "before invocation"
+            )
+            .into()),
+            usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
+            usage_observation: None,
+            raw_artifact_ids: vec![],
+        };
+        // Native clients do not consume Broker handles. Keep the native refusal, before any check.
+        if broker.is_some() {
+            return self
+                .inner
+                .invoke_with_broker(cas, workdir, input, timeout, writable, broker);
+        }
+        let Some(deadline) = Instant::now().checked_add(timeout) else {
+            return refused();
+        };
+        let local = AtomicBool::new(false);
+        let cancelled = cancellation.unwrap_or(&local);
+        // Raw status/account output and filesystem diagnostics remain local, never Worker evidence.
+        if self.identity.check_current(deadline, cancelled).is_err() {
+            return refused();
+        }
+        let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+            return refused();
+        };
+        self.inner
+            .invoke_controlled(cas, workdir, input, remaining, writable, None, cancellation)
     }
 }
 
@@ -205,3 +335,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "task/currentness_tests.rs"]
+mod currentness_tests;

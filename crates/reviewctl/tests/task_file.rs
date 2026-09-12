@@ -97,6 +97,22 @@ fn native_codex_multiturn_usage_survives_common_accounting_and_fresh_inspection(
 
 #[cfg(unix)]
 fn native_model_case(wide: bool, codex: bool) {
+    native_model_drift_case(wide, codex, None);
+}
+
+#[cfg(unix)]
+#[test]
+fn native_task_account_change_after_admission_refuses_private_worker_context() {
+    native_model_drift_case(false, false, Some(1));
+}
+#[cfg(unix)]
+#[test]
+fn native_task_account_change_between_workers_retains_original_spend() {
+    native_model_drift_case(false, false, Some(2));
+}
+
+#[cfg(unix)]
+fn native_model_drift_case(wide: bool, codex: bool, switch_after: Option<usize>) {
     use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
@@ -108,6 +124,9 @@ fn native_model_case(wide: bool, codex: bool) {
     let email = home.join("account-email");
     std::fs::write(&email, "developer@example.test").unwrap();
     let calls = home.join("calls");
+    if let Some(after) = switch_after {
+        std::fs::write(home.join("switch-after"), after.to_string()).unwrap();
+    }
     if wide {
         std::fs::write(home.join("wide-usage"), b"fixture").unwrap();
     }
@@ -118,7 +137,9 @@ if sys.argv[1:3]==['auth','status']:
  print(json.dumps({'loggedIn':True,'apiProvider':'firstParty','authMethod':'claude.ai','email':open(home+'/account-email').read()}))
  sys.exit(0)
 request=sys.stdin.read()
-with open(home+'/calls','a') as f: f.write('model\n')
+with open(home+'/calls','a') as f: f.write(open(home+'/account-email').read()+'\n')
+if os.path.isfile(home+'/switch-after') and len(open(home+'/calls').readlines())==int(open(home+'/switch-after').read()):
+ with open(home+'/account-email','w') as f: f.write('changed@example.test')
 if os.path.isfile(home+'/wide-usage'):
  print(json.dumps({'is_error':True,'result':'fixture provider failed after reporting usage','usage':{'input_tokens':18446744073709551615,'output_tokens':20,'cache_creation_input_tokens':0}}))
  sys.exit(0)
@@ -176,6 +197,9 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
         toml::from_str(&std::fs::read_to_string(pipeline_dir.join("pipeline.toml")).unwrap())
             .unwrap();
     pipeline.max_attempts = 4;
+    if switch_after.is_some() {
+        pipeline.max_parallel = 1;
+    }
     std::fs::write(
         pipeline_dir.join("pipeline.toml"),
         toml::to_string(&pipeline).unwrap(),
@@ -240,6 +264,49 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     assert!(!calls.exists(), "Changed account reached model dispatch");
     std::fs::write(&email, "developer@example.test").unwrap();
     let output = run(&["task", "run", "review-cli"]);
+    if let Some(after) = switch_after {
+        assert_eq!(
+            output.status.code(),
+            Some(4),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let result: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(result["chargeable_tokens"], (12 * after).to_string());
+        assert_ne!(result["result"]["domain_conclusion"], "pass");
+        let sent = std::fs::read_to_string(&calls).unwrap();
+        assert_eq!(sent.lines().count(), after);
+        assert!(
+            sent.lines().all(|line| line == "developer@example.test"),
+            "private input reached another account"
+        );
+        let records = result["execution_records"].as_array().unwrap();
+        assert!(
+            records
+                .iter()
+                .any(|r| r["record"]["kind"] == "settled" && r["record"]["charged_tokens"] == "0"),
+            "pre-send refusal must be known zero: {records:?}"
+        );
+        let shown = run(&["task", "show", "review-cli"]);
+        assert!(shown.status.success());
+        let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
+        assert_eq!(shown["chargeable_tokens"], result["chargeable_tokens"]);
+        assert_eq!(shown["attempts"], result["attempts"]);
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), sent);
+        let cas = review_store::Cas::open(state.join("cas")).unwrap();
+        let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+        let projection = store.task_projection(&cas, "review-cli").unwrap().unwrap();
+        assert_eq!(projection.revision.limits.tokens, 10000);
+        let execution = projection.execution.unwrap();
+        assert_eq!(execution.budget.committed_tokens(), (12 * after) as u128);
+        assert!(
+            execution.outputs.contains_key("root.providers.admit0"),
+            "succeeded admission was lost"
+        );
+        assert!(execution.budget.begun_attempts() <= 4);
+        return;
+    }
     if wide {
         let exact = if codex {
             2 * u128::from(u64::MAX) + 40

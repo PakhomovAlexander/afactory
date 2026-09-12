@@ -69,26 +69,76 @@ sys.stdout.write('{"fields":{}}\n200')"#,
 #[test]
 fn native_source_cancels_inflight_process_and_bounds_output() {
     let root = tempfile::tempdir().unwrap();
+    let ready = root.path().join("ready");
     let transport = transport(
         root.path(),
-        "import sys,time\nsys.stdin.read()\ntime.sleep(30)",
+        &format!(
+            r#"import os,sys,time,subprocess
+sys.stdin.read()
+child=subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)'])
+with open({ready:?},'w') as f: f.write(str(os.getpid())+' '+str(child.pid))
+time.sleep(30)"#,
+            ready = ready.to_str().unwrap()
+        ),
     );
     let cancelled = AtomicBool::new(false);
     std::thread::scope(|scope| {
-        scope.spawn(|| {
-            std::thread::sleep(Duration::from_millis(150));
+        let observer = scope.spawn(|| {
+            let limit = Instant::now() + Duration::from_secs(4);
+            let pids = loop {
+                if let Ok(text) = std::fs::read_to_string(&ready) {
+                    let pids: Vec<u32> = text
+                        .split_whitespace()
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                    if pids.len() == 2 {
+                        break Some(pids);
+                    }
+                }
+                if Instant::now() >= limit {
+                    break None;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            let live = pids
+                .as_ref()
+                .is_some_and(|pids| pids.iter().all(|pid| process_live(*pid)));
+            // Always release the owned operation before making assertions in the calling thread.
             cancelled.store(true, Ordering::Release);
+            (pids, live, Instant::now())
         });
-        let started = Instant::now();
         let control = SourceControl {
-            deadline: started + Duration::from_secs(5),
+            deadline: Instant::now() + Duration::from_secs(5),
             cancelled: &cancelled,
         };
-        assert!(matches!(
-            transport.get_issue(&select(), &control),
-            Err(SourceError::Cancelled)
-        ));
-        assert!(started.elapsed() < Duration::from_secs(2));
+        let result = transport.get_issue(&select(), &control);
+        let (pids, live, cancellation_time) = observer.join().unwrap();
+        assert!(
+            cancellation_time.elapsed() < Duration::from_secs(2),
+            "source cancellation was not prompt"
+        );
+        assert!(
+            live,
+            "source leader and descendant must be alive before cancellation: {pids:?}"
+        );
+        assert!(
+            matches!(&result, Err(SourceError::Cancelled)),
+            "{:?}",
+            result.err()
+        );
+        let pids = pids.unwrap();
+        assert!(
+            !process_exists(pids[0]),
+            "direct source child was not reaped"
+        );
+        let limit = Instant::now() + Duration::from_secs(2);
+        while process_live(pids[1]) && Instant::now() < limit {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            !process_live(pids[1]),
+            "source descendant survived cancellation"
+        );
     });
     cancelled.store(false, Ordering::Release);
     let control = SourceControl {
@@ -114,4 +164,28 @@ fn super_transport(root: &std::path::Path) -> CurlJiraTransport {
         root,
         "import sys\nsys.stdin.read()\nsys.stdout.write('x'*1048580+'\\n200')",
     )
+}
+
+fn process_exists(pid: u32) -> bool {
+    std::process::Command::new("/bin/sh")
+        .args([
+            "-c",
+            "kill -0 \"$1\" 2>/dev/null",
+            "source-fixture",
+            &pid.to_string(),
+        ])
+        .status()
+        .unwrap()
+        .success()
+}
+fn process_live(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    if std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|s| s.rsplit_once(") ").map(|(_, tail)| tail.starts_with('Z')))
+        == Some(true)
+    {
+        return false;
+    }
+    process_exists(pid)
 }
