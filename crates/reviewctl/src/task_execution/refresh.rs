@@ -173,101 +173,103 @@ pub(crate) fn refresh(
     let lease = store
         .take_task_lease(&cas, id, &format!("cli-{}", std::process::id()), 15_000)
         .map_err(|e| e.to_string())?;
-    let locked = Mutex::new(&mut store);
-    let outcome = review_pipeline::task::lease::with_heartbeat(&locked, &cas, &lease, || {
-        let state = {
-            let mut store = locked.lock().expect("Task Store");
-            let state = store
-                .task_projection(&cas, id)
-                .map_err(|e| e.to_string())?
-                .ok_or("Unknown Task")?;
-            if state.revision_id != before.revision_id {
-                return Err("Task revision changed before refresh acquired its lease".into());
-            }
-            store
-                .recover_task_attempts(&cas, &lease)
-                .map_err(|e| e.to_string())?;
-            store
-                .task_projection(&cas, id)
-                .map_err(|e| e.to_string())?
-                .ok_or("Unknown Task")?
-        };
-        let compiler = planning::restore(&cas, &state, &authority)?;
-        let capacity = state.execution.as_ref().map_or_else(
-            || state.revision.limits.clone(),
-            |e| e.budget.remaining_limits(),
-        );
-        let assessment = selection::assess(&cas, &authority, &compiler, revision, Some(&capacity))?;
-        let (compiler, revision_id, plan_id, waiting) = match assessment {
-            selection::SelectionAssessment::Prepared(selection::PreparedSelection::Selected(
-                selected,
-            )) => {
-                let plan_id = planning::persist_plan(&cas, &selected.plan)?;
-                (selected.compiler, selected.revision_id, Some(plan_id), None)
-            }
-            selection::SelectionAssessment::Prepared(
-                selection::PreparedSelection::Generation {
-                    revision,
-                    revision_id,
-                },
-            ) => {
-                match planning::prepare_bootstrap(
-                    &cas,
-                    &authority,
-                    base.clone(),
-                    *revision,
-                    revision_id.clone(),
-                ) {
-                    Ok(selected) => {
-                        let plan_id = planning::persist_plan(&cas, &selected.plan)?;
-                        (selected.compiler, selected.revision_id, Some(plan_id), None)
-                    }
-                    Err(reason) => {
-                        eprintln!("Refreshed source needs planning prerequisites: {reason}");
-                        (
-                            base,
-                            revision_id,
-                            None,
-                            Some(TaskWaitingReasonV1::NeedsHuman),
-                        )
+    let outcome = {
+        let locked = Mutex::new(&mut store);
+        review_pipeline::task::lease::with_heartbeat(&locked, &cas, &lease, || {
+            let state = {
+                let mut store = locked.lock().expect("Task Store");
+                let state = store
+                    .task_projection(&cas, id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("Unknown Task")?;
+                if state.revision_id != before.revision_id {
+                    return Err("Task revision changed before refresh acquired its lease".into());
+                }
+                store
+                    .recover_task_attempts(&cas, &lease)
+                    .map_err(|e| e.to_string())?;
+                store
+                    .task_projection(&cas, id)
+                    .map_err(|e| e.to_string())?
+                    .ok_or("Unknown Task")?
+            };
+            let compiler = planning::restore(&cas, &state, &authority)?;
+            let capacity = state.execution.as_ref().map_or_else(
+                || state.revision.limits.clone(),
+                |e| e.budget.remaining_limits(),
+            );
+            let assessment =
+                selection::assess(&cas, &authority, &compiler, revision, Some(&capacity))?;
+            let (compiler, revision_id, plan_id, waiting) = match assessment {
+                selection::SelectionAssessment::Prepared(
+                    selection::PreparedSelection::Selected(selected),
+                ) => {
+                    let plan_id = planning::persist_plan(&cas, &selected.plan)?;
+                    (selected.compiler, selected.revision_id, Some(plan_id), None)
+                }
+                selection::SelectionAssessment::Prepared(
+                    selection::PreparedSelection::Generation {
+                        revision,
+                        revision_id,
+                    },
+                ) => {
+                    match planning::prepare_bootstrap(
+                        &cas,
+                        &authority,
+                        base.clone(),
+                        *revision,
+                        revision_id.clone(),
+                    ) {
+                        Ok(selected) => {
+                            let plan_id = planning::persist_plan(&cas, &selected.plan)?;
+                            (selected.compiler, selected.revision_id, Some(plan_id), None)
+                        }
+                        Err(reason) => {
+                            eprintln!("Refreshed source needs planning prerequisites: {reason}");
+                            (
+                                base,
+                                revision_id,
+                                None,
+                                Some(TaskWaitingReasonV1::NeedsHuman),
+                            )
+                        }
                     }
                 }
-            }
-            selection::SelectionAssessment::Refused {
-                revision,
-                revision_id,
-                decision,
-                ..
-            } => {
-                debug_assert_eq!(revision.task_id, id);
-                let reason = match decision {
-                    SelectionDecision::Infeasible {} => TaskWaitingReasonV1::NeedsResources,
-                    SelectionDecision::NeedsFacts { .. } => TaskWaitingReasonV1::NeedsInput,
-                    _ => TaskWaitingReasonV1::NeedsHuman,
-                };
-                (compiler, revision_id, None, Some(reason))
-            }
-        };
-        let developer = developer::host(&cas, &authority, None);
-        let trusted = developer::DecisionAuthority {
-            compiler: &compiler,
-            developer: developer.as_ref(),
-        };
-        locked
-            .lock()
-            .expect("Task Store")
-            .refresh_task_source(
-                &cas,
-                &lease,
-                &revision_id,
-                plan_id.as_deref(),
-                waiting,
-                &trusted,
-            )
-            .map_err(|e| e.to_string())?;
-        Ok(())
-    });
-    drop(locked);
+                selection::SelectionAssessment::Refused {
+                    revision,
+                    revision_id,
+                    decision,
+                    ..
+                } => {
+                    debug_assert_eq!(revision.task_id, id);
+                    let reason = match decision {
+                        SelectionDecision::Infeasible {} => TaskWaitingReasonV1::NeedsResources,
+                        SelectionDecision::NeedsFacts { .. } => TaskWaitingReasonV1::NeedsInput,
+                        _ => TaskWaitingReasonV1::NeedsHuman,
+                    };
+                    (compiler, revision_id, None, Some(reason))
+                }
+            };
+            let developer = developer::host(&cas, &authority, None);
+            let trusted = developer::DecisionAuthority {
+                compiler: &compiler,
+                developer: developer.as_ref(),
+            };
+            locked
+                .lock()
+                .expect("Task Store")
+                .refresh_task_source(
+                    &cas,
+                    &lease,
+                    &revision_id,
+                    plan_id.as_deref(),
+                    waiting,
+                    &trusted,
+                )
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        })
+    };
     release(&cas, &mut store, &lease, outcome)?;
     present(&cas, &store, id, inspect.json, true)
 }
