@@ -1197,6 +1197,32 @@ impl EventStore {
         Ok(())
     }
 
+    /// Recheck a domain-owned effect during the one common started Attempt. Broker adapters
+    /// can use this boundary without maintaining another Attempt ledger or accepting an ID alone.
+    pub fn check_task_attempt_current(
+        &self,
+        cas: &Cas,
+        lease: &TaskLease,
+        attempt: &PreparedTaskAttempt,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(), StoreError> {
+        let (state, _) = self.checked_task_dispatch(cas, lease, authority)?;
+        state.check_prepared_capability(lease, attempt)?;
+        let recorded = &state
+            .execution
+            .as_ref()
+            .expect("checked prepared execution")
+            .attempts[attempt.id()];
+        if !recorded.started
+            || recorded.released
+            || recorded.settlement.is_some()
+            || now()? >= recorded.reservation.deadline_unix_ms
+        {
+            return Err(conflict("Task Attempt is not current started work"));
+        }
+        Ok(())
+    }
+
     pub fn release_task_attempt(
         &mut self,
         cas: &Cas,

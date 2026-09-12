@@ -139,3 +139,77 @@ fn unbound_reservation_recovery_releases_credit_and_fences_old_context() {
         );
     }
 }
+
+#[test]
+fn effect_currentness_requires_started_work_and_rechecks_revocation_and_settlement() {
+    use review_core::task::execution::TaskAttemptResultV1;
+    let mut f = Fixture::new(true).with_execution_graph();
+    let lease = f.open();
+    f.propose(&lease);
+    f.decide(&lease, PlanDecisionKindV1::Approved);
+    f.store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    f.record_execution_inputs(&lease);
+    let reservation = f
+        .store
+        .reserve_task_attempt(&f.cas, &lease, "root.nodes.write", &f.authority)
+        .unwrap();
+    let context = f
+        .cas
+        .put_json(&json!({"attempt":reservation.id()}))
+        .unwrap();
+    let attempt = f
+        .store
+        .bind_task_attempt_context(&f.cas, &lease, &reservation, &context, &f.authority)
+        .unwrap();
+    assert!(
+        f.store
+            .check_task_attempt_current(&f.cas, &lease, &attempt, &f.authority)
+            .is_err()
+    );
+    f.store
+        .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+        .unwrap();
+    f.store
+        .check_task_attempt_current(&f.cas, &lease, &attempt, &f.authority)
+        .unwrap();
+    f.authority.current = false;
+    assert!(
+        f.store
+            .check_task_attempt_current(&f.cas, &lease, &attempt, &f.authority)
+            .is_err()
+    );
+    f.authority.current = true;
+    f.store
+        .check_task_attempt_current(&f.cas, &lease, &attempt, &f.authority)
+        .unwrap();
+    let diagnostic_id = f
+        .cas
+        .put_json(&json!({"error":"observed execution failure"}))
+        .unwrap();
+    f.store
+        .settle_task_attempt(
+            &f.cas,
+            &lease,
+            TaskExecutionRecordV1::Settled {
+                attempt_id: attempt.id().into(),
+                charged_tokens: 7,
+                result: TaskAttemptResultV1::Failed {
+                    diagnostic_id,
+                    feedback_id: None,
+                },
+                raw_artifact_ids: vec![],
+                usage_id: None,
+            },
+            &f.authority,
+        )
+        .unwrap();
+    f.store = EventStore::open(&f.path).unwrap();
+    assert!(
+        f.store
+            .check_task_attempt_current(&f.cas, &lease, &attempt, &f.authority)
+            .is_err()
+    );
+    assert_eq!(f.state().execution.unwrap().budget.committed_tokens(), 7);
+}

@@ -45,6 +45,8 @@ The [run diagnostics and recovery boundary](task-execution/run-reports.md) prese
 before an Attempt starts and retry domain publication without invoking the Worker again.
 [Reservation and context binding](adr/0066-reserve-task-attempts-before-binding-exact-context.md)
 let adapters render the actual persisted Attempt identity before execution.
+The [Review compatibility map](task-execution/review-compatibility.md) records the extracted
+operations and remaining legacy entry-point connections.
 PR 2's current composition checkpoint is described in [local bindings](task-execution/local-bindings.md)
 and [embedded Review](task-execution/embedded-review.md).
 The [shared catalog walkthrough](task-execution/shared-catalogs.md) describes explicit Git sync

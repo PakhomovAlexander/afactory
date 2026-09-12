@@ -1,6 +1,7 @@
 //! Reviewer business output checks. These helpers prepare immutable artifacts and domain
 //! facts; the execution owner must select the real Attempt before publishing those facts.
 
+use review_core::task::review_compat::{TaskReviewProposalV1, TaskReviewResultMetadataV1};
 use review_core::{
     EventType, MAX_CHANGE_SET_BYTES, ProposalCandidateV1, ProposalPreparedPayloadV1,
     ProposalRefusalReasonV1, ProposalRefusedPayloadV1,
@@ -10,6 +11,85 @@ use review_source_git::manifest_diff;
 use review_store::{Cas, NewEvent};
 
 use super::{PreparedProposal, RoundAuthority};
+
+/// One already validated adapter reply. Capturing it seals the actual sandbox and creates
+/// immutable result/provenance artifacts; it cannot select an Attempt or publish domain facts.
+pub(super) struct ReviewerResultCapture<'a> {
+    pub node_id: &'a str,
+    pub attempt_id: &'a str,
+    pub result: &'a serde_json::Value,
+    pub result_contract: review_core::ReviewerResultContract,
+    pub proposal: Result<Option<ReviewerProposalDeclaration>, String>,
+    pub assigned_finding_ids: &'a [String],
+    pub report_count: usize,
+    pub cost_tokens: u64,
+    pub usage: &'a review_runner::TokenUsage,
+    pub context_manifest: &'a review_runner::ContextManifest,
+    pub raw_artifact: &'a str,
+}
+
+pub(super) struct CapturedReviewerResult {
+    pub metadata: TaskReviewResultMetadataV1,
+    pub proposal: PreparedProposal,
+}
+
+pub(super) fn capture_result(
+    cas: &Cas,
+    authority: &RoundAuthority,
+    sandbox: review_sandbox::Sandbox,
+    reply: ReviewerResultCapture<'_>,
+) -> Result<CapturedReviewerResult, String> {
+    let sealed = sandbox.seal().map_err(|error| error.to_string())?;
+    let result_artifact = cas
+        .put_json(reply.result)
+        .map_err(|error| error.to_string())?;
+    let proposal = prepare_proposal(
+        cas,
+        authority,
+        reply.node_id,
+        reply.attempt_id,
+        &result_artifact,
+        reply.proposal,
+        reply.assigned_finding_ids,
+        reply.report_count,
+        &sealed,
+    )?;
+    // A build can leave thousands of mutations. Capture the complete set once, then retain
+    // only its digest and bounded summary in provenance.
+    let mutations_artifact = cas
+        .put_json(&serde_json::json!({
+            "added":sealed.mutations.added, "modified":sealed.mutations.modified,
+            "deleted":sealed.mutations.deleted,
+        }))
+        .map_err(|error| error.to_string())?;
+    let provenance_artifact = cas.put_json(&serde_json::json!({
+        "node":reply.node_id, "attempt":reply.attempt_id, "result_artifact":result_artifact,
+        "cost_tokens":reply.cost_tokens, "usage":reply.usage, "context_manifest":reply.context_manifest,
+        "raw":reply.raw_artifact,
+        "sandbox_mutations":super::mutation_summary(&sealed.mutations, &mutations_artifact),
+    })).map_err(|error| error.to_string())?;
+    let disposition = match &proposal {
+        PreparedProposal::None => TaskReviewProposalV1::None {},
+        PreparedProposal::Prepared {
+            candidate_artifact, ..
+        } => TaskReviewProposalV1::Prepared {
+            candidate_artifact_id: candidate_artifact.clone(),
+        },
+        PreparedProposal::Refused(event) => TaskReviewProposalV1::Refused {
+            reason: serde_json::from_value::<ProposalRefusedPayloadV1>(event.payload.clone())
+                .map_err(|e| e.to_string())?
+                .reason,
+        },
+    };
+    let metadata = TaskReviewResultMetadataV1 {
+        result_contract: reply.result_contract,
+        result_artifact_id: result_artifact,
+        provenance_artifact_id: provenance_artifact,
+        proposal: disposition,
+    };
+    metadata.validate()?;
+    Ok(CapturedReviewerResult { metadata, proposal })
+}
 
 #[allow(clippy::too_many_arguments)] // one exact Attempt boundary; grouping would obscure authority inputs
 pub(super) fn prepare_proposal(

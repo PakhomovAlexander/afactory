@@ -15,6 +15,7 @@ pub mod provider;
 pub mod repair;
 pub mod report;
 pub mod review;
+pub mod review_compat;
 pub mod source;
 pub mod verification;
 

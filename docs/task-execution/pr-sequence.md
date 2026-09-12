@@ -210,3 +210,12 @@ replay. The complete gate at `7ba2338` (the same code as stacked `2d8421e`) pass
 documentation tests and byte-identical frozen reproduction. Markdown passes.
 The preceding report checkpoint `c45a55b` passes Check, CLI smoke and container probes in
 CI run `34668202469`. Legacy Review conversion remains required.
+
+The next compatibility extraction isolates one adapter invocation, exact Attempt-context binding,
+and sealed canonical result/provenance capture from legacy scheduling and accounting. The typed
+`TaskReviewResultMetadata@1` receipt retains result identities and explicit Proposal disposition.
+A common Store currentness check refuses unstarted, revoked and settled work. Metadata schema
+parity, all three reservation/currentness tests, and all 71 pipeline tests pass (one opt-in probe
+ignored), including Proposal, broker, Scatter and replay coverage. The complete workspace gate
+for this extraction is pending. The [compatibility map](review-compatibility.md) records the
+remaining selected-evidence, bounded Scatter and Round-continuation wiring.

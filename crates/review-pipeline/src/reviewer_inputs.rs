@@ -2,13 +2,42 @@
 
 use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES, ReviewerResultContract};
 use review_graph::{ArtifactMap, Node};
-use review_runner::{ReviewerInputArtifact, ReviewerInputs};
+use review_runner::{ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs};
 use review_store::Cas;
 
 use super::{
     RoundAuthority, is_change_set_port, is_reviewer_finding_set_input, is_reviewer_prior_set_input,
     retain_round_assignment, reviewer_result_contract,
 };
+
+/// Bind the execution owner's actual identity after resolving the exact declared inputs.
+/// No ID allocation, budget mutation, Store mutation or Worker invocation occurs here.
+pub(super) fn bind_attempt(
+    inputs: &mut ReviewerInputs,
+    authority: &RoundAuthority,
+    binding_node: &str,
+    attempt_id: &str,
+    reserved_tokens: Option<u64>,
+) {
+    inputs.attempt_context = Some(ReviewerAttemptContext {
+        attempt_id: attempt_id.into(),
+        round: authority.round,
+        epoch: authority.epoch,
+        subject_id: authority.subject_id.clone(),
+        head_snapshot_id: authority.head_snapshot_id.clone(),
+        campaign_manifest_id: authority.campaign_manifest_id.clone(),
+        reviewer_package_artifact_id: authority
+            .reviewer_packages
+            .get(binding_node)
+            .map(|(id, _)| id.clone()),
+        reviewer_package_digest: authority
+            .reviewer_packages
+            .get(binding_node)
+            .map(|(_, digest)| digest.clone()),
+        policy_ids: authority.policy_ids.clone(),
+        reserved_tokens,
+    });
+}
 
 pub(super) fn prepare(
     cas: &Cas,

@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 95] = [
+const SCHEMAS: [&str; 96] = [
     "normalized-task-requirements-v1.json",
     "task-source-capture-v1.json",
     "issue-input-v1.json",
@@ -53,6 +53,7 @@ const SCHEMAS: [&str; 95] = [
     "task-provider-admission-v1.json",
     "task-review-subject-v1.json",
     "task-review-round-v1.json",
+    "task-review-result-metadata-v1.json",
     "task-check-receipt-v1.json",
     "task-evaluation-v1.json",
     "verification-result-v1.json",
@@ -2279,5 +2280,59 @@ fn source_refresh_event_requires_exactly_one_plan_or_unresolved_reason() {
                 .map(|v| v.validate().is_err())
                 .unwrap_or(true)
         );
+    }
+}
+
+#[test]
+fn task_review_metadata_retains_typed_canonical_results_and_closed_proposal_dispositions() {
+    use review_core::task::review_compat::*;
+    let id = format!("sha256:{}", "a".repeat(64));
+    for contract in [
+        review_core::ReviewerResultContract::V1,
+        review_core::ReviewerResultContract::V2,
+    ] {
+        for proposal in [
+            TaskReviewProposalV1::None {},
+            TaskReviewProposalV1::Prepared {
+                candidate_artifact_id: id.clone(),
+            },
+            TaskReviewProposalV1::Refused {
+                reason: review_core::ProposalRefusalReasonV1::PatchMismatch,
+            },
+        ] {
+            let metadata = TaskReviewResultMetadataV1 {
+                result_contract: contract,
+                result_artifact_id: id.clone(),
+                provenance_artifact_id: id.clone(),
+                proposal,
+            };
+            metadata.validate().unwrap();
+            let value = serde_json::to_value(&metadata).unwrap();
+            assert_valid("task-review-result-metadata-v1.json", &value);
+            for (field, bad) in [
+                ("result_contract", json!("opaque")),
+                ("result_artifact_id", json!("stale")),
+                ("provenance_artifact_id", json!(null)),
+                ("proposal", json!({"kind":"selected"})),
+            ] {
+                let mut wrong = value.clone();
+                wrong[field] = bad;
+                assert!(!validator("task-review-result-metadata-v1.json").is_valid(&wrong));
+                assert!(
+                    serde_json::from_value::<TaskReviewResultMetadataV1>(wrong)
+                        .map_or(true, |v| v.validate().is_err())
+                );
+            }
+            for extra in ["root", "proposal"] {
+                let mut wrong = value.clone();
+                if extra == "root" {
+                    wrong["undeclared"] = json!(true);
+                } else {
+                    wrong["proposal"]["undeclared"] = json!(true);
+                }
+                assert!(!validator("task-review-result-metadata-v1.json").is_valid(&wrong));
+                assert!(serde_json::from_value::<TaskReviewResultMetadataV1>(wrong).is_err());
+            }
+        }
     }
 }

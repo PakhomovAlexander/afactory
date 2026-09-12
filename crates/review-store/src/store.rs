@@ -3547,45 +3547,20 @@ fn validate_campaign_transition(
                                 )));
                             }
                             if let Some(attempt) = event.attempt_id.as_deref() {
-                                let selected: Option<(String, String)> = tx
-                                    .query_row(
-                                        "SELECT node_id, payload FROM events
-                                         WHERE run_id = ?1 AND causation_id = ?2
-                                           AND attempt_id = ?3 AND type = 'AttemptAdmitted@1'
-                                         LIMIT 1",
-                                        params![run_id, active_id, attempt],
-                                        |row| {
-                                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                                        },
-                                    )
-                                    .optional()?
-                                    .and_then(|(node, raw)| {
-                                        serde_json::from_str::<
-                                            review_core::event::AttemptAdmittedPayloadV1,
-                                        >(&raw)
-                                        .ok()
-                                        .and_then(|payload| {
-                                            (payload.selection == "selected")
-                                                .then_some(payload.result_artifact)
-                                                .flatten()
-                                                .map(|result| (node, result))
-                                        })
-                                    })
-                                    .or_else(|| batch_selected.get(attempt).cloned());
-                                let Some((selected_node, result)) = selected else {
-                                    return Err(StoreError::Conflict(
-                                        "reviewer receipt has no selected admitted attempt".into(),
-                                    ));
-                                };
+                                let result = selected_attempt_result(
+                                    tx,
+                                    run_id,
+                                    active_id,
+                                    &batch_selected,
+                                    node,
+                                    attempt,
+                                )?;
                                 let outputs: Vec<&String> = receipt
                                     .outputs
                                     .iter()
                                     .flat_map(|port| &port.artifact_ids)
                                     .collect();
-                                if selected_node != node
-                                    || outputs.len() != 1
-                                    || outputs[0] != &result
-                                {
+                                if outputs.len() != 1 || outputs[0] != &result {
                                     return Err(StoreError::Conflict(
                                         "reviewer receipt contradicts its selected admitted result"
                                             .into(),

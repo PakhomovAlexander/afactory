@@ -24,12 +24,13 @@
 
 mod reviewer_inputs;
 mod reviewer_output;
+mod reviewer_work;
 pub mod scatter;
 pub mod task;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use review_attempt::{
     AttemptId, AttemptLedger, Budget, BudgetLedger, BudgetScope, Receipt, Reservation, Selection,
@@ -63,9 +64,7 @@ use review_core::{
 use review_graph::{
     ArtifactMap, Dispatch, Node, NodeFailureClass, NodeKind, NodeOutcome, PortContract, RunReport,
 };
-use review_runner::{
-    ContextManifest, ReviewerAdapter, ReviewerAttemptContext, RunnerError, TokenUsage,
-};
+use review_runner::{ContextManifest, ReviewerAdapter, RunnerError, TokenUsage};
 use review_sandbox::{
     CacheError, CacheErrorKind, CacheKind, CacheMaterialization, CacheSource, ContainerProvider,
     Isolation, Mode, Policy, Sandbox, admit, materialize_cache, remove_materialized_caches,
@@ -3450,26 +3449,13 @@ impl<'a> Kernel<'a> {
                 None => Vec::new(),
             };
             retry_failures.clone_from(&inputs.refused_attempts);
-            inputs.attempt_context = Some(ReviewerAttemptContext {
-                attempt_id: attempt.to_string(),
-                round: self.authority.round,
-                epoch: self.authority.epoch,
-                subject_id: self.authority.subject_id.clone(),
-                head_snapshot_id: self.authority.head_snapshot_id.clone(),
-                campaign_manifest_id: self.authority.campaign_manifest_id.clone(),
-                reviewer_package_artifact_id: self
-                    .authority
-                    .reviewer_packages
-                    .get(&binding_node)
-                    .map(|(artifact_id, _)| artifact_id.clone()),
-                reviewer_package_digest: self
-                    .authority
-                    .reviewer_packages
-                    .get(&binding_node)
-                    .map(|(_, digest)| digest.clone()),
-                policy_ids: self.authority.policy_ids.clone(),
-                reserved_tokens: reservation.as_ref().map(|reservation| reservation.amount),
-            });
+            reviewer_inputs::bind_attempt(
+                &mut inputs,
+                &self.authority,
+                &binding_node,
+                &attempt.to_string(),
+                reservation.as_ref().map(|reservation| reservation.amount),
+            );
 
             let boundary = KernelBrokerBoundary { kernel: self };
             let brokered = (|| -> Result<Option<Broker<'_>>, String> {
@@ -3550,20 +3536,18 @@ impl<'a> Kernel<'a> {
                 }
             };
 
-            let wall_started = SystemTime::now();
-            let wall_clock = Instant::now();
-            let invoked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                adapter.invoke_with_broker(
-                    self.cas,
-                    sandbox.root(),
-                    &inputs,
-                    broker.as_ref().map(|broker| broker as &dyn BrokerClient),
-                )
-            }));
+            let invocation = reviewer_work::invoke(
+                self.cas,
+                adapter.as_ref(),
+                sandbox.root(),
+                &inputs,
+                broker.as_ref().map(|broker| broker as &dyn BrokerClient),
+            );
             let broker_charged = broker.as_ref().map_or(0, Broker::charged_usage);
-            let invoked = match invoked {
-                Ok(invoked) => invoked,
-                Err(_) => {
+            let invoked = match invocation.result {
+                Ok(invoked) => Ok(invoked),
+                Err(reviewer_work::InvocationFailure::Adapter(error)) => Err(error),
+                Err(reviewer_work::InvocationFailure::Panicked) => {
                     let error = format!("reviewer adapter panicked for node {node_id}");
                     let charged = reservation
                         .as_ref()
@@ -3587,8 +3571,8 @@ impl<'a> Kernel<'a> {
             self.record_attempt_wall(
                 node_id,
                 &attempt,
-                wall_started,
-                wall_clock.elapsed(),
+                invocation.started,
+                invocation.elapsed,
                 invoked.as_ref().ok().map(|receipted| &receipted.usage),
             );
 
@@ -3662,68 +3646,45 @@ impl<'a> Kernel<'a> {
                             continue;
                         }
                     };
-                    let artifacts = (|| -> Result<(String, String, PreparedProposal), String> {
-                        let sealed = sandbox.seal().map_err(|error| error.to_string())?;
-                        let result_artifact = self
-                            .cas
-                            .put_json(&result_value)
-                            .map_err(|error| error.to_string())?;
-                        let proposal = reviewer_output::prepare_proposal(
-                            self.cas,
-                            &self.authority,
+                    let artifacts = reviewer_output::capture_result(
+                        self.cas,
+                        &self.authority,
+                        sandbox,
+                        reviewer_output::ReviewerResultCapture {
                             node_id,
-                            &attempt.to_string(),
-                            &result_artifact,
-                            proposal_declaration,
-                            &assigned_finding_ids,
-                            returned.output.findings.len(),
-                            &sealed,
-                        )?;
-                        // The mutation set can be enormous — a reviewer that built to verify a
-                        // claim leaves a whole target/ behind. The full list lives once in the
-                        // CAS; provenance carries only a bounded summary.
-                        let mutations_artifact = self
-                            .cas
-                            .put_json(&serde_json::json!({
-                                "added": sealed.mutations.added,
-                                "modified": sealed.mutations.modified,
-                                "deleted": sealed.mutations.deleted,
-                            }))
-                            .map_err(|error| error.to_string())?;
-                        let mutation_summary =
-                            mutation_summary(&sealed.mutations, &mutations_artifact);
-                        let provenance_artifact = self
-                            .cas
-                            .put_json(&serde_json::json!({
-                                "node": node_id,
-                                "attempt": attempt.to_string(),
-                                "result_artifact": result_artifact,
-                                "cost_tokens": returned.cost_tokens,
-                                "usage": receipted.usage,
-                                "context_manifest": receipted.context_manifest,
-                                "raw": returned.raw_artifact,
-                                "sandbox_mutations": mutation_summary,
-                            }))
-                            .map_err(|error| error.to_string())?;
-                        Ok((result_artifact, provenance_artifact, proposal))
-                    })();
-                    let (result_artifact, provenance_artifact, proposal) = match artifacts {
-                        Ok(artifacts) => artifacts,
-                        Err(error) => {
-                            self.fail_started_attempt(
-                                node_id,
-                                &attempt,
-                                reservation.as_ref(),
-                                &error,
-                                returned.cost_tokens.max(broker_charged),
-                                AttemptFailureEvidence {
-                                    raw_artifact: Some(&returned.raw_artifact),
-                                    refusal_history: None,
-                                },
-                            )?;
-                            return Err(error);
-                        }
-                    };
+                            attempt_id: &attempt.to_string(),
+                            result: &result_value,
+                            result_contract,
+                            proposal: proposal_declaration,
+                            assigned_finding_ids: &assigned_finding_ids,
+                            report_count: returned.output.findings.len(),
+                            cost_tokens: returned.cost_tokens,
+                            usage: &receipted.usage,
+                            context_manifest: &receipted.context_manifest,
+                            raw_artifact: &returned.raw_artifact,
+                        },
+                    );
+                    let reviewer_output::CapturedReviewerResult { metadata, proposal } =
+                        match artifacts {
+                            Ok(artifacts) => artifacts,
+                            Err(error) => {
+                                self.fail_started_attempt(
+                                    node_id,
+                                    &attempt,
+                                    reservation.as_ref(),
+                                    &error,
+                                    returned.cost_tokens.max(broker_charged),
+                                    AttemptFailureEvidence {
+                                        raw_artifact: Some(&returned.raw_artifact),
+                                        refusal_history: None,
+                                    },
+                                )?;
+                                return Err(error);
+                            }
+                        };
+
+                    let result_artifact = metadata.result_artifact_id;
+                    let provenance_artifact = metadata.provenance_artifact_id;
 
                     // Selection is recorded only after the complete receipted output exists.
                     let selection = self
