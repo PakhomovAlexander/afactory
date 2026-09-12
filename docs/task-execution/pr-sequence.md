@@ -316,3 +316,12 @@ with two ignored, all 19 Campaign lifecycle tests, workspace Clippy and Markdown
 complete gate is being restarted; the last completed full gate remains the recorded 839-test
 checkpoint. Lossless persistence of usage beyond safe JSON/SQLite integers remains a separate
 common Task conformance correction; native adapter retention alone does not complete it.
+
+The `e81457e` full gate stopped in the model environment-isolation fixture: an otherwise
+completed child was reported as retaining stdout. Whole-suite repetition reproduced a separate
+killed-child drain delay. Inspection of pinned Rust 1.88 localized the sibling-pipe inheritance
+window to macOS's non-atomic pipe/close-on-exec setup. Shared buffered and duplex launch now
+serialize child creation on Apple platforms, leaving execution and drains concurrent. The
+unchanged model-supervision suite passes 20 consecutive runs; a new 12-worker process fixture
+passes 24 concurrent batches and preserves bounded execution. Focused Clippy passes. The failed
+full run remains recorded; another complete gate is required for this correction.

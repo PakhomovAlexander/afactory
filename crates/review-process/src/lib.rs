@@ -6,6 +6,7 @@ use std::time::{Duration, Instant};
 
 mod capture;
 mod drain;
+mod spawn;
 
 use capture::run_supervised_inner;
 pub use capture::{
@@ -189,7 +190,7 @@ where
         command.process_group(0);
     }
 
-    let mut child = command.spawn().map_err(SupervisedError::Spawn)?;
+    let mut child = spawn::spawn(command).map_err(SupervisedError::Spawn)?;
     let pid = child.id();
     std::thread::scope(|scope| {
         let mut stdin = child.stdin.take().expect("stdin was piped");

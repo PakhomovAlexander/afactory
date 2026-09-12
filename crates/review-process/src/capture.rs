@@ -156,7 +156,7 @@ where
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    let mut child = match command.spawn() {
+    let mut child = match crate::spawn::spawn(command) {
         Ok(child) => child,
         Err(error) => return StreamCapture::empty(SupervisedError::Spawn(error)),
     };
