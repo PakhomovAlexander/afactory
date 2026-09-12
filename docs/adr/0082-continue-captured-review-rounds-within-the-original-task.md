@@ -61,3 +61,9 @@ moves to the common runtime.
 
 Implementation verification and the requested external specialist review are in progress. This
 checkpoint does not by itself complete the legacy frontend cutover or live pilot evidence.
+
+The frozen implementation tree `c81893d92b3d9b8a88aafe2cb792c474fd78c2d3` passed the full
+local gate at `cff20f3`: 1,018 tests, zero failures, 15 ignored, formatting, Clippy,
+documentation tests and byte-identical fixtures. Product commit `faeb933` has that exact tree.
+Specialist PR review remains pending; this checkpoint does not claim CLI execution cutover or
+automatic Integration support.

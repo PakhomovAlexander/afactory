@@ -667,3 +667,23 @@ Heavy Round continuation is the next checkpoint in the same PR: it retains origi
 limits, cumulative usage and retired scopes across exact canonical Round changes. Its code
 and tests are in progress and are excluded from the owned checkpoint above. The existing
 external-review capacity and personal-login gaps remain; no specialist reviewer has run.
+
+The captured Review continuation checkpoint is complete at
+`faeb9332bbac6d6d7ac07a54fb101415fb90c89c`, identical to frozen verification
+`cff20f366d2de4702d7d1bc0beadead92b4c161a`, tree
+`c81893d92b3d9b8a88aafe2cb792c474fd78c2d3`. The full gate passes **1,018 tests, zero
+failures, 15 ignored**, across 125 suites, including formatting, Clippy, documentation tests
+and byte-identical synthetic fixture reproduction. Two actual numeric Rounds preserve one
+Task, original limits, exact prior Finding/Demand lineage and cumulative usage; a third
+terminal Round tests semantic exhaustion separately from resource failure. Epoch supersession,
+late usage above u64, pending-Attempt refusal and atomic Task/Review prefixes are covered.
+A generated successor remains unadmitted until its new exact developer decision. The final
+result wrapper refuses to finish a Task that still has a permitted heavy Review Round.
+
+Inspection@6 adds typed handoffs without changing older inspection generations. The new
+`af task explain TASK_ID --plan PLAN_ID` returns only plans recorded for that Task, preserves
+original revisions/graphs and does not restore old approval authority. Real CLI tests compare
+Task and Review logs before and after inspection. The owned checkpoint's container CI passes
+at `d15804c` in run `34706164966`; its main Check job was still running at the last observation.
+The continuation checkpoint still needs CI. Automatic Integration, legacy CLI migration,
+remaining conformance and pilot/release evidence remain. No specialist reviewer has run.

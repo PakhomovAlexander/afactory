@@ -1,12 +1,13 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
 **Active increment:** [Task execution](task-execution.md), P00–P14, authorized as three PRs.
-Owned Review checkpoint `d9babab` (frozen identical tree `47c73ec`) passes the complete
-local gate: **1,009 tests, zero failures, 15 ignored**, plus formatting, Clippy, documentation
-and frozen reproduction. Registered slices share the original Task scheduler and budget;
-replay preserves complete, failed and missing outcomes and canonical Review receipts.
-Separate captured Provider probes and business Broker operations retain exact failed/late
-usage. Heavy continuation and legacy CLI cutover remain in progress.
+Captured Review continuation checkpoint `faeb933` (frozen identical tree `cff20f3`) passes
+the complete local gate: **1,018 tests, zero failures, 15 ignored** across 125 suites, plus
+formatting, Clippy, documentation tests and frozen reproduction. Multiple Review Rounds retain
+one Task, its original budget, late paid usage and exact handoff history. Fresh CLI inspection
+can explain an earlier recorded plan without changing either log. Owned slices and separately
+captured Provider probes already use the common scheduler and ledger. Automatic Integration
+and legacy CLI cutover remain in progress.
 
 Common Task workflows, shared packages, embedding, repair, selection/generation, exact-plan
 approval, export, starters and issue/document Tasks are implemented on the PR branches.

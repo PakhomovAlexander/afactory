@@ -30,7 +30,12 @@ The owned Review checkpoint `d9babab` matches frozen tree `47c73ec` and passes t
 **1,009 tests, zero failures, 15 ignored** across 125 suites, plus formatting, Clippy,
 documentation and byte-identical fixture reproduction. Registered slices use the same
 scheduler and ledger, and canonical completion recovers without repeating paid work.
-Heavy continuation and legacy CLI cutover remain. The proposed
+The continuation checkpoint `faeb933` matches frozen tree `cff20f3` and passes the full gate:
+**1,018 tests, zero failures, 15 ignored** across 125 suites, plus formatting, Clippy,
+documentation tests and byte-identical fixture reproduction. Numeric Rounds and input epochs
+retain one Task, its original limits and cumulative paid usage; every successor plan requires
+its own admission. Fresh CLI inspection preserves handoff history and historical plans.
+Automatic Integration and the legacy CLI cutover remain. The proposed
 [owned-child decision](adr/0081-register-owned-review-children-in-the-common-task-runtime.md)
 records registration, factual recovery and immutable completion. See
 [Review compatibility](task-execution/review-compatibility.md) and
