@@ -10,14 +10,11 @@ pub(super) fn restore(
     authority: &RunAuthority,
 ) -> Result<TaskPlanCompiler, String> {
     let mut compiler = restore_compiler(cas, &state.revision.authority.policy_id, authority)?;
-    let plan: ExecutionPlanV1 = artifact(
-        cas,
-        state
-            .plan_id
-            .as_deref()
-            .ok_or("Task has no captured plan")?,
-        EXECUTION_PLAN_V1,
-    )?;
+    let plan: Option<ExecutionPlanV1> = state
+        .plan_id
+        .as_deref()
+        .map(|id| artifact(cas, id, EXECUTION_PLAN_V1))
+        .transpose()?;
     if state.planning.is_some() {
         let proof = state.planning_proof(cas).map_err(|e| e.to_string())?;
         let original: TaskRevisionV1 = artifact(cas, proof.revision_id(), TASK_REVISION_V1)?;
@@ -34,28 +31,28 @@ pub(super) fn restore(
             PLANNER_PIPELINE,
         )?;
         compiler.install_selected_proposal(cas, &proof)?;
-    } else if plan.preparation.is_some() {
+    } else if plan.as_ref().is_some_and(|p| p.preparation.is_some()) {
         let settings = authority
             .planner
             .as_ref()
             .ok_or("Task lost its captured Planner setting")?;
         compiler.install_planning_bootstrap(cas, &state.revision, settings)?;
-    } else if !plan.generated_origins.is_empty() {
+    } else if plan
+        .as_ref()
+        .is_some_and(|p| !p.generated_origins.is_empty())
+    {
         return Err("Generated plan has no durable selected Planner proof".into());
     }
     Ok(compiler)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) fn start(
-    options: StartOptions,
-    cas: Cas,
-    mut store: EventStore,
-    authority: RunAuthority,
+pub(super) fn prepare_bootstrap(
+    cas: &Cas,
+    authority: &RunAuthority,
     mut compiler: TaskPlanCompiler,
     revision: TaskRevisionV1,
     revision_id: String,
-) -> Result<i32, String> {
+) -> Result<selection::SelectedTask, String> {
     let settings = authority
         .planner
         .as_ref()
@@ -65,17 +62,45 @@ pub(super) fn start(
         .as_ref()
         .ok_or("Generated plans require captured developer keys")?
         .validate()?;
-    compiler.install_planning_bootstrap(&cas, &revision, settings)?;
+    compiler.install_planning_bootstrap(cas, &revision, settings)?;
     compiler.planning_request(&revision)?;
     let adapters = bind_models(
-        &cas,
+        cas,
         &mut compiler,
-        &authority,
+        authority,
         &revision_id,
         PLANNER_PIPELINE,
     )?;
-    let (plan, graph) = compiler.compile(&cas, &revision_id, PLANNER_PIPELINE)?;
-    selection::available_tools(&cas, &compiler, &authority, &graph)?;
+    let (plan, graph) = compiler.compile(cas, &revision_id, PLANNER_PIPELINE)?;
+    selection::available_tools(cas, &compiler, authority, &graph)?;
+    Ok(selection::SelectedTask {
+        revision,
+        revision_id,
+        compiler,
+        adapters,
+        plan,
+        graph,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn start(
+    options: StartOptions,
+    cas: Cas,
+    mut store: EventStore,
+    authority: RunAuthority,
+    compiler: TaskPlanCompiler,
+    revision: TaskRevisionV1,
+    revision_id: String,
+) -> Result<i32, String> {
+    let selection::SelectedTask {
+        revision,
+        revision_id,
+        compiler,
+        adapters,
+        plan,
+        graph,
+    } = prepare_bootstrap(&cas, &authority, compiler, revision, revision_id)?;
     let resources =
         compiler.candidate_resources(&cas, graph.clone(), &revision.limits, clock()?)?;
     if !resources.is_empty() {
@@ -170,7 +195,7 @@ pub(super) fn resume(
     present(&cas, &store, &state.task_id, json, true)
 }
 
-fn persist_plan(cas: &Cas, plan: &ExecutionPlanV1) -> Result<String, String> {
+pub(super) fn persist_plan(cas: &Cas, plan: &ExecutionPlanV1) -> Result<String, String> {
     cas.put_artifact(
         EXECUTION_PLAN_V1,
         producer(),

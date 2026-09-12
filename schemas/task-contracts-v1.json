@@ -461,7 +461,8 @@
               "enum": [
                 "needs_input",
                 "needs_human",
-                "needs_plan_review"
+                "needs_plan_review",
+                "needs_resources"
               ]
             }
           }

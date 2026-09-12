@@ -161,6 +161,28 @@ impl TaskBudget {
         limits
     }
 
+    /// Invalidate the active plan after an explicitly recorded business-source revision.
+    /// The old ledger and reservation identities survive, including late usage. No resource
+    /// check blocks recording updated intent; installing or dispatching new work remains bound.
+    pub fn invalidate_plan(&mut self, now_unix_ms: u64) -> Result<(), String> {
+        if now_unix_ms < self.last_time
+            || self
+                .reservations
+                .values()
+                .any(|held| !held.released && held.settled.is_none())
+        {
+            return Err(
+                "Cannot revise a Task budget with pending work or a backwards clock".into(),
+            );
+        }
+        self.retired_attempts = self.begun_attempts();
+        self.nodes.clear();
+        self.call_limits.clear();
+        self.deferred_verification = true;
+        self.last_time = now_unix_ms;
+        Ok(())
+    }
+
     /// The single bootstrap-to-execution barrier keeps the token ledger, reservation IDs,
     /// late-usage authority and all begun Attempts. A caller must separately admit its exact
     /// compiled graph and generated origins through the common Store.
@@ -169,6 +191,18 @@ impl TaskBudget {
         allowances: BTreeMap<String, NodeAllowance>,
         call_limits: BTreeMap<String, u32>,
         now_unix_ms: u64,
+    ) -> Result<(), String> {
+        self.install_graph(allowances, call_limits, now_unix_ms, false)
+    }
+
+    /// Install a graph only after invalidation or the fixed planning handoff. The Store owns
+    /// those barriers and supplies whether this graph is the captured preparation Pipeline.
+    pub fn install_graph(
+        &mut self,
+        allowances: BTreeMap<String, NodeAllowance>,
+        call_limits: BTreeMap<String, u32>,
+        now_unix_ms: u64,
+        preparation: bool,
     ) -> Result<(), String> {
         if !self.deferred_verification
             || self.breached
@@ -192,10 +226,15 @@ impl TaskBudget {
             return Err("Planning spent capacity still owed to business verification".into());
         }
         let next = Self::new(remaining, allowances)?.with_call_limits(call_limits)?;
+        let next = if preparation {
+            next.with_deferred_verification()?
+        } else {
+            next
+        };
         self.retired_attempts = self.begun_attempts();
         self.nodes = next.nodes;
         self.call_limits = next.call_limits;
-        self.deferred_verification = false;
+        self.deferred_verification = preparation;
         self.last_time = now_unix_ms;
         Ok(())
     }

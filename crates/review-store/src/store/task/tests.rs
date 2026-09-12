@@ -2,6 +2,7 @@ use super::*;
 use review_core::Producer;
 use review_core::task::plan::PlanDependencyV1;
 mod planning;
+mod source;
 
 struct Authority {
     generated: Vec<GeneratedOriginV1>,

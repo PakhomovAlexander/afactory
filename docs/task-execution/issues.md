@@ -102,5 +102,51 @@ Its [curl configuration](https://curl.se/docs/manpage.html) disables ambient con
 redirects and enforces HTTPS, response-size and time bounds. Account configuration and raw Jira
 responses are excluded from Worker payloads. A Task result retains exact captured field provenance.
 
-Explicit ticket refresh with a new Task revision is still under implementation. `af task run`
-continues captured work and does not fetch the latest ticket.
+## Refresh an updated issue
+
+```sh
+# Read the captured project-relative issue path again.
+af task refresh implementation-reviewed --json
+
+# Or explicitly read a fresh local JSON/TOML representation of the same issue.
+af task refresh implementation-reviewed --source-file /absolute/path/updated-issue.toml --json
+
+# Jira requires the explicit local binding again and retains its exact tenant/key/field selector.
+af task refresh implementation-reviewed \
+  --source-bindings /absolute/local/path/source-bindings.toml --json
+```
+
+Refresh captures and plans without running Workers. A changed selected field or source revision
+creates a new Task revision. It preserves the original action, structured specification, code
+Snapshot, permissions, verification, selection facts, total budget and absolute deadline. Live
+edits to the Task file, source code or catalog do not become execution authority. Formatting or
+unselected-field changes alone preserve the existing observation and approval.
+
+```text
+new issue observation
+         |
+   remaining-capacity selection
+         |
+   atomic revision + plan barrier
+         |
+         +-- existing plan ------> ready
+         +-- generated plan ----> needs_plan_review (fresh exact signature)
+         +-- no fit ------------> fixed Planner preparation (run explicitly)
+         +-- insufficient ------> needs_resources (no plan, no dispatch)
+```
+
+Every earlier Attempt and token charge stays on the same ledger, including late usage. A fitting
+previously generated definition is reused without another Planner call, but its new plan requires
+fresh approval. A completed Task may receive an updated revision if its original allowance can
+still fund the required work. Refresh does not extend a deadline or allocate more Attempts.
+
+Inspect the new state with `af task explain`. Approve a generated plan through the existing
+[signed decision flow](generated-plans.md), then run it explicitly. An unplanned waiting revision
+makes `af task run` exit 4; it cannot fall back to the earlier approved plan. Existing results,
+decisions and delivery receipts remain in history. A delivered worktree is unchanged. Each new
+verified result can be delivered explicitly to another absent branch/worktree; inspection does
+not present an earlier result's receipt as delivery of the current revision. An unfinished delivery
+preparation must be reconciled before refreshing its Task.
+
+`af task run` continues captured work and never fetches the latest ticket. The atomic barrier and
+validation rules are recorded in [ADR-0062](../adr/0062-refresh-issue-revisions-without-resetting-execution-authority.md).

@@ -36,7 +36,8 @@ supplement it. Claude calls use only `claude-personal`.
   passes the full gate, including CLI execution, repair, planning, approval and reuse.
 - [ ] P13: document execution and independent acceptance pass the full gate. Read-only issue
   capture and local/Jira source conformance pass the full gate.
-  Ticket revision refresh and remaining Provider evidence are next.
+  Ticket revision refresh passes targeted CLI/Store/budget fixtures; its full gate is pending.
+  Remaining Provider evidence and Review compatibility are still required.
 - [ ] P14: compatibility, benchmark and consumer release.
 
 The owner authorized the complete plan in [three PRs](task-execution/pr-sequence.md).
@@ -53,7 +54,7 @@ The [generated-plan walkthrough](task-execution/generated-plans.md) describes th
 typed compiler repair, one-budget handoff and exact signed approval before generated execution.
 The [export walkthrough](task-execution/export.md) describes portable bundles, static contract
 fixtures and second-developer reuse without another Planner call.
-The [issue walkthrough](task-execution/issues.md) covers read-only capture and local/Jira bindings.
+The [issue walkthrough](task-execution/issues.md) covers read-only capture, explicit revision refresh and local/Jira bindings.
 The [document walkthrough](task-execution/document.md) runs a credential-free release-note Task
 with captured sources, protected content checks, independent acceptance and recorded Markdown output.
 The [starter walkthrough](task-execution/starters.md) creates software, document, review and repair
@@ -143,8 +144,10 @@ across 89 suites; formatting, Clippy and synthetic fixture reproduction passed. 
 checked 96 files with zero errors. Prior candidate gates also passed on read-only archives and
 with the exact cleared Gate environment. No model review was repeated after these corrections.
 
-**Current resume:** finish versioned Review entry-point adapters and developer authentication
-through the common Store guard. Fixed implementation cutover is described in
+**Current resume:** finish the refresh/delivery gate, compose requirements-aware independent
+acceptance with Review, and complete legacy Review entry-point migration plus P14 evidence.
+Signed developer plan decisions are implemented; external PR review awaits Claude personal login.
+Fixed implementation cutover is described in
 [ADR-0051](adr/0051-compile-fixed-implementation-tasks-into-the-common-runtime.md).
 Continue P00–P14 in the approved three PRs; this internal checkpoint does not reduce that scope.
 

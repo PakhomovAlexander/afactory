@@ -2130,6 +2130,16 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
             revision_id: id.clone(),
             plan_id: id.clone(),
         },
+        TaskChangeV1::SourceRefreshed {
+            revision_id: id.clone(),
+            plan_id: Some(id.clone()),
+            waiting: None,
+        },
+        TaskChangeV1::SourceRefreshed {
+            revision_id: id.clone(),
+            plan_id: None,
+            waiting: Some(TaskWaitingReasonV1::NeedsResources),
+        },
         TaskChangeV1::PlanDecided {
             decision_id: id.clone(),
             valid_until_unix_ms: 200,
@@ -2223,4 +2233,35 @@ fn source_contracts_keep_exact_fields_separate_from_normalized_requirements_and_
     forged["specification"] = json!(null);
     assert!(!validator("normalized-task-requirements-v1.json").is_valid(&forged));
     assert!(serde_json::from_value::<NormalizedRequirementsV1>(forged).is_err());
+}
+
+#[test]
+fn source_refresh_event_requires_exactly_one_plan_or_unresolved_reason() {
+    use review_core::task::event::TaskTransitionV1;
+    let id = format!("sha256:{}", "a".repeat(64));
+    let base = json!({"writer":"writer-1","epoch":1,"now_unix_ms":100,
+        "change":{"kind":"source_refreshed","revision_id":id}});
+    for fields in [
+        json!({}),
+        json!({"plan_id":id,"waiting":"needs_resources"}),
+        json!({"plan_id":null}),
+        json!({"waiting":null}),
+        json!({"waiting":"needs_plan_review"}),
+    ] {
+        let mut value = base.clone();
+        value["change"]
+            .as_object_mut()
+            .unwrap()
+            .extend(fields.as_object().unwrap().clone());
+        assert_invalid(
+            "task-transition-v1.json",
+            &value,
+            "ambiguous source barrier",
+        );
+        assert!(
+            serde_json::from_value::<TaskTransitionV1>(value)
+                .map(|v| v.validate().is_err())
+                .unwrap_or(true)
+        );
+    }
 }

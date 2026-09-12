@@ -136,3 +136,13 @@ cancels through the shared process supervisor. The source substitution fixtures 
 issue-to-embedded-Review-to-delivery flow pass. The complete gate passes **793 tests, zero failures,
 15 ignored**, across 111 suites, plus formatting, Clippy and frozen reproduction. Markdown checks
 pass. No live Jira request or model call ran; source refresh remains the next P13 checkpoint.
+
+CI for `7cd7662` passes Check, CLI smoke and live container probes in run `34656763527`.
+The refresh checkpoint adds one atomic issue-revision/plan barrier, remaining-capacity selection
+and shared lease renewal. Targeted CLI tests retain the original S0 and allowance after completed
+work, reuse generated definitions with fresh signed approval and wait when remaining Attempts
+are insufficient. Store and budget tests retain failed/late usage and refuse authority changes.
+The full refresh and result-scoped delivery gate passes **802 tests, zero failures, 15 ignored**,
+across 112 suites, plus formatting, Clippy and frozen reproduction. Delivery recovery retains the
+exact result identity; a pending delivery blocks refresh until reconciled. Both revisions can be
+delivered independently without changing earlier worktrees. No external PR 2 reviewer has run.

@@ -55,6 +55,8 @@ not create legacy Resolution authority. Later discovery can reopen a previously 
 An exact read-only observation of ticket fields, with raw source, per-field value and normalized
 text identities. A source revision label alone is not immutable identity. It supplies Task
 requirements and never execution authority; resume reads captured input without fetching again.
+An explicit source refresh creates a new Task revision when selected fields change, invalidates
+its affected plan approval and retains the original execution allowance and all prior spend.
 
 ### What is reviewed
 

@@ -23,6 +23,16 @@ pub(super) enum PreparedSelection {
     },
 }
 
+pub(super) enum SelectionAssessment {
+    Prepared(PreparedSelection),
+    Refused {
+        revision: Box<TaskRevisionV1>,
+        revision_id: String,
+        decision: SelectionDecision,
+        view: serde_json::Value,
+    },
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SelectedAdapter {
@@ -99,9 +109,37 @@ pub(super) fn prepare(
     cas: &Cas,
     authority: &RunAuthority,
     compiler: &TaskPlanCompiler,
-    mut request: TaskRevisionV1,
+    request: TaskRevisionV1,
     json_output: bool,
 ) -> Result<Option<PreparedSelection>, String> {
+    match assess(cas, authority, compiler, request, None)? {
+        SelectionAssessment::Prepared(value) => Ok(Some(value)),
+        SelectionAssessment::Refused { decision, view, .. } => {
+            println!(
+                "{}",
+                if json_output {
+                    serde_json::to_string(&view)
+                } else {
+                    serde_json::to_string_pretty(&view)
+                }
+                .map_err(|e| e.to_string())?
+            );
+            eprintln!(
+                "No Pipeline selected: {}",
+                serde_json::to_string(&decision).map_err(|e| e.to_string())?
+            );
+            Ok(None)
+        }
+    }
+}
+
+pub(super) fn assess(
+    cas: &Cas,
+    authority: &RunAuthority,
+    compiler: &TaskPlanCompiler,
+    mut request: TaskRevisionV1,
+    capacity: Option<&TaskLimitsV1>,
+) -> Result<SelectionAssessment, String> {
     request.provenance.input_artifact_ids = request
         .inputs
         .values()
@@ -150,7 +188,12 @@ pub(super) fn prepare(
                 Ok(now) => now,
                 Err(reason) => return CandidateState::Unavailable { reason },
             };
-            match candidate.candidate_resources(cas, graph, &revision.limits, now) {
+            match candidate.candidate_resources(
+                cas,
+                graph,
+                capacity.unwrap_or(&revision.limits),
+                now,
+            ) {
                 Err(reason) => return CandidateState::Invalid { reason },
                 Ok(reasons) if !reasons.is_empty() => {
                     return CandidateState::Infeasible {
@@ -192,30 +235,34 @@ pub(super) fn prepare(
                 )
                 .map_err(|e| e.to_string())?;
             let revision_id = capture_revision(cas, &request)?;
-            return Ok(Some(PreparedSelection::Generation {
-                revision: Box::new(request),
-                revision_id,
-            }));
+            return Ok(SelectionAssessment::Prepared(
+                PreparedSelection::Generation {
+                    revision: Box::new(request),
+                    revision_id,
+                },
+            ));
         }
         let view = json!({"schema":"af/task-selection@1", "task_id":request.task_id,
             "selection_id": selection_id, "request_revision_id":request_id,
             "attempts":0, "chargeable_tokens":0, "selection":selection});
-        if json_output {
-            println!(
-                "{}",
-                serde_json::to_string(&view).map_err(|e| e.to_string())?
-            );
-        } else {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&view).map_err(|e| e.to_string())?
-            );
-        }
-        eprintln!(
-            "No Pipeline selected: {}",
-            serde_json::to_string(&selection.decision).map_err(|e| e.to_string())?
-        );
-        return Ok(None);
+        request.provenance.adapter_id = cas
+            .put_json(
+                &serde_json::to_value(SelectedAdapter {
+                    schema: "af.selected-task-adapter/1".into(),
+                    source_adapter_id: request.provenance.adapter_id,
+                    selection_id,
+                    request_revision_id: request_id,
+                })
+                .map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        let revision_id = capture_revision(cas, &request)?;
+        return Ok(SelectionAssessment::Refused {
+            revision: Box::new(request),
+            revision_id,
+            decision: selection.decision,
+            view,
+        });
     };
     let (mut revision, compiler, adapters) = admitted
         .remove(pipeline)
@@ -233,14 +280,16 @@ pub(super) fn prepare(
         .map_err(|e| e.to_string())?;
     let revision_id = capture_revision(cas, &revision)?;
     let (plan, graph) = compiler.compile(cas, &revision_id, pipeline)?;
-    Ok(Some(PreparedSelection::Selected(Box::new(SelectedTask {
-        revision,
-        revision_id,
-        compiler,
-        adapters,
-        plan,
-        graph,
-    }))))
+    Ok(SelectionAssessment::Prepared(PreparedSelection::Selected(
+        Box::new(SelectedTask {
+            revision,
+            revision_id,
+            compiler,
+            adapters,
+            plan,
+            graph,
+        }),
+    )))
 }
 
 pub(super) fn recorded(

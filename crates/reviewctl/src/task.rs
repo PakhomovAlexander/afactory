@@ -373,6 +373,13 @@ struct DeliveryPrepared {
     schema: String,
     delivery_id: String,
     task_id: String,
+    /// New common-Task deliveries bind one exact result. Absent in historical receipts.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    result_id: Option<String>,
     source_snapshot_id: String,
     derived_snapshot_id: String,
     source_revision: String,
@@ -385,6 +392,13 @@ struct DeliveryReceipt {
     schema: String,
     delivery_id: String,
     task_id: String,
+    /// New common-Task deliveries bind one exact result. Absent in historical receipts.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    result_id: Option<String>,
     source_snapshot_id: String,
     derived_snapshot_id: String,
     target: DeliveryTarget,
@@ -622,6 +636,22 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
         branch: options.branch.clone(),
         worktree: worktree_text,
     };
+    let result_id = if let Some(task) = &common {
+        // Resume the captured ownership scheme for an existing delivery of this result.
+        if let Some(event) = events.last() {
+            cas.get_json(&event.artifact_id)
+                .map_err(|e| e.to_string())?
+                .get("result_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        } else if let review_core::task::TaskPhaseV1::Finished { result_id } = &task.phase {
+            Some(result_id.clone())
+        } else {
+            return Err("Task has no finished result".into());
+        }
+    } else {
+        None
+    };
     let prepared = DeliveryPrepared {
         schema: "af/task-delivery-prepared@1".into(),
         delivery_id: delivery_id(
@@ -629,8 +659,10 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
             &assets.source_snapshot_id,
             &assets.derived_snapshot_id,
             &target,
+            result_id.as_deref(),
         )?,
         task_id: options.task_id.clone(),
+        result_id,
         source_snapshot_id: assets.source_snapshot_id.clone(),
         derived_snapshot_id: assets.derived_snapshot_id.clone(),
         source_revision,
@@ -977,19 +1009,31 @@ fn delivery_id(
     source_snapshot_id: &str,
     derived_snapshot_id: &str,
     target: &DeliveryTarget,
+    result_id: Option<&str>,
 ) -> Result<String, String> {
-    let bytes = serde_json::to_vec(&serde_json::json!({
+    let mut value = serde_json::json!({
         "task_id": task_id,
         "source_snapshot_id": source_snapshot_id,
         "derived_snapshot_id": derived_snapshot_id,
         "target": target,
-    }))
-    .map_err(|error| error.to_string())?;
+    });
+    if let Some(id) = result_id {
+        value["result_id"] = serde_json::json!(id);
+    }
+    let bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
     Ok(format!("delivery-{:x}", Sha256::digest(bytes)))
 }
 
-fn owner_ref(task_id: &str) -> String {
-    format!("refs/afactory/deliveries/{task_id}")
+fn owner_ref(prepared: &DeliveryPrepared) -> Result<String, String> {
+    match &prepared.result_id {
+        Some(id) if review_core::is_digest(id) => Ok(format!(
+            "refs/afactory/task-deliveries/{}/{}",
+            prepared.task_id,
+            &id[7..]
+        )),
+        Some(_) => Err("Delivery has an invalid result identity".into()),
+        None => Ok(format!("refs/afactory/deliveries/{}", prepared.task_id)),
+    }
 }
 
 fn branch_ref(branch: &str) -> String {
@@ -1090,6 +1134,7 @@ fn release_failed_delivery_owner(
     failed: &DeliveryReceipt,
 ) -> Result<(), String> {
     if failed.task_id != requested.task_id
+        || failed.result_id != requested.result_id
         || failed.source_snapshot_id != requested.source_snapshot_id
         || failed.derived_snapshot_id != requested.derived_snapshot_id
         || failed.target.repository != requested.target.repository
@@ -1097,7 +1142,7 @@ fn release_failed_delivery_owner(
     {
         return Err("terminal failed delivery disagrees with the requested Task authority".into());
     }
-    let reference = owner_ref(&requested.task_id);
+    let reference = owner_ref(requested)?;
     let Some(oid) = git.ref_oid(&reference)? else {
         return Ok(());
     };
@@ -1135,6 +1180,7 @@ fn ensure_same_delivery(
     if existing.schema != "af/task-delivery@1"
         || existing.delivery_id != requested.delivery_id
         || existing.task_id != requested.task_id
+        || existing.result_id != requested.result_id
         || existing.source_snapshot_id != requested.source_snapshot_id
         || existing.derived_snapshot_id != requested.derived_snapshot_id
         || existing.target != requested.target
@@ -1226,7 +1272,7 @@ fn ensure_delivery_target_absent(
     if git.ref_oid(&branch_ref(&prepared.target.branch))?.is_some() {
         return Err("delivery branch already exists".into());
     }
-    if git.ref_oid(&owner_ref(&prepared.task_id))?.is_some() {
+    if git.ref_oid(&owner_ref(prepared)?)?.is_some() {
         return Err("Task already owns an unresolved local delivery ref".into());
     }
     Ok(())
@@ -1269,7 +1315,7 @@ fn execute_delivery(
 fn create_delivery_refs(git: &DeliveryGit, prepared: &DeliveryPrepared) -> Result<(), String> {
     let input = format!(
         "start\ncreate {} {}\ncreate {} {}\nprepare\ncommit\n",
-        owner_ref(&prepared.task_id),
+        owner_ref(prepared)?,
         prepared.source_revision,
         branch_ref(&prepared.target.branch),
         prepared.source_revision,
@@ -1345,9 +1391,7 @@ fn verify_sealed_delivery_identity(
     git_home: &Path,
     prepared: &DeliveryPrepared,
 ) -> Result<DeliveryGit, String> {
-    if source_git
-        .ref_oid(&owner_ref(&prepared.task_id))?
-        .as_deref()
+    if source_git.ref_oid(&owner_ref(prepared)?)?.as_deref()
         != Some(prepared.source_revision.as_str())
     {
         return Err("delivery ownership ref is absent or has moved".into());
@@ -1391,7 +1435,7 @@ fn rollback_owned_delivery(
     derived_manifest: &Manifest,
     context: RollbackContext,
 ) -> Result<(), String> {
-    let owner = git.ref_oid(&owner_ref(&prepared.task_id))?;
+    let owner = git.ref_oid(&owner_ref(prepared)?)?;
     let branch = git.ref_oid(&branch_ref(&prepared.target.branch))?;
     let worktree = Path::new(&prepared.target.worktree);
     if owner.is_none() {
@@ -1465,7 +1509,7 @@ fn rollback_owned_delivery(
             return Err("delivery path is not an owned linked worktree; refusing rollback".into());
         }
     }
-    let owner = git.ref_oid(&owner_ref(&prepared.task_id))?;
+    let owner = git.ref_oid(&owner_ref(prepared)?)?;
     let branch = git.ref_oid(&branch_ref(&prepared.target.branch))?;
     let mut commands = String::from("start\n");
     if let Some(oid) = branch {
@@ -1476,11 +1520,7 @@ fn rollback_owned_delivery(
         ));
     }
     if let Some(oid) = owner {
-        commands.push_str(&format!(
-            "delete {} {}\n",
-            owner_ref(&prepared.task_id),
-            oid
-        ));
+        commands.push_str(&format!("delete {} {}\n", owner_ref(prepared)?, oid));
     }
     commands.push_str("prepare\ncommit\n");
     git.require(["update-ref", "--stdin"], Some(commands.into_bytes()))?;
@@ -1576,6 +1616,7 @@ fn delivered_receipt(prepared: &DeliveryPrepared, ignored_paths: Vec<String>) ->
         schema: "af/task-delivery@1".into(),
         delivery_id: prepared.delivery_id.clone(),
         task_id: prepared.task_id.clone(),
+        result_id: prepared.result_id.clone(),
         source_snapshot_id: prepared.source_snapshot_id.clone(),
         derived_snapshot_id: prepared.derived_snapshot_id.clone(),
         target: prepared.target.clone(),

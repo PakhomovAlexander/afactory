@@ -402,3 +402,85 @@ fn planning_barrier_requires_settled_attempts_and_keeps_expiry_and_late_overrun_
         "Old settled reservation was restarted"
     );
 }
+
+#[test]
+fn source_revision_retains_spend_reservations_late_usage_and_the_original_deadline() {
+    let mut value = budget(5, 200, 1000);
+    let author = spend(&mut value, "implement", 1, 20);
+    let verify = spend(&mut value, "review.verify", 2, 10);
+    value.invalidate_plan(3).unwrap();
+    assert_eq!(value.begun_attempts(), 2);
+    assert_eq!(value.committed_tokens(), 30);
+    assert_eq!(value.remaining_limits().deadline_unix_ms, 1000);
+    assert!(value.prepare("implement", 4).is_err());
+    let allow = BTreeMap::from([
+        (
+            "implement".into(),
+            NodeAllowance {
+                tokens_per_attempt: 40,
+                wall_ms_per_attempt: 100,
+                max_attempts: 2,
+                verification_attempts: 0,
+            },
+        ),
+        (
+            "review.verify".into(),
+            NodeAllowance {
+                tokens_per_attempt: 30,
+                wall_ms_per_attempt: 200,
+                max_attempts: 1,
+                verification_attempts: 1,
+            },
+        ),
+    ]);
+    value
+        .install_graph(allow.clone(), BTreeMap::new(), 4, false)
+        .unwrap();
+    value.observe_charge(&author, 25).unwrap();
+    value.observe_charge(&verify, 15).unwrap();
+    assert_eq!(value.committed_tokens(), 40);
+    let next = spend(&mut value, "implement", 5, 10);
+    assert_ne!(next, author);
+    assert_ne!(next, verify);
+    assert_eq!(value.begun_attempts(), 3);
+    spend(&mut value, "implement", 6, 10);
+    assert!(value.prepare("implement", 7).is_err());
+    spend(&mut value, "review.verify", 7, 10);
+    assert_eq!(value.begun_attempts(), 5);
+    value.invalidate_plan(8).unwrap();
+    assert!(
+        value
+            .install_graph(allow, BTreeMap::new(), 9, false)
+            .is_err()
+    );
+    assert_eq!(value.begun_attempts(), 5);
+    assert_eq!(value.committed_tokens(), 70);
+}
+#[test]
+fn source_revision_cannot_release_pending_work_overruns_or_expired_resources() {
+    let mut value = budget(5, 200, 1000);
+    let pending = value.prepare("implement", 1).unwrap();
+    assert!(value.invalidate_plan(2).is_err());
+    value.begin(&pending.id, 2).unwrap();
+    assert!(value.invalidate_plan(3).is_err());
+    value.settle(&pending.id, 40).unwrap();
+    value.invalidate_plan(4).unwrap();
+    assert!(value.invalidate_plan(3).is_err());
+    value.observe_charge(&pending.id, 41).unwrap();
+    assert!(value.breached());
+    assert!(
+        value
+            .install_graph(BTreeMap::new(), BTreeMap::new(), 5, true)
+            .is_err()
+    );
+    let mut value = budget(5, 200, 1000);
+    spend(&mut value, "implement", 1, 10);
+    value.invalidate_plan(1001).unwrap();
+    assert!(
+        value
+            .install_graph(BTreeMap::new(), BTreeMap::new(), 1002, true)
+            .is_err()
+    );
+    assert_eq!(value.begun_attempts(), 1);
+    assert_eq!(value.committed_tokens(), 10);
+}

@@ -203,7 +203,8 @@
               "enum": [
                 "needs_input",
                 "needs_human",
-                "needs_plan_review"
+                "needs_plan_review",
+                "needs_resources"
               ]
             }
           }
@@ -305,6 +306,54 @@
               "pattern": "^sha256:[0-9a-f]{64}$"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "revision_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "source_refreshed"
+            },
+            "revision_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "plan_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "waiting": {
+              "enum": [
+                "needs_input",
+                "needs_human",
+                "needs_resources"
+              ]
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "plan_id"
+              ],
+              "not": {
+                "required": [
+                  "waiting"
+                ]
+              }
+            },
+            {
+              "required": [
+                "waiting"
+              ],
+              "not": {
+                "required": [
+                  "plan_id"
+                ]
+              }
+            }
+          ]
         }
       ]
     }

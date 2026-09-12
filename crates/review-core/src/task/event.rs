@@ -23,6 +23,22 @@ pub enum TaskChangeV1 {
     RevisionRecorded {
         revision_id: String,
     },
+    /// Atomic source-revision and replanning barrier. No execution approval carries over.
+    SourceRefreshed {
+        revision_id: String,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "super::present_option"
+        )]
+        plan_id: Option<String>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "super::present_option"
+        )]
+        waiting: Option<TaskWaitingReasonV1>,
+    },
     PlanProposed {
         plan_id: String,
     },
@@ -89,6 +105,13 @@ impl TaskTransitionV1 {
             require(is_digest(id), "Invalid Task transition artifact ID")?;
         }
         match &self.change {
+            TaskChangeV1::SourceRefreshed {
+                plan_id, waiting, ..
+            } => require(
+                plan_id.is_some() != waiting.is_some()
+                    && *waiting != Some(TaskWaitingReasonV1::NeedsPlanReview),
+                "Source refresh needs a plan or an unresolved reason; approval waiting is derived from the plan",
+            ),
             TaskChangeV1::Opened {
                 lease_until_unix_ms,
                 ..
@@ -119,6 +142,15 @@ impl TaskTransitionV1 {
 
     pub fn artifact_refs(&self) -> Vec<&str> {
         match &self.change {
+            TaskChangeV1::SourceRefreshed {
+                revision_id,
+                plan_id,
+                ..
+            } => {
+                let mut refs = vec![revision_id.as_str()];
+                refs.extend(plan_id.as_deref());
+                refs
+            }
             TaskChangeV1::PlanningCompleted {
                 bootstrap_plan_id,
                 proposal_id,

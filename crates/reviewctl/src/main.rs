@@ -1341,6 +1341,17 @@ fn main() {
                     &signature,
                     &inspect,
                 ),
+                cli::TaskCommand::Refresh {
+                    task_id,
+                    source_file,
+                    source_bindings,
+                    inspect,
+                } => task_execution::refresh::refresh(
+                    &task_id,
+                    source_file.as_deref(),
+                    source_bindings.as_deref(),
+                    &inspect,
+                ),
                 cli::TaskCommand::Run { task_id, inspect } => task_execution::run(
                     &task_id,
                     &inspect.repo,

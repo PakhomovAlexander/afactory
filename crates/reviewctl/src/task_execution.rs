@@ -39,6 +39,7 @@ pub(super) mod export;
 mod issue;
 mod legacy;
 mod planning;
+pub(super) mod refresh;
 mod selection;
 pub(crate) mod starter;
 pub(super) use legacy::start_legacy;
@@ -1232,6 +1233,10 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
     if matches!(projection.phase, TaskPhaseV1::Finished { .. }) {
         return present(&cas, &store, id, json, false);
     }
+    if projection.plan_id.is_none() {
+        present(&cas, &store, id, json, true)?;
+        return Ok(4);
+    }
     let authority: RunAuthority = serde_json::from_value(
         cas.get_json(&projection.revision.authority.policy_id)
             .map_err(|e| e.to_string())?,
@@ -1516,14 +1521,14 @@ fn present(
             "Task {}: {}",
             state.task_id,
             result.as_ref().map_or(
-                if state.phase
-                    == (TaskPhaseV1::Waiting {
-                        reason: TaskWaitingReasonV1::NeedsPlanReview
-                    })
-                {
-                    "needs-plan-review"
-                } else {
-                    "planned"
+                match &state.phase {
+                    TaskPhaseV1::Waiting { reason } => match reason {
+                        TaskWaitingReasonV1::NeedsPlanReview => "needs-plan-review",
+                        TaskWaitingReasonV1::NeedsResources => "needs-resources",
+                        TaskWaitingReasonV1::NeedsInput => "needs-input",
+                        TaskWaitingReasonV1::NeedsHuman => "needs-human",
+                    },
+                    _ => "planned",
                 },
                 |r| r.domain_conclusion.as_str()
             )
@@ -1558,8 +1563,13 @@ fn present(
 }
 
 fn delivery_view(cas: &Cas, task: &TaskProjection) -> Result<Option<serde_json::Value>, String> {
+    let TaskPhaseV1::Finished { result_id } = &task.phase else {
+        return Ok(None);
+    };
     task.deliveries
-        .last()
+        .iter()
+        .rev()
+        .find(|(_, delivery)| &delivery.result_id == result_id)
         .map(|(_, record)| cas.get_json(&record.receipt_id).map_err(|e| e.to_string()))
         .transpose()
 }

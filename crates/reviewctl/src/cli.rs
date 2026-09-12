@@ -911,6 +911,18 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
         #[arg(long)]
         json: bool,
     },
+    /// Capture an updated issue and replace its plan without executing Workers
+    Refresh {
+        task_id: String,
+        /// Read a fresh local JSON/TOML issue (defaults to the captured project path)
+        #[arg(long, value_name = "FILE", conflicts_with = "source_bindings")]
+        source_file: Option<PathBuf>,
+        /// Explicit machine-local account for the captured Jira selector
+        #[arg(long, value_name = "FILE")]
+        source_bindings: Option<PathBuf>,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
     /// Write exact bytes for an external developer signature; this does not approve execution
     DecisionPayload {
         task_id: String,

@@ -32,7 +32,7 @@ ambient configuration, proxies, redirects and URL globbing; keep certificate ver
 time, body bytes and process lifetime, and return typed errors without response-body diagnostics.
 There is no automatic source retry. The shared process supervisor owns cancellation and termination.
 
-Only initial explicit capture reads the source. A recorded Task run or replay uses its captured
+Initial capture and explicit source refresh read the source. A recorded Task run or replay uses its captured
 Requirements and source records. Local issue files come from the selected Git Snapshot. Jira raw
 responses and undeclared fields stay outside the Worker payload. Source bindings do not appear in
 exported definitions or Task authority.
@@ -45,5 +45,6 @@ limits. A real CLI fixture captures local issue input, executes shared implement
 Review, replays after source-file edits and explicitly delivers a verified new worktree.
 Command tutorial Workers assess their declared structured specification; broader interpretation
 requires suitable replacement Workers. No live Jira account or model-performance claim follows
-from recorded fixtures. Explicit source refresh and its revision/accounting barrier remain the
-next P13 checkpoint; resuming never implicitly refreshes a ticket.
+from recorded fixtures. Explicit source refresh and its revision/accounting barrier are specified by
+[ADR-0062](0062-refresh-issue-revisions-without-resetting-execution-authority.md); resuming never
+implicitly refreshes a ticket.

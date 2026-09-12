@@ -4,14 +4,15 @@
 pub mod code;
 pub mod document;
 pub mod host;
+pub mod lease;
 pub mod planning;
 pub mod provider;
 pub mod review;
 pub mod source;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{Condvar, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::sync::Mutex;
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use review_core::task::execution::*;
 use review_core::task::{ArtifactInputV1, TaskRevisionV1};
@@ -61,14 +62,6 @@ pub struct TaskRuntime<'a> {
     prepared: Mutex<BTreeMap<String, PreparedTaskAttempt>>,
     pending_outputs: Mutex<BTreeMap<String, (String, Option<String>)>>,
     failures: Mutex<BTreeMap<String, NodeFailureClass>>,
-}
-
-struct StopHeartbeat<'a>(&'a (Mutex<bool>, Condvar));
-impl Drop for StopHeartbeat<'_> {
-    fn drop(&mut self) {
-        *self.0.0.lock().expect("Task heartbeat") = true;
-        self.0.1.notify_all();
-    }
 }
 
 fn envelope(cas: &Cas, id: &str) -> Result<ArtifactEnvelope, String> {
@@ -128,48 +121,7 @@ impl<'a> TaskRuntime<'a> {
     }
 
     pub fn execute(&self) -> Result<RunReport, String> {
-        // Keep the writer renewable rather than claiming the whole Task deadline. A crashed
-        // process loses this short lease, allowing another process to fence and account for it.
-        let stopped = (Mutex::new(false), Condvar::new());
-        std::thread::scope(|scope| {
-            let heartbeat = scope.spawn(|| -> Result<(), String> {
-                loop {
-                    let (done, _) = stopped
-                        .1
-                        .wait_timeout_while(
-                            stopped.0.lock().expect("Task heartbeat"),
-                            Duration::from_secs(1),
-                            |done| !*done,
-                        )
-                        .expect("Task heartbeat");
-                    if *done {
-                        return Ok(());
-                    }
-                    drop(done);
-                    let now = SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .map_err(|e| e.to_string())?
-                        .as_millis() as u64;
-                    let mut store = self.store.lock().expect("Task Store");
-                    let projection = store
-                        .task_projection(self.cas, self.lease.task_id())
-                        .map_err(|e| e.to_string())?
-                        .ok_or("Unknown Task")?;
-                    if projection.lease_until_unix_ms() < now.saturating_add(10_000) {
-                        store
-                            .renew_task_lease(self.cas, &self.lease, 15_000)
-                            .map_err(|e| e.to_string())?;
-                    }
-                }
-            });
-            let stop = StopHeartbeat(&stopped);
-            let result = self.graph.run(self);
-            drop(stop);
-            heartbeat
-                .join()
-                .map_err(|_| "Task heartbeat panicked".to_string())??;
-            result
-        })
+        lease::with_heartbeat(&self.store, self.cas, &self.lease, || self.graph.run(self))
     }
 
     pub fn projection(&self) -> Result<TaskProjection, String> {

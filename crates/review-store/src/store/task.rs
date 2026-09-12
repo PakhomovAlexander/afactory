@@ -24,6 +24,7 @@ mod tests;
 mod delivery;
 pub mod execution;
 pub mod planning;
+mod source;
 
 fn conflict(message: impl Into<String>) -> StoreError {
     StoreError::Conflict(message.into())
@@ -281,6 +282,34 @@ fn references(
         ]);
     }
     match change {
+        TaskChangeV1::SourceRefreshed {
+            revision_id,
+            plan_id,
+            ..
+        } => {
+            let mut next = state
+                .ok_or_else(|| conflict("Source refresh precedes Task"))?
+                .clone();
+            next.revision = revision(cas, revision_id)?;
+            next.revision_id = revision_id.clone();
+            refs.extend(references(
+                cas,
+                &TaskChangeV1::RevisionRecorded {
+                    revision_id: revision_id.clone(),
+                },
+                None,
+            )?);
+            if let Some(plan_id) = plan_id {
+                refs.extend(references(
+                    cas,
+                    &TaskChangeV1::PlanProposed {
+                        plan_id: plan_id.clone(),
+                    },
+                    Some(&next),
+                )?);
+            }
+        }
+
         TaskChangeV1::PlanningCompleted {
             bootstrap_plan_id,
             proposal_id,
@@ -431,7 +460,8 @@ impl TaskProjection {
             TaskChangeV1::LeaseTaken { .. }
             | TaskChangeV1::LeaseRenewed { .. }
             | TaskChangeV1::LeaseReleased {}
-            | TaskChangeV1::DeliveryRecorded { .. } => true,
+            | TaskChangeV1::DeliveryRecorded { .. }
+            | TaskChangeV1::SourceRefreshed { .. } => true,
             TaskChangeV1::ExecutionRecorded { record_id } => matches!(
                 payload::<review_core::task::execution::TaskExecutionRecordV1>(
                     cas,
@@ -466,6 +496,19 @@ impl TaskProjection {
         } else {
             self.check_lease(transition)?;
             match &transition.change {
+                TaskChangeV1::SourceRefreshed {
+                    revision_id,
+                    plan_id,
+                    waiting,
+                } => {
+                    self.apply_source_refreshed(
+                        cas,
+                        revision_id,
+                        plan_id.as_deref(),
+                        *waiting,
+                        transition.now_unix_ms,
+                    )?;
+                }
                 TaskChangeV1::DeliveryRecorded { record_id } => {
                     self.apply_delivery(cas, record_id)?;
                 }

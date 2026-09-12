@@ -43,6 +43,9 @@ impl TaskProjection {
         };
         if receipt["schema"] != expected_schema
             || receipt["task_id"] != value.task_id
+            || receipt
+                .get("result_id")
+                .is_some_and(|id| id.as_str() != Some(value.result_id.as_str()))
             || receipt["source_snapshot_id"] != value.source_snapshot_id
             || receipt["derived_snapshot_id"] != value.derived_snapshot_id
             || receipt.get("target") != Some(&target)
@@ -56,7 +59,12 @@ impl TaskProjection {
                 "Delivery receipt contradicts its recorded identity or local scope",
             ));
         }
-        match (self.deliveries.last(), value.status) {
+        let previous = self
+            .deliveries
+            .iter()
+            .rev()
+            .find(|(_, previous)| previous.result_id == value.result_id);
+        match (previous, value.status) {
             (None, TaskDeliveryStatusV1::Prepared) => {}
             (Some((_, previous)), TaskDeliveryStatusV1::Prepared)
                 if previous.status == TaskDeliveryStatusV1::Failed => {}
@@ -69,7 +77,9 @@ impl TaskProjection {
                 let prepared = cas
                     .get_json(&previous.receipt_id)
                     .map_err(|e| conflict(e.to_string()))?;
-                if receipt["delivery_id"] != prepared["delivery_id"] {
+                if receipt["delivery_id"] != prepared["delivery_id"]
+                    || receipt.get("result_id") != prepared.get("result_id")
+                {
                     return Err(conflict(
                         "Delivery terminal receipt changed prepared operation",
                     ));
