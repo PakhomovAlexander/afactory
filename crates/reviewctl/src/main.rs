@@ -29,7 +29,8 @@ use std::time::Duration;
 use review_attempt::{Budget, BudgetLedger, Scope};
 use review_core::{
     EventType, RunFailureReasonV2, RunFailureReasonV3, RunReportPayloadV2, RunReportPayloadV3,
-    RunReportPayloadV4, RunReportPayloadV5, RunVerdictV2, RunVerdictV3, Severity,
+    RunReportPayloadV4, RunReportPayloadV5, RunReportPayloadV6, RunVerdictV2, RunVerdictV3,
+    Severity,
 };
 use review_graph::NodeOutcome;
 use review_pipeline::{Kernel, RoundAuthority, RunVerdict};
@@ -45,6 +46,7 @@ mod config;
 mod onboard;
 mod project;
 mod providers;
+mod report_tasks;
 mod selfmgmt;
 mod task;
 mod task_execution;
@@ -2587,12 +2589,12 @@ fn print_campaigns_text(view: &CampaignListView) {
         }
         for round in &campaign.rounds {
             println!(
-                "    run {}: round {} epoch {}; {}; reported tokens {}",
+                "    run {}: round {} epoch {}; {}; {}",
                 round.run,
                 optional_number(round.round),
                 optional_number(round.epoch),
                 round.verdict,
-                optional_tokens(round.reported_tokens)
+                round.tokens_label()
             );
         }
     }
@@ -2615,6 +2617,8 @@ struct ReviewReportView {
     final_verdict: Option<String>,
     rounds: Vec<ReportRoundView>,
     spend: Vec<RoundSpendView>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    task_accounting: Vec<report_tasks::TaskAccountingView>,
     demands: Vec<review_core::DemandSetEntryV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recorded_not_gathered: Option<LatestRoundEvidence>,
@@ -2634,6 +2638,26 @@ struct ReportRoundView {
     verdict: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     reported_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_chargeable_tokens_at_report: Option<review_core::task::usage::DecimalU128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_accounting: Option<review_core::TaskReviewAccountingV1>,
+}
+
+impl ReportRoundView {
+    fn tokens_label(&self) -> String {
+        self.task_chargeable_tokens_at_report.map_or_else(
+            || format!("reported tokens {}", optional_tokens(self.reported_tokens)),
+            |tokens| format!("Task cumulative charge at report {}", tokens.get()),
+        )
+    }
+
+    fn tokens_cell(&self) -> String {
+        self.task_chargeable_tokens_at_report.map_or_else(
+            || optional_tokens(self.reported_tokens),
+            |tokens| format!("{} (Task cumulative at report)", tokens.get()),
+        )
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -2857,10 +2881,27 @@ struct ProviderSpendAccumulator {
 
 fn print_report(options: &ReportOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let store = open_campaign_store(&state)?;
-    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
-    let run_id = campaign_run_id(&options.campaign);
-    let ledger = LedgerProjection::rebuild(&store, &cas, &run_id)
+    let store = open_campaign_store_read_only(&state)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let view = read_report_view(&store, &cas, &options.campaign)?;
+    match options.format {
+        ReportFormat::Markdown => print_report_markdown(&view),
+        ReportFormat::Text => print_report_text(&view),
+        ReportFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
+        ),
+    }
+    Ok(())
+}
+
+fn read_report_view(
+    store: &EventStore,
+    cas: &Cas,
+    campaign: &str,
+) -> Result<ReviewReportView, String> {
+    let run_id = campaign_run_id(campaign);
+    let ledger = LedgerProjection::rebuild(store, cas, &run_id)
         .map_err(|e| e.to_string())?
         .into_ledger();
     print_scope_authority_warnings(&ledger);
@@ -2871,16 +2912,26 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
         .collect();
     let round_authority = report_round_authority(&events)?;
     let rounds = report_rounds(&reports, &round_authority)?;
-    let recorded_not_gathered = latest_round_evidence(&events, &cas)?.filter(|evidence| {
+    let recorded_not_gathered = latest_round_evidence(&events, cas)?.filter(|evidence| {
         evidence.ledger_was_not_produced() && !evidence.available_node_results.is_empty()
     });
     let mut spend = report_spend(&events, &round_authority)?;
-    let wall_rows = store.attempt_wall(&run_id).map_err(|e| e.to_string())?;
+    let task_accounting = report_tasks::read(store, cas, &run_id, &events)?;
+    // An empty legacy accumulator says nothing about common Task work in that Round.
+    spend.retain(|round| {
+        !round.reviewers.is_empty() || !task_accounting.rounds.contains(&(round.round, round.epoch))
+    });
+    let mut wall_rows = store.attempt_wall(&run_id).map_err(|e| e.to_string())?;
+    wall_rows.extend(task_accounting.wall_rows);
     let wall_ms = attach_attempt_wall(&mut spend, &wall_rows);
     let findings = ledger.finding_views();
-    let view = ReviewReportView {
-        schema: "af/review-report@1",
-        campaign: options.campaign.clone(),
+    Ok(ReviewReportView {
+        schema: if task_accounting.tasks.is_empty() {
+            "af/review-report@1"
+        } else {
+            "af/review-report@2"
+        },
+        campaign: campaign.into(),
         runs_recorded: reports.len(),
         ledger_round: ledger.round,
         final_verdict: reports
@@ -2889,22 +2940,13 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
             .transpose()?,
         rounds,
         spend,
+        task_accounting: task_accounting.tasks,
         demands: ledger.demand_views(),
         recorded_not_gathered,
         wall_ms,
         findings_summary: findings_summary(&findings),
         findings,
-    };
-
-    match options.format {
-        ReportFormat::Markdown => print_report_markdown(&view),
-        ReportFormat::Text => print_report_text(&view),
-        ReportFormat::Json => println!(
-            "{}",
-            serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
-        ),
-    }
-    Ok(())
+    })
 }
 
 fn report_rounds(
@@ -2919,12 +2961,20 @@ fn report_rounds(
                 .causation_id
                 .as_deref()
                 .and_then(|causation| round_authority.get(causation));
+            let task_report = (event.event_type == EventType::RunReportV6)
+                .then(|| serde_json::from_value::<RunReportPayloadV6>(event.payload.clone()))
+                .transpose()
+                .map_err(|error| error.to_string())?;
             Ok(ReportRoundView {
                 run: index + 1,
                 round: authority.map(|(round, _)| *round),
                 epoch: authority.map(|(_, epoch)| *epoch),
                 verdict: report_verdict(event)?,
                 reported_tokens: event.payload.get("spent_tokens").and_then(|v| v.as_u64()),
+                task_chargeable_tokens_at_report: task_report
+                    .as_ref()
+                    .map(|report| report.spent_tokens),
+                task_accounting: task_report.map(|report| report.task_accounting),
             })
         })
         .collect()
@@ -3237,12 +3287,12 @@ fn print_report_text(report: &ReviewReportView) {
     }
     for round in &report.rounds {
         println!(
-            "  run {} (round {} epoch {}): {}; reported tokens {}",
+            "  run {} (round {} epoch {}): {}; {}",
             round.run,
             optional_number(round.round),
             optional_number(round.epoch),
             round.verdict,
-            optional_tokens(round.reported_tokens)
+            round.tokens_label()
         );
     }
     println!("Spend:");
@@ -3285,6 +3335,7 @@ fn print_report_text(report: &ReviewReportView) {
             }
         }
     }
+    print!("{}", report_tasks::render(&report.task_accounting, false));
     println!("Demands:");
     if report.demands.is_empty() {
         println!("  none");
@@ -3375,7 +3426,7 @@ fn print_report_markdown(report: &ReviewReportView) {
             optional_number(round.round),
             optional_number(round.epoch),
             round.verdict,
-            optional_tokens(round.reported_tokens)
+            round.tokens_cell()
         );
     }
     println!();
@@ -3436,6 +3487,7 @@ fn print_report_markdown(report: &ReviewReportView) {
         }
     }
     println!();
+    print!("{}", report_tasks::render(&report.task_accounting, true));
     println!("## Demands");
     if report.demands.is_empty() {
         println!();
@@ -3726,6 +3778,11 @@ fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
         }
         EventType::RunReportV5 => {
             let report: RunReportPayloadV5 =
+                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
+            Ok(render_verdict_v3(report.verdict))
+        }
+        EventType::RunReportV6 => {
+            let report: RunReportPayloadV6 =
                 serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
             Ok(render_verdict_v3(report.verdict))
         }
@@ -4200,6 +4257,11 @@ fn run_report_outcomes(
         )),
         EventType::RunReportV5 => Ok(Some(
             serde_json::from_value::<RunReportPayloadV5>(event.payload.clone())
+                .map_err(|error| error.to_string())?
+                .outcomes,
+        )),
+        EventType::RunReportV6 => Ok(Some(
+            serde_json::from_value::<RunReportPayloadV6>(event.payload.clone())
                 .map_err(|error| error.to_string())?
                 .outcomes,
         )),

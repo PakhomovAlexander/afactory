@@ -1,5 +1,8 @@
 //! `RunEvent@1` — the append-only source of truth.
 
+mod task_report;
+pub use task_report::{RunReportExecutionV6, RunReportPayloadV6, TaskReviewAccountingV1};
+
 use serde::{Deserialize, Serialize};
 
 /// The complete event vocabulary understood by this kernel build.
@@ -101,6 +104,8 @@ pub enum EventType {
     RunReportV4,
     #[serde(rename = "RunReport@5")]
     RunReportV5,
+    #[serde(rename = "RunReport@6")]
+    RunReportV6,
     #[serde(rename = "RoundInputSuperseded@1")]
     RoundInputSupersededV1,
     #[serde(rename = "RoundStarted@1")]
@@ -116,7 +121,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 52] = [
+    pub const ALL: [Self; 53] = [
         Self::TaskTransitionV1,
         Self::TaskReviewResultSelectedV1,
         Self::BrokerOperationCompletedV1,
@@ -163,6 +168,7 @@ impl EventType {
         Self::RunReportV3,
         Self::RunReportV4,
         Self::RunReportV5,
+        Self::RunReportV6,
         Self::RoundInputSupersededV1,
         Self::RoundStartedV1,
         Self::SourceCapturedV1,
@@ -219,6 +225,7 @@ impl EventType {
             Self::RunReportV3 => "RunReport@3",
             Self::RunReportV4 => "RunReport@4",
             Self::RunReportV5 => "RunReport@5",
+            Self::RunReportV6 => "RunReport@6",
             Self::RoundInputSupersededV1 => "RoundInputSuperseded@1",
             Self::RoundStartedV1 => "RoundStarted@1",
             Self::SourceCapturedV1 => "SourceCaptured@1",
@@ -237,6 +244,7 @@ impl EventType {
                 | Self::RunReportV3
                 | Self::RunReportV4
                 | Self::RunReportV5
+                | Self::RunReportV6
         )
     }
 
@@ -244,7 +252,11 @@ impl EventType {
     pub const fn run_report_requires_receipts(self) -> bool {
         matches!(
             self,
-            Self::RunReportV2 | Self::RunReportV3 | Self::RunReportV4 | Self::RunReportV5
+            Self::RunReportV2
+                | Self::RunReportV3
+                | Self::RunReportV4
+                | Self::RunReportV5
+                | Self::RunReportV6
         )
     }
 
@@ -296,6 +308,7 @@ impl EventType {
             Self::RunReportV3 => ("RunReport", 3),
             Self::RunReportV4 => ("RunReport", 4),
             Self::RunReportV5 => ("RunReport", 5),
+            Self::RunReportV6 => ("RunReport", 6),
             Self::RoundInputSupersededV1 => ("RoundInputSuperseded", 1),
             Self::RoundStartedV1 => ("RoundStarted", 1),
             Self::SourceCapturedV1 => ("SourceCaptured", 1),
@@ -385,6 +398,7 @@ impl std::str::FromStr for EventType {
             "RunReport@3" => Ok(Self::RunReportV3),
             "RunReport@4" => Ok(Self::RunReportV4),
             "RunReport@5" => Ok(Self::RunReportV5),
+            "RunReport@6" => Ok(Self::RunReportV6),
             "RoundInputSuperseded@1" => Ok(Self::RoundInputSupersededV1),
             "RoundStarted@1" => Ok(Self::RoundStartedV1),
             "ReviewerExecutionBound@1" => Ok(Self::ReviewerExecutionBoundV1),
@@ -1653,6 +1667,13 @@ pub fn validate_event_payload(
                 .validate()
                 .map_err(|error| format!("RunReport@5: {error}"))
         }
+        EventType::RunReportV6 => {
+            let report = serde_json::from_value::<RunReportPayloadV6>(payload.clone())
+                .map_err(|error| format!("RunReport@6: {error}"))?;
+            report
+                .validate()
+                .map_err(|error| format!("RunReport@6: {error}"))
+        }
         EventType::IntegrationPreparedV1 => {
             let value =
                 serde_json::from_value::<crate::IntegrationPreparedPayloadV1>(payload.clone())
@@ -1975,6 +1996,16 @@ pub fn run_report_closes_round(event: &RunEvent) -> Result<Option<bool>, serde_j
         }
         EventType::RunReportV5 => {
             let report: RunReportPayloadV5 = serde_json::from_value(event.payload.clone())?;
+            report
+                .validate()
+                .map_err(<serde_json::Error as serde::de::Error>::custom)?;
+            Ok(Some(!matches!(
+                report.verdict,
+                RunVerdictV3::Incomplete { .. }
+            )))
+        }
+        EventType::RunReportV6 => {
+            let report: RunReportPayloadV6 = serde_json::from_value(event.payload.clone())?;
             report
                 .validate()
                 .map_err(<serde_json::Error as serde::de::Error>::custom)?;

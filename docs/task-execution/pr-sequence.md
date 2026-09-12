@@ -439,3 +439,29 @@ canonical accounting and remaining live conformance/P14 evidence still gate comp
 owner's terminal confirms the isolated personal Claude profile is signed out (`false`/`none`);
 Fable and Opus cannot run until that subscription login completes. No ambient API key or work
 account has been used. The active hub pin remains the supported `v0.7.1` release.
+
+## Captured Review operation host: verified checkpoint
+
+The full gate at `eab8d29` (identical tree to frozen verification `9e55cec`) passes
+**903 tests, zero failures, 15 ignored**, across 119 suites, plus formatting, Clippy,
+documentation tests and byte-identical synthetic reproduction. PR 2 carries this checkpoint;
+its exact-head CI is run `34693346220`.
+
+The first full operation-host gate at `e4a5157` failed a new container probe test's assumption
+that the first shell script had started before the deadline. The corrected test checks the
+actual first runtime's timeout result and asserts that later probes never launch; it preserves
+the original deadline and elapsed bound. The first failure log remains recorded separately.
+
+The next accounting slice introduces checked cumulative `RunReport@6` receipts and typed Task
+reviewer provenance under [ADR-0078](../adr/0078-bind-review-conclusions-to-exact-task-accounting.md).
+It preserves exact counters through the canonical Review boundary and separates immutable report
+snapshots from later Task charges. The final focused checks pass: 18 captured Review integration
+tests, 67 Core schema parity tests, 90 Store unit tests (one ignored), 75 CLI unit tests and
+19 Campaign-loop tests. Workspace Clippy passes. The full CLI suite and frozen full gate follow.
+
+The integration fixtures cover exact u128 totals, current accounting versus frozen reports,
+forged prefixes/charges, unknown usage, strict historical provenance, durable cache-failure
+omission/substitution, late overrun before Task finish and expired execution with zero Attempts
+under unbound, bound and cached Gate policy. A broad host check caught semantic Review Round-cap
+exhaustion being confused with Task resource exhaustion; publication now carries its observed
+resource state separately, preserving complete finding-bearing Review results.

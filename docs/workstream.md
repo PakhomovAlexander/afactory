@@ -1,10 +1,11 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
 **Active increment:** [Task execution](task-execution.md), P00–P14, authorized as three PRs.
-The latest pushed checkpoint `7b6e1e3` passes the complete local gate (**891 tests**, no failures,
-15 ignored) and CI. Captured Review now executes through the common operation host with
-canonical acceptance and restart recovery in integration fixtures; its complete gate follows.
-Broker/Scatter/heavy continuation and legacy CLI ownership still require the remaining adapters.
+The captured Review host checkpoint `eab8d29` passes the complete local gate (**903 tests**,
+no failures, 15 ignored); exact-head CI is run `34693346220`. It preserves canonical acceptance
+and restart recovery under common Task Attempts. The next slice adds exact cumulative accounting
+at the Review report boundary and common Attempt inspection. Broker/Scatter/heavy continuation
+and legacy CLI ownership still require the remaining adapters.
 
 Common Task workflows, shared packages, embedding, repair, selection/generation, exact-plan
 approval, export, starters and issue/document Tasks are implemented on the PR branches.

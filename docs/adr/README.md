@@ -147,3 +147,4 @@ options you rejected and why — that is the part future-you needs.
   once](0076-decode-and-verify-typed-cas-reads-once.md)
 - [0077 — Run captured Review operations under common Task
   Attempts](0077-run-captured-review-operations-under-common-task-attempts.md)
+- [0078 — Bind Review conclusions to exact Task accounting](0078-bind-review-conclusions-to-exact-task-accounting.md)

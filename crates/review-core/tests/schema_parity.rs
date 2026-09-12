@@ -32,7 +32,10 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 106] = [
+const SCHEMAS: [&str; 109] = [
+    "task-review-attempt-provenance-v1.json",
+    "task-review-accounting-v1.json",
+    "run-report-v6.json",
     "normalized-task-requirements-v1.json",
     "task-source-capture-v1.json",
     "issue-input-v1.json",
@@ -546,6 +549,7 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     "run-report-v5.json",
                     "task-contracts-v1.json",
                     "task-token-usage-v1.json",
+                    "task-review-accounting-v1.json",
                     "task-operator-signature-v1.json",
                     "task-kind-v1.json",
                     "task-invocation-v1.json",
@@ -2351,6 +2355,42 @@ fn task_review_metadata_retains_typed_canonical_results_and_closed_proposal_disp
 }
 
 #[test]
+fn task_review_attempt_provenance_preserves_wide_charge_and_unknown_usage() {
+    use review_core::task::review_compat::TaskReviewAttemptProvenanceV1;
+    let id = format!("sha256:{}", "a".repeat(64));
+    let schema = "task-review-attempt-provenance-v1.json";
+    for known in [false, true] {
+        let mut value = json!({"context_id":id, "task_invocation_id":id,
+            "attempt_id":"b".repeat(26), "review_node":"reviewer", "result_artifact_id":id,
+            "mutations_artifact_id":id, "raw_artifact_id":id, "charged_tokens":u64::MAX.to_string()});
+        if known {
+            value["usage_id"] = json!(id);
+        }
+        assert_valid(schema, &value);
+        let typed: TaskReviewAttemptProvenanceV1 = serde_json::from_value(value.clone()).unwrap();
+        typed.validate().unwrap();
+        assert_eq!(typed.charged_tokens.get(), u64::MAX);
+        assert_eq!(typed.usage_id.is_some(), known);
+        for (field, bad) in [
+            ("charged_tokens", json!(1)),
+            ("charged_tokens", json!("18446744073709551616")),
+            ("charged_tokens", json!("01")),
+            ("usage_id", json!(null)),
+            ("result_artifact_id", json!("missing")),
+            ("extra", json!(true)),
+        ] {
+            let mut bad_value = value.clone();
+            bad_value[field] = bad;
+            assert_invalid(schema, &bad_value, "closed exact provenance");
+            assert!(
+                serde_json::from_value::<TaskReviewAttemptProvenanceV1>(bad_value)
+                    .map_or(true, |v| v.validate().is_err())
+            );
+        }
+    }
+}
+
+#[test]
 fn task_review_gate_facts_preserve_closed_failed_attempt_observations() {
     use review_core::task::review_compat::TaskReviewGateFactsV1;
     let valid = json!({
@@ -2523,3 +2563,266 @@ fn legacy_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
 
 #[path = "schema_parity/task_usage.rs"]
 mod task_usage;
+
+#[test]
+fn task_review_conclusions_preserve_exact_cumulative_charge_and_execution_contracts() {
+    use review_core::{RunReportExecutionV6, RunReportPayloadV6, TaskReviewAccountingV1};
+    let id = format!("sha256:{}", "a".repeat(64));
+    let accounting = TaskReviewAccountingV1 {
+        task_id: "review-task".into(),
+        task_revision_id: id.clone(),
+        plan_id: id.clone(),
+        task_report_id: id,
+        through_sequence: 43,
+    };
+    assert_valid(
+        "task-review-accounting-v1.json",
+        &serde_json::to_value(&accounting).unwrap(),
+    );
+    let binding = RunExecutionBindingV4 {
+        node: "gate".into(),
+        provider: RunExecutionProviderV4::TrustedLocal,
+        image: None,
+        required_isolation: RunIsolationV4::None,
+        provided_isolation: RunIsolationV4::None,
+        mode: RunSandboxModeV4::EphemeralWrite,
+        admitted: true,
+    };
+    for execution in [
+        RunReportExecutionV6::Unbound {},
+        RunReportExecutionV6::Bound {
+            execution_bindings: vec![binding.clone()],
+        },
+        RunReportExecutionV6::Cached {
+            execution_bindings: vec![binding.clone()],
+            cache_snapshots: vec![],
+            cache_failures: vec![RunCacheFailureV5 {
+                node: "gate".into(),
+                kind: RunCacheKindV5::Cargo,
+                reason: RunCacheFailureReasonV5::PolicyUnavailable,
+            }],
+        },
+    ] {
+        for total in [
+            0,
+            9007199254740991,
+            u64::MAX as u128,
+            u64::MAX as u128 + 1,
+            u128::MAX,
+        ] {
+            let report = RunReportPayloadV6 {
+                outcomes: vec![RunNodeReportV2 {
+                    node: "gate".into(),
+                    outcome: RunNodeOutcomeV2::Failed {
+                        error: "setup failed".into(),
+                    },
+                }],
+                blocked_gates: vec!["gate".into()],
+                verdict: RunVerdictV3::Incomplete {
+                    missing_nodes: vec![MissingNodeV2 {
+                        node: "gate".into(),
+                        reason: "setup failed".into(),
+                    }],
+                },
+                spent_tokens: total.into(),
+                task_accounting: accounting.clone(),
+                execution: execution.clone(),
+            };
+            report.validate().unwrap();
+            let value = serde_json::to_value(&report).unwrap();
+            assert_eq!(value["spent_tokens"], total.to_string());
+            assert_valid("run-report-v6.json", &value);
+            assert_eq!(
+                serde_json::from_value::<RunReportPayloadV6>(value.clone()).unwrap(),
+                report
+            );
+            for invalid in [
+                json!(0),
+                json!(null),
+                json!(""),
+                json!("01"),
+                json!("-1"),
+                json!("1.0"),
+                json!("1e3"),
+                json!("1\n"),
+                json!("340282366920938463463374607431768211456"),
+            ] {
+                let mut changed = value.clone();
+                changed["spent_tokens"] = invalid;
+                assert_invalid("run-report-v6.json", &changed, "inexact cumulative charge");
+                assert!(serde_json::from_value::<RunReportPayloadV6>(changed).is_err());
+            }
+            for invalid in [
+                json!({"kind":"bound"}),
+                json!({"kind":"unbound","cache_snapshots":[]}),
+                json!({"kind":"unknown"}),
+            ] {
+                let mut changed = value.clone();
+                changed["execution"] = invalid;
+                assert_invalid("run-report-v6.json", &changed, "invalid execution contract");
+                assert!(
+                    serde_json::from_value::<RunReportPayloadV6>(changed)
+                        .map_or(true, |report| report.validate().is_err())
+                );
+            }
+        }
+    }
+
+    let binding = serde_json::to_value(binding).unwrap();
+    let snapshot = json!({"node":"gate", "kind":"cargo", "source_digest":accounting.plan_id,
+        "bytes":12, "files":1, "materialization":"copy"});
+    let failure = json!({"node":"gate", "kind":"cargo", "reason":"policy_unavailable"});
+    let incomplete = json!({
+        "outcomes":[
+            {"node":"gate", "outcome":{"kind":"failed", "error":"setup failed"}},
+            {"node":"unstarted", "outcome":{"kind":"suppressed", "reason":"upstream_missing"}}
+        ],
+        "blocked_gates":["gate"],
+        "verdict":{"kind":"incomplete", "missing_nodes":[
+            {"node":"gate", "reason":"setup failed"},
+            {"node":"unstarted", "reason":"upstream missing"}
+        ]},
+        "spent_tokens":"0", "task_accounting":accounting,
+        "execution":{"kind":"cached", "execution_bindings":[binding],
+            "cache_snapshots":[], "cache_failures":[failure]}
+    });
+    let read = |value: Value| {
+        serde_json::from_value::<RunReportPayloadV6>(value)
+            .is_ok_and(|report| report.validate().is_ok())
+    };
+    // Incomplete reports retain the captured variant even when no Gate started, or only
+    // part of its execution facts exist. Exact receipt coverage is checked by Store.
+    for execution in [
+        json!({"kind":"bound", "execution_bindings":[]}),
+        json!({"kind":"bound", "execution_bindings":[binding]}),
+        json!({"kind":"cached", "execution_bindings":[], "cache_snapshots":[], "cache_failures":[]}),
+        json!({"kind":"cached", "execution_bindings":[binding], "cache_snapshots":[], "cache_failures":[]}),
+        json!({"kind":"cached", "execution_bindings":[binding], "cache_snapshots":[snapshot], "cache_failures":[]}),
+        incomplete["execution"].clone(),
+    ] {
+        let mut value = incomplete.clone();
+        value["execution"] = execution;
+        assert_valid("run-report-v6.json", &value);
+        assert!(read(value));
+    }
+    for verdict in [
+        json!({"kind":"pass"}),
+        json!({"kind":"fail", "reason":"not_converged"}),
+        json!({"kind":"fail", "reason":"authority_unavailable"}),
+        json!({"kind":"fail", "reason":"exhausted"}),
+    ] {
+        let mut complete = incomplete.clone();
+        complete["verdict"] = verdict;
+        complete["outcomes"] =
+            json!([{"node":"gate", "outcome":{"kind":"completed", "output_artifacts":[]}}]);
+        complete["blocked_gates"] = json!([]);
+        for execution in [
+            json!({"kind":"unbound"}),
+            json!({"kind":"bound", "execution_bindings":[binding]}),
+            json!({"kind":"cached", "execution_bindings":[binding], "cache_snapshots":[snapshot], "cache_failures":[]}),
+        ] {
+            complete["execution"] = execution;
+            assert_valid("run-report-v6.json", &complete);
+            assert!(read(complete.clone()));
+            for field in ["execution_bindings", "cache_snapshots"] {
+                if complete["execution"][field].is_array() {
+                    let mut unknown = complete.clone();
+                    unknown["execution"][field][0]["unknown"] = json!(true);
+                    assert_invalid(
+                        "run-report-v6.json",
+                        &unknown,
+                        "closed complete execution entries",
+                    );
+                    assert!(!read(unknown));
+                    let mut undeclared = complete.clone();
+                    undeclared["execution"][field][0]["node"] = json!("undeclared");
+                    assert!(
+                        !read(undeclared),
+                        "complete facts require declared bound nodes"
+                    );
+                }
+            }
+        }
+        for execution in [
+            json!({"kind":"bound", "execution_bindings":[]}),
+            json!({"kind":"cached", "execution_bindings":[], "cache_snapshots":[], "cache_failures":[]}),
+            json!({"kind":"cached", "execution_bindings":[], "cache_snapshots":[snapshot], "cache_failures":[]}),
+            json!({"kind":"cached", "execution_bindings":[binding], "cache_snapshots":[], "cache_failures":[]}),
+        ] {
+            complete["execution"] = execution;
+            assert_invalid(
+                "run-report-v6.json",
+                &complete,
+                "complete reports require execution evidence",
+            );
+            assert!(!read(complete.clone()));
+        }
+    }
+    for (pointer, invalid) in [
+        ("/execution/execution_bindings/0/node", json!("")),
+        ("/execution/execution_bindings/0/provider", json!("unknown")),
+        ("/execution/cache_failures/0/node", json!("")),
+        ("/execution/cache_failures/0/reason", json!("unknown")),
+    ] {
+        let mut value = incomplete.clone();
+        *value.pointer_mut(pointer).unwrap() = invalid;
+        assert_invalid(
+            "run-report-v6.json",
+            &value,
+            "incomplete entries remain validated",
+        );
+        assert!(!read(value));
+    }
+    for field in ["execution_bindings", "cache_snapshots", "cache_failures"] {
+        let mut value = incomplete.clone();
+        value["execution"]["cache_snapshots"] = json!([snapshot]);
+        value["execution"]["cache_failures"] = json!([]);
+        if field == "cache_failures" {
+            value["execution"]["cache_snapshots"] = json!([]);
+            value["execution"]["cache_failures"] = json!([failure]);
+        }
+        let mut unknown = value.clone();
+        unknown["execution"][field][0]["unknown"] = json!(true);
+        assert_invalid("run-report-v6.json", &unknown, "closed execution entries");
+        assert!(!read(unknown));
+        // Cross-entry identities and node relations are semantic Core checks, as in V4/V5.
+        let mut duplicate = value.clone();
+        let entry = duplicate["execution"][field][0].clone();
+        duplicate["execution"][field]
+            .as_array_mut()
+            .unwrap()
+            .push(entry);
+        assert!(!read(duplicate));
+        value["execution"][field][0]["node"] = json!("undeclared");
+        assert!(!read(value));
+    }
+    let mut value = incomplete.clone();
+    value["execution"]["cache_snapshots"] = json!([snapshot]);
+    assert!(
+        !read(value),
+        "snapshot and failure identities cannot overlap"
+    );
+    let mut value = incomplete.clone();
+    value["execution"]["execution_bindings"] = json!([]);
+    assert!(
+        !read(value),
+        "cache failures still require a recorded binding"
+    );
+    let mut value = incomplete.clone();
+    value["execution"]["execution_bindings"][0]["node"] = json!("unstarted");
+    value["execution"]["cache_failures"][0]["node"] = json!("unstarted");
+    assert!(
+        !read(value),
+        "cache failures still require a failed outcome"
+    );
+    let mut value = incomplete;
+    value["execution"]["cache_failures"] = json!([]);
+    value["execution"]["cache_snapshots"] = json!([snapshot]);
+    value["execution"]["cache_snapshots"][0]["files"] = json!(0);
+    assert_invalid(
+        "run-report-v6.json",
+        &value,
+        "cache snapshot bounds remain validated",
+    );
+    assert!(!read(value));
+}

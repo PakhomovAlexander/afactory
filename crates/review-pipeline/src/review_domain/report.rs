@@ -4,6 +4,9 @@ use super::*;
 
 struct TaskPublication<'a> {
     report_id: &'a str,
+    accounting: review_core::TaskReviewAccountingV1,
+    spent_tokens: review_core::task::usage::DecimalU128,
+    resources_exhausted: bool,
     lease: &'a review_store::store::task::TaskLease,
     authority: &'a dyn review_store::store::task::TaskAuthority,
 }
@@ -24,11 +27,10 @@ impl ReviewDomainState<'_> {
         &self,
         report: &RunReport,
         policy: ConvergencePolicy,
-        spent_tokens: Option<u64>,
         task_report_id: &str,
         lease: &review_store::store::task::TaskLease,
         authority: &dyn review_store::store::task::TaskAuthority,
-    ) -> Result<RunVerdict, String> {
+    ) -> Result<(RunVerdict, bool), String> {
         let captured = self
             .cas
             .get_artifact(task_report_id)
@@ -36,6 +38,29 @@ impl ReviewDomainState<'_> {
         if captured.artifact_type != review_core::task::report::TASK_RUN_REPORT_V1 {
             return Err("Canonical Task Review requires a typed scheduler report".into());
         }
+        let state = self
+            .store
+            .lock()
+            .expect("Task Store")
+            .task_projection(self.cas, lease.task_id())
+            .map_err(|e| e.to_string())?
+            .ok_or("Review Task is absent")?;
+        let accounting = review_core::TaskReviewAccountingV1 {
+            task_id: lease.task_id().into(),
+            task_revision_id: state.revision_id.clone(),
+            plan_id: state.plan_id.clone().ok_or("Review Task has no plan")?,
+            task_report_id: task_report_id.into(),
+            through_sequence: state
+                .next_sequence
+                .checked_sub(1)
+                .ok_or("Review Task has no prefix")?,
+        };
+        let execution = state
+            .execution
+            .as_ref()
+            .ok_or("Review Task has no execution")?;
+        let spent_tokens = execution.budget.committed_tokens().into();
+        let resources_exhausted = execution.budget.breached();
         for event in self
             .store
             .lock()
@@ -50,31 +75,38 @@ impl ReviewDomainState<'_> {
                 let verdict: RunVerdictV3 =
                     serde_json::from_value(event.payload["verdict"].clone())
                         .map_err(|e| e.to_string())?;
-                return Ok(match verdict {
-                    RunVerdictV3::Pass => RunVerdict::Pass,
-                    RunVerdictV3::Fail {
-                        reason: RunFailureReasonV3::Exhausted,
-                    } => RunVerdict::Fail(Verdict::Exhausted),
-                    RunVerdictV3::Fail { .. } => RunVerdict::Fail(Verdict::NotConverged),
-                    RunVerdictV3::Incomplete { missing_nodes } => RunVerdict::Incomplete {
-                        missing: missing_nodes
-                            .into_iter()
-                            .map(|entry| (entry.node, entry.reason))
-                            .collect(),
+                return Ok((
+                    match verdict {
+                        RunVerdictV3::Pass => RunVerdict::Pass,
+                        RunVerdictV3::Fail {
+                            reason: RunFailureReasonV3::Exhausted,
+                        } => RunVerdict::Fail(Verdict::Exhausted),
+                        RunVerdictV3::Fail { .. } => RunVerdict::Fail(Verdict::NotConverged),
+                        RunVerdictV3::Incomplete { missing_nodes } => RunVerdict::Incomplete {
+                            missing: missing_nodes
+                                .into_iter()
+                                .map(|entry| (entry.node, entry.reason))
+                                .collect(),
+                        },
                     },
-                });
+                    resources_exhausted,
+                ));
             }
         }
         self.publish_report_inner(
             report,
             policy,
-            spent_tokens,
+            None,
             Some(TaskPublication {
+                accounting,
+                spent_tokens,
+                resources_exhausted,
                 report_id: task_report_id,
                 lease,
                 authority,
             }),
         )
+        .map(|verdict| (verdict, resources_exhausted))
     }
 
     fn publish_report_inner(
@@ -133,12 +165,22 @@ impl ReviewDomainState<'_> {
                     })
                     .collect(),
             }
+        } else if task_publication
+            .as_ref()
+            .is_some_and(|task| task.resources_exhausted)
+        {
+            RunVerdict::Fail(Verdict::Exhausted)
         } else {
             run_verdict(report, &convergence)
         };
         let append_report = |mut event: NewEvent| {
             if let Some(task) = &task_publication {
-                event.artifact_refs.push(task.report_id.into());
+                event.artifact_refs.extend(
+                    task.accounting
+                        .artifact_refs()
+                        .into_iter()
+                        .map(String::from),
+                );
                 let event = self.bind_authority(event);
                 let appended = self
                     .store
@@ -193,7 +235,64 @@ impl ReviewDomainState<'_> {
         let persisted_verdict =
             persisted_verdict(&verdict, &convergence, !report.blocked_gates.is_empty())?;
         let blocked_gates = report.blocked_gates.iter().cloned().collect();
-        if self.gate_execution.is_some() {
+        if let Some(task) = &task_publication {
+            let bindings = self
+                .execution_bindings
+                .lock()
+                .expect("execution bindings")
+                .values()
+                .cloned()
+                .collect();
+            let execution = match &self.gate_execution {
+                None => review_core::RunReportExecutionV6::Unbound {},
+                Some(binding) if binding.caches.is_empty() => {
+                    review_core::RunReportExecutionV6::Bound {
+                        execution_bindings: bindings,
+                    }
+                }
+                Some(_) => review_core::RunReportExecutionV6::Cached {
+                    execution_bindings: bindings,
+                    cache_snapshots: self
+                        .cache_snapshots
+                        .lock()
+                        .expect("cache snapshots")
+                        .values()
+                        .cloned()
+                        .collect(),
+                    cache_failures: self
+                        .cache_failures
+                        .lock()
+                        .expect("cache failures")
+                        .values()
+                        .cloned()
+                        .collect(),
+                },
+            };
+            let refs = match &execution {
+                review_core::RunReportExecutionV6::Cached {
+                    cache_snapshots, ..
+                } => cache_snapshots
+                    .iter()
+                    .map(|snapshot| snapshot.source_digest.clone())
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let payload = review_core::RunReportPayloadV6 {
+                outcomes,
+                blocked_gates,
+                verdict: persisted_verdict,
+                spent_tokens: task.spent_tokens,
+                task_accounting: task.accounting.clone(),
+                execution,
+            };
+            append_report(
+                NewEvent::new(
+                    EventType::RunReportV6,
+                    serde_json::to_value(payload).map_err(|e| e.to_string())?,
+                )
+                .referencing(refs),
+            )?;
+        } else if self.gate_execution.is_some() {
             let execution_bindings: Vec<_> = self
                 .execution_bindings
                 .lock()

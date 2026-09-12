@@ -39,6 +39,33 @@ pub(super) fn capture_result(
     sandbox: review_sandbox::Sandbox,
     reply: ReviewerResultCapture<'_>,
 ) -> Result<CapturedReviewerResult, String> {
+    capture_result_inner(cas, authority, sandbox, reply, None)
+}
+
+pub(super) fn capture_task_result(
+    cas: &Cas,
+    authority: &RoundAuthority,
+    sandbox: review_sandbox::Sandbox,
+    reply: ReviewerResultCapture<'_>,
+    context_id: &str,
+    usage_known: bool,
+) -> Result<CapturedReviewerResult, String> {
+    capture_result_inner(
+        cas,
+        authority,
+        sandbox,
+        reply,
+        Some((context_id, usage_known)),
+    )
+}
+
+fn capture_result_inner(
+    cas: &Cas,
+    authority: &RoundAuthority,
+    sandbox: review_sandbox::Sandbox,
+    reply: ReviewerResultCapture<'_>,
+    task_context: Option<(&str, bool)>,
+) -> Result<CapturedReviewerResult, String> {
     let sealed = sandbox.seal().map_err(|error| error.to_string())?;
     let result_artifact = cas
         .put_json(reply.result)
@@ -62,12 +89,61 @@ pub(super) fn capture_result(
             "deleted":sealed.mutations.deleted,
         }))
         .map_err(|error| error.to_string())?;
-    let provenance_artifact = cas.put_json(&serde_json::json!({
+    let provenance_artifact = if let Some((context_id, usage_known)) = task_context {
+        use review_core::task::review_compat::*;
+        let envelope = cas.get_artifact(context_id).map_err(|e| e.to_string())?;
+        if envelope.artifact_type != TASK_REVIEW_CONTEXT_V1 {
+            return Err("Task Review provenance has another context type".into());
+        }
+        let context: TaskReviewContextV1 =
+            serde_json::from_value(envelope.payload).map_err(|e| e.to_string())?;
+        context.validate()?;
+        if context.attempt_id != reply.attempt_id || context.review_node != reply.node_id {
+            return Err("Task Review provenance changed its actual Attempt".into());
+        }
+        let usage_id = usage_known
+            .then(|| {
+                review_runner::task::usage::persist_task_usage(
+                    cas,
+                    envelope.producer.clone(),
+                    context_id,
+                    reply.usage,
+                )
+            })
+            .transpose()?;
+        let provenance = TaskReviewAttemptProvenanceV1 {
+            context_id: context_id.into(),
+            task_invocation_id: context.task_invocation_id,
+            attempt_id: reply.attempt_id.into(),
+            review_node: reply.node_id.into(),
+            result_artifact_id: result_artifact.clone(),
+            mutations_artifact_id: mutations_artifact,
+            raw_artifact_id: reply.raw_artifact.into(),
+            charged_tokens: reply.cost_tokens.into(),
+            usage_id,
+        };
+        provenance.validate()?;
+        cas.put_artifact(
+            TASK_REVIEW_ATTEMPT_PROVENANCE_V1,
+            envelope.producer,
+            provenance
+                .artifact_refs()
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            Some(authority.head_snapshot_id.clone()),
+            serde_json::to_value(provenance).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?
+        .0
+    } else {
+        cas.put_json(&serde_json::json!({
         "node":reply.node_id, "attempt":reply.attempt_id, "result_artifact":result_artifact,
         "cost_tokens":reply.cost_tokens, "usage":reply.usage, "context_manifest":reply.context_manifest,
         "raw":reply.raw_artifact,
         "sandbox_mutations":super::mutation_summary(&sealed.mutations, &mutations_artifact),
-    })).map_err(|error| error.to_string())?;
+    })).map_err(|error| error.to_string())?
+    };
     let disposition = match &proposal {
         PreparedProposal::None => TaskReviewProposalV1::None {},
         PreparedProposal::Prepared {

@@ -175,22 +175,18 @@ impl LegacyReviewTaskHost<'_, '_> {
             .filter(|name| !outputs.contains_key(*name))
             .cloned()
             .collect();
-        // The frozen canonical report schema cannot encode counters above JSON's safe range.
-        // The common Task ledger retains them exactly; do not truncate them into legacy prose.
-        let spent = u64::try_from(execution.budget.committed_tokens())
-            .ok()
-            .filter(|value| *value <= review_core::json::SAFE_INTEGER_MAX as u64)
-            .ok_or("Canonical Review report requires the full-width usage bridge")?;
-        let verdict = self.domain.publish_task_report(
+        let (verdict, exhausted_at_publication) = self.domain.publish_task_report(
             &original,
             self.compiler
                 .mode()?
                 .convergence(self.captured.loaded.convergence()),
-            Some(spent),
             report_id,
             &self.lease,
             &self.authority(),
         )?;
+        // Publication may observe late charges after the projection read above. Its committed
+        // exhausted verdict must also fence Task acceptance and execution classification.
+        resources_failed |= exhausted_at_publication;
         let acceptance = if !complete || !missing.is_empty() || resources_failed {
             TaskAcceptanceV1::Inconclusive
         } else if verdict == crate::RunVerdict::Pass {

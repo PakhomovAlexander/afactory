@@ -364,7 +364,7 @@ impl LegacyReviewTaskHost<'_, '_> {
             };
             let unknown = TokenUsage::charge_only(attempt.reservation().tokens);
             let usage = result.usage.as_ref().unwrap_or(&unknown);
-            let captured = crate::reviewer_output::capture_result(
+            let captured = crate::reviewer_output::capture_task_result(
                 cas,
                 &self.domain.authority,
                 sandbox,
@@ -381,6 +381,8 @@ impl LegacyReviewTaskHost<'_, '_> {
                     context_manifest: &manifest,
                     raw_artifact: &raw,
                 },
+                attempt.context_id(),
+                result.usage.is_some(),
             )?;
             let raw_outputs = BTreeMap::from([(
                 node.outputs[0].name.clone(),

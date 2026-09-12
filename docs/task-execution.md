@@ -19,11 +19,13 @@ supplement it. Claude calls use only `claude-personal`.
 
 ## Progress
 
-The captured-plan checkpoint `7b6e1e3` passes the full local gate (**891 tests**, zero failures,
-15 ignored) and CI. The next operation-host checkpoint runs captured Review on common Attempts
-and preserves canonical acceptance and restart recovery; all 15 integration tests and workspace
-Clippy pass. Its full gate follows. See [Review compatibility](task-execution/review-compatibility.md)
-and [ADR-0077](adr/0077-run-captured-review-operations-under-common-task-attempts.md).
+The captured Review operation host at `eab8d29` passes the full local gate (**903 tests**, zero
+failures, 15 ignored); exact-head CI is run `34693346220`. It executes captured Review on common
+Attempts and preserves canonical acceptance and restart recovery. The next accounting slice
+adds exact cumulative report receipts and typed reviewer provenance. See
+[Review compatibility](task-execution/review-compatibility.md),
+[ADR-0077](adr/0077-run-captured-review-operations-under-common-task-attempts.md) and
+[ADR-0078](adr/0078-bind-review-conclusions-to-exact-task-accounting.md).
 
 The earlier shared Review operations and Round-fencing checkpoint passes the full gate at `5b1461e`
 (internal `9a81fbe`): 839 tests, zero failures, 15 ignored, plus documentation tests and frozen
@@ -53,6 +55,8 @@ in [the three-PR record](task-execution/pr-sequence.md).
 - [ ] P14: compatibility, benchmark and consumer release.
 
 The owner authorized the complete plan in [three PRs](task-execution/pr-sequence.md).
+[Review report inspection](task-execution/review-report-inspection.md) separates exact current
+Task accounting from immutable cumulative report snapshots, including Provider and business Attempts.
 The [run diagnostics and recovery boundary](task-execution/run-reports.md) preserve failures
 before an Attempt starts and retry domain publication without invoking the Worker again.
 [Reservation and context binding](adr/0066-reserve-task-attempts-before-binding-exact-context.md)

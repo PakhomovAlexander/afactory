@@ -353,10 +353,12 @@ impl EventStore {
         if events.is_empty() {
             return Ok(Vec::new());
         }
-        if events
-            .iter()
-            .any(|e| e.event_type == EventType::TaskReviewResultSelectedV1)
-            && review_permit.is_none()
+        if events.iter().any(|e| {
+            matches!(
+                e.event_type,
+                EventType::TaskReviewResultSelectedV1 | EventType::RunReportV6
+            )
+        }) && review_permit.is_none()
         {
             return Err(StoreError::Conflict(
                 "Task Review selection requires the trusted Task publication entry point".into(),
@@ -1411,6 +1413,23 @@ fn typed_json_artifacts(
                 )?;
                 continue;
             }
+            EventType::RunReportV6 => {
+                let report: review_core::RunReportPayloadV6 =
+                    serde_json::from_value(event.payload.clone())?;
+                if let review_core::RunReportExecutionV6::Cached {
+                    cache_snapshots, ..
+                } = report.execution
+                {
+                    for snapshot in cache_snapshots {
+                        insert_artifact_type(
+                            &mut artifacts,
+                            snapshot.source_digest,
+                            review_core::contract::CACHE_MANIFEST_V1.into(),
+                        )?;
+                    }
+                }
+                continue;
+            }
             EventType::RunReportV5 => {
                 let report: review_core::RunReportPayloadV5 =
                     serde_json::from_value(event.payload.clone())?;
@@ -1978,6 +1997,31 @@ fn is_digest(value: &str) -> bool {
         .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
+fn task_report_execution(payload: &Value) -> Result<(EventType, Value), StoreError> {
+    let report: review_core::RunReportPayloadV6 = serde_json::from_value(payload.clone())?;
+    report.validate().map_err(StoreError::Conflict)?;
+    let mut facts = serde_json::json!({"outcomes": report.outcomes,
+        "blocked_gates": report.blocked_gates, "verdict": report.verdict});
+    let event_type = match report.execution {
+        review_core::RunReportExecutionV6::Unbound {} => EventType::RunReportV3,
+        review_core::RunReportExecutionV6::Bound { execution_bindings } => {
+            facts["execution_bindings"] = serde_json::to_value(execution_bindings)?;
+            EventType::RunReportV4
+        }
+        review_core::RunReportExecutionV6::Cached {
+            execution_bindings,
+            cache_snapshots,
+            cache_failures,
+        } => {
+            facts["execution_bindings"] = serde_json::to_value(execution_bindings)?;
+            facts["cache_snapshots"] = serde_json::to_value(cache_snapshots)?;
+            facts["cache_failures"] = serde_json::to_value(cache_failures)?;
+            EventType::RunReportV5
+        }
+    };
+    Ok((event_type, facts))
+}
+
 fn report_outcomes(
     event_type: EventType,
     payload: &Value,
@@ -1999,6 +2043,10 @@ fn report_outcomes(
             payload.clone(),
         )?
         .outcomes),
+        EventType::RunReportV6 => Ok(serde_json::from_value::<review_core::RunReportPayloadV6>(
+            payload.clone(),
+        )?
+        .outcomes),
         _ => Err(StoreError::Conflict(format!(
             "{event_type} has no structural run-report outcomes"
         ))),
@@ -2010,7 +2058,36 @@ fn validate_report_plan(
     event_type: EventType,
     payload: &Value,
 ) -> Result<(), StoreError> {
+    if event_type == EventType::RunReportV6 {
+        let (kind, facts) = task_report_execution(payload)?;
+        let incomplete = facts["verdict"]["kind"] == "incomplete";
+        return validate_report_plan_facts(plan, kind, &facts, incomplete);
+    }
+    validate_report_plan_facts(plan, event_type, payload, false)
+}
+
+fn validate_report_plan_facts(
+    plan: &AuthorityPlan,
+    event_type: EventType,
+    payload: &Value,
+    incomplete_task: bool,
+) -> Result<(), StoreError> {
     let outcomes = report_outcomes(event_type, payload)?;
+    let required_gates: std::collections::BTreeSet<String> = plan
+        .gate_nodes
+        .iter()
+        .filter(|node| {
+            !incomplete_task
+                || outcomes.iter().any(|entry| {
+                    &entry.node == *node
+                        && matches!(
+                            entry.outcome,
+                            review_core::RunNodeOutcomeV2::Completed { .. }
+                        )
+                })
+        })
+        .cloned()
+        .collect();
     let expected: std::collections::BTreeSet<&str> =
         plan.nodes.keys().map(String::as_str).collect();
     let actual: std::collections::BTreeSet<&str> = outcomes
@@ -2048,7 +2125,7 @@ fn validate_report_plan(
         };
         let binding_nodes: std::collections::BTreeSet<String> =
             bindings.into_iter().map(|binding| binding.node).collect();
-        if binding_nodes != plan.gate_nodes {
+        if !required_gates.is_subset(&binding_nodes) || !binding_nodes.is_subset(&plan.gate_nodes) {
             return Err(StoreError::Conflict(
                 "RunReport@4 does not cover exactly the pinned Gate nodes".into(),
             ));
@@ -2081,7 +2158,12 @@ fn validate_report_plan(
                     .map(move |kind| (node.clone(), kind.clone()))
             })
             .collect();
-        if actual != expected {
+        let required: std::collections::BTreeSet<_> = expected
+            .iter()
+            .filter(|(node, _)| required_gates.contains(node))
+            .cloned()
+            .collect();
+        if !required.is_subset(&actual) || !actual.is_subset(&expected) {
             return Err(StoreError::Conflict(
                 "RunReport@5 does not cover exactly the pinned Gate cache requests".into(),
             ));
@@ -3954,27 +4036,43 @@ fn validate_campaign_transition(
                         // when it keeps the Round open; frozen report versions retain their
                         // existing closing-report admission behavior.
                         if event_type.run_report_requires_receipts()
-                            && (closes || event_type == EventType::RunReportV5)
+                            && (closes
+                                || matches!(
+                                    event_type,
+                                    EventType::RunReportV5 | EventType::RunReportV6
+                                ))
                         {
                             if let Some(plan) = plan {
                                 validate_report_plan(plan, event_type, &event.payload)?;
                             }
-                            if matches!(event_type, EventType::RunReportV4 | EventType::RunReportV5)
-                            {
+                            let task_execution = if event_type == EventType::RunReportV6 {
+                                Some(task_report_execution(&event.payload)?)
+                            } else {
+                                None
+                            };
+                            let (execution_type, execution_payload) = task_execution
+                                .as_ref()
+                                .map_or((event_type, &event.payload), |(kind, facts)| {
+                                    (*kind, facts)
+                                });
+                            if matches!(
+                                execution_type,
+                                EventType::RunReportV4 | EventType::RunReportV5
+                            ) {
                                 validate_report_gate_bindings(
                                     tx,
                                     run_id,
                                     active_id,
-                                    event_type,
-                                    &event.payload,
+                                    execution_type,
+                                    execution_payload,
                                 )?;
                             }
-                            if event_type == EventType::RunReportV5 {
+                            if execution_type == EventType::RunReportV5 {
                                 validate_report_cache_snapshots(
                                     tx,
                                     run_id,
                                     active_id,
-                                    &event.payload,
+                                    execution_payload,
                                     &event.artifact_refs,
                                     prepared,
                                 )?;

@@ -36,6 +36,21 @@ struct RecordedAttempt {
     settlement: Option<TaskExecutionRecordV1>,
 }
 
+/// Read-only accounting from the common ledger. The effective charge includes observations
+/// received after settlement; the terminal result and original reservation stay unchanged.
+#[derive(Debug, Clone)]
+pub struct TaskAttemptAccounting {
+    pub attempt_id: String,
+    pub invocation_id: String,
+    pub plan_id: String,
+    pub reservation: TaskReservation,
+    pub started: bool,
+    pub released: bool,
+    pub charged_tokens: u64,
+    pub state: Option<review_attempt::AttemptState>,
+    pub result: Option<TaskAttemptResultV1>,
+}
+
 /// Unstarted reservation authority. Only the Store can construct this capability; a Worker
 /// cannot choose its identity, feedback, writer epoch or resource allowance.
 #[derive(Debug, Clone)]
@@ -374,6 +389,31 @@ impl TaskExecutionProjection {
             .iter()
             .filter(|(_, attempt)| !attempt.released && attempt.settlement.is_none())
             .map(|(id, _)| id.clone())
+            .collect()
+    }
+
+    /// Includes unstarted reservations so inspection can explain released work without
+    /// counting it as an Attempt that began. Historical plans remain attached to each row.
+    pub fn attempt_accounting(&self) -> Vec<TaskAttemptAccounting> {
+        self.attempts
+            .iter()
+            .map(|(id, attempt)| {
+                let ledger = self.ledger.attempt(&AttemptId(id.clone()));
+                TaskAttemptAccounting {
+                    attempt_id: id.clone(),
+                    invocation_id: attempt.invocation_id.clone(),
+                    plan_id: attempt.plan_id.clone(),
+                    reservation: attempt.reservation.clone(),
+                    started: attempt.started,
+                    released: attempt.released,
+                    charged_tokens: ledger.map_or(0, |row| row.charged),
+                    state: ledger.map(|row| row.state),
+                    result: match &attempt.settlement {
+                        Some(TaskExecutionRecordV1::Settled { result, .. }) => Some(result.clone()),
+                        _ => None,
+                    },
+                }
+            })
             .collect()
     }
 

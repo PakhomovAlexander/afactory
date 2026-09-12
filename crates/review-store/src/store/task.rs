@@ -753,6 +753,14 @@ impl TaskProjection {
                         return Err(conflict("A waiting Task cannot claim satisfied acceptance"));
                     }
                     if let Some(execution) = &self.execution {
+                        if execution.budget.breached()
+                            && (result.execution != task::TaskExecutionV1::Exhausted
+                                || result.acceptance == TaskAcceptanceV1::Satisfied)
+                        {
+                            return Err(conflict(
+                                "Task result predates its committed resource exhaustion",
+                            ));
+                        }
                         let expected_outputs: BTreeMap<_, _> = execution
                             .graph
                             .outputs
@@ -830,14 +838,21 @@ impl TaskProjection {
     }
 
     fn check_approval(&self, cas: &Cas, time: u64) -> Result<(), StoreError> {
+        let plan = self.check_plan_decision(cas, time)?;
+        if time >= plan.limits.deadline_unix_ms {
+            return Err(conflict("Task plan deadline expired"));
+        }
+        Ok(())
+    }
+
+    // Recording a conclusion still requires a current developer decision, but cannot grant
+    // another execution effect by extending the plan deadline.
+    fn check_plan_decision(&self, cas: &Cas, time: u64) -> Result<ExecutionPlanV1, StoreError> {
         let id = self
             .plan_id
             .as_ref()
             .ok_or_else(|| conflict("Task has no plan"))?;
         let plan = plan(cas, id, self)?;
-        if time >= plan.limits.deadline_unix_ms {
-            return Err(conflict("Task plan deadline expired"));
-        }
         if let Some(decision) = self.decisions.get(id) {
             if decision.revoked
                 || time >= decision.valid_until
@@ -850,7 +865,7 @@ impl TaskProjection {
         } else if plan.requires_developer_approval() {
             return Err(conflict("Generated Task plan needs developer review"));
         }
-        Ok(())
+        Ok(plan)
     }
 }
 

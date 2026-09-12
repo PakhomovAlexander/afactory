@@ -199,13 +199,20 @@ runner = { program = "/bin/true" }
     }
 }
 
-fn review_output(f: &Fixture, invocation: &str, attempt: &str, wrong_metadata: bool) -> String {
+fn review_output(
+    f: &Fixture,
+    invocation: &str,
+    attempt: &str,
+    wrong_metadata: bool,
+    context_id: &str,
+) -> String {
     review_output_with_proposal(
         f,
         invocation,
         attempt,
         wrong_metadata,
         TaskReviewProposalV1::None {},
+        context_id,
     )
 }
 
@@ -215,6 +222,25 @@ fn review_output_with_proposal(
     attempt: &str,
     wrong_metadata: bool,
     proposal: TaskReviewProposalV1,
+    context_id: &str,
+) -> String {
+    review_output_with_provenance(
+        f,
+        invocation,
+        attempt,
+        wrong_metadata,
+        proposal,
+        Some((context_id, 0, "legacy_valid")),
+    )
+}
+
+fn review_output_with_provenance(
+    f: &Fixture,
+    invocation: &str,
+    attempt: &str,
+    wrong_metadata: bool,
+    proposal: TaskReviewProposalV1,
+    task_context: Option<(&str, u64, &str)>,
 ) -> String {
     let author = Producer::Attempt {
         run_id: task_run_id("task-1").unwrap(),
@@ -234,10 +260,116 @@ fn review_output_with_proposal(
         )
         .unwrap()
         .0;
-    let provenance = f
+    let (context_id, _, corruption) = task_context.unwrap();
+    let context: TaskReviewContextV1 = payload(&f.cas, context_id, TASK_REVIEW_CONTEXT_V1).unwrap();
+    let raw = f.cas.put(b"historical raw observation").unwrap();
+    let mutations = f
         .cas
-        .put_json(&json!({"fixture":"sealed provenance"}))
+        .put_json(&json!({"added":[],"modified":[],"deleted":[]}))
         .unwrap();
+    let mut legacy = json!({"node":context.review_node,"attempt":attempt,"result_artifact":result_id,
+        "cost_tokens":7,"usage":{"chargeable_tokens":7},
+        "context_manifest":f.cas.get_json(&context.context_manifest_id).unwrap(),"raw":raw,
+        "sandbox_mutations":{"count":0,"added":0,"modified":0,"deleted":0,"sample":[],"truncated":false,"artifact":mutations}});
+    match corruption {
+        "legacy_null" => legacy = json!(null),
+        "legacy_empty" => legacy = json!({}),
+        "legacy_attempt" => legacy["attempt"] = json!("z".repeat(26)),
+        "legacy_node" => legacy["node"] = json!("different-node"),
+        "legacy_result" => legacy["result_artifact"] = json!(raw),
+        "legacy_context" => legacy["context_manifest"] = json!({}),
+        "legacy_usage" => legacy["usage"]["chargeable_tokens"] = json!(6),
+        "legacy_type_removed" => legacy = json!({"context_id":context_id,"charged_tokens":"7"}),
+        _ => {}
+    }
+    let provenance = f.cas.put_json(&legacy).unwrap();
+    let provenance = if let Some((context_id, reserved_tokens, corruption)) =
+        task_context.filter(|(_, _, corruption)| !corruption.starts_with("legacy_"))
+    {
+        use review_core::task::usage::{TASK_TOKEN_USAGE_V1, TaskTokenUsageV1};
+        let context: TaskReviewContextV1 =
+            payload(&f.cas, context_id, TASK_REVIEW_CONTEXT_V1).unwrap();
+        let subject: review_core::SubjectV1 =
+            serde_json::from_value(f.cas.get_json(&context.subject_id).unwrap()).unwrap();
+        let unknown = matches!(corruption, "unknown" | "unknown_charge");
+        let usage_id = (!unknown).then(|| {
+            f.cas
+                .put_artifact(
+                    TASK_TOKEN_USAGE_V1,
+                    if corruption == "usage_producer" {
+                        producer()
+                    } else {
+                        author.clone()
+                    },
+                    vec![context_id.into()],
+                    None,
+                    serde_json::to_value(TaskTokenUsageV1 {
+                        input_tokens: Some(u64::MAX.into()),
+                        chargeable_tokens: if corruption == "usage_tokens" {
+                            8.into()
+                        } else {
+                            7.into()
+                        },
+                        ..Default::default()
+                    })
+                    .unwrap(),
+                )
+                .unwrap()
+                .0
+        });
+        let mut value = TaskReviewAttemptProvenanceV1 {
+            context_id: context_id.into(),
+            task_invocation_id: invocation.into(),
+            attempt_id: attempt.into(),
+            review_node: context.review_node,
+            result_artifact_id: result_id.clone(),
+            mutations_artifact_id: provenance.clone(),
+            raw_artifact_id: provenance.clone(),
+            charged_tokens: if unknown {
+                reserved_tokens.into()
+            } else {
+                7.into()
+            },
+            usage_id,
+        };
+        match corruption {
+            "context" => value.context_id = provenance.clone(),
+            "invocation" => value.task_invocation_id = provenance.clone(),
+            "attempt" => value.attempt_id = "z".repeat(26),
+            "node" => value.review_node = "another-reviewer".into(),
+            "result" => value.result_artifact_id = provenance.clone(),
+            "unknown_charge" => value.charged_tokens = (reserved_tokens - 1).into(),
+            _ => (),
+        }
+        f.cas
+            .put_artifact(
+                TASK_REVIEW_ATTEMPT_PROVENANCE_V1,
+                if corruption == "producer" {
+                    producer()
+                } else {
+                    author.clone()
+                },
+                if corruption == "references" {
+                    vec![]
+                } else {
+                    value
+                        .artifact_refs()
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect()
+                },
+                Some(if corruption == "snapshot" {
+                    provenance
+                } else {
+                    subject.head_snapshot_id
+                }),
+                serde_json::to_value(value).unwrap(),
+            )
+            .unwrap()
+            .0
+    } else {
+        provenance
+    };
     let metadata = TaskReviewResultMetadataV1 {
         result_contract: ReviewerResultContract::V1,
         result_artifact_id: if wrong_metadata {
@@ -295,13 +427,23 @@ fn review_output_with_proposal(
 }
 
 fn settle(f: &mut Fixture, lease: &TaskLease, attempt: &str, output: &str) {
+    settle_charged(f, lease, attempt, output, 7);
+}
+
+fn settle_charged(
+    f: &mut Fixture,
+    lease: &TaskLease,
+    attempt: &str,
+    output: &str,
+    charged_tokens: u64,
+) {
     f.store
         .settle_task_attempt(
             &f.cas,
             lease,
             TaskExecutionRecordV1::Settled {
                 attempt_id: attempt.into(),
-                charged_tokens: 7,
+                charged_tokens,
                 result: TaskAttemptResultV1::Succeeded {
                     output_id: output.into(),
                 },
@@ -311,6 +453,99 @@ fn settle(f: &mut Fixture, lease: &TaskLease, attempt: &str, output: &str) {
             &f.authority,
         )
         .unwrap();
+}
+
+#[test]
+fn typed_review_provenance_binds_exact_attempt_usage_and_unknown_reservation() {
+    for corruption in [
+        "valid",
+        "undercharge",
+        "legacy_valid",
+        "legacy_null",
+        "legacy_empty",
+        "legacy_attempt",
+        "legacy_node",
+        "legacy_result",
+        "legacy_context",
+        "legacy_usage",
+        "legacy_type_removed",
+        "unknown",
+        "context",
+        "invocation",
+        "attempt",
+        "node",
+        "result",
+        "producer",
+        "usage_producer",
+        "usage_tokens",
+        "unknown_charge",
+        "snapshot",
+        "references",
+    ] {
+        let mut f = fixture();
+        let lease = f.open();
+        f.propose(&lease);
+        f.decide(&lease, PlanDecisionKindV1::Approved);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        let invocation = f.record_execution_inputs(&lease);
+        let mut context = canonical_context(&mut f, &invocation, &"a".repeat(26));
+        let reserved = f
+            .store
+            .reserve_task_attempt(&f.cas, &lease, "root.nodes.write", &f.authority)
+            .unwrap();
+        context.attempt_id = reserved.id().into();
+        let context_id = f
+            .cas
+            .put_artifact(
+                TASK_REVIEW_CONTEXT_V1,
+                producer(),
+                context
+                    .artifact_refs()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                None,
+                serde_json::to_value(context).unwrap(),
+            )
+            .unwrap()
+            .0;
+        let attempt = f
+            .store
+            .bind_task_attempt_context(&f.cas, &lease, &reserved, &context_id, &f.authority)
+            .unwrap();
+        f.store
+            .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+            .unwrap();
+        let output = review_output_with_provenance(
+            &f,
+            &invocation,
+            attempt.id(),
+            false,
+            TaskReviewProposalV1::None {},
+            Some((&context_id, reserved.reservation().tokens, corruption)),
+        );
+        let charge = if matches!(corruption, "unknown" | "unknown_charge") {
+            reserved.reservation().tokens
+        } else if corruption == "undercharge" {
+            6
+        } else {
+            7
+        };
+        settle_charged(&mut f, &lease, attempt.id(), &output, charge);
+        f.store
+            .publish_task_output(&f.cas, &lease, &output, Some(attempt.id()), &f.authority)
+            .unwrap();
+        let selected = f
+            .store
+            .publish_task_review_result(&f.cas, &lease, &output, &f.authority);
+        assert_eq!(
+            selected.is_ok(),
+            matches!(corruption, "valid" | "unknown" | "legacy_valid"),
+            "{corruption}: {selected:?}"
+        );
+    }
 }
 
 #[test]
@@ -357,7 +592,7 @@ fn legacy_opaque_review_selection_is_only_the_frozen_v1_contract() {
         f.store
             .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
             .unwrap();
-        let output = review_output(&f, &invocation, attempt.id(), false);
+        let output = review_output(&f, &invocation, attempt.id(), false, &context_id);
         settle(&mut f, &lease, attempt.id(), &output);
         f.store
             .publish_task_output(&f.cas, &lease, &output, Some(attempt.id()), &f.authority)
@@ -420,7 +655,14 @@ fn review_selection_requires_common_publication_and_replays_without_legacy_attem
         } else {
             TaskReviewProposalV1::None {}
         };
-        let output = review_output_with_proposal(&f, &invocation, attempt.id(), false, proposal);
+        let output = review_output_with_proposal(
+            &f,
+            &invocation,
+            attempt.id(),
+            false,
+            proposal,
+            &context_id,
+        );
         assert!(
             f.store
                 .publish_task_review_result(&f.cas, &lease, &output, &f.authority)
@@ -695,7 +937,7 @@ fn review_selection_refuses_mismatched_side_metadata_and_context() {
         f.store
             .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
             .unwrap();
-        let output = review_output(&f, &invocation, attempt.id(), corrupt_metadata);
+        let output = review_output(&f, &invocation, attempt.id(), corrupt_metadata, &context_id);
         settle(&mut f, &lease, attempt.id(), &output);
         f.store
             .publish_task_output(&f.cas, &lease, &output, Some(attempt.id()), &f.authority)
