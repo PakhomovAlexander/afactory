@@ -43,8 +43,9 @@ The installed frontend now compiles the captured topology into an explicit publi
 contract, typed per-edge lanes and inherited Gate conditions. Flat JSON is adapted through
 explicit codecs; existing envelopes keep their original identities and historical Snapshots.
 `LegacyReviewRound@1` binds input capture to the exact current Campaign Round. Generation and
-capture reopen without creating execution events. The legacy CLI still awaits plan admission
-and operation-host wiring ([ADR-0069](../adr/0069-compile-captured-review-ports-with-explicit-artifact-codecs.md)).
+capture reopen without creating execution events. The compiler and operation host now exercise
+common plan admission and execution; the legacy CLI still awaits the complete command cutover
+([ADR-0069](../adr/0069-compile-captured-review-ports-with-explicit-artifact-codecs.md)).
 
 ```text
 captured Review configuration + exact Round inputs
@@ -88,9 +89,9 @@ legacy wrapper invokes automatic Integration after publication. Existing report 
 verdict ordering, cache evidence and the one-conclusion guard retain their original behavior;
 this extraction adds neither an execution ledger nor a new public verdict policy.
 
-The trusted context adapter and legacy CLI still require this connection to be wired into common
-execution. Canonical replay, inspection and broker currentness also need their adapter paths;
-synthetic legacy Attempt lifecycle events cannot substitute for them.
+The trusted context adapter now uses actual common Attempts and canonical replay. Legacy CLI
+ownership, inspection and broker currentness still need their complete adapter paths; synthetic
+legacy Attempt lifecycle events cannot substitute for them.
 
 The captured definition loader is now shared with the CLI, retaining package/policy validation,
 Snapshot reachability and recorded light/heavy mode. Common compiled graphs support named
@@ -127,9 +128,10 @@ matching model/effort/backend bindings and the common Provider admission operati
 Plan validation rederives the graph and every dependency, binding, contract and policy from the
 recorded artifacts without recreating missing CAS objects. Reviewer metadata, Gate outcomes
 and Scatter evidence supplement the selected public outputs, including nodes not consumed by
-the original Ledger. This is plan admission, not the completed CLI cutover: canonical Ledger
-companion outputs, operation execution, result acceptance/replay, broker/Scatter accounting and
-heavy-Round handoff remain required before the legacy entry point changes ownership.
+the original Ledger. The operation host additionally retains mandatory Finding Set/Demand Set
+companions, actual common Worker execution, canonical publication recovery and domain acceptance.
+Broker/Scatter accounting, heavy-Round handoff and full-width canonical report accounting remain
+required before the legacy entry point changes ownership.
 
 Recorded-plan recompilation reads existing root wrappers and refuses their absence, different
 producer, changed Round or changed head; it does not recreate missing CAS objects. Historical
@@ -137,3 +139,20 @@ Round reconstruction is separate from the active-epoch check used for dispatch. 
 ports use the captured finding identity policy to select either the canonical Finding Set
 envelope or the frozen legacy flat encoding. Scatter result version follows its inherited
 Finding Set input contract, matching the original executor.
+
+## Common operation host
+
+`LegacyReviewTaskHost` now executes the captured Command and packaged Model paths, shared pure
+operations and Gates using common Attempts. The same slot-bound adapter performs Provider
+admission and Review; account/model/effort/credential-mode substitutions are refused before
+dispatch. A malformed response retains charge and supplies typed bounded retry feedback. Gate
+materialization, container detection and each Check consume the original absolute deadline.
+
+Publication recovery on either side of canonical commit preserves the selected Attempt and
+original outputs. Typed Gate facts retain failed cache setup through settlement and Store
+reopen, alongside existing successful cache receipts. Final Task acceptance reads the recorded
+scheduler report and canonical Review verdict; blocking Findings and required Demands remain
+unsatisfied even when execution completes. Conclusion publication compares both logs with the
+current Task writer, and recoverable publication failures cannot be finalized. Recovery between
+canonical conclusion and Task finish does no execution. See
+[ADR-0077](../adr/0077-run-captured-review-operations-under-common-task-attempts.md).

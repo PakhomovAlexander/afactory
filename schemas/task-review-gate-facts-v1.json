@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-review-gate-facts:1",
+  "title": "TaskReviewGateFacts@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["round_event_id", "review_node", "attempt_id", "cache_failures"],
+  "properties": {
+    "round_event_id": {"type": "string", "pattern": "^[a-z0-9]{26}$"},
+    "attempt_id": {"type": "string", "pattern": "^[a-z0-9]{26}$"},
+    "review_node": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "\\S"},
+    "cache_failures": {
+      "type": "array",
+      "maxItems": 1,
+      "items": {"$ref": "urn:review-kernel:schema:run-report:5#/properties/cache_failures/items"}
+    }
+  }
+}

@@ -19,7 +19,13 @@ supplement it. Claude calls use only `claude-personal`.
 
 ## Progress
 
-The shared Review operations and Round-fencing checkpoint passes the full gate at `5b1461e`
+The captured-plan checkpoint `7b6e1e3` passes the full local gate (**891 tests**, zero failures,
+15 ignored) and CI. The next operation-host checkpoint runs captured Review on common Attempts
+and preserves canonical acceptance and restart recovery; all 15 integration tests and workspace
+Clippy pass. Its full gate follows. See [Review compatibility](task-execution/review-compatibility.md)
+and [ADR-0077](adr/0077-run-captured-review-operations-under-common-task-attempts.md).
+
+The earlier shared Review operations and Round-fencing checkpoint passes the full gate at `5b1461e`
 (internal `9a81fbe`): 839 tests, zero failures, 15 ignored, plus documentation tests and frozen
 reproduction. The preceding captured frontend passes CI at `50e9e29`.
 The legacy Review CLI still requires its execution cutover; the detailed checkpoint history is

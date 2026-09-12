@@ -2542,8 +2542,18 @@ fn validate_campaign_transition(
                                 cas.get_json(&selected.result_envelope_id)
                                     .map_err(|e| StoreError::Artifact(e.to_string()))?,
                             )?;
+                            // Historical name-only Reviewer ports carry exactly the v1 flat
+                            // result. The Task frontend makes that existing contract explicit;
+                            // this does not authorize another result generation or shape.
+                            let result_type =
+                                outputs.first().map(|port| match port.artifact_type() {
+                                    review_core::contract::OPAQUE_V1 => {
+                                        review_core::contract::REVIEWER_RESULT_V1
+                                    }
+                                    ty => ty,
+                                });
                             if outputs.len() != 1
-                                || outputs[0].artifact_type() != result.artifact_type
+                                || result_type != Some(result.artifact_type.as_str())
                                 || outputs[0].cardinality() != "one"
                                 || outputs[0].optional()
                             {

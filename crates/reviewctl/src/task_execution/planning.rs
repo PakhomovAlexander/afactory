@@ -216,7 +216,7 @@ pub(super) fn persist_plan(cas: &Cas, plan: &ExecutionPlanV1) -> Result<String, 
 
 fn finish_incomplete(
     cas: &Cas,
-    runtime: &TaskRuntime<'_>,
+    runtime: &TaskRuntime<'_, '_>,
     state: &TaskProjection,
     conclusion: &str,
     diagnostic: Option<&str>,

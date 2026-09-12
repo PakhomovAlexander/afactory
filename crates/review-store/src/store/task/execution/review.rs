@@ -60,13 +60,13 @@ impl WritePermit {
             || u64::try_from(first).ok() != Some(self.review_sequence)
             || sequence != self.task_sequence
             || now()? >= self.valid_until
-            || event.event_type != EventType::TaskReviewResultSelectedV1
+            || event.event_type != self.event.event_type
             || event.payload != self.event.payload
             || event.artifact_refs != self.event.artifact_refs
             || event.node_id != self.event.node_id
             || event.attempt_id != self.event.attempt_id
             || event.causation_id != self.event.causation_id
-            || event.correlation_id.is_some()
+            || event.correlation_id != self.event.correlation_id
             || event.legacy_import
         {
             return Err(conflict(
@@ -78,6 +78,87 @@ impl WritePermit {
 }
 
 impl EventStore {
+    /// Bind a canonical conclusion to the current Task writer and exact scheduler report.
+    /// Both log prefixes are compared again inside the append transaction.
+    pub fn publish_task_review_report(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        report_id: &str,
+        event: NewEvent,
+        authority: &dyn TaskAuthority,
+    ) -> Result<Vec<review_core::RunEvent>, StoreError> {
+        use review_core::task::report::{
+            TASK_RUN_REPORT_V1, TaskFailureClassV1, TaskNodeOutcomeV1, TaskRunReportV1,
+        };
+        let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
+        let execution = state
+            .execution
+            .as_ref()
+            .ok_or_else(|| conflict("Review Task has no execution"))?;
+        let report: TaskRunReportV1 = payload(cas, report_id, TASK_RUN_REPORT_V1)?;
+        report.validate().map_err(conflict)?;
+        if !execution.pending_attempts().is_empty()
+            || state.run_reports.last().map(String::as_str) != Some(report_id)
+            || report.task_revision_id != state.revision_id
+            || Some(&report.plan_id) != state.plan_id.as_ref()
+            || report.nodes.iter().any(|node| {
+                matches!(
+                    node.outcome,
+                    TaskNodeOutcomeV1::Failed {
+                        class: TaskFailureClassV1::DomainPublication,
+                        ..
+                    }
+                )
+            })
+        {
+            return Err(conflict(
+                "Review conclusion requires settled execution and recovered domain publication",
+            ));
+        }
+        let input = state
+            .revision
+            .inputs
+            .values()
+            .find(|input| input.artifact_type == LEGACY_REVIEW_ROUND_V1)
+            .ok_or_else(|| conflict("Review conclusion has no captured Round"))?;
+        let round: LegacyReviewRoundV1 =
+            payload(cas, &input.artifact_ids[0], LEGACY_REVIEW_ROUND_V1)?;
+        if !event.event_type.is_run_report()
+            || event.node_id.is_some()
+            || event.attempt_id.is_some()
+            || event.legacy_import
+            || event.causation_id.as_deref() != Some(&round.round_event_id)
+            || event.correlation_id.as_deref() != Some(&round.subject_id)
+            || !event.artifact_refs.iter().any(|id| id == report_id)
+        {
+            return Err(conflict(
+                "Task Review conclusion changed its captured Round or report",
+            ));
+        }
+        let (fresh, _) = self.checked_task_dispatch(cas, lease, authority)?;
+        if fresh.next_sequence != state.next_sequence {
+            return Err(conflict("Task changed during conclusion validation"));
+        }
+        let mut permit = WritePermit::for_checked_selection(
+            &fresh,
+            &plan,
+            &round.campaign_id,
+            self.len(&round.campaign_id)?,
+            event.clone(),
+        )?;
+        // Conclusion records completed work and may explain an expired execution deadline.
+        // It still requires the current writer lease and any still-current plan approval.
+        permit.valid_until = fresh.lease_until.min(
+            fresh
+                .plan_id
+                .as_ref()
+                .and_then(|id| fresh.decisions.get(id))
+                .map_or(u64::MAX, |decision| decision.valid_until),
+        );
+        self.append_batch_inner(&round.campaign_id, cas, &[event], None, Some(&permit))
+    }
+
     /// Publish the canonical Review identity of an already selected and published Task output.
     /// Routing comes from that Attempt's admitted context, never from caller-supplied Round IDs.
     /// An exact replay is idempotent. There are no synthetic legacy Attempt lifecycle events.

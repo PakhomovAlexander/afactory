@@ -6,6 +6,26 @@ use super::*;
 
 mod report;
 
+fn gate_remaining(
+    check_timeout: Duration,
+    deadline: Option<std::time::Instant>,
+) -> Result<Duration, String> {
+    let remaining = deadline.map_or(check_timeout, |end| {
+        check_timeout.min(end.saturating_duration_since(std::time::Instant::now()))
+    });
+    if remaining.is_zero() {
+        Err("Review Gate exhausted its common Task Attempt deadline".into())
+    } else {
+        Ok(remaining)
+    }
+}
+
+pub(super) struct ReviewLedgerOutputs {
+    pub(super) original: ArtifactMap,
+    /// The same reducer artifacts, including canonical Demands omitted by old port lists.
+    pub(super) canonical: BTreeMap<String, String>,
+}
+
 pub(super) struct ReviewDomainState<'a> {
     /// One kernel generation has exactly one durable conclusion.
     report_published: Mutex<bool>,
@@ -239,6 +259,17 @@ impl<'a> ReviewDomainState<'a> {
     }
 
     pub(super) fn run_gate(&self, node_id: &str) -> Result<Vec<String>, String> {
+        self.run_gate_before(node_id, None)
+    }
+
+    /// The common Attempt supplies one absolute deadline. Each check consumes its remaining
+    /// time instead of receiving a fresh full timeout after earlier checks and setup.
+    pub(super) fn run_gate_before(
+        &self,
+        node_id: &str,
+        deadline: Option<std::time::Instant>,
+    ) -> Result<Vec<String>, String> {
+        gate_remaining(self.check_timeout, deadline)?;
         if let Some(binding) = self.gate_execution.as_ref() {
             for requested in &binding.caches {
                 let kind = match requested {
@@ -275,7 +306,12 @@ impl<'a> ReviewDomainState<'a> {
                     review_config::SandboxProviderSpec::Container => Some(
                         self.container_provider
                             .clone()
-                            .unwrap_or_else(ContainerProvider::detect)
+                            .unwrap_or_else(|| {
+                                deadline.map_or_else(
+                                    ContainerProvider::detect,
+                                    ContainerProvider::detect_before,
+                                )
+                            })
                             .with_image(
                                 binding
                                     .image
@@ -284,6 +320,7 @@ impl<'a> ReviewDomainState<'a> {
                             ),
                     ),
                 };
+                gate_remaining(self.check_timeout, deadline)?;
                 let provided = container
                     .as_ref()
                     .map_or(Isolation::None, ContainerProvider::isolation);
@@ -461,6 +498,7 @@ impl<'a> ReviewDomainState<'a> {
         }
         let mut results = Vec::with_capacity(self.checks.len());
         for check in &self.checks {
+            runner = runner.with_timeout(gate_remaining(self.check_timeout, deadline)?);
             let mut cleanup_failure = None;
             let result = match container.as_ref() {
                 Some(provider) => runner.run_with(check, |program, args, env, timeout| {
@@ -707,6 +745,18 @@ impl<'a> ReviewDomainState<'a> {
         node: &Node,
         inputs: &ArtifactMap,
     ) -> Result<ArtifactMap, String> {
+        let outputs = self.reduce_ledger(node, inputs, false)?;
+        // Frozen projection retains only the original declared ports.
+        drop(outputs.canonical);
+        Ok(outputs.original)
+    }
+
+    pub(super) fn reduce_ledger(
+        &self,
+        node: &Node,
+        inputs: &ArtifactMap,
+        retain_companions: bool,
+    ) -> Result<ReviewLedgerOutputs, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
         let canonical = self.authority.finding_identity_policy
@@ -1145,6 +1195,10 @@ impl<'a> ReviewDomainState<'a> {
                 .map_err(|e| e.to_string())?
         };
 
+        let mut canonical_outputs = BTreeMap::new();
+        if canonical {
+            canonical_outputs.insert("finding_set".into(), findings_artifact.clone());
+        }
         let finding_port = node
             .outputs
             .iter()
@@ -1198,11 +1252,13 @@ impl<'a> ReviewDomainState<'a> {
                     serde_json::to_value(payload).map_err(|error| error.to_string())?,
                 )
                 .map_err(|error| error.to_string())?;
+            canonical_outputs.insert("demand_set".into(), record_id.clone());
             match node.outputs.iter().find(|port| is_demand_set_port(port)) {
                 Some(port) => {
                     outputs.insert(port.name.clone(), vec![record_id]);
                 }
-                None if !outputs.is_empty()
+                None if !retain_companions
+                    && !outputs.is_empty()
                     && self
                         .ledger_cache
                         .lock()
@@ -1409,7 +1465,10 @@ impl<'a> ReviewDomainState<'a> {
                 )?;
             }
         }
-        Ok(outputs)
+        Ok(ReviewLedgerOutputs {
+            original: outputs,
+            canonical: canonical_outputs,
+        })
     }
 
     pub(super) fn finalize_proposals(

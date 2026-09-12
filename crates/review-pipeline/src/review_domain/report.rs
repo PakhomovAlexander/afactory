@@ -2,12 +2,87 @@
 //! spend; this operation owns no Attempt or budget and cannot run automatic Integration.
 use super::*;
 
+struct TaskPublication<'a> {
+    report_id: &'a str,
+    lease: &'a review_store::store::task::TaskLease,
+    authority: &'a dyn review_store::store::task::TaskAuthority,
+}
+
 impl ReviewDomainState<'_> {
     pub(crate) fn publish_report(
         &self,
         report: &RunReport,
         policy: ConvergencePolicy,
         spent_tokens: Option<u64>,
+    ) -> Result<RunVerdict, String> {
+        self.publish_report_inner(report, policy, spent_tokens, None)
+    }
+
+    /// The common scheduler report binds this canonical conclusion to one durable run.
+    /// Repeating the same publication after a crash reads its original verdict without work.
+    pub(crate) fn publish_task_report(
+        &self,
+        report: &RunReport,
+        policy: ConvergencePolicy,
+        spent_tokens: Option<u64>,
+        task_report_id: &str,
+        lease: &review_store::store::task::TaskLease,
+        authority: &dyn review_store::store::task::TaskAuthority,
+    ) -> Result<RunVerdict, String> {
+        let captured = self
+            .cas
+            .get_artifact(task_report_id)
+            .map_err(|e| e.to_string())?;
+        if captured.artifact_type != review_core::task::report::TASK_RUN_REPORT_V1 {
+            return Err("Canonical Task Review requires a typed scheduler report".into());
+        }
+        for event in self
+            .store
+            .lock()
+            .expect("event store")
+            .replay(&self.run_id)
+            .map_err(|e| e.to_string())?
+        {
+            if event.event_type.is_run_report()
+                && event.causation_id.as_deref() == Some(&self.authority.round_event_id)
+                && event.artifact_refs.iter().any(|id| id == task_report_id)
+            {
+                let verdict: RunVerdictV3 =
+                    serde_json::from_value(event.payload["verdict"].clone())
+                        .map_err(|e| e.to_string())?;
+                return Ok(match verdict {
+                    RunVerdictV3::Pass => RunVerdict::Pass,
+                    RunVerdictV3::Fail {
+                        reason: RunFailureReasonV3::Exhausted,
+                    } => RunVerdict::Fail(Verdict::Exhausted),
+                    RunVerdictV3::Fail { .. } => RunVerdict::Fail(Verdict::NotConverged),
+                    RunVerdictV3::Incomplete { missing_nodes } => RunVerdict::Incomplete {
+                        missing: missing_nodes
+                            .into_iter()
+                            .map(|entry| (entry.node, entry.reason))
+                            .collect(),
+                    },
+                });
+            }
+        }
+        self.publish_report_inner(
+            report,
+            policy,
+            spent_tokens,
+            Some(TaskPublication {
+                report_id: task_report_id,
+                lease,
+                authority,
+            }),
+        )
+    }
+
+    fn publish_report_inner(
+        &self,
+        report: &RunReport,
+        policy: ConvergencePolicy,
+        spent_tokens: Option<u64>,
+        task_publication: Option<TaskPublication<'_>>,
     ) -> Result<RunVerdict, String> {
         let mut published = self.report_published.lock().expect("report published");
         if *published {
@@ -42,7 +117,46 @@ impl ReviewDomainState<'_> {
         // ends with a report, so flushing here records the paid work no matter the graph.
         self.flush_reviewer_events()?;
         let convergence = self.convergence(policy);
-        let verdict = run_verdict(report, &convergence);
+        // New Task acceptance requires all mandatory evidence even after budget exhaustion.
+        // Frozen legacy conclusions retain their existing precedence.
+        let verdict = if task_publication.is_some() && !report.complete() {
+            RunVerdict::Incomplete {
+                missing: report
+                    .outcomes
+                    .iter()
+                    .filter_map(|(id, outcome)| match outcome {
+                        NodeOutcome::Completed { .. } => None,
+                        NodeOutcome::Failed { error, .. } => Some((id.clone(), error.clone())),
+                        NodeOutcome::Suppressed { reason } => {
+                            Some((id.clone(), format!("{reason:?}")))
+                        }
+                    })
+                    .collect(),
+            }
+        } else {
+            run_verdict(report, &convergence)
+        };
+        let append_report = |mut event: NewEvent| {
+            if let Some(task) = &task_publication {
+                event.artifact_refs.push(task.report_id.into());
+                let event = self.bind_authority(event);
+                let appended = self
+                    .store
+                    .lock()
+                    .expect("Task Store")
+                    .publish_task_review_report(
+                        self.cas,
+                        task.lease,
+                        task.report_id,
+                        event,
+                        task.authority,
+                    )
+                    .map_err(|e| e.to_string())?;
+                self.fold_appended_into_ledger_cache(&appended);
+                return Ok(());
+            }
+            self.append(event)
+        };
         let outcomes: Vec<RunNodeReportV2> = report
             .outcomes
             .iter()
@@ -113,7 +227,7 @@ impl ReviewDomainState<'_> {
                     spent_tokens,
                     execution_bindings,
                 };
-                self.append(NewEvent::new(
+                append_report(NewEvent::new(
                     EventType::RunReportV4,
                     serde_json::to_value(payload).map_err(|e| e.to_string())?,
                 ))?;
@@ -131,7 +245,7 @@ impl ReviewDomainState<'_> {
                     cache_snapshots,
                     cache_failures,
                 };
-                self.append(
+                append_report(
                     NewEvent::new(
                         EventType::RunReportV5,
                         serde_json::to_value(payload).map_err(|e| e.to_string())?,
@@ -146,7 +260,7 @@ impl ReviewDomainState<'_> {
                 verdict: persisted_verdict,
                 spent_tokens,
             };
-            self.append(NewEvent::new(
+            append_report(NewEvent::new(
                 EventType::RunReportV3,
                 serde_json::to_value(payload).map_err(|e| e.to_string())?,
             ))?;

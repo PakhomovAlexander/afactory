@@ -16,6 +16,7 @@ use review_store::{Cas, EventStore, validate_envelope};
 
 use crate::RoundAuthority;
 
+pub mod host;
 pub mod plan;
 
 pub struct CapturedLegacyReviewRound {

@@ -377,6 +377,23 @@ impl TaskExecutionProjection {
             .collect()
     }
 
+    /// Immutable observations of settled Attempts, including failures. These references do
+    /// not grant output selection; a domain must verify its own typed facts and provenance.
+    pub fn settled_artifacts(&self) -> BTreeMap<String, (String, Vec<String>)> {
+        self.attempts
+            .iter()
+            .filter_map(|(id, attempt)| match &attempt.settlement {
+                Some(TaskExecutionRecordV1::Settled {
+                    raw_artifact_ids, ..
+                }) => Some((
+                    id.clone(),
+                    (attempt.reservation.node.clone(), raw_artifact_ids.clone()),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn verify_invocation(&self, cas: &Cas, input: &TaskInvocationV1) -> Result<(), StoreError> {
         let node = self
             .graph

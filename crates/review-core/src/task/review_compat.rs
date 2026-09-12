@@ -9,6 +9,42 @@ pub const TASK_REVIEW_RESULT_METADATA_V1: &str = "af/TaskReviewResultMetadata@1"
 pub const TASK_REVIEW_CONTEXT_V1: &str = "af/TaskReviewContext@1";
 pub const LEGACY_REVIEW_ROUND_V1: &str = "af/LegacyReviewRound@1";
 pub const LEGACY_REVIEW_GATE_OUTCOME_V1: &str = "af/LegacyReviewGateOutcome@1";
+pub const TASK_REVIEW_GATE_FACTS_V1: &str = "af/TaskReviewGateFacts@1";
+
+/// Gate setup observations retained by the common settlement, including failed Attempts.
+/// Machine-local paths and credentials never enter these portable facts.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskReviewGateFactsV1 {
+    pub round_event_id: String,
+    pub review_node: String,
+    pub attempt_id: String,
+    pub cache_failures: Vec<crate::RunCacheFailureV5>,
+}
+impl TaskReviewGateFactsV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            event_id(&self.round_event_id)
+                && event_id(&self.attempt_id)
+                && !self.review_node.trim().is_empty()
+                && self.review_node.chars().count() <= 256,
+            "Review Gate facts require their exact Round, node and Attempt",
+        )?;
+        // Cargo is currently the one supported cache kind.
+        require(
+            self.cache_failures.len() <= 1,
+            "Duplicate Review Gate cache failure",
+        )?;
+        for failure in &self.cache_failures {
+            failure.validate()?;
+            require(
+                failure.node == self.review_node,
+                "Review Gate fact names another node",
+            )?;
+        }
+        Ok(())
+    }
+}
 
 /// Input binding for the installed legacy frontend. Unlike TaskReviewRound@1 (a completed
 /// canonical reduction), this names one exact Campaign Round awaiting execution.

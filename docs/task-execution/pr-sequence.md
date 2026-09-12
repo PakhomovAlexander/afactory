@@ -413,3 +413,29 @@ workspace Clippy passes. ProviderTaskDomain now forwards domain invocation publi
 existing lost-ack recovery fixtures exercise that wrapper. No specialist or live model was used.
 The operation host, canonical Ledger companion outputs, result acceptance/replay, broker and
 owned Scatter execution, and same-Task heavy-Round advancement remain unfinished.
+
+The plan-admission checkpoint `7b6e1e3` (identical frozen tree `e9aecc1`) passes the full
+local gate: **891 tests, zero failures, 15 ignored**, across 119 suites, formatting, Clippy,
+documentation tests and byte-identical reproduction. Exact-head CI `34689190250` passes,
+including container probes and CLI smoke. The preceding `7c36468` CI also passed.
+
+The captured operation host now runs Command and packaged Model Review through common Attempts,
+including the same Provider adapter for admission and business work. It retains canonical
+Finding/Demand companion outputs, selected result/Proposal publication, bounded retry feedback,
+cache success/failure evidence across reopen and canonical conclusion/Task-finish recovery.
+Account and credential-mode substitutions are refused before dispatch. Complete execution with
+blocking Findings or required Demands remains unsatisfied.
+
+Read-only audit found three corrections before checkpoint publication: canonical conclusions
+now compare the current Task writer and both log prefixes transactionally; recoverable domain
+publication cannot become a final Task result; container detection consumes the same Gate
+deadline. Fifteen captured-Review integration tests, the opaque-V1 Store regression and the
+container-deadline regression pass. The earlier combined Core/Store/Runner/Pipeline regression
+run passed **383 tests, zero failures, six ignored** across 39 suites. Workspace Clippy passes
+after all corrections. The full checkpoint gate follows; no external specialist has run.
+
+Legacy CLI ownership, broker effects, owned Scatter, same-Task heavy continuation, full-width
+canonical accounting and remaining live conformance/P14 evidence still gate completion. The
+owner's terminal confirms the isolated personal Claude profile is signed out (`false`/`none`);
+Fable and Opus cannot run until that subscription login completes. No ambient API key or work
+account has been used. The active hub pin remains the supported `v0.7.1` release.

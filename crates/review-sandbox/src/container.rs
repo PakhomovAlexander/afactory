@@ -24,7 +24,7 @@
 //! the container genuinely runs work.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use review_process::{SupervisedError, run_supervised};
 
@@ -128,7 +128,15 @@ impl ContainerProvider {
     /// Probe the host for a usable runtime.
     pub fn detect() -> ContainerProvider {
         ContainerProvider {
-            availability: Self::probe(),
+            availability: Self::probe(None),
+            image: DEFAULT_IMAGE.to_string(),
+        }
+    }
+
+    /// Every runtime probe consumes the caller's same absolute execution deadline.
+    pub fn detect_before(deadline: Instant) -> ContainerProvider {
+        ContainerProvider {
+            availability: Self::probe(Some(deadline)),
             image: DEFAULT_IMAGE.to_string(),
         }
     }
@@ -148,11 +156,28 @@ impl ContainerProvider {
         self
     }
 
-    fn probe() -> Availability {
+    fn probe(deadline: Option<Instant>) -> Availability {
+        Self::probe_paths(
+            RUNTIMES.into_iter().filter_map(|name| which(name).ok()),
+            deadline,
+        )
+    }
+
+    fn probe_paths(
+        paths: impl IntoIterator<Item = PathBuf>,
+        deadline: Option<Instant>,
+    ) -> Availability {
         let mut first_unusable = None;
-        for name in RUNTIMES {
-            let Ok(path) = which(name) else { continue };
-            match Self::probe_one(&path) {
+        for path in paths {
+            let timeout = deadline.map_or(PROBE_TIMEOUT, |deadline| {
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(PROBE_TIMEOUT)
+            });
+            if timeout.is_zero() {
+                break;
+            }
+            match Self::probe_one_with_timeout(&path, timeout) {
                 usable @ Availability::Usable { .. } => return usable,
                 unusable if first_unusable.is_none() => first_unusable = Some(unusable),
                 _ => {}
@@ -488,6 +513,35 @@ mod tests {
             err.starts_with("refusing to run outside a container"),
             "{err}"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn runtime_detection_stops_at_the_callers_deadline() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let paths: Vec<_> = (0..3)
+            .map(|n| {
+                let path = directory.path().join(format!("runtime{n}"));
+                std::fs::write(&path, "#!/bin/sh\nprintf x > \"$0.marker\"\nsleep 60\n").unwrap();
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+                path
+            })
+            .collect();
+        let start = Instant::now();
+        let unavailable =
+            ContainerProvider::probe_paths(paths.clone(), Some(start + Duration::from_millis(500)));
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(!unavailable.usable());
+        assert!(
+            directory.path().join("runtime0.marker").exists(),
+            "{unavailable:?}"
+        );
+        assert!(!directory.path().join("runtime1.marker").exists());
+        assert!(!directory.path().join("runtime2.marker").exists());
+        let expired = ContainerProvider::probe_paths([paths[1].clone()], Some(start));
+        assert!(!expired.usable());
+        assert!(!directory.path().join("runtime1.marker").exists());
     }
 
     #[test]

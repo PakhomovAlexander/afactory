@@ -68,7 +68,21 @@ fn fixture() -> Fixture {
 }
 
 fn canonical_context(f: &mut Fixture, invocation: &str, attempt: &str) -> TaskReviewContextV1 {
-    let pipeline = f.cas.put(br#"version = 2
+    canonical_context_for_contract(
+        f,
+        invocation,
+        attempt,
+        review_core::contract::REVIEWER_RESULT_V1,
+    )
+}
+
+fn canonical_context_for_contract(
+    f: &mut Fixture,
+    invocation: &str,
+    attempt: &str,
+    contract: &str,
+) -> TaskReviewContextV1 {
+    let definition = r#"version = 2
 [subject]
 kind = "whole-tree"
 [[nodes]]
@@ -76,7 +90,13 @@ id = "reviewer"
 kind = "reviewer"
 outputs = [{ name = "out", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 runner = { program = "/bin/true" }
-"#).unwrap();
+"#;
+    let definition = if contract == review_core::contract::OPAQUE_V1 {
+        definition.replace("[{ name = \"out\", type = \"review.kernel/ReviewerResult@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }]", "[\"out\"]")
+    } else {
+        definition.replace(review_core::contract::REVIEWER_RESULT_V1, contract)
+    };
+    let pipeline = f.cas.put(definition.as_bytes()).unwrap();
     let authority = f.cas.put(b"review authority").unwrap();
     let head = f.cas.put(b"review head").unwrap();
     let facts = f.cas.put_json(&json!({"fixture":"review roots"})).unwrap();
@@ -291,6 +311,66 @@ fn settle(f: &mut Fixture, lease: &TaskLease, attempt: &str, output: &str) {
             &f.authority,
         )
         .unwrap();
+}
+
+#[test]
+fn legacy_opaque_review_selection_is_only_the_frozen_v1_contract() {
+    for contract in [
+        review_core::contract::OPAQUE_V1,
+        review_core::contract::REVIEWER_RESULT_V2,
+        review_core::contract::FINDING_SET_V1,
+    ] {
+        let mut f = fixture();
+        let lease = f.open();
+        f.propose(&lease);
+        f.decide(&lease, PlanDecisionKindV1::Approved);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        let invocation = f.record_execution_inputs(&lease);
+        let mut context =
+            canonical_context_for_contract(&mut f, &invocation, &"a".repeat(26), contract);
+        let reserved = f
+            .store
+            .reserve_task_attempt(&f.cas, &lease, "root.nodes.write", &f.authority)
+            .unwrap();
+        context.attempt_id = reserved.id().into();
+        let context_id = f
+            .cas
+            .put_artifact(
+                TASK_REVIEW_CONTEXT_V1,
+                producer(),
+                context
+                    .artifact_refs()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                None,
+                serde_json::to_value(context).unwrap(),
+            )
+            .unwrap()
+            .0;
+        let attempt = f
+            .store
+            .bind_task_attempt_context(&f.cas, &lease, &reserved, &context_id, &f.authority)
+            .unwrap();
+        f.store
+            .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+            .unwrap();
+        let output = review_output(&f, &invocation, attempt.id(), false);
+        settle(&mut f, &lease, attempt.id(), &output);
+        f.store
+            .publish_task_output(&f.cas, &lease, &output, Some(attempt.id()), &f.authority)
+            .unwrap();
+        let selected = f
+            .store
+            .publish_task_review_result(&f.cas, &lease, &output, &f.authority);
+        assert_eq!(
+            selected.is_ok(),
+            contract == review_core::contract::OPAQUE_V1,
+            "{contract}: {selected:?}"
+        );
+    }
 }
 
 #[test]

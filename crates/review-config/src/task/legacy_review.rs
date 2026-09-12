@@ -376,7 +376,19 @@ pub fn compile_legacy_review(
                 }
             }
             NodeKind::Gather => ReviewOperation::Gather,
-            NodeKind::Ledger => ReviewOperation::Ledger,
+            NodeKind::Ledger => {
+                if canonical_identity {
+                    for (name, ty) in [
+                        ("finding_set", contract::FINDING_SET_V1),
+                        ("demand_set", contract::DEMAND_SET_V1),
+                    ] {
+                        let mut companion = port(ty, PortCardinality::One, false);
+                        companion.affinity = PortAffinityV1::SameAs { input: HEAD.into() };
+                        outputs.insert(name.into(), companion);
+                    }
+                }
+                ReviewOperation::Ledger
+            }
             NodeKind::Slicer => ReviewOperation::Slicer,
             NodeKind::Task => {
                 return Err("Legacy Review cannot declare Task execution nodes".into());

@@ -9,7 +9,7 @@ use review_pipeline::task::{TaskOperatorHost, TaskWorkOutput};
 use review_store::store::task::execution::PreparedTaskAttempt;
 
 // Admission must not reach execution or silently grant domain acceptance.
-struct RefuseExecution;
+pub(super) struct RefuseExecution;
 impl TaskOperatorHost for RefuseExecution {
     fn prepare_context(
         &self,
@@ -53,7 +53,7 @@ impl TaskDomain for RefuseExecution {
     }
 }
 
-fn settings() -> ReviewPlanSettings {
+pub(super) fn settings() -> ReviewPlanSettings {
     ReviewPlanSettings {
         mode: "light".into(),
         resources: review_config::task::legacy_review::resources::ReviewResourcePolicy {
@@ -68,7 +68,7 @@ fn settings() -> ReviewPlanSettings {
         allowed_effects: Default::default(),
     }
 }
-fn artifact(cas: &Cas, ty: &str, value: impl serde::Serialize) -> String {
+pub(super) fn artifact(cas: &Cas, ty: &str, value: impl serde::Serialize) -> String {
     cas.put_artifact(
         ty,
         review_core::Producer::KernelOperation {
@@ -109,8 +109,8 @@ fn captured_review_plan_admits_reopens_and_refuses_changed_or_missing_authority(
     let task = compiler
         .prepare_revision(&cas, "review-task", capture::limits())
         .unwrap();
-    assert_eq!(task.required_outputs.len(), 2);
-    assert_eq!(task.acceptance.len(), 2);
+    assert_eq!(task.required_outputs.len(), 4);
+    assert_eq!(task.acceptance.len(), 4);
     let revision = artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
     let (plan, captured) = compiler.compile(&cas, &revision).unwrap();
     assert_plan_schemas(&cas, &compiler, &plan);
@@ -122,7 +122,7 @@ fn captured_review_plan_admits_reopens_and_refuses_changed_or_missing_authority(
         captured.compilation.graph.calls["root"].coverage,
         captured.compilation.graph.coverage
     );
-    assert_eq!(plan.acceptance.len(), 2);
+    assert_eq!(plan.acceptance.len(), 4);
     assert_eq!(
         captured.compilation.graph.token_scopes["review.round1"].tokens,
         50

@@ -225,6 +225,9 @@ impl LegacyReviewPlanCompiler {
     pub fn policy_id(&self) -> &str {
         &self.policy_id
     }
+    pub(super) fn mode(&self) -> Result<review_config::captured_review::ReviewMode, String> {
+        self.policy.settings.mode()
+    }
     pub fn round(&self) -> &CapturedLegacyReviewRound {
         &self.round
     }
@@ -303,25 +306,36 @@ impl LegacyReviewPlanCompiler {
         let mut evidence = BTreeMap::new();
         for mapping in compiled.nodes.values() {
             let node = &compiled.graph.nodes[&mapping.task_node];
-            let port = match &node.operator {
+            let ports: &[&str] = match &node.operator {
                 CompiledOperator::ReviewDomain {
                     operation: ReviewOperation::Reviewer { .. },
                     ..
-                } => Some("metadata"),
+                } => &["metadata"],
                 CompiledOperator::ReviewDomain {
                     operation: ReviewOperation::Gate,
                     ..
-                } => Some("outcome"),
+                } => &["outcome"],
                 CompiledOperator::ReviewDomain {
                     operation: ReviewOperation::Scatter { .. },
                     ..
-                } => Some("o0"),
-                _ => None,
+                } => &["o0"],
+                CompiledOperator::ReviewDomain {
+                    operation: ReviewOperation::Ledger,
+                    ..
+                } if node.contract.outputs.contains_key("finding_set") => {
+                    &["finding_set", "demand_set"]
+                }
+                _ => &[],
             };
-            if let Some(port) = port {
+            for &port in ports {
+                let suffix = if ports.len() > 1 {
+                    format!("_{port}")
+                } else {
+                    String::new()
+                };
                 let name = format!(
-                    "af_evidence_{}",
-                    mapping.task_node.rsplit('.').next().unwrap()
+                    "af_evidence_{}{suffix}",
+                    mapping.task_node.rsplit('.').next().unwrap(),
                 );
                 if compiled.graph.outputs.contains_key(&name) {
                     return Err("Public Review output collides with installed evidence port".into());
@@ -599,6 +613,17 @@ impl LegacyReviewPlanCompiler {
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
+        self.recompile(cas, task, plan)?;
+        Ok(vec![])
+    }
+
+    /// Recover the executable domain mapping without recreating missing authority bytes.
+    pub fn recompile(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+    ) -> Result<CapturedReviewCompilation, String> {
         let revision = cas
             .get_artifact(&plan.task_revision_id)
             .map_err(|e| e.to_string())?;
@@ -607,11 +632,11 @@ impl LegacyReviewPlanCompiler {
         {
             return Err("Review plan names a different Task revision".into());
         }
-        let (expected, _) = self.compile_inner(cas, &plan.task_revision_id, Some(plan))?;
+        let (expected, captured) = self.compile_inner(cas, &plan.task_revision_id, Some(plan))?;
         if &expected != plan {
             return Err("Review plan differs from trusted captured recompilation".into());
         }
-        Ok(vec![])
+        Ok(captured)
     }
 }
 

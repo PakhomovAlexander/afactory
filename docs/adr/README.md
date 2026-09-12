@@ -145,3 +145,5 @@ options you rejected and why — that is the part future-you needs.
 - [0075 — Retain exact Task usage with versioned decimal counters](0075-retain-exact-task-usage-with-versioned-decimal-counters.md)
 - [0076 — Decode and verify typed CAS reads
   once](0076-decode-and-verify-typed-cas-reads-once.md)
+- [0077 — Run captured Review operations under common Task
+  Attempts](0077-run-captured-review-operations-under-common-task-attempts.md)

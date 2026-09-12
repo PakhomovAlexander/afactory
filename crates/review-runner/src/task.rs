@@ -459,24 +459,7 @@ pub fn invoke_command(
         .read_context(cas, context_id)
         .map_err(RunnerError::Refused);
     let result = prepared.and_then(|(_, bytes)| {
-        let mut runner = ModelRunner::new(workdir, timeout);
-        for (key, directory) in [
-            ("HOME", "home"),
-            ("XDG_CONFIG_HOME", "config"),
-            ("XDG_CACHE_HOME", "cache"),
-            ("XDG_STATE_HOME", "state"),
-            ("TMPDIR", "tmp"),
-        ] {
-            let path = runtime_root.join(directory);
-            std::fs::create_dir_all(&path).map_err(|e| RunnerError::Unavailable(e.to_string()))?;
-            runner = runner.with_env(
-                key,
-                path.to_str().ok_or_else(|| {
-                    RunnerError::Refused("Worker runtime path is not UTF-8".into())
-                })?,
-            );
-        }
-        runner.capture_with_stdin(cas, command, bytes)
+        capture_command(cas, workdir, runtime_root, command, bytes, timeout)
     });
     match result {
         Ok(raw) => {
@@ -509,4 +492,74 @@ pub fn invoke_command(
             feedback_code: Some(TaskFeedbackCodeV1::ProcessFailure),
         },
     }
+}
+
+/// The same isolated command transport with an independently installed business parser.
+/// No scheduler or retry loop; the caller supplies an already-started Attempt's remaining time.
+pub fn invoke_command_bytes(
+    cas: &Cas,
+    workdir: &Path,
+    runtime_root: &Path,
+    command: &Command,
+    bytes: Vec<u8>,
+    timeout: Duration,
+) -> ModelWorkerReturn {
+    match capture_command(cas, workdir, runtime_root, command, bytes, timeout) {
+        Ok(raw) => ModelWorkerReturn {
+            message: if raw.status.success() {
+                Ok(raw.stdout)
+            } else {
+                Err(format!("Command Worker exited with {}", raw.status))
+            },
+            usage: Some(TokenUsage::charge_only(0)),
+            raw_artifact_ids: vec![raw.raw_artifact],
+        },
+        Err(error) => {
+            let mut result = ModelWorkerReturn::failed(error);
+            result.usage = Some(TokenUsage::charge_only(0));
+            result
+        }
+    }
+}
+
+fn capture_command(
+    cas: &Cas,
+    workdir: &Path,
+    runtime_root: &Path,
+    command: &Command,
+    bytes: Vec<u8>,
+    timeout: Duration,
+) -> Result<crate::RawCapture, RunnerError> {
+    let deadline = std::time::Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| RunnerError::Refused("Command deadline overflow".into()))?;
+    let mut environment = Vec::new();
+    for (key, directory) in [
+        ("HOME", "home"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_STATE_HOME", "state"),
+        ("TMPDIR", "tmp"),
+    ] {
+        let path = runtime_root.join(directory);
+        std::fs::create_dir_all(&path).map_err(|e| RunnerError::Unavailable(e.to_string()))?;
+        environment.push((
+            key,
+            path.to_str()
+                .ok_or_else(|| RunnerError::Refused("Worker runtime path is not UTF-8".into()))?
+                .to_owned(),
+        ));
+    }
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    if remaining.is_zero() {
+        return Err(RunnerError::TimedOut {
+            after_ms: timeout.as_millis().try_into().unwrap_or(u64::MAX),
+            raw_artifact: None,
+        });
+    }
+    let mut runner = ModelRunner::new(workdir, remaining);
+    for (key, value) in environment {
+        runner = runner.with_env(key, value);
+    }
+    runner.capture_with_stdin(cas, command, bytes)
 }

@@ -92,14 +92,14 @@ pub trait TaskOperatorHost: Sync {
     ) -> TaskWorkOutput;
 }
 
-pub struct TaskRuntime<'a> {
-    store: SharedEventStore<'a>,
-    cas: &'a Cas,
+pub struct TaskRuntime<'store, 'host> {
+    store: SharedEventStore<'store>,
+    cas: &'store Cas,
     lease: TaskLease,
     plan_id: String,
     graph: CompiledTask,
-    authority: &'a dyn TaskAuthority,
-    host: &'a dyn TaskOperatorHost,
+    authority: &'host dyn TaskAuthority,
+    host: &'host dyn TaskOperatorHost,
     prepared: Mutex<BTreeMap<String, PreparedTaskAttempt>>,
     pending_outputs: Mutex<BTreeMap<String, (String, Option<String>)>>,
     failures: Mutex<BTreeMap<String, NodeFailureClass>>,
@@ -117,13 +117,13 @@ fn artifact_map(values: &BTreeMap<String, ArtifactInputV1>) -> ArtifactMap {
         .collect()
 }
 
-impl<'a> TaskRuntime<'a> {
+impl<'store, 'host> TaskRuntime<'store, 'host> {
     pub fn new(
-        store: &'a mut EventStore,
-        cas: &'a Cas,
+        store: &'store mut EventStore,
+        cas: &'store Cas,
         lease: TaskLease,
-        authority: &'a dyn TaskAuthority,
-        host: &'a dyn TaskOperatorHost,
+        authority: &'host dyn TaskAuthority,
+        host: &'host dyn TaskOperatorHost,
     ) -> Result<Self, String> {
         Self::with_store(SharedEventStore::new(store), cas, lease, authority, host)
     }
@@ -131,11 +131,11 @@ impl<'a> TaskRuntime<'a> {
     /// Domain handlers may retain a clone for durable evidence and broker checks. Locks must
     /// be released before calling a handler or starting an external operation.
     pub fn with_store(
-        store: SharedEventStore<'a>,
-        cas: &'a Cas,
+        store: SharedEventStore<'store>,
+        cas: &'store Cas,
         lease: TaskLease,
-        authority: &'a dyn TaskAuthority,
-        host: &'a dyn TaskOperatorHost,
+        authority: &'host dyn TaskAuthority,
+        host: &'host dyn TaskOperatorHost,
     ) -> Result<Self, String> {
         let (plan, projection) = {
             let locked = store.lock().expect("Task Store");
@@ -381,7 +381,7 @@ impl<'a> TaskRuntime<'a> {
     }
 }
 
-impl Dispatch for TaskRuntime<'_> {
+impl Dispatch for TaskRuntime<'_, '_> {
     fn requires_successful_predecessors(&self, node: &Node) -> bool {
         self.graph.requires_successful_predecessors(&node.id)
     }

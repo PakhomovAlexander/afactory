@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 105] = [
+const SCHEMAS: [&str; 106] = [
     "normalized-task-requirements-v1.json",
     "task-source-capture-v1.json",
     "issue-input-v1.json",
@@ -55,6 +55,7 @@ const SCHEMAS: [&str; 105] = [
     "task-review-round-v1.json",
     "task-review-result-metadata-v1.json",
     "task-review-context-v1.json",
+    "task-review-gate-facts-v1.json",
     "legacy-review-round-v1.json",
     "legacy-review-task-policy-v1.json",
     "legacy-review-dependency-v1.json",
@@ -542,6 +543,7 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                 [
                     "finding-report-v1.json",
                     "reviewer-result-v1.json",
+                    "run-report-v5.json",
                     "task-contracts-v1.json",
                     "task-token-usage-v1.json",
                     "task-operator-signature-v1.json",
@@ -2346,6 +2348,48 @@ fn task_review_metadata_retains_typed_canonical_results_and_closed_proposal_disp
             }
         }
     }
+}
+
+#[test]
+fn task_review_gate_facts_preserve_closed_failed_attempt_observations() {
+    use review_core::task::review_compat::TaskReviewGateFactsV1;
+    let valid = json!({
+        "round_event_id":"a".repeat(26), "review_node":"gate",
+        "attempt_id":"b".repeat(26), "cache_failures":[{
+            "node":"gate", "kind":"cargo", "reason":"policy_unavailable"
+        }],
+    });
+    let schema = "task-review-gate-facts-v1.json";
+    let read = |v: Value| {
+        serde_json::from_value::<TaskReviewGateFactsV1>(v).is_ok_and(|v| v.validate().is_ok())
+    };
+    assert_valid(schema, &valid);
+    assert!(read(valid.clone()));
+    for (field, replacement) in [
+        ("round_event_id", json!("stale")),
+        ("attempt_id", json!(null)),
+        ("review_node", json!(" ")),
+        (
+            "cache_failures",
+            json!([valid["cache_failures"][0], valid["cache_failures"][0]]),
+        ),
+        ("authority", json!("approved")),
+    ] {
+        let mut wrong = valid.clone();
+        wrong[field] = replacement;
+        assert_invalid(
+            schema,
+            &wrong,
+            "Gate observations have a closed bounded contract",
+        );
+        assert!(!read(wrong));
+    }
+    let mut wrong = valid;
+    wrong["cache_failures"][0]["node"] = json!("another_gate");
+    assert!(
+        !read(wrong),
+        "semantic validation binds failures to their Gate"
+    );
 }
 
 #[test]

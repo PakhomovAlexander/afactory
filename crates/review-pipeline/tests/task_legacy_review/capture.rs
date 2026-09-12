@@ -15,13 +15,81 @@ pub(super) fn open_round_with_pipeline(
     store: &mut EventStore,
     definition: &str,
 ) -> String {
+    open_round_authority(cas, store, definition, None)
+}
+
+pub(super) fn open_round_with_package(
+    cas: &Cas,
+    store: &mut EventStore,
+    definition: &str,
+) -> String {
+    let files = BTreeMap::from([
+        ("reviewer.toml".into(), b"name=\"fixture\"\nversion=\"1.0.0\"\nsubjects=[\"whole-tree\"]\n[runner]\nprogram=\"claude\"\nargs=[{value=\"--model\"},{value=\"claude-fixture\"},{value=\"--effort\"},{value=\"high\"}]\n".to_vec()),
+        ("reviewer.md".into(), b"Review the exact declared Subject. Captured instruction marker.".to_vec()),
+    ]);
+    open_round_authority(cas, store, definition, Some(files))
+}
+
+fn open_round_authority(
+    cas: &Cas,
+    store: &mut EventStore,
+    definition: &str,
+    files: Option<BTreeMap<String, Vec<u8>>>,
+) -> String {
+    let (attempt_tokens, run_tokens) = if files.is_some() {
+        (20_000, 50_000)
+    } else {
+        (19, 50)
+    };
     let pipeline = format!(
-        "{definition}\n[budgets]\nunit = \"tokens\"\nattempt = 19\nrun = 50\n[convergence]\nclean_rounds = 2\nmax_rounds = 3\ngate = \"major\"\n"
+        "{definition}\n[budgets]\nunit = \"tokens\"\nattempt = {attempt_tokens}\nrun = {run_tokens}\n[convergence]\nclean_rounds = 2\nmax_rounds = 3\ngate = \"major\"\n"
     );
     let pipeline_id = cas.put(pipeline.as_bytes()).unwrap();
-    let lock = b"version = 1\n";
-    let lock_id = cas.put(lock).unwrap();
-    let tree = Manifest::new(vec![
+    let mut lock = review_config::lock::Lockfile::empty();
+    let mut entries = Vec::new();
+    let mut reviewers = Vec::new();
+    let mut execution_policy_ids = vec![pipeline_id.clone()];
+    if let Some(files) = files {
+        let digest = review_config::lock::package_digest_from_files(&files);
+        let mut package_files = BTreeMap::new();
+        for (path, bytes) in files {
+            let id = cas.put(&bytes).unwrap();
+            entries.push(Entry {
+                path: format!(".af/workers/fixture/{path}"),
+                kind: EntryKind::File,
+                content: id.clone(),
+                size: bytes.len() as u64,
+            });
+            package_files.insert(path, id);
+        }
+        let package = review_core::ReviewerPackageV1 {
+            name: "fixture".into(),
+            version: "1.0.0".into(),
+            digest: digest.clone(),
+            files: package_files,
+        };
+        let id = cas
+            .put_json(&serde_json::to_value(&package).unwrap())
+            .unwrap();
+        reviewers.push(review_core::CampaignReviewerV1 {
+            node: "reviewer".into(),
+            name: package.name,
+            version: package.version,
+            digest: digest.clone(),
+            package_artifact_id: id.clone(),
+        });
+        lock.reviewers.insert(
+            "fixture".into(),
+            review_config::lock::Pin {
+                version: "1.0.0".into(),
+                digest,
+            },
+        );
+        execution_policy_ids.push(id);
+    }
+    let lock = lock.to_toml();
+    let lock_id = cas.put(lock.as_bytes()).unwrap();
+    entries.extend([
         Entry {
             path: ".af/pipelines/review.toml".into(),
             kind: EntryKind::File,
@@ -34,8 +102,8 @@ pub(super) fn open_round_with_pipeline(
             content: lock_id.clone(),
             size: lock.len() as u64,
         },
-    ])
-    .unwrap();
+    ]);
+    let tree = Manifest::new(entries).unwrap();
     let tree_id = cas.put_json(&serde_json::to_value(&tree).unwrap()).unwrap();
     let head = cas
         .put_json(&json!({
@@ -59,10 +127,10 @@ pub(super) fn open_round_with_pipeline(
         "authority_snapshot_id": head, "subject_kind": "whole-tree",
         "pipeline": {"path": ".af/pipelines/review.toml", "artifact_id": pipeline_id},
         "reviewer_lock": {"path": ".af/af.lock", "artifact_id": lock_id},
-        "reviewers": [], "execution_policy_ids": [pipeline_id], "project_policy_ids": [],
+        "reviewers": reviewers, "execution_policy_ids": execution_policy_ids, "project_policy_ids": [],
         "convergence": {"clean_rounds": 1, "max_rounds": 1, "gate": "major"},
         "reviewer_timeout_seconds": 7, "check_timeout_seconds": 3600,
-        "budgets": {"attempt_tokens": 19, "run_tokens": 50},
+        "budgets": {"attempt_tokens": attempt_tokens, "run_tokens": run_tokens},
         "finding_identity_policy": review_core::CANONICAL_FINDING_IDENTITY_POLICY,
         "finding_genesis_id": finding_genesis, "demand_genesis_id": demand_genesis,
     }))

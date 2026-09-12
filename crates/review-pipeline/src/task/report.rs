@@ -3,7 +3,7 @@ use review_graph::{NodeOutcome, SuppressionReason};
 
 use super::*;
 
-impl TaskRuntime<'_> {
+impl TaskRuntime<'_, '_> {
     pub(super) fn record_run_report(&self, report: &RunReport) -> Result<(), String> {
         let state = self.projection()?;
         let execution = state
