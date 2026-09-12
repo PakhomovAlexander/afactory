@@ -7,8 +7,9 @@ contract tests, the software/document starter pack and heavy repair-history cont
 full gate. Read-only issue capture and source conformance also pass. Ticket revision refresh
 and result-scoped delivery pass the full gate. Requirements acceptance now composes with
 embedded Review on the final Snapshot. The shared-Store/domain extraction checkpoint passes
-805 local tests, zero failures, 15 ignored. Linux CI heavy Tasks currently exhaust their
-unchanged deadline before the final evaluator; performance correction, Review compatibility
+805 local tests, zero failures, 15 ignored. Its performance correction passes 807 local tests,
+documentation tests and frozen reproduction, with unchanged deadlines and verifier reserves.
+Linux CI confirmation, Review compatibility
 and P14 release evidence remain required. The completed
 M0–M9 record below remains the compatibility foundation.
 

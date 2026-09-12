@@ -176,3 +176,14 @@ CI for `4acc628` passes container probes but both heavy-review cases reach the u
 90-second Task deadline after ten Attempts, before the final goal evaluator can start (run
 `34663288212`). The local full gate passes those cases. Repeated captured-plan validation is
 being investigated; no Task deadline, verifier reserve or acceptance assertion has been relaxed.
+
+The correction in `b4b1bd6` freezes the compiler borrow and reuses only structural validation,
+while rehashing captured authority on every use. Store operations reuse their fresh projection
+inside one operation and revalidate publication after domain callbacks, including replay
+([ADR-0064](../adr/0064-reuse-structural-validation-with-fresh-authority-checks.md)).
+All 807 executable tests pass, with zero failures and 15 ignored; formatting and Clippy pass.
+The first documentation-test invocation saw in-progress source from the next checkpoint against
+the earlier compiled dependencies. Restoring the exact committed source and rerunning documentation
+tests plus frozen reproduction passes. Combined gate coverage is 113 suites. No limits or
+assertions were relaxed. The same local heavy positive command fixture decreased from 35.14s
+to 25.89s; this is not a live-model benchmark and Linux CI confirmation remains pending.
