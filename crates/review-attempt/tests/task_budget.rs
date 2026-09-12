@@ -111,6 +111,59 @@ fn child_attempt_cap_protects_its_verifier_even_when_the_parent_has_capacity() {
 }
 
 #[test]
+fn running_usage_preserves_other_reservations_and_cannot_be_refunded_at_settlement() {
+    let mut ledger = budget(3, 100, 1000);
+    let author = ledger.prepare("implement", 1).unwrap();
+    let verifier = ledger.prepare("review.verify", 1).unwrap();
+    assert!(ledger.observe_charge(&author.id, 10).is_err());
+    ledger.begin(&author.id, 2).unwrap();
+    for amount in [12, 12, 4] {
+        ledger.observe_charge(&author.id, amount).unwrap();
+    }
+    assert_eq!(ledger.committed_tokens(), 12);
+    assert_eq!(ledger.reserved_tokens(), 58);
+    assert_eq!(ledger.remaining_limits().tokens, 30);
+    assert!(ledger.prepare("implement", 3).is_err());
+    assert!(ledger.release(&author.id).is_err());
+    assert!(ledger.settle(&author.id, 7).is_err());
+    assert_eq!(ledger.committed_tokens(), 12);
+    assert_eq!(ledger.reserved_tokens(), 58);
+    ledger.settle(&author.id, 15).unwrap();
+    ledger.settle(&author.id, 15).unwrap();
+    assert_eq!(ledger.committed_tokens(), 15);
+    assert_eq!(ledger.reserved_tokens(), 30);
+    ledger.begin(&verifier.id, 4).unwrap();
+    ledger.observe_charge(&verifier.id, 9).unwrap();
+    ledger.settle(&verifier.id, 9).unwrap();
+    assert_eq!(ledger.committed_tokens(), 24);
+    assert_eq!(ledger.reserved_tokens(), 0);
+    assert_eq!(ledger.begun_attempts(), 2);
+}
+
+#[test]
+fn running_overrun_stops_prepared_work_and_remains_payable_after_the_deadline() {
+    let mut ledger = budget(3, 200, 1000);
+    let author = ledger.prepare("implement", 1).unwrap();
+    let verifier = ledger.prepare("review.verify", 1).unwrap();
+    ledger.begin(&author.id, 2).unwrap();
+    ledger.observe_charge(&author.id, 55).unwrap();
+    assert_eq!(ledger.committed_tokens(), 55);
+    assert_eq!(ledger.reserved_tokens(), 30);
+    assert!(ledger.breached());
+    assert!(ledger.begin(&verifier.id, 3).is_err());
+    assert!(ledger.prepare("implement", 3).is_err());
+    assert!(ledger.invalidate_plan(1001).is_err());
+    ledger.observe_charge(&author.id, 58).unwrap();
+    ledger.settle(&author.id, 58).unwrap();
+    ledger.release(&verifier.id).unwrap();
+    ledger.invalidate_plan(1002).unwrap();
+    ledger.observe_charge(&author.id, 63).unwrap();
+    assert_eq!(ledger.committed_tokens(), 63);
+    assert_eq!(ledger.reserved_tokens(), 0);
+    assert_eq!(ledger.begun_attempts(), 1);
+}
+
+#[test]
 fn late_provider_usage_keeps_conservative_spend_and_leaves_other_reservations_intact() {
     let mut ledger = budget(3, 200, 1000);
     let abandoned = ledger.prepare("implement", 1).unwrap();

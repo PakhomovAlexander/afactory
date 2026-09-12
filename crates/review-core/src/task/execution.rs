@@ -131,6 +131,8 @@ pub enum TaskExecutionRecordV1 {
         )]
         attempt_id: Option<String>,
     },
+    /// A trusted cumulative charge floor for started work, whether running or settled.
+    /// It neither grants execution authority nor refunds an earlier observation.
     UsageObserved {
         attempt_id: String,
         charged_tokens: u64,

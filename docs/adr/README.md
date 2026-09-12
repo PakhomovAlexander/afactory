@@ -133,3 +133,5 @@ options you rejected and why — that is the part future-you needs.
   context](0066-reserve-task-attempts-before-binding-exact-context.md)
 - [0067 — Project common Task selections into canonical
   Review](0067-project-common-task-selections-into-canonical-review.md)
+- [0068 — Retain in-flight Task usage in the common
+  budget](0068-retain-inflight-task-usage-in-the-common-budget.md)

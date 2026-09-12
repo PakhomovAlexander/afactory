@@ -91,10 +91,16 @@ struct Account {
     reserved: u64,
 }
 
+#[derive(Debug, Clone)]
+struct Outstanding {
+    reservation: Reservation,
+    observed: u64,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct BudgetLedger {
     accounts: BTreeMap<Scope, Account>,
-    outstanding: BTreeMap<String, Reservation>,
+    outstanding: BTreeMap<String, Outstanding>,
     next: u64,
 }
 
@@ -140,9 +146,54 @@ impl BudgetLedger {
             amount,
             scopes: scopes.to_vec(),
         };
-        self.outstanding
-            .insert(reservation.id.clone(), reservation.clone());
+        self.outstanding.insert(
+            reservation.id.clone(),
+            Outstanding {
+                reservation: reservation.clone(),
+                observed: 0,
+            },
+        );
         Ok(reservation)
+    }
+
+    /// Move known spend out of an outstanding reservation without ending its Attempt.
+    /// Observations are cumulative floors, so duplicated or older receipts cannot charge twice.
+    pub(crate) fn observe_charge(
+        &mut self,
+        reservation: &Reservation,
+        actual: u64,
+    ) -> Result<(), String> {
+        let held = self
+            .outstanding
+            .get_mut(&reservation.id)
+            .ok_or("Usage has no outstanding reservation")?;
+        if &held.reservation != reservation {
+            return Err("Usage differs from its reserved authority".into());
+        }
+        let delta = actual.saturating_sub(held.observed);
+        let consumed = delta.min(held.reservation.amount.saturating_sub(held.observed));
+        // Check every scope before changing any of them.
+        for scope in &held.reservation.scopes {
+            let account = &self.accounts[scope];
+            account
+                .committed
+                .checked_add(delta)
+                .and_then(|used| used.checked_add(account.reserved.saturating_sub(consumed)))
+                .ok_or("Observed budget total overflow")?;
+        }
+        for scope in &held.reservation.scopes {
+            let account = self.accounts.get_mut(scope).expect("reserved scope");
+            account.committed += delta;
+            account.reserved -= consumed;
+        }
+        held.observed = held.observed.max(actual);
+        Ok(())
+    }
+
+    pub(crate) fn observed_charge(&self, reservation: &Reservation) -> u64 {
+        self.outstanding
+            .get(&reservation.id)
+            .map_or(0, |held| held.observed)
     }
 
     /// Settle a reservation with what was actually spent.
@@ -154,10 +205,12 @@ impl BudgetLedger {
         let Some(held) = self.outstanding.remove(&reservation.id) else {
             return;
         };
-        for scope in &held.scopes {
+        for scope in &held.reservation.scopes {
             let account = self.accounts.entry(scope.clone()).or_default();
-            account.reserved = account.reserved.saturating_sub(held.amount);
-            account.committed += actual;
+            account.reserved = account
+                .reserved
+                .saturating_sub(held.reservation.amount.saturating_sub(held.observed));
+            account.committed += actual.saturating_sub(held.observed);
         }
     }
 
@@ -166,9 +219,11 @@ impl BudgetLedger {
         let Some(held) = self.outstanding.remove(&reservation.id) else {
             return;
         };
-        for scope in &held.scopes {
+        for scope in &held.reservation.scopes {
             let account = self.accounts.entry(scope.clone()).or_default();
-            account.reserved = account.reserved.saturating_sub(held.amount);
+            account.reserved = account
+                .reserved
+                .saturating_sub(held.reservation.amount.saturating_sub(held.observed));
         }
     }
 
@@ -193,6 +248,34 @@ mod tests {
 
     fn run_ledger(limit: u64) -> BudgetLedger {
         BudgetLedger::default().with_limit(Scope::Run, Budget::of(limit))
+    }
+
+    #[test]
+    fn partial_usage_checks_every_scope_before_mutating_and_never_refunds_spend() {
+        let node = Scope::Node("reviewer".into());
+        let mut ledger = run_ledger(100).with_limit(node.clone(), Budget::of(60));
+        let first = ledger.reserve(&[node.clone(), Scope::Run], 40).unwrap();
+        let other = ledger.reserve(&[Scope::Run], 30).unwrap();
+        // An observed total that would overflow after the other reservation is retained
+        // must not partially charge the narrower scope.
+        assert!(ledger.observe_charge(&first, u64::MAX).is_err());
+        assert_eq!(ledger.committed(&node), 0);
+        assert_eq!(ledger.reserved(&Scope::Run), 70);
+        ledger.observe_charge(&first, 20).unwrap();
+        ledger.observe_charge(&first, 20).unwrap();
+        ledger.observe_charge(&first, 4).unwrap();
+        assert_eq!(ledger.committed(&node), 20);
+        assert_eq!(ledger.reserved(&node), 20);
+        assert_eq!(ledger.committed(&Scope::Run), 20);
+        assert_eq!(ledger.reserved(&Scope::Run), 50);
+        ledger.charge(&first, 28);
+        ledger.charge(&first, 28);
+        assert_eq!(ledger.committed(&Scope::Run), 28);
+        assert_eq!(ledger.reserved(&Scope::Run), 30);
+        ledger.observe_charge(&other, 3).unwrap();
+        ledger.release(&other);
+        assert_eq!(ledger.committed(&Scope::Run), 31);
+        assert_eq!(ledger.reserved(&Scope::Run), 0);
     }
 
     #[test]

@@ -150,8 +150,10 @@ across 89 suites; formatting, Clippy and synthetic fixture reproduction passed. 
 checked 96 files with zero errors. Prior candidate gates also passed on read-only archives and
 with the exact cleared Gate environment. No model review was repeated after these corrections.
 
-**Current resume:** verify the captured-plan performance correction, complete legacy Review
-entry-point migration and remaining conformance, then finish P14 evidence. Refresh, delivery
+**Current resume:** complete legacy Review entry-point migration and remaining conformance,
+then finish P14 evidence. The captured-plan performance correction passes local and Linux CI
+gates. Canonical Task-to-Review selection passes the full local gate; in-flight usage accounting
+now preserves observed broker spend through settlement and recovery. Refresh, delivery
 and requirements-aware independent acceptance alongside Review pass the local full gate.
 Signed developer plan decisions are implemented; external PR review awaits Claude personal login.
 Fixed implementation cutover is described in

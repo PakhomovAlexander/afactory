@@ -478,7 +478,17 @@ impl TaskBudget {
             };
         }
         // Validate before mutating; the shared token ledger stores u64 aggregate charges.
-        add(self.tokens.committed(&Scope::Run), actual)?;
+        let observed = self.tokens.observed_charge(&held.tokens);
+        if actual < observed {
+            return Err("Task settlement cannot refund already observed usage".into());
+        }
+        let committed = add(self.tokens.committed(&Scope::Run), actual - observed)?;
+        add(
+            committed,
+            self.tokens
+                .reserved(&Scope::Run)
+                .saturating_sub(held.tokens.amount.saturating_sub(observed)),
+        )?;
         self.tokens.charge(&held.tokens, actual);
         self.breached |= actual > held.tokens.amount;
         held.settled = Some(actual);
@@ -489,23 +499,26 @@ impl TaskBudget {
         self.tokens.committed(&Scope::Run)
     }
 
-    /// A late Provider observation may increase a conservatively settled charge. It cannot
-    /// refund abandoned work or consume another live reservation's credit.
+    /// A Provider observation commits known usage even while its Attempt is running. The
+    /// unspent reservation stays held until settlement; an overrun immediately stops dispatch.
+    /// After settlement, observations can only increase the charge, including abandoned work.
     pub fn observe_charge(&mut self, id: &str, actual: u64) -> Result<(), String> {
         let held = self
             .reservations
             .get_mut(id)
             .ok_or("Unknown Task reservation")?;
-        let previous = held
-            .settled
-            .ok_or("Late usage requires a settled Attempt")?;
         if !held.begun || held.released {
-            return Err("Late usage has no started Attempt".into());
+            return Err("Usage has no started Attempt".into());
         }
-        if actual > previous {
-            let total = add(self.tokens.committed(&Scope::Run), actual - previous)?;
-            self.tokens = self.tokens.clone().with_committed(Scope::Run, total);
-            held.settled = Some(actual);
+        if let Some(previous) = held.settled {
+            if actual > previous {
+                let total = add(self.tokens.committed(&Scope::Run), actual - previous)?;
+                add(total, self.tokens.reserved(&Scope::Run))?;
+                self.tokens = self.tokens.clone().with_committed(Scope::Run, total);
+                held.settled = Some(actual);
+            }
+        } else {
+            self.tokens.observe_charge(&held.tokens, actual)?;
         }
         self.breached |= actual > held.tokens.amount;
         Ok(())

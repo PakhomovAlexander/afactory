@@ -213,3 +213,172 @@ fn effect_currentness_requires_started_work_and_rechecks_revocation_and_settleme
     );
     assert_eq!(f.state().execution.unwrap().budget.committed_tokens(), 7);
 }
+
+#[test]
+fn inflight_usage_survives_reopen_revocation_lower_settlement_and_writer_loss() {
+    use review_core::task::execution::TaskAttemptResultV1;
+    for recover in [false, true] {
+        let mut f = Fixture::new(true).with_execution_graph();
+        let lease = f.open();
+        f.propose(&lease);
+        f.decide(&lease, PlanDecisionKindV1::Approved);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        f.record_execution_inputs(&lease);
+        let context = f
+            .cas
+            .put_json(&json!({"purpose":"bounded review"}))
+            .unwrap();
+        let attempt = f
+            .store
+            .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+            .unwrap();
+        let usage_id = f
+            .cas
+            .put_json(&json!({"provider":"receipt proof"}))
+            .unwrap();
+        let observe = |amount| TaskExecutionRecordV1::UsageObserved {
+            attempt_id: attempt.id().into(),
+            charged_tokens: amount,
+            usage_id: usage_id.clone(),
+            raw_artifact_ids: vec![],
+        };
+        let sequence = f.state().next_sequence;
+        assert!(
+            f.store
+                .observe_task_usage(&f.cas, &lease, observe(4))
+                .is_err()
+        );
+        assert_eq!(f.state().next_sequence, sequence);
+        f.store
+            .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+            .unwrap();
+        for amount in [4, 4, 2] {
+            f.store
+                .observe_task_usage(&f.cas, &lease, observe(amount))
+                .unwrap();
+        }
+        f.store = EventStore::open(&f.path).unwrap();
+        let execution = f.state().execution.unwrap();
+        assert_eq!(execution.budget.committed_tokens(), 4);
+        assert_eq!(execution.budget.reserved_tokens(), 6);
+        assert_eq!(execution.pending_attempts(), vec![attempt.id().to_string()]);
+        f.store
+            .check_task_attempt_current(&f.cas, &lease, &attempt, &f.authority)
+            .unwrap();
+        f.store
+            .observe_task_usage(&f.cas, &lease, observe(17))
+            .unwrap();
+        assert!(
+            f.store
+                .check_task_attempt_current(&f.cas, &lease, &attempt, &f.authority)
+                .is_err()
+        );
+        // Revocation cannot erase receipt evidence for work that already started.
+        f.authority.current = false;
+        f.store
+            .observe_task_usage(&f.cas, &lease, observe(20))
+            .unwrap();
+        let execution = f.state().execution.unwrap();
+        assert_eq!(execution.budget.committed_tokens(), 20);
+        assert_eq!(execution.budget.reserved_tokens(), 0);
+        assert!(execution.budget.breached());
+        if recover {
+            let time = f.state().lease_until + 1;
+            f.store
+                .append_task_transition(
+                    &f.cas,
+                    lease.task_id(),
+                    TaskTransitionV1 {
+                        writer: "recovery".into(),
+                        epoch: 2,
+                        now_unix_ms: time,
+                        change: TaskChangeV1::LeaseTaken {
+                            lease_until_unix_ms: time + 10000,
+                        },
+                    },
+                )
+                .unwrap();
+            let next = TaskLease {
+                task_id: lease.task_id.clone(),
+                writer: "recovery".into(),
+                epoch: 2,
+            };
+            assert!(
+                f.store
+                    .observe_task_usage(&f.cas, &lease, observe(100))
+                    .is_err()
+            );
+            f.store
+                .recover_task_attempts_at(&f.cas, &next, time)
+                .unwrap();
+            f.store
+                .recover_task_attempts_at(&f.cas, &next, time)
+                .unwrap();
+        } else {
+            let diagnostic_id = f
+                .cas
+                .put_json(&json!({"failure":"transport ended"}))
+                .unwrap();
+            let settlement = TaskExecutionRecordV1::Settled {
+                attempt_id: attempt.id().into(),
+                charged_tokens: 7,
+                result: TaskAttemptResultV1::Failed {
+                    diagnostic_id,
+                    feedback_id: None,
+                },
+                raw_artifact_ids: vec![],
+                usage_id: None,
+            };
+            f.store
+                .settle_task_attempt(&f.cas, &lease, settlement.clone(), &f.authority)
+                .unwrap();
+            let sequence = f.state().next_sequence;
+            f.store
+                .settle_task_attempt(&f.cas, &lease, settlement.clone(), &f.authority)
+                .unwrap();
+            assert_eq!(f.state().next_sequence, sequence);
+            let mut changed = settlement;
+            if let TaskExecutionRecordV1::Settled { charged_tokens, .. } = &mut changed {
+                *charged_tokens = 21;
+            }
+            assert!(
+                f.store
+                    .settle_task_attempt(&f.cas, &lease, changed, &f.authority)
+                    .is_err()
+            );
+            assert_eq!(f.state().next_sequence, sequence);
+        }
+        f.store = EventStore::open(&f.path).unwrap();
+        let execution = f.state().execution.unwrap();
+        assert!(execution.pending_attempts().is_empty());
+        assert!(!execution.outputs.contains_key("root.nodes.write"));
+        assert_eq!(execution.budget.committed_tokens(), 20);
+        assert_eq!(execution.budget.reserved_tokens(), 0);
+        assert_eq!(execution.budget.begun_attempts(), 1);
+        assert!(execution.budget.breached());
+        let settlements: Vec<_> = f
+            .store
+            .replay(&task_run_id(lease.task_id()).unwrap())
+            .unwrap()
+            .into_iter()
+            .filter_map(|event| {
+                let transition: TaskTransitionV1 = serde_json::from_value(event.payload).unwrap();
+                let TaskChangeV1::ExecutionRecorded { record_id } = transition.change else {
+                    return None;
+                };
+                let record: TaskExecutionRecordV1 = payload(
+                    &f.cas,
+                    &record_id,
+                    review_core::task::execution::TASK_EXECUTION_RECORD_V1,
+                )
+                .unwrap();
+                matches!(record, TaskExecutionRecordV1::Settled { .. }).then_some(record)
+            })
+            .collect();
+        assert!(matches!(&settlements[..], [TaskExecutionRecordV1::Settled {
+            attempt_id, charged_tokens, ..
+        }] if attempt_id == attempt.id() && *charged_tokens == if recover { 20 } else { 7 }));
+    }
+}

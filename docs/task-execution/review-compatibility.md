@@ -30,6 +30,13 @@ The common Store also exposes a currentness check for an already-started Attempt
 exact prepared capability, active plan and approval, writer lease, reservation deadline and
 absence of settlement. Domain effects must use this authority instead of a second ledger.
 
+Trusted usage observations now commit cumulative spend during an Attempt as well as after
+settlement. The remaining reservation stays held, an overrun blocks further effects, and lower
+terminal reports or writer-loss recovery cannot refund known usage. Duplicate observations do
+not double-charge. The original settlement bytes and exact replay comparison are preserved
+([ADR-0068](../adr/0068-retain-inflight-task-usage-in-the-common-budget.md)). The actual broker
+receipt adapter must feed these observations through the common Store.
+
 ## Required cutover
 
 ```text

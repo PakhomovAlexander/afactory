@@ -564,8 +564,8 @@ impl TaskProjection {
                     .attempts
                     .get(attempt_id)
                     .ok_or_else(|| conflict("Unknown Task Attempt"))?;
-                if attempt.settlement.is_none() {
-                    return Err(conflict("Usage observation requires settled Task work"));
+                if !attempt.started || attempt.released {
+                    return Err(conflict("Usage observation requires started Task work"));
                 }
                 execution
                     .budget
@@ -770,13 +770,20 @@ impl TaskProjection {
                         "Abandoned Task work retains its full reserved charge",
                     ));
                 }
+                // Preserve the original terminal receipt for exact replay. The common
+                // accounting projection also retains every earlier cumulative usage floor.
+                let charge = execution
+                    .ledger
+                    .attempt(&AttemptId(attempt_id.clone()))
+                    .map_or(0, |a| a.charged)
+                    .max(*charged_tokens);
                 execution
                     .budget
-                    .settle(&attempt.reservation.id, *charged_tokens)
+                    .settle(&attempt.reservation.id, charge)
                     .map_err(conflict)?;
                 execution
                     .ledger
-                    .charge(&AttemptId(attempt_id.clone()), *charged_tokens);
+                    .charge(&AttemptId(attempt_id.clone()), charge);
                 if !matches!(result, TaskAttemptResultV1::Succeeded { .. })
                     || attempt.prepared_epoch != self.epoch
                 {
@@ -785,7 +792,7 @@ impl TaskProjection {
                     if execution.ledger.admit(&Receipt {
                         attempt: AttemptId(attempt_id.clone()),
                         output: output_id.clone(),
-                        cost: *charged_tokens,
+                        cost: charge,
                     }) != Selection::Selected
                     {
                         return Err(conflict("Task settlement was quarantined"));
@@ -894,7 +901,13 @@ impl EventStore {
                     .filter(|w| &w.attempt_id == id)
                     .filter_map(|w| w.usage.as_ref().map(|u| u.chargeable_tokens))
                     .max()
-                    .unwrap_or(0);
+                    .unwrap_or(0)
+                    .max(
+                        execution
+                            .ledger
+                            .attempt(&AttemptId(id.clone()))
+                            .map_or(0, |a| a.charged),
+                    );
                 let diagnostic_id = cas.put_json(&json!({"schema":"af.task-diagnostic/1", "reason":"previous Task writer disappeared", "attempt_id":id})).map_err(|e| StoreError::Artifact(e.to_string()))?;
                 TaskExecutionRecordV1::Settled {
                     attempt_id: id.clone(),
@@ -914,6 +927,9 @@ impl EventStore {
         Ok(())
     }
 
+    /// Record a trusted cumulative usage floor, even after approval or Attempt authority ends.
+    /// The current Store writer must retain receipt identities; the observation grants no
+    /// execution authority and settlement cannot refund already recorded usage.
     pub fn observe_task_usage(
         &mut self,
         cas: &Cas,
@@ -921,7 +937,7 @@ impl EventStore {
         observation: TaskExecutionRecordV1,
     ) -> Result<(), StoreError> {
         if !matches!(observation, TaskExecutionRecordV1::UsageObserved { .. }) {
-            return Err(conflict("Expected a late Task usage observation"));
+            return Err(conflict("Expected a Task usage observation"));
         }
         self.task_execution_record(cas, lease, observation, now()?)?;
         Ok(())
@@ -1210,6 +1226,15 @@ impl EventStore {
     ) -> Result<(), StoreError> {
         let (state, _) = self.checked_task_dispatch(cas, lease, authority)?;
         state.check_prepared_capability(lease, attempt)?;
+        if state
+            .execution
+            .as_ref()
+            .is_some_and(|e| e.budget.breached())
+        {
+            return Err(conflict(
+                "Task Attempt cannot authorize another effect after a budget overrun",
+            ));
+        }
         let recorded = &state
             .execution
             .as_ref()
