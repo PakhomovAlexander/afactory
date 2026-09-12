@@ -7,7 +7,7 @@ use review_core::task::pipeline::PipelinePortV1;
 use review_graph::{NodeKind, NodeOutcome, OwnedChildDispatch, PortContract, SnapshotAffinity};
 use review_store::store::task::execution::owned::{RegisteredTaskChildren, ResolvedTaskNode};
 
-fn port(name: &str, value: &PipelinePortV1) -> PortContract {
+pub(super) fn port(name: &str, value: &PipelinePortV1) -> PortContract {
     // Exact Snapshot affinity is checked by common Store output admission. The scheduler
     // transports the captured typed ports and does not manufacture a new affinity policy.
     PortContract {

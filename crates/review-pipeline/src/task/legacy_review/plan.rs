@@ -20,11 +20,13 @@ use std::collections::BTreeSet;
 pub const REVIEW_TASK_POLICY_V1: &str = "af/LegacyReviewTaskPolicy@1";
 pub const REVIEW_TASK_POLICY_V2: &str = "af/LegacyReviewTaskPolicy@2";
 pub const REVIEW_TASK_POLICY_V3: &str = "af/LegacyReviewTaskPolicy@3";
+pub const REVIEW_TASK_POLICY_V4: &str = "af/LegacyReviewTaskPolicy@4";
 pub const REVIEW_DEPENDENCY_V1: &str = "af/LegacyReviewDependency@1";
 pub const REVIEW_INVOCATION_POLICY_V1: &str = "af/LegacyReviewInvocationPolicy@1";
 const ROOT: &str = "af/legacy-review";
 
 mod continuation;
+mod integration;
 
 /// Trusted host choices captured once for the Task, including all later numeric Rounds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -167,9 +169,37 @@ pub struct LegacyReviewPlanCompiler {
     policy: ReviewTaskPolicy,
     policy_v2: Option<ReviewTaskPolicyV2>,
     owned_children: bool,
+    integration: bool,
 }
 
 impl LegacyReviewPlanCompiler {
+    pub fn capture_v4(
+        cas: &Cas,
+        round: CapturedLegacyReviewRound,
+        engine_id: String,
+        settings: ReviewPlanSettingsV2,
+    ) -> Result<Self, String> {
+        settings.review.validate()?;
+        cas.verify(&engine_id).map_err(|e| e.to_string())?;
+        let policy = ReviewTaskPolicyV2 {
+            engine_id,
+            campaign_manifest_id: round.binding().campaign_manifest_id,
+            settings,
+        };
+        let envelope = capture_or_read(
+            cas,
+            REVIEW_TASK_POLICY_V4,
+            "policy",
+            vec![
+                policy.engine_id.clone(),
+                policy.campaign_manifest_id.clone(),
+            ],
+            &policy,
+            None,
+        )?;
+        Self::reopen(cas, round, &policy.engine_id, &envelope.artifact_id)
+    }
+
     pub fn capture_v3(
         cas: &Cas,
         round: CapturedLegacyReviewRound,
@@ -267,7 +297,7 @@ impl LegacyReviewPlanCompiler {
                     .map_err(|e| e.to_string())?,
                 None,
             ),
-            REVIEW_TASK_POLICY_V2 | REVIEW_TASK_POLICY_V3 => {
+            REVIEW_TASK_POLICY_V2 | REVIEW_TASK_POLICY_V3 | REVIEW_TASK_POLICY_V4 => {
                 let v2: ReviewTaskPolicyV2 =
                     serde_json::from_value(envelope.payload.clone()).map_err(|e| e.to_string())?;
                 (
@@ -355,7 +385,11 @@ impl LegacyReviewPlanCompiler {
             policy_id: policy_id.into(),
             policy,
             policy_v2,
-            owned_children: envelope.artifact_type == REVIEW_TASK_POLICY_V3,
+            owned_children: matches!(
+                envelope.artifact_type.as_str(),
+                REVIEW_TASK_POLICY_V3 | REVIEW_TASK_POLICY_V4
+            ),
+            integration: envelope.artifact_type == REVIEW_TASK_POLICY_V4,
         })
     }
     pub fn policy_id(&self) -> &str {
@@ -573,7 +607,9 @@ impl LegacyReviewPlanCompiler {
         // Check policy bytes on every admission/resume, even when the compiler stays in memory.
         let (policy_type, policy_payload) = if let Some(v2) = &self.policy_v2 {
             (
-                if self.owned_children {
+                if self.integration {
+                    REVIEW_TASK_POLICY_V4
+                } else if self.owned_children {
                     REVIEW_TASK_POLICY_V3
                 } else {
                     REVIEW_TASK_POLICY_V2
@@ -785,6 +821,13 @@ impl LegacyReviewPlanCompiler {
             &self.policy.settings.provider_admission,
             &probes,
         )?;
+        let integration_policy_id = self.install_integration_phase(
+            cas,
+            &captured.loaded,
+            graph,
+            &mut dependencies,
+            recorded,
+        )?;
         graph.budget(task.limits.clone())?;
         let mut graph_refs = vec![
             revision_id.into(),
@@ -797,6 +840,7 @@ impl LegacyReviewPlanCompiler {
                 .map(|probe| probe.policy_id.clone())
                 .collect::<BTreeSet<_>>(),
         );
+        graph_refs.extend(integration_policy_id);
         let graph = capture_or_read(
             cas,
             review_config::task::catalog::COMPILED_TASK_V1,

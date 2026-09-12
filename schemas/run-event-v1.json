@@ -21,6 +21,7 @@
       "enum": [
         "TaskTransition@1",
         "TaskTransition@2",
+        "TaskTransition@3",
         "TaskBrokerTransition@1",
         "TaskReviewResultSelected@1",
         "BrokerOperationCompleted@1",
@@ -116,6 +117,10 @@
     {
       "if": { "properties": { "type": { "const": "TaskTransition@2" } }, "required": ["type"] },
       "then": { "properties": { "payload": { "$ref": "urn:af:schema:task-transition:2" } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "TaskTransition@3" } }, "required": ["type"] },
+      "then": { "properties": { "payload": { "$ref": "urn:af:schema:task-transition:3" } } }
     },
     {
       "if": { "properties": { "type": { "const": "TaskTransition@1" } }, "required": ["type"] },

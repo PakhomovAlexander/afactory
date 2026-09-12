@@ -7,9 +7,11 @@ use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRound
 use review_core::{CampaignManifestV1, PortCardinality, SubjectV1};
 
 use super::*;
+use rusqlite::OptionalExtension;
 
 pub(super) struct ReviewRoundFence {
     binding: LegacyReviewRoundV1,
+    closed_report: Option<String>,
 }
 
 impl ReviewRoundFence {
@@ -58,7 +60,10 @@ impl ReviewRoundFence {
         }
         cas.verify(&binding.head_snapshot_id)
             .map_err(|e| StoreError::Artifact(e.to_string()))?;
-        Ok(Some(Self { binding }))
+        Ok(Some(Self {
+            binding,
+            closed_report: None,
+        }))
     }
 
     pub(super) fn validate(&self, connection: &rusqlite::Connection) -> Result<(), StoreError> {
@@ -71,11 +76,43 @@ impl ReviewRoundFence {
             || round.epoch != b.epoch
             || round.subject_id != b.subject_id
             || round.campaign_manifest_id != b.campaign_manifest_id
-            || super::super::round_has_terminal_report(connection, &b.campaign_id, &event)?
+            || (self.closed_report.is_none()
+                && super::super::round_has_terminal_report(connection, &b.campaign_id, &event)?)
         {
             return Err(conflict("Task Review Round is superseded or closed"));
         }
+        if let Some(expected) = &self.closed_report {
+            let latest:Option<String>=connection.query_row("SELECT event_id FROM events WHERE run_id=?1 AND type='RunReport@6' AND causation_id=?2 AND json_extract(payload,'$.verdict.kind')='pass' ORDER BY sequence DESC LIMIT 1",rusqlite::params![b.campaign_id,event],|r|r.get(0)).optional()?;
+            if latest.as_ref() != Some(expected) {
+                return Err(conflict("Integration lost its exact passing closed Round"));
+            }
+        }
         Ok(())
+    }
+    pub(super) fn capture_closed(
+        cas: &Cas,
+        revision: &TaskRevisionV1,
+        report: &str,
+    ) -> Result<Self, StoreError> {
+        let mut fence = Self::capture(cas, revision)?
+            .ok_or_else(|| conflict("Integration has no captured Review Round"))?;
+        fence.closed_report = Some(report.into());
+        Ok(fence)
+    }
+    pub(super) fn for_state(cas: &Cas, state: &TaskProjection) -> Result<Option<Self>, StoreError> {
+        if let Some(phase) = state
+            .execution
+            .as_ref()
+            .and_then(|e| e.active_review_integration())
+        {
+            return Self::capture_closed(
+                cas,
+                &state.revision,
+                &phase.phase().closing_report_event_id,
+            )
+            .map(Some);
+        }
+        Self::capture(cas, &state.revision)
     }
 }
 
@@ -85,6 +122,17 @@ pub(super) fn fence_for_transition(
     state: Option<&TaskProjection>,
 ) -> Result<Option<ReviewRoundFence>, StoreError> {
     match &transition.change {
+        TaskChangeV1::ReviewIntegrationSelected { phase_id }
+        | TaskChangeV1::ReviewIntegrationFinished { phase_id, .. } => {
+            let phase = super::review_integration::read_task_review_integration(cas, phase_id)?;
+            let state = state.ok_or_else(|| conflict("Integration phase precedes Task"))?;
+            return ReviewRoundFence::capture_closed(
+                cas,
+                &state.revision,
+                &phase.closing_report_event_id,
+            )
+            .map(Some);
+        }
         TaskChangeV1::ReviewContinued { handoff_id } => {
             let handoff = super::review_handoff::read_task_review_handoff(cas, handoff_id)?;
             return ReviewRoundFence::capture(cas, &revision(cas, &handoff.successor_revision_id)?);
@@ -127,7 +175,7 @@ pub(super) fn fence_for_transition(
         | TaskChangeV1::DeliveryRecorded { .. } => return Ok(None),
     }
     state
-        .map(|state| ReviewRoundFence::capture(cas, &state.revision))
+        .map(|state| ReviewRoundFence::for_state(cas, state))
         .transpose()
         .map(Option::flatten)
 }

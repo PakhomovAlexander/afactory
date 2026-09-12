@@ -197,6 +197,7 @@ impl TaskProjection {
                 return Err(conflict("Source refresh has pending Attempts"));
             }
             execution.budget.invalidate_plan(time).map_err(conflict)?;
+            execution.active_review_integration = None;
             execution.invocations.clear();
             execution.outputs.clear();
         }
@@ -222,7 +223,7 @@ impl TaskProjection {
                 execution
                     .budget
                     .install_graph_with_owned_templates(
-                        graph.allowances.clone(),
+                        graph.execution_allowances().map_err(conflict)?,
                         graph
                             .calls
                             .iter()
@@ -306,7 +307,7 @@ impl EventStore {
                 }
                 if let Some(budget) = &mut budget {
                     budget.install_graph_with_owned_templates(
-                        graph.allowances.clone(),
+                        graph.execution_allowances()?,
                         graph
                             .calls
                             .iter()

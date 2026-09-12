@@ -5,6 +5,14 @@ use super::*;
 
 impl TaskRuntime<'_, '_> {
     pub(super) fn record_run_report(&self, report: &RunReport) -> Result<(), String> {
+        self.capture_run_report(report, None).map(|_| ())
+    }
+
+    pub(super) fn capture_run_report(
+        &self,
+        report: &RunReport,
+        phase_id: Option<&str>,
+    ) -> Result<String, String> {
         let state = self.projection()?;
         let execution = state
             .execution
@@ -77,27 +85,45 @@ impl TaskRuntime<'_, '_> {
             nodes,
         };
         value.validate()?;
-        let id = self
-            .cas
-            .put_artifact(
+        let (kind, payload, refs) = if let Some(phase_id) = phase_id {
+            let phase = TaskRunReportV2 {
+                task_revision_id: value.task_revision_id.clone(),
+                plan_id: value.plan_id.clone(),
+                through_sequence: value.through_sequence,
+                phase_id: phase_id.into(),
+                nodes: value.nodes.clone(),
+            };
+            phase.validate()?;
+            (
+                TASK_RUN_REPORT_V2,
+                serde_json::to_value(&phase).map_err(|e| e.to_string())?,
+                phase
+                    .references()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect::<BTreeSet<_>>(),
+            )
+        } else {
+            (
                 TASK_RUN_REPORT_V1,
-                producer,
+                serde_json::to_value(&value).map_err(|e| e.to_string())?,
                 value
                     .references()
                     .into_iter()
                     .map(str::to_owned)
-                    .collect::<BTreeSet<_>>()
-                    .into_iter()
-                    .collect(),
-                None,
-                serde_json::to_value(&value).map_err(|e| e.to_string())?,
+                    .collect::<BTreeSet<_>>(),
             )
+        };
+        let id = self
+            .cas
+            .put_artifact(kind, producer, refs.into_iter().collect(), None, payload)
             .map_err(|e| e.to_string())?
             .0;
         self.store
             .lock()
             .expect("Task Store")
             .record_task_run_report(self.cas, &self.lease, &id)
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        Ok(id)
     }
 }

@@ -699,3 +699,24 @@ verification `05a3d133d40a6f608528b5fe9cb5d0d8fe49bf67`, tree
 `0ac26ae5ff93742b2eabf3773f6fe0f968c09a32`. The full gate again passes **1,018 tests, zero
 failures, 15 ignored**, across 125 suites, formatting, Clippy, documentation tests and
 byte-identical fixtures. CI for this corrective checkpoint remains required.
+
+Published corrective head `2cae97ca4b55b4aa5791f75879bf01662f396a98` passes Check and
+container-probes in CI `34708574515`. The current post-Round Integration implementation is
+outside that verified checkpoint.
+
+Local review-policy head `1136b7b8213cec71a2cdb9bab4cf3fb099e9d8ed` selects the explicit
+`review-pr2-whole-tree` Pipeline in `.af/af.toml`, with an af-generated lock entry. Released
+0.8.0 requires that project selector; the original default has therefore changed. Offline
+onboarding and exact pinned plan/render checks pass without executing Gates, capability probes
+or Workers. Against baseline `c8015f1`, all 435 changed paths and resulting candidate files are
+captured. Initial correctness, performance and bug-bounty inputs are 9,511, 9,401 and 9,375 tokens,
+within the unchanged 400,000-token Attempt caps. Roles, packages, checks, Campaign limits and
+one-light-Round policy are unchanged. These local policy commits are not yet pushed.
+
+WholeTree supplies resulting files; the baseline SHA/tree and complete changed-path index are
+provenance, not baseline contents or a canonical Diff. Review findings can predate this change,
+and this route cannot prove every before/after semantic property. Existing allowed read tools
+can inspect all candidate files, with retrieval and output charged to original budgets. The
+final candidate requires regenerated exact focus and pinned input renders. Configured Provider
+readiness from token-free planning is not authentication or capability evidence; the requested
+specialist Round remains pending a usable personal login.

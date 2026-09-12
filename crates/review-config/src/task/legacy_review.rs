@@ -258,6 +258,7 @@ pub fn compile_legacy_review(
         max_parallel: context.max_parallel,
         allowances: BTreeMap::new(),
         owned_children: BTreeMap::new(),
+        review_integration: None,
         token_scopes: BTreeMap::new(),
     };
     graph.nodes.insert(

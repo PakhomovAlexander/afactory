@@ -17,6 +17,8 @@ mod broker;
 mod captured_fixture;
 #[path = "task_public_schemas/continuation.rs"]
 mod continuation;
+#[path = "task_public_schemas/integration.rs"]
+mod integration;
 #[path = "task_public_schemas/owned.rs"]
 mod owned;
 #[path = "support/task_cli.rs"]

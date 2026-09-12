@@ -77,6 +77,10 @@ impl Address {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CompiledOperator {
     RootInputs,
+    /// Installed captured post-Round operation; never constructible by a Pipeline.
+    ReviewIntegrationChecks {
+        sequence_policy_id: String,
+    },
     Select,
     /// Installed host bootstrap, never a Pipeline-supplied operation. All listed slots use
     /// the same captured Provider capability and share this admission Attempt.
@@ -172,6 +176,12 @@ pub struct CompiledTask {
     pub allowances: BTreeMap<String, NodeAllowance>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub owned_children: BTreeMap<String, OwnedChildTemplateV1>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub review_integration: Option<CompiledReviewIntegrationV1>,
     /// Aggregate caps for exact nodes or bounded child groups, charged by the common ledger.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub token_scopes: BTreeMap<String, review_attempt::task_budget::TaskTokenScope>,
@@ -474,7 +484,7 @@ impl CompiledTask {
         {
             return Err("Root Pipeline cannot retain verification and mandatory Provider admission within its Attempt bound".into());
         }
-        TaskBudget::new(limits, self.allowances.clone())?
+        TaskBudget::new(limits, self.execution_allowances()?)?
             .with_call_limits(
                 self.calls
                     .iter()
@@ -763,6 +773,7 @@ fn compile_structure_mode(
             max_parallel: definition.max_parallel,
             allowances: BTreeMap::new(),
             owned_children: BTreeMap::new(),
+            review_integration: None,
             token_scopes: BTreeMap::new(),
         },
     };
@@ -1683,5 +1694,82 @@ fn outcome_name(outcome: ReceiptOutcomeV1) -> &'static str {
         ReceiptOutcomeV1::Passed => "passed",
         ReceiptOutcomeV1::Failed => "failed",
         ReceiptOutcomeV1::Inconclusive => "inconclusive",
+    }
+}
+
+/// One immutable installed sequence outside the Round DAG. Its allowance exists before
+/// activation; a protected Store phase supplies the only admissible invocation input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompiledReviewIntegrationV1 {
+    pub node: String,
+    pub sequence_policy_id: String,
+    pub allowance: NodeAllowance,
+}
+impl CompiledReviewIntegrationV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.node.len() > 4096
+            || !self.node.split('.').all(review_core::task::is_name)
+            || !review_core::is_digest(&self.sequence_policy_id)
+            || self.allowance.tokens_per_attempt != 0
+            || self.allowance.max_attempts != 1
+            || self.allowance.verification_attempts != 0
+            || self.allowance.wall_ms_per_attempt == 0
+        {
+            return Err("Integration sequence requires an exact node, policy and one zero-token bounded Attempt".into());
+        }
+        Ok(())
+    }
+    pub fn definition(&self) -> CompiledNode {
+        let port = |kind: &str, affinity| PipelinePortV1 {
+            artifact_type: kind.into(),
+            cardinality: review_core::PortCardinality::One,
+            optional: false,
+            affinity,
+            root_default: None,
+            covers: BTreeSet::new(),
+        };
+        CompiledNode {
+            operator: CompiledOperator::ReviewIntegrationChecks {
+                sequence_policy_id: self.sequence_policy_id.clone(),
+            },
+            contract: PipelineContractV1 {
+                inputs: BTreeMap::from([(
+                    "phase".into(),
+                    port(
+                        review_core::task::review_integration::TASK_REVIEW_INTEGRATION_PHASE_V1,
+                        PortAffinityV1::Unbound {},
+                    ),
+                )]),
+                outputs: BTreeMap::from([(
+                    "checks".into(),
+                    port(
+                        review_core::contract::INTEGRATION_CHECKS_V1,
+                        PortAffinityV1::SameAs {
+                            input: "phase".into(),
+                        },
+                    ),
+                )]),
+            },
+            inputs: BTreeMap::new(),
+            conditions: Vec::new(),
+        }
+    }
+}
+impl CompiledTask {
+    pub fn execution_allowances(&self) -> Result<BTreeMap<String, NodeAllowance>, String> {
+        let mut allowances = self.allowances.clone();
+        if let Some(phase) = &self.review_integration {
+            phase.validate()?;
+            if self.nodes.contains_key(&phase.node)
+                || self.owned_children.contains_key(&phase.node)
+                || allowances
+                    .insert(phase.node.clone(), phase.allowance.clone())
+                    .is_some()
+            {
+                return Err("Dormant Integration node collides with the Round graph".into());
+            }
+        }
+        Ok(allowances)
     }
 }

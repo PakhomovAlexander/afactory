@@ -27,6 +27,141 @@ impl ReviewResourcePolicy {
         Ok(())
     }
 
+    /// Original lifetime envelope for an installed Review Task. Capture this once, before
+    /// execution; a later Round or input epoch must reuse it rather than call this again.
+    /// Sequential wall bounds include every permitted retry, shard, check and Provider probe.
+    /// Existing per-Round token scopes still constrain admission inside this outer envelope.
+    pub fn task_limits(
+        &self,
+        loaded: &Loaded,
+        manifest: &CampaignManifestV1,
+        mode: crate::captured_review::ReviewMode,
+        executions: &BTreeMap<String, review_core::task::plan::WorkerExecutionV1>,
+        provider: &review_graph::task::OperatorAttemptCost,
+        now_unix_ms: u64,
+    ) -> Result<review_core::task::TaskLimitsV1, String> {
+        use review_core::task::plan::WorkerExecutionV1;
+        self.validate()?;
+        manifest.validate()?;
+        let convergence = mode.convergence(loaded.convergence());
+        let budgets = loaded.budgets().map(|v| review_core::CampaignBudgetV1 {
+            attempt_tokens: v.attempt,
+            run_tokens: v.run,
+        });
+        if manifest.budgets != budgets
+            || manifest.convergence.clean_rounds != convergence.clean_rounds
+            || manifest.convergence.max_rounds != convergence.max_rounds
+            || manifest.convergence.gate != format!("{:?}", convergence.gate).to_lowercase()
+            || manifest
+                .check_timeout_seconds
+                .is_some_and(|v| v != loaded.check_timeout_seconds())
+            || now_unix_ms == 0
+            || provider.tokens == 0
+            || provider.wall_ms == 0
+            || provider.tokens > SAFE_INTEGER_MAX as u64
+            || provider.wall_ms > SAFE_INTEGER_MAX as u64
+        {
+            return Err(
+                "Review Task envelope differs from captured authority or bounded host policy"
+                    .into(),
+            );
+        }
+        let expected: BTreeSet<_> = loaded
+            .planned()
+            .nodes
+            .iter()
+            .filter(|(_, node)| matches!(node.kind, NodeKind::Reviewer | NodeKind::Scatter))
+            .map(|(name, _)| name)
+            .collect();
+        if expected != executions.keys().collect() {
+            return Err(
+                "Review Task envelope requires every exact Worker execution binding".into(),
+            );
+        }
+        let worker_wall = milliseconds(manifest.reviewer_timeout_seconds)?;
+        let check_wall = milliseconds(loaded.check_timeout_seconds())?;
+        let gate_wall = bounded_mul(check_wall, loaded.checks().len().max(1) as u64)?;
+        let mut attempts = 0;
+        let mut tokens = 0;
+        let mut wall = 0;
+        for (name, node) in &loaded.planned().nodes {
+            match node.kind {
+                NodeKind::Gate => {
+                    attempts = bounded_add(attempts, 1)?;
+                    wall = bounded_add(wall, gate_wall)?;
+                }
+                NodeKind::Reviewer | NodeKind::Scatter => {
+                    let count = if node.kind == NodeKind::Scatter {
+                        let policies: Vec<_> = loaded
+                            .slicing()
+                            .values()
+                            .filter(|policy| policy.scatter == *name)
+                            .collect();
+                        if policies.len() != 1 {
+                            return Err("Review Scatter needs one captured fan-out bound".into());
+                        }
+                        u64::from(policies[0].max_fanout)
+                    } else {
+                        1
+                    };
+                    let count = bounded_mul(count, 2)?;
+                    attempts = bounded_add(attempts, count)?;
+                    tokens = bounded_add(
+                        tokens,
+                        bounded_mul(
+                            count,
+                            loaded
+                                .attempt_cap_for(name)
+                                .unwrap_or(self.uncapped_attempt_tokens),
+                        )?,
+                    )?;
+                    wall = bounded_add(wall, bounded_mul(count, worker_wall)?)?;
+                    executions[name].validate()?;
+                    if matches!(executions[name], WorkerExecutionV1::Model { .. }) {
+                        // The compiler may share an identical probe across slots. Counting
+                        // each configured slot is an upper bound, not permission to duplicate it.
+                        attempts = bounded_add(attempts, 1)?;
+                        tokens = bounded_add(tokens, provider.tokens)?;
+                        wall = bounded_add(wall, provider.wall_ms)?;
+                    }
+                }
+                _ => {}
+            }
+        }
+        let rounds = u64::from(convergence.max_rounds);
+        let mut attempts = bounded_mul(attempts, rounds)?;
+        let tokens = bounded_mul(budgets.as_ref().map_or(tokens, |v| v.run_tokens), rounds)?;
+        let mut wall = bounded_mul(wall, rounds)?;
+        if mode == crate::captured_review::ReviewMode::Heavy
+            && let Some(integration) = loaded.integration()
+        {
+            // A promoted head needs another complete Round, so no check phase can start
+            // after the final permitted Round. Each sequence is one common Attempt.
+            let phases = rounds.saturating_sub(1);
+            attempts = bounded_add(attempts, phases)?;
+            wall = bounded_add(
+                wall,
+                bounded_mul(
+                    phases,
+                    bounded_mul(check_wall, integration.post_apply_checks.len() as u64)?,
+                )?,
+            )?;
+        }
+        let limits = review_core::task::TaskLimitsV1 {
+            tokens,
+            max_attempts: u32::try_from(attempts.max(1))
+                .map_err(|_| "Review Task Attempt envelope exceeds its wire range")?,
+            deadline_unix_ms: bounded_add(now_unix_ms, wall.max(1))?,
+            verification: review_core::task::VerificationReserveV1 {
+                tokens: 0,
+                attempts: 0,
+                wall_ms: 0,
+            },
+        };
+        limits.validate()?;
+        Ok(limits)
+    }
+
     /// Replace all caller-supplied execution bounds with captured Review authority.
     /// The caller retains the original whole-Task limits and exact package/input mapping.
     pub fn apply(
@@ -107,6 +242,18 @@ impl ReviewResourcePolicy {
         context.gate_wall_ms = gate_wall;
         Ok(())
     }
+}
+
+fn bounded_add(left: u64, right: u64) -> Result<u64, String> {
+    left.checked_add(right)
+        .filter(|v| *v <= SAFE_INTEGER_MAX as u64)
+        .ok_or_else(|| "Review Task resource envelope exceeds its wire range".into())
+}
+
+fn bounded_mul(left: u64, right: u64) -> Result<u64, String> {
+    left.checked_mul(right)
+        .filter(|v| *v <= SAFE_INTEGER_MAX as u64)
+        .ok_or_else(|| "Review Task resource envelope exceeds its wire range".into())
 }
 
 fn milliseconds(seconds: u64) -> Result<u64, String> {

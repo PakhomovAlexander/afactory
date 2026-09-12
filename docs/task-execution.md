@@ -35,9 +35,16 @@ The continuation checkpoint `faeb933` matches frozen tree `cff20f3` and passes t
 documentation tests and byte-identical fixture reproduction. Numeric Rounds and input epochs
 retain one Task, its original limits and cumulative paid usage; every successor plan requires
 its own admission. Fresh CLI inspection preserves handoff history and historical plans.
-Automatic Integration and the legacy CLI cutover remain.
+Post-Round Integration is implemented and its full gate is pending. Prepared proposals use
+one original Task Attempt for the shared check sequence; Empty/Conflict selections require no
+Attempt. A successful commit requires a complete Review of the derived Snapshot within the
+same Task. Focused tests cover writer fencing, atomic two-log rollback and late charge after
+successful checks. All seven real CLI public-schema tests pass, including original generations
+and inspection@7 after Integration and Handoff@2. The legacy CLI execution cutover remains.
+See [ADR-0083](adr/0083-run-post-round-integration-within-the-original-task.md).
 The debug-profile correction `97bb1c7` passes the same full gate. It addresses the earlier
-CI recovery deadline failure without changing Task limits; corrective CI remains pending. The proposed
+CI recovery deadline failure without changing Task limits; published `2cae97c` passes both
+checks in CI `34708574515`. The proposed
 [owned-child decision](adr/0081-register-owned-review-children-in-the-common-task-runtime.md)
 records registration, factual recovery and immutable completion. See
 [Review compatibility](task-execution/review-compatibility.md) and

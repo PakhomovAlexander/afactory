@@ -116,6 +116,12 @@ impl TaskExecutionProjection {
     }
 
     pub fn resolve_node(&self, node: &str) -> Result<ResolvedTaskNode, StoreError> {
+        if let Some(phase) = self
+            .active_review_integration()
+            .filter(|p| p.node() == node)
+        {
+            return phase.resolved();
+        }
         if let Some(definition) = self.graph.nodes.get(node) {
             return Ok(ResolvedTaskNode {
                 definition: definition.clone(),
@@ -153,6 +159,18 @@ impl TaskExecutionProjection {
             return Err(conflict("Accounting Attempt changed its original identity"));
         }
         let node = &attempt.reservation.node;
+        if let Some(compiled) = &graph.review_integration {
+            if compiled.node == *node {
+                let phase = self
+                    .review_integrations
+                    .values()
+                    .find(|p| p.phase().plan_id == attempt.plan_id && p.node() == node)
+                    .ok_or_else(|| {
+                        conflict("Historical Integration Attempt lacks its exact phase")
+                    })?;
+                return phase.resolved();
+            }
+        }
         if let Some(definition) = graph.nodes.get(node) {
             return Ok(ResolvedTaskNode {
                 definition: definition.clone(),
@@ -181,6 +199,7 @@ impl TaskExecutionProjection {
     }
 
     pub(super) fn check_owned_open(&self, node: &str) -> Result<(), StoreError> {
+        self.check_integration_node(node)?;
         let resolved = self.resolve_node(node)?;
         if let Some(address) = resolved.owned
             && self.owned[&address.child_set_id].completed.is_some()

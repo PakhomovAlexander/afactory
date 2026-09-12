@@ -12,6 +12,12 @@ pub fn read_task_transition(event: &RunEvent) -> Result<TaskTransitionV1, StoreE
             value.validate().map_err(conflict)?;
             Ok(value)
         }
+        EventType::TaskTransitionV3 => {
+            let value: task::event::TaskTransitionV3 =
+                serde_json::from_value(event.payload.clone())?;
+            value.validate().map_err(conflict)?;
+            Ok(value.into_transition())
+        }
         EventType::TaskTransitionV2 => {
             let value: TaskTransitionV2 = serde_json::from_value(event.payload.clone())?;
             value.validate().map_err(conflict)?;
@@ -23,7 +29,10 @@ pub fn read_task_transition(event: &RunEvent) -> Result<TaskTransitionV1, StoreE
 pub(super) fn encode_transition(
     value: &TaskTransitionV1,
 ) -> Result<(EventType, serde_json::Value), StoreError> {
-    if let Some(value) = TaskTransitionV2::from_continuation(value) {
+    if let Some(value) = task::event::TaskTransitionV3::from_integration(value) {
+        value.validate().map_err(conflict)?;
+        Ok((EventType::TaskTransitionV3, serde_json::to_value(value)?))
+    } else if let Some(value) = TaskTransitionV2::from_continuation(value) {
         value.validate().map_err(conflict)?;
         Ok((EventType::TaskTransitionV2, serde_json::to_value(value)?))
     } else {
@@ -42,10 +51,16 @@ pub fn capture_task_review_handoff(
     cas: &Cas,
     value: &TaskReviewHandoffV1,
 ) -> Result<String, StoreError> {
-    value.validate().map_err(conflict)?;
+    let (kind, raw) = if let Some(v2) = TaskReviewHandoffV2::from_integrated(value) {
+        v2.validate().map_err(conflict)?;
+        (TASK_REVIEW_HANDOFF_V2, serde_json::to_value(v2)?)
+    } else {
+        value.validate().map_err(conflict)?;
+        (TASK_REVIEW_HANDOFF_V1, serde_json::to_value(value)?)
+    };
     Ok(cas
         .put_artifact(
-            TASK_REVIEW_HANDOFF_V1,
+            kind,
             producer(&value.task_id)?,
             value
                 .artifact_refs()
@@ -53,15 +68,28 @@ pub fn capture_task_review_handoff(
                 .map(str::to_owned)
                 .collect(),
             None,
-            serde_json::to_value(value)?,
+            raw,
         )
         .map_err(|e| StoreError::Artifact(e.to_string()))?
         .0)
 }
 pub fn read_task_review_handoff(cas: &Cas, id: &str) -> Result<TaskReviewHandoffV1, StoreError> {
-    let frame = envelope(cas, id, TASK_REVIEW_HANDOFF_V1)?;
-    let value: TaskReviewHandoffV1 = serde_json::from_value(frame.payload)?;
-    value.validate().map_err(conflict)?;
+    let frame = cas
+        .get_artifact(id)
+        .map_err(|e| StoreError::Artifact(e.to_string()))?;
+    let value = match frame.artifact_type.as_str() {
+        TASK_REVIEW_HANDOFF_V1 => {
+            let v: TaskReviewHandoffV1 = serde_json::from_value(frame.payload)?;
+            v.validate().map_err(conflict)?;
+            v
+        }
+        TASK_REVIEW_HANDOFF_V2 => {
+            let v: TaskReviewHandoffV2 = serde_json::from_value(frame.payload)?;
+            v.validate().map_err(conflict)?;
+            v.into_handoff()
+        }
+        _ => return Err(conflict("Expected versioned Review handoff")),
+    };
     if frame.input_artifacts != value.artifact_refs()
         || frame.subject_snapshot_id.is_some()
         || frame.producer != producer(&value.task_id)?
@@ -134,6 +162,7 @@ fn validate_revisions(
     }
     match value.evidence {
         TaskReviewHandoffEvidenceV1::ClosedRound { .. }
+        | TaskReviewHandoffEvidenceV1::IntegratedRound { .. }
             if old.round.checked_add(1) == Some(new.round) && new.epoch == 1 => {}
         TaskReviewHandoffEvidenceV1::SupersededInput { .. }
             if old.round == new.round && old.epoch.checked_add(1) == Some(new.epoch) => {}
@@ -206,13 +235,31 @@ pub(super) fn validate_evidence(
         serde_json::from_value(new_event.payload.clone())?;
     if evidence.sequence <= old_event.sequence
         || evidence.sequence >= new_event.sequence
-        || evidence.causation_id.as_deref() != Some(&old.round_event_id)
+        || evidence.causation_id.as_deref()
+            != if matches!(
+                value.evidence,
+                TaskReviewHandoffEvidenceV1::IntegratedRound { .. }
+            ) {
+                None
+            } else {
+                Some(&old.round_event_id)
+            }
     {
         return Err(conflict(
             "Review handoff evidence is outside its exact predecessor epoch",
         ));
     }
     match &value.evidence {
+        TaskReviewHandoffEvidenceV1::IntegratedRound { .. } => {
+            super::review_integration::validate_handoff(
+                store,
+                cas,
+                value,
+                evidence,
+                &new,
+                &new_started,
+            )?;
+        }
         TaskReviewHandoffEvidenceV1::ClosedRound { .. } => {
             if evidence.event_type != EventType::RunReportV6 {
                 return Err(conflict(
@@ -247,7 +294,8 @@ pub(super) fn validate_evidence(
                     "Review conclusion changed its common execution report",
                 ));
             }
-            let (_, demands) = selected_prior_sets(cas, value, &old, &task_report)?;
+            let (_, demands) =
+                selected_prior_sets(cas, &value.predecessor_plan_id, &old, &task_report)?;
             // prior_finding_set_id is the legacy raw PriorFindings view, which may include
             // intervening dispositions. The captured compiler resolves the canonical FindingSet
             // separately. DemandSet is an envelope ID, including a common-only companion port.
@@ -291,14 +339,13 @@ pub(super) fn validate_evidence(
     Ok(())
 }
 
-fn selected_prior_sets(
+pub(super) fn selected_prior_sets(
     cas: &Cas,
-    handoff: &TaskReviewHandoffV1,
+    predecessor_plan_id: &str,
     round: &LegacyReviewRoundV1,
     report: &task::report::TaskRunReportV1,
 ) -> Result<(String, String), StoreError> {
-    let plan: ExecutionPlanV1 =
-        payload(cas, &handoff.predecessor_plan_id, task::EXECUTION_PLAN_V1)?;
+    let plan: ExecutionPlanV1 = payload(cas, predecessor_plan_id, task::EXECUTION_PLAN_V1)?;
     let graph: CompiledTask = payload(cas, &plan.compiled_graph_id, "af/CompiledTask@1")?;
     let mut sets = BTreeMap::<String, BTreeSet<String>>::new();
     for (node, definition) in &graph.nodes {
@@ -321,7 +368,7 @@ fn selected_prior_sets(
         };
         let output = execution::output(cas, output_id)?;
         let invocation = execution::invocation(cas, &output.invocation_id)?;
-        if invocation.node != *node || invocation.plan_id != handoff.predecessor_plan_id {
+        if invocation.node != *node || invocation.plan_id != predecessor_plan_id {
             return Err(conflict(
                 "Review Ledger output changed its original invocation",
             ));
@@ -399,6 +446,24 @@ impl TaskProjection {
             ));
         }
         self.check_plan_decision(cas, time)?;
+        if let TaskReviewHandoffEvidenceV1::IntegratedRound {
+            phase_id,
+            integration_committed_event_id,
+            ..
+        } = &handoff.evidence
+        {
+            let active = self
+                .execution
+                .as_ref()
+                .and_then(|e| e.active_review_integration())
+                .ok_or_else(|| conflict("Integrated handoff lacks its active phase"))?;
+            if active.phase_id() != phase_id
+                || active.integration_committed_event_id() != Some(integration_committed_event_id)
+                || !active.finished()
+            {
+                return Err(conflict("Integrated handoff lacks its sealed exact commit"));
+            }
+        }
         if self
             .execution
             .as_ref()
@@ -432,7 +497,7 @@ impl TaskProjection {
             execution
                 .budget
                 .install_graph_with_owned_templates(
-                    graph.allowances.clone(),
+                    graph.execution_allowances().map_err(conflict)?,
                     graph
                         .calls
                         .iter()
@@ -445,6 +510,7 @@ impl TaskProjection {
                 )
                 .map_err(conflict)?;
             execution.graph = graph;
+            execution.active_review_integration = None;
             execution.invocations.clear();
             execution.outputs.clear();
         }

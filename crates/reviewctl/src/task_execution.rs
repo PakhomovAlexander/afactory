@@ -1515,20 +1515,36 @@ fn present(
     }
     if !state.review_handoffs.is_empty() {
         value["schema"] = json!("af/task-inspection@6");
-        value["review_handoffs"] =
-            json!(state.review_handoffs.iter().map(|(id, record)| {
-            json!({
-                "artifact_id": id,
-                "artifact_type": review_core::task::review_handoff::TASK_REVIEW_HANDOFF_V1,
-                "record": record,
-            })
-        }).collect::<Vec<_>>());
+        let mut handoffs = Vec::new();
+        for (id, _) in &state.review_handoffs {
+            // The checked projection normalizes both generations. Keep the original
+            // payload: an integrated handoff must never be re-encoded as generation one.
+            let recorded = cas.get_artifact(id).map_err(|e| e.to_string())?;
+            handoffs.push(json!({"artifact_id":id,"artifact_type":recorded.artifact_type,"record":recorded.payload}));
+        }
+        value["review_handoffs"] = json!(handoffs);
+    }
+    if let Some(execution) = &state.execution {
+        let phases = execution.review_integrations();
+        if !phases.is_empty() {
+            value["schema"] = json!("af/task-inspection@7");
+            value["review_integrations"] = json!(phases.iter().map(|phase| json!({
+                "artifact_id":phase.phase_id(),
+                "artifact_type":review_core::task::review_integration::TASK_REVIEW_INTEGRATION_PHASE_V1,
+                "record":phase.phase(),
+                "node":phase.node(),
+                "requires_checks":phase.requires_checks(),
+                "finished":phase.finished(),
+                "report_id":phase.report_id(),
+                "integration_committed_event_id":phase.integration_committed_event_id(),
+            })).collect::<Vec<_>>());
+        }
     }
     let mut reports = Vec::new();
     for id in &state.run_reports {
         use review_core::task::report::*;
-        let report: TaskRunReportV1 = artifact(cas, id, TASK_RUN_REPORT_V1)?;
-        report.validate()?;
+        let (report, phase_id) =
+            review_store::store::task::read_task_run_report(cas, id).map_err(|e| e.to_string())?;
         let mut diagnostics = BTreeMap::new();
         for node in &report.nodes {
             if let TaskNodeOutcomeV1::Failed { diagnostic_id, .. } = &node.outcome {
@@ -1538,6 +1554,11 @@ fn present(
                 diagnostics.insert(node.node.clone(), diagnostic);
             }
         }
+        let report = if phase_id.is_some() {
+            cas.get_artifact(id).map_err(|e| e.to_string())?.payload
+        } else {
+            serde_json::to_value(report).map_err(|e| e.to_string())?
+        };
         reports.push(json!({"artifact_id":id,"report":report,"diagnostics":diagnostics}));
     }
     value["run_reports"] = json!(reports);

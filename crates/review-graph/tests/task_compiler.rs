@@ -1055,3 +1055,55 @@ fn planning_compilation_has_a_proposal_contract_without_business_coverage_or_ver
         "Preparation widened effect authority"
     );
 }
+
+#[test]
+fn captured_integration_allowance_is_dormant_and_cannot_collide_or_add_paid_work() {
+    use review_graph::task::CompiledReviewIntegrationV1;
+    let (task, pipelines, signatures) = fixture();
+    let context = CompileContext {
+        slot_workers: BTreeMap::new(),
+        acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
+        pipelines: &pipelines,
+        signatures: &signatures,
+        max_nodes: 64,
+        max_depth: 4,
+    };
+    let ordinary = compile_task(&task, "builtin/document", &context).unwrap();
+    let old_bytes = serde_json::to_value(&ordinary).unwrap();
+    assert!(old_bytes.get("review_integration").is_none());
+    let mut graph = ordinary.clone();
+    graph.review_integration = Some(CompiledReviewIntegrationV1 {
+        node: "root.integration_checks".into(),
+        sequence_policy_id: format!("sha256:{}", "a".repeat(64)),
+        allowance: review_attempt::task_budget::NodeAllowance {
+            tokens_per_attempt: 0,
+            wall_ms_per_attempt: 1000,
+            max_attempts: 1,
+            verification_attempts: 0,
+        },
+    });
+    let allowances = graph.execution_allowances().unwrap();
+    assert_eq!(allowances.len(), ordinary.allowances.len() + 1);
+    assert_eq!(graph.nodes, ordinary.nodes);
+    assert_eq!(graph.order, ordinary.order);
+    assert_eq!(graph.outputs, ordinary.outputs);
+    assert_eq!(graph.coverage, ordinary.coverage);
+    let mut budget = graph.budget(task.limits.clone()).unwrap();
+    let reservation = budget.prepare("root.integration_checks", 1).unwrap();
+    assert_eq!(reservation.tokens, 0);
+    for mutation in 0..4 {
+        let mut bad = graph.clone();
+        let phase = bad.review_integration.as_mut().unwrap();
+        match mutation {
+            0 => phase.node = "root.nodes.write".into(),
+            1 => phase.allowance.tokens_per_attempt = 1,
+            2 => phase.allowance.max_attempts = 2,
+            3 => phase.allowance.verification_attempts = 1,
+            _ => unreachable!(),
+        }
+        assert!(bad.execution_allowances().is_err());
+    }
+    let mut null = old_bytes;
+    null["review_integration"] = serde_json::Value::Null;
+    assert!(serde_json::from_value::<review_graph::task::CompiledTask>(null).is_err());
+}

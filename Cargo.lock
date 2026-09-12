@@ -1377,6 +1377,7 @@ dependencies = [
  "review-sandbox",
  "review-source-git",
  "review-store",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",

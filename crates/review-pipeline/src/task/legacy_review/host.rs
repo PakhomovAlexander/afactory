@@ -23,6 +23,7 @@ use crate::task::{TaskOperatorHost, TaskWorkOutput};
 use crate::{DurableReceipt, artifact_ids, port_artifacts};
 
 mod gate_facts;
+mod integration;
 mod owned;
 mod result;
 pub use result::RecordedReviewRoundConclusion;
@@ -145,6 +146,19 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
         host.validate_transports()?;
         if let Some(execution) = &state.execution {
             host.restore_gate_facts(cas, execution)?;
+            for (id, input) in execution.invocations.values() {
+                if host.is_integration(input) {
+                    let phase = input
+                        .inputs
+                        .get("phase")
+                        .and_then(|p| p.artifact_ids.first())
+                        .ok_or("Recorded Integration invocation lacks its phase")?;
+                    host.invocations
+                        .lock()
+                        .expect("Review invocations")
+                        .insert(input.node.clone(), (id.clone(), phase.clone()));
+                }
+            }
         }
         host.hydrate()?;
         Ok(host)
@@ -211,6 +225,9 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
     ) -> Result<Option<(Node, ReviewNodeMapping, ReviewOperation)>, String> {
         if input.plan_id != self.plan_id {
             return Err("Review invocation changed its plan".into());
+        }
+        if self.is_integration(input) {
+            return Ok(None);
         }
         if let Some(child) = self
             .owned
@@ -605,6 +622,9 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
         invocation_id: &str,
         input: &TaskInvocationV1,
     ) -> Result<(), String> {
+        if self.is_integration(input) {
+            return self.commit_integration_invocation(cas, invocation_id, input);
+        }
         self.hydrate_owned_invocation(cas, input)?;
         let Some((node, mapping, _)) = self.operation(input)? else {
             return Ok(());
@@ -806,6 +826,9 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
                 .providers()
                 .execute_with_broker(cas, input, attempt, broker);
         }
+        if self.is_integration(input) {
+            return self.execute_integration(cas, input, attempt, broker);
+        }
         let reviewer = self
             .operation(input)
             .ok()
@@ -859,6 +882,31 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
 }
 
 impl TaskDomain for LegacyReviewTaskHost<'_, '_> {
+    fn validate_review_integration_selection(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
+        evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
+    ) -> Result<(), String> {
+        self.validate_integration_selection(cas, task, plan, phase, evidence)
+    }
+    fn validate_review_integration_completion(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
+        _report: &review_core::task::report::TaskRunReportV2,
+        _events: &[NewEvent],
+        evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
+    ) -> Result<(), String> {
+        // Store additionally requires the exact selected common output and runs the original
+        // complete canonical checks/attestation/commit validator in its atomic transaction.
+        self.validate_integration_selection(cas, task, plan, phase, evidence)
+    }
+
     fn validate_owned_children(
         &self,
         cas: &Cas,
@@ -1040,7 +1088,7 @@ impl TaskDomain for LegacyReviewTaskHost<'_, '_> {
                 .providers()
                 .validate_output(cas, task, plan, input, output);
         }
-        if self.operation(input)?.is_none() {
+        if !self.is_integration(input) && self.operation(input)?.is_none() {
             return Ok(());
         }
         if self.invocation(input)?.0 != output.invocation_id {
@@ -1118,11 +1166,40 @@ impl TaskDomain for LegacyReviewTaskHost<'_, '_> {
         if matches!(
             handoff.evidence,
             review_core::task::review_handoff::TaskReviewHandoffEvidenceV1::ClosedRound { .. }
+                | review_core::task::review_handoff::TaskReviewHandoffEvidenceV1::IntegratedRound { .. }
         ) && self.compiler.mode()? != review_config::captured_review::ReviewMode::Heavy
         {
             return Err(
                 "Only a captured heavy Campaign may continue to another numeric Round".into(),
             );
+        }
+        if let review_core::task::review_handoff::TaskReviewHandoffEvidenceV1::IntegratedRound {
+            phase_id,
+            ..
+        } = &handoff.evidence
+        {
+            let phase =
+                review_store::store::task::review_integration::read_task_review_integration(
+                    cas, phase_id,
+                )
+                .map_err(|e| e.to_string())?;
+            let review_core::task::review_integration::TaskReviewIntegrationSelectionV1::Prepared {
+                derived_snapshot_id,
+                ..
+            } = phase.selection
+            else {
+                return Err("Integrated continuation lacks a prepared Snapshot".into());
+            };
+            let round: review_core::task::review_compat::LegacyReviewRoundV1 =
+                serde_json::from_value(
+                    cas.get_artifact(&handoff.successor_round_id)
+                        .map_err(|e| e.to_string())?
+                        .payload,
+                )
+                .map_err(|e| e.to_string())?;
+            if phase.plan_id != self.plan_id || round.head_snapshot_id != derived_snapshot_id {
+                return Err("Integrated continuation changed the exact prepared head".into());
+            }
         }
         self.compiler.recompile(cas, previous, previous_plan)?;
         Ok(())

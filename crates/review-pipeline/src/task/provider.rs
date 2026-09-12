@@ -423,6 +423,33 @@ impl TaskOperatorHost for ProviderTaskDomain<'_> {
     }
 }
 impl TaskDomain for ProviderTaskDomain<'_> {
+    fn validate_review_integration_selection(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
+        evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
+    ) -> Result<(), String> {
+        self.inner
+            .validate_review_integration_selection(cas, task, plan, phase, evidence)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn validate_review_integration_completion(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
+        report: &review_core::task::report::TaskRunReportV2,
+        events: &[review_store::NewEvent],
+        evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
+    ) -> Result<(), String> {
+        self.inner.validate_review_integration_completion(
+            cas, task, plan, phase, report, events, evidence,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn validate_review_continuation(
         &self,

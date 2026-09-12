@@ -107,6 +107,52 @@
       "additionalProperties": {
         "$ref": "#/$defs/ownedChildTemplate"
       }
+    },
+    "review_integration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "sequence_policy_id",
+        "allowance"
+      ],
+      "properties": {
+        "node": {
+          "type": "string",
+          "maxLength": 4096,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"
+        },
+        "sequence_policy_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "allowance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tokens_per_attempt",
+            "wall_ms_per_attempt",
+            "max_attempts",
+            "verification_attempts"
+          ],
+          "properties": {
+            "tokens_per_attempt": {
+              "const": 0
+            },
+            "wall_ms_per_attempt": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 18446744073709551615
+            },
+            "max_attempts": {
+              "const": 1
+            },
+            "verification_attempts": {
+              "const": 0
+            }
+          }
+        }
+      }
     }
   },
   "$defs": {
@@ -329,6 +375,23 @@
             },
             "signature": {
               "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "sequence_policy_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "review_integration_checks"
+            },
+            "sequence_policy_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
             }
           }
         }

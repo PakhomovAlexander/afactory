@@ -372,6 +372,7 @@ impl EventStore {
                 e.event_type,
                 EventType::TaskTransitionV1
                     | EventType::TaskTransitionV2
+                    | EventType::TaskTransitionV3
                     | EventType::TaskBrokerTransitionV1
             )
         }) && task_permit.is_none()
@@ -380,6 +381,66 @@ impl EventStore {
                 "Task events require the trusted Task entry point".into(),
             ));
         }
+        let prepared = self.prepare_event_artifacts(cas, events)?;
+
+        // Acquire the writer lock before reading aggregate state. A deferred transaction lets
+        // two openers both observe an empty Campaign and only races at INSERT; IMMEDIATE makes
+        // the compare-and-append decision itself serial.
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let first: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(sequence) + 1, 0) FROM events WHERE run_id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        if let Some(permit) = review_permit {
+            permit.validate(&tx, run_id, first, events)?;
+        }
+        if let Some(permit) = task_permit {
+            permit.validate(&tx, run_id, first, events)?;
+        } else {
+            let task_log: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE run_id = ?1 AND type = 'TaskTransition@1')",
+                [run_id], |row| row.get(0),
+            )?;
+            if task_log {
+                return Err(StoreError::Conflict(
+                    "Task log cannot accept Campaign or generic append authority".into(),
+                ));
+            }
+            if events.iter().any(|event| {
+                matches!(
+                    event.event_type,
+                    EventType::IntegrationPreparedV1
+                        | EventType::IntegrationConflictV1
+                        | EventType::IntegrationChecksCompletedV1
+                        | EventType::IntegrationCommittedV1
+                )
+            }) {
+                let task_round: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM events WHERE run_id=?1 AND type='RunReport@6' AND causation_id=(SELECT event_id FROM events WHERE run_id=?1 AND type='RoundStarted@1' ORDER BY sequence DESC LIMIT 1))", [run_id], |r|r.get(0))?;
+                if task_round {
+                    return Err(StoreError::Conflict(
+                        "Task-backed Integration requires its protected phase publication".into(),
+                    ));
+                }
+            }
+            validate_campaign_transition(&tx, cas, run_id, events, first, &prepared)?;
+        }
+        let appended = insert_events(&tx, run_id, events, first)?;
+        tx.commit()?;
+        Ok(appended)
+    }
+
+    fn prepare_event_artifacts(
+        &mut self,
+        cas: &Cas,
+        events: &[NewEvent],
+    ) -> Result<PreparedArtifacts, StoreError> {
         for event in events {
             review_core::json::admit(&event.payload)
                 .map_err(|error| StoreError::Conflict(format!("invalid event payload: {error}")))?;
@@ -447,94 +508,7 @@ impl EventStore {
                 .map_err(|e| StoreError::Durability(e.to_string()))?;
         }
 
-        // Acquire the writer lock before reading aggregate state. A deferred transaction lets
-        // two openers both observe an empty Campaign and only races at INSERT; IMMEDIATE makes
-        // the compare-and-append decision itself serial.
-        let tx = self
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let first: i64 = tx
-            .query_row(
-                "SELECT COALESCE(MAX(sequence) + 1, 0) FROM events WHERE run_id = ?1",
-                params![run_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        if let Some(permit) = review_permit {
-            permit.validate(&tx, run_id, first, events)?;
-        }
-        if let Some(permit) = task_permit {
-            permit.validate(&tx, run_id, first, events)?;
-        } else {
-            let task_log: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM events WHERE run_id = ?1 AND type = 'TaskTransition@1')",
-                [run_id], |row| row.get(0),
-            )?;
-            if task_log {
-                return Err(StoreError::Conflict(
-                    "Task log cannot accept Campaign or generic append authority".into(),
-                ));
-            }
-            validate_campaign_transition(&tx, cas, run_id, events, first, &prepared)?;
-        }
-        let mut appended = Vec::with_capacity(events.len());
-        for (offset, event) in events.iter().enumerate() {
-            let offset = i64::try_from(offset)
-                .map_err(|_| StoreError::Conflict("event batch is too large".into()))?;
-            let next = first
-                .checked_add(offset)
-                .ok_or_else(|| StoreError::Conflict("event sequence overflow".into()))?;
-            let event_id = derive_event_id(run_id, next);
-            let refs = serde_json::to_string(&event.artifact_refs)?;
-            let payload = serde_json::to_string(&event.payload)?;
-            tx.execute(
-                "INSERT INTO events
-                   (run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
-                    causation_id, correlation_id, artifact_refs, payload)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![
-                    run_id,
-                    next,
-                    event_id,
-                    event.event_type.as_str(),
-                    event.occurred_at,
-                    event.node_id,
-                    event.attempt_id,
-                    event.causation_id,
-                    event.correlation_id,
-                    refs,
-                    payload,
-                ],
-            )
-            .map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, _)
-                    if matches!(
-                        err.extended_code,
-                        rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
-                            | rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
-                    ) =>
-                {
-                    StoreError::Conflict(format!("sequence {next} already taken for run {run_id}"))
-                }
-                other => StoreError::Sqlite(other),
-            })?;
-            appended.push(RunEvent {
-                event_id,
-                run_id: run_id.to_string(),
-                sequence: next as u64,
-                event_type: event.event_type,
-                occurred_at: event.occurred_at.clone(),
-                node_id: event.node_id.clone(),
-                attempt_id: event.attempt_id.clone(),
-                causation_id: event.causation_id.clone(),
-                correlation_id: event.correlation_id.clone(),
-                artifact_refs: event.artifact_refs.clone(),
-                payload: event.payload.clone(),
-            });
-        }
-        tx.commit()?;
-        Ok(appended)
+        Ok(prepared)
     }
 
     /// Ordered transitions for one provider operation. The correlation index keeps admission
@@ -5855,6 +5829,16 @@ fn validate_integration_commit_authority(
             }
         }
     }
+    let task_report:Option<String>=tx.query_row(
+        "SELECT payload FROM events WHERE run_id=?1 AND type='RunReport@6' AND causation_id=(SELECT event_id FROM events WHERE run_id=?1 AND type='RoundStarted@1' ORDER BY sequence DESC LIMIT 1) ORDER BY sequence DESC LIMIT 1", [run_id],|r|r.get(0)).optional()?;
+    if let Some(raw) = task_report {
+        let report: review_core::RunReportPayloadV6 = serde_json::from_str(&raw)?;
+        report.validate().map_err(StoreError::Conflict)?;
+        let (findings, demands) =
+            task::review_integration::canonical_task_integration_views(cas, &report)?;
+        finding_set = Some(findings);
+        demand_set = Some(demands);
+    }
     if finding_set.as_deref() != Some(committed.expected_finding_set_id.as_str())
         || demand_set.as_deref() != Some(committed.expected_demand_set_id.as_str())
     {
@@ -6120,6 +6104,70 @@ fn derive_event_id(run_id: &str, sequence: i64) -> String {
     hasher.update(b"\0");
     hasher.update(sequence.to_string().as_bytes());
     format!("{:x}", hasher.finalize())[..26].to_string()
+}
+
+fn insert_events(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    events: &[NewEvent],
+    first: i64,
+) -> Result<Vec<RunEvent>, StoreError> {
+    let mut appended = Vec::with_capacity(events.len());
+    for (offset, event) in events.iter().enumerate() {
+        let offset = i64::try_from(offset)
+            .map_err(|_| StoreError::Conflict("event batch is too large".into()))?;
+        let next = first
+            .checked_add(offset)
+            .ok_or_else(|| StoreError::Conflict("event sequence overflow".into()))?;
+        let event_id = derive_event_id(run_id, next);
+        let refs = serde_json::to_string(&event.artifact_refs)?;
+        let payload = serde_json::to_string(&event.payload)?;
+        tx.execute(
+            "INSERT INTO events
+                   (run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
+                    causation_id, correlation_id, artifact_refs, payload)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                run_id,
+                next,
+                event_id,
+                event.event_type.as_str(),
+                event.occurred_at,
+                event.node_id,
+                event.attempt_id,
+                event.causation_id,
+                event.correlation_id,
+                refs,
+                payload,
+            ],
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(err, _)
+                if matches!(
+                    err.extended_code,
+                    rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                        | rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                ) =>
+            {
+                StoreError::Conflict(format!("sequence {next} already taken for run {run_id}"))
+            }
+            other => StoreError::Sqlite(other),
+        })?;
+        appended.push(RunEvent {
+            event_id,
+            run_id: run_id.to_string(),
+            sequence: next as u64,
+            event_type: event.event_type,
+            occurred_at: event.occurred_at.clone(),
+            node_id: event.node_id.clone(),
+            attempt_id: event.attempt_id.clone(),
+            causation_id: event.causation_id.clone(),
+            correlation_id: event.correlation_id.clone(),
+            artifact_refs: event.artifact_refs.clone(),
+            payload: event.payload.clone(),
+        });
+    }
+    Ok(appended)
 }
 
 #[cfg(test)]

@@ -121,3 +121,50 @@ impl TaskRunReportV1 {
         Ok(())
     }
 }
+
+/// A report for the exact activated post-Round sequence. Frozen ordinary report membership
+/// remains every node in the original Round graph; this generation has one phase node.
+pub const TASK_RUN_REPORT_V2: &str = "af/TaskRunReport@2";
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskRunReportV2 {
+    pub task_revision_id: String,
+    pub plan_id: String,
+    pub through_sequence: u64,
+    pub phase_id: String,
+    pub nodes: Vec<TaskNodeReportV1>,
+}
+impl TaskRunReportV2 {
+    pub fn as_report(&self) -> TaskRunReportV1 {
+        TaskRunReportV1 {
+            task_revision_id: self.task_revision_id.clone(),
+            plan_id: self.plan_id.clone(),
+            through_sequence: self.through_sequence,
+            nodes: self.nodes.clone(),
+        }
+    }
+    pub fn references(&self) -> Vec<&str> {
+        let mut refs = vec![
+            self.task_revision_id.as_str(),
+            self.plan_id.as_str(),
+            self.phase_id.as_str(),
+        ];
+        for n in &self.nodes {
+            match &n.outcome {
+                TaskNodeOutcomeV1::Completed { output_id } => refs.push(output_id),
+                TaskNodeOutcomeV1::Failed { diagnostic_id, .. } => refs.push(diagnostic_id),
+                TaskNodeOutcomeV1::Suppressed { .. } => {}
+            }
+        }
+        refs
+    }
+    pub fn validate(&self) -> Result<(), String> {
+        self.as_report().validate()?;
+        require(
+            is_digest(&self.phase_id)
+                && self.nodes.len() == 1
+                && !matches!(self.nodes[0].outcome, TaskNodeOutcomeV1::Suppressed { .. }),
+            "Integration report requires its exact phase and one executed or failed node",
+        )
+    }
+}

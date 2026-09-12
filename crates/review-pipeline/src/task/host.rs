@@ -125,6 +125,30 @@ impl TaskEnvironment for EmptyTaskEnvironment {
 /// Domain operators retain their own receipt semantics. This interface cannot create an
 /// Attempt, execute a child graph, authorize a plan, or change the parent's allowance.
 pub trait TaskDomain: TaskOperatorHost {
+    fn validate_review_integration_selection(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
+        _evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
+    ) -> Result<(), String> {
+        Err("Task domain has no installed Review Integration".into())
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn validate_review_integration_completion(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
+        _report: &review_core::task::report::TaskRunReportV2,
+        _events: &[review_store::NewEvent],
+        _evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
+    ) -> Result<(), String> {
+        Err("Task domain has no installed Review Integration".into())
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn validate_review_continuation(
         &self,
@@ -291,6 +315,41 @@ impl<'a> CapturedTaskAuthority<'a> {
 }
 
 impl TaskAuthority for CapturedTaskAuthority<'_> {
+    fn validate_review_integration_selection(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
+        evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
+    ) -> Result<(), String> {
+        if !matches!(self.compiler, CapturedCompiler::Review(_)) {
+            return Err("Only captured Review admits an Integration phase".into());
+        }
+        self.validate_plan(cas, task, plan)?;
+        self.domain
+            .validate_review_integration_selection(cas, task, plan, phase, evidence)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn validate_review_integration_completion(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
+        report: &review_core::task::report::TaskRunReportV2,
+        events: &[review_store::NewEvent],
+        evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
+    ) -> Result<(), String> {
+        if !matches!(self.compiler, CapturedCompiler::Review(_)) {
+            return Err("Only captured Review admits an Integration phase".into());
+        }
+        self.validate_plan(cas, task, plan)?;
+        self.domain.validate_review_integration_completion(
+            cas, task, plan, phase, report, events, evidence,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn validate_review_continuation(
         &self,
@@ -891,6 +950,33 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
 }
 
 impl TaskDomain for CapturedTaskHost<'_> {
+    fn validate_review_integration_selection(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
+        evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
+    ) -> Result<(), String> {
+        self.domain
+            .validate_review_integration_selection(cas, task, plan, phase, evidence)
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn validate_review_integration_completion(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
+        report: &review_core::task::report::TaskRunReportV2,
+        events: &[review_store::NewEvent],
+        evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
+    ) -> Result<(), String> {
+        self.domain.validate_review_integration_completion(
+            cas, task, plan, phase, report, events, evidence,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn validate_review_continuation(
         &self,

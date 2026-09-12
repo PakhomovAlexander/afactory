@@ -30,7 +30,8 @@ impl LegacyReviewTaskHost<'_, '_> {
                 "Heavy Review has another permitted Round; publish the Round conclusion and continue the Task before assembling its final result".into(),
             );
         }
-        let result = conclusion.result;
+        let mut result = conclusion.result;
+        self.apply_integration_result(cas, &mut result)?;
         *self.result.lock().expect("Review result") =
             Some((conclusion.task_report_id, result.clone()));
         Ok(result)
@@ -60,16 +61,23 @@ impl LegacyReviewTaskHost<'_, '_> {
         if !execution.pending_attempts().is_empty() {
             return Err("Review Task cannot conclude with outstanding Attempts".into());
         }
-        let report_id = state
-            .run_reports
-            .last()
-            .ok_or("Review Task has no durable scheduler report")?;
-        let artifact = cas.get_artifact(report_id).map_err(|e| e.to_string())?;
-        if artifact.artifact_type != TASK_RUN_REPORT_V1 {
-            return Err("Review Task report has another type".into());
+        // A phase report @2 is additional evidence; it cannot replace the Round's original
+        // scheduler report or change already published RunReport@6 bytes.
+        let mut selected_report = None;
+        for id in state.run_reports.iter().rev() {
+            let artifact = cas.get_artifact(id).map_err(|e| e.to_string())?;
+            if artifact.artifact_type != TASK_RUN_REPORT_V1 {
+                continue;
+            }
+            let value: TaskRunReportV1 =
+                serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+            if value.task_revision_id == state.revision_id && value.plan_id == self.plan_id {
+                selected_report = Some((id, value));
+                break;
+            }
         }
-        let report: TaskRunReportV1 =
-            serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+        let (report_id, report) =
+            selected_report.ok_or("Review Task has no exact durable Round report")?;
         report.validate()?;
         if report.task_revision_id != state.revision_id || report.plan_id != self.plan_id {
             return Err("Review Task scheduler report belongs to another revision or plan".into());

@@ -32,7 +32,8 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 133] = [
+const SCHEMAS: [&str; 140] = [
+    "task-inspection-v7.json",
     "task-plan-inspection-v1.json",
     "task-inspection-v6.json",
     "task-inspection-v5.json",
@@ -107,6 +108,12 @@ const SCHEMAS: [&str; 133] = [
     "task-contracts-v1.json",
     "task-transition-v1.json",
     "task-transition-v2.json",
+    "task-transition-v3.json",
+    "task-review-check-sequence-policy-v1.json",
+    "task-review-integration-phase-v1.json",
+    "task-run-report-v2.json",
+    "task-review-handoff-v2.json",
+    "legacy-review-task-policy-v4.json",
     "task-review-handoff-v1.json",
     "task-delivery-record-v1.json",
     "task-invocation-v1.json",
@@ -2866,3 +2873,6 @@ mod task_review_handoff;
 
 #[path = "schema_parity/task_review_inspection.rs"]
 mod task_review_inspection;
+
+#[path = "schema_parity/task_review_integration.rs"]
+mod task_review_integration;

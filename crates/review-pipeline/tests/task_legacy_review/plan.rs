@@ -3,6 +3,8 @@ use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_core::task::{TaskResultV1, TaskRevisionV1};
 use review_graph::task::OperatorAttemptCost;
+#[path = "plan/integration.rs"]
+mod integration;
 #[path = "plan/owned.rs"]
 mod owned;
 #[path = "plan/provider_probe.rs"]

@@ -5,6 +5,7 @@ pub mod broker;
 pub mod code;
 pub mod document;
 pub mod host;
+mod integration;
 pub mod lease;
 pub mod legacy_review;
 mod owned;
@@ -158,6 +159,8 @@ pub struct TaskRuntime<'store, 'host> {
     lease: TaskLease,
     plan_id: String,
     graph: CompiledTask,
+    integration:
+        Option<review_store::store::task::review_integration::RegisteredTaskReviewIntegration>,
     authority: &'host dyn TaskAuthority,
     host: &'host dyn TaskOperatorHost,
     broker_providers: BTreeMap<String, &'host broker::TaskBrokerProvider>,
@@ -210,6 +213,31 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
                 .ok_or("Unknown Task")?;
             (plan, projection)
         };
+        if projection
+            .execution
+            .as_ref()
+            .is_some_and(|e| e.active_review_integration().is_some())
+        {
+            return Err(
+                "Closed Review Round requires its dedicated Integration phase runtime".into(),
+            );
+        }
+        Self::from_captured(store, cas, lease, authority, host, plan, projection, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn from_captured(
+        store: SharedEventStore<'store>,
+        cas: &'store Cas,
+        lease: TaskLease,
+        authority: &'host dyn TaskAuthority,
+        host: &'host dyn TaskOperatorHost,
+        plan: review_core::task::plan::ExecutionPlanV1,
+        projection: TaskProjection,
+        integration: Option<
+            review_store::store::task::review_integration::RegisteredTaskReviewIntegration,
+        >,
+    ) -> Result<Self, String> {
         let value = envelope(cas, &plan.compiled_graph_id)?;
         if value.artifact_type != "af/CompiledTask@1" {
             return Err("Task plan has no compiled Task graph".into());
@@ -225,6 +253,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             lease,
             plan_id: projection.plan_id.ok_or("Task has no plan")?,
             graph,
+            integration,
             authority,
             host,
             broker_providers: BTreeMap::new(),
@@ -237,6 +266,9 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
     }
 
     pub fn execute(&self) -> Result<RunReport, String> {
+        if self.integration.is_some() {
+            return Err("Activated Integration runtime can execute only its captured phase".into());
+        }
         let report =
             lease::with_heartbeat(&self.store, self.cas, &self.lease, || self.graph.run(self))?;
         self.record_run_report(&report)?;
@@ -494,11 +526,7 @@ impl TaskRuntime<'_, '_> {
             .ok_or("Task invocation is not recorded")?;
         // Replaying an already selected result above is factual recovery. Every new operation,
         // including a pure installed operation, still requires current dispatch authority.
-        self.store
-            .lock()
-            .expect("Task Store")
-            .check_task_dispatch(self.cas, &self.lease, self.authority)
-            .map_err(|e| e.to_string())?;
+        self.check_node_authority(&node.id, true)?;
         let resolved = state.resolve_node(&node.id).map_err(|e| e.to_string())?;
         let compiled = &resolved.definition;
         if matches!(
@@ -807,11 +835,7 @@ impl Dispatch for TaskRuntime<'_, '_> {
             if recorded != &id || prior != &input {
                 return Err("Invocation replay changed its exact inputs".into());
             }
-            self.store
-                .lock()
-                .expect("Task Store")
-                .check_current_task_plan_for_recording(self.cas, &self.lease, self.authority)
-                .map_err(|e| e.to_string())?;
+            self.check_node_authority(&node.id, false)?;
         } else {
             self.store
                 .lock()
@@ -829,15 +853,10 @@ impl Dispatch for TaskRuntime<'_, '_> {
         let replayed = self.projection()?.execution.as_ref().is_some_and(|e| {
             e.outputs.contains_key(&node.id) || e.reusable_output(&node.id).is_some()
         });
-        {
-            let store = self.store.lock().expect("Task Store");
-            if replayed || self.graph.owned_children.contains_key(&node.id) {
-                store.check_current_task_plan_for_recording(self.cas, &self.lease, self.authority)
-            } else {
-                store.check_task_dispatch(self.cas, &self.lease, self.authority)
-            }
-            .map_err(|e| e.to_string())?;
-        }
+        self.check_node_authority(
+            &node.id,
+            !replayed && !self.graph.owned_children.contains_key(&node.id),
+        )?;
         if self.resolve_node(&node.id)?.allowance.is_some() && !replayed {
             let attempt = self.prepare(&input)?;
             self.prepared

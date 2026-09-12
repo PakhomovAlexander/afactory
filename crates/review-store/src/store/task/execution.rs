@@ -25,6 +25,9 @@ pub struct TaskExecutionProjection {
     attempts: BTreeMap<String, RecordedAttempt>,
     brokers: BTreeMap<String, broker::RecordedBroker>,
     pub(super) owned: BTreeMap<String, owned::RecordedChildren>,
+    pub(super) review_integrations:
+        BTreeMap<String, super::review_integration::RegisteredTaskReviewIntegration>,
+    pub(super) active_review_integration: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -269,7 +272,7 @@ impl TaskExecutionProjection {
             .map_err(conflict)?;
         self.budget
             .install_graph_with_owned_templates(
-                graph.allowances.clone(),
+                graph.execution_allowances().map_err(conflict)?,
                 graph
                     .calls
                     .iter()
@@ -371,7 +374,7 @@ impl TaskExecutionProjection {
         Ok(())
     }
 
-    fn new(cas: &Cas, state: &TaskProjection) -> Result<Self, StoreError> {
+    pub(super) fn new(cas: &Cas, state: &TaskProjection) -> Result<Self, StoreError> {
         let plan = plan(
             cas,
             state
@@ -408,6 +411,8 @@ impl TaskExecutionProjection {
             attempts: BTreeMap::new(),
             brokers: BTreeMap::new(),
             owned: BTreeMap::new(),
+            review_integrations: BTreeMap::new(),
+            active_review_integration: None,
         })
     }
 
@@ -696,6 +701,7 @@ impl TaskProjection {
             self.execution = Some(TaskExecutionProjection::new(cas, self)?);
         }
         let execution = self.execution.as_mut().expect("execution initialized");
+        execution.check_review_integration_record(cas, &record)?;
         match &record {
             TaskExecutionRecordV1::OwnedChildrenRegistered { .. }
             | TaskExecutionRecordV1::OwnedChildPublished { .. }
@@ -1678,5 +1684,46 @@ impl EventStore {
             now()?,
         )?;
         Ok(())
+    }
+}
+
+impl TaskExecutionProjection {
+    fn check_review_integration_record(
+        &self,
+        cas: &Cas,
+        record: &TaskExecutionRecordV1,
+    ) -> Result<(), StoreError> {
+        let node = match record {
+            TaskExecutionRecordV1::Invocation { invocation_id }
+            | TaskExecutionRecordV1::Prepared { invocation_id, .. }
+            | TaskExecutionRecordV1::Reserved { invocation_id, .. } => {
+                invocation(cas, invocation_id)?.node
+            }
+            TaskExecutionRecordV1::ContextBound { attempt_id, .. }
+            | TaskExecutionRecordV1::Started { attempt_id } => self
+                .attempts
+                .get(attempt_id)
+                .ok_or_else(|| conflict("Unknown Task Attempt"))?
+                .reservation
+                .node
+                .clone(),
+            TaskExecutionRecordV1::Published { output_id, .. } => {
+                invocation(cas, &output(cas, output_id)?.invocation_id)?.node
+            }
+            TaskExecutionRecordV1::OwnedChildrenRegistered { .. }
+            | TaskExecutionRecordV1::OwnedChildPublished { .. }
+            | TaskExecutionRecordV1::OwnedChildrenCompleted { .. } => {
+                if self.active_review_integration.is_some() {
+                    return Err(conflict(
+                        "Integration cannot dispatch or publish an old Round owned node",
+                    ));
+                }
+                return Ok(());
+            }
+            TaskExecutionRecordV1::Released { .. }
+            | TaskExecutionRecordV1::Settled { .. }
+            | TaskExecutionRecordV1::UsageObserved { .. } => return Ok(()),
+        };
+        self.check_integration_node(&node)
     }
 }

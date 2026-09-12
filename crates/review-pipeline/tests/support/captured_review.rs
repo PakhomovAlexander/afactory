@@ -31,6 +31,39 @@ pub fn open_round_authority_with_convergence(
     files: Option<BTreeMap<String, Vec<u8>>>,
     convergence: review_core::CampaignConvergenceV1,
 ) -> String {
+    open_round_inner(
+        cas,
+        store,
+        definition,
+        files,
+        convergence,
+        BTreeMap::new(),
+        false,
+    )
+}
+
+/// Extra ordinary source files and an exact heavy convergence policy for integration tests.
+#[allow(dead_code)]
+pub fn open_round_authority_with_source(
+    cas: &Cas,
+    store: &mut EventStore,
+    definition: &str,
+    files: Option<BTreeMap<String, Vec<u8>>>,
+    convergence: review_core::CampaignConvergenceV1,
+    source: BTreeMap<String, Vec<u8>>,
+) -> String {
+    open_round_inner(cas, store, definition, files, convergence, source, true)
+}
+
+fn open_round_inner(
+    cas: &Cas,
+    store: &mut EventStore,
+    definition: &str,
+    files: Option<BTreeMap<String, Vec<u8>>>,
+    convergence: review_core::CampaignConvergenceV1,
+    source: BTreeMap<String, Vec<u8>>,
+    exact_convergence: bool,
+) -> String {
     let (attempt_tokens, run_tokens) = if files.is_some() {
         (20_000, 50_000)
     } else {
@@ -39,9 +72,28 @@ pub fn open_round_authority_with_convergence(
     let pipeline = format!(
         "{definition}\n[budgets]\nunit = \"tokens\"\nattempt = {attempt_tokens}\nrun = {run_tokens}\n[convergence]\nclean_rounds = 2\nmax_rounds = 3\ngate = \"major\"\n"
     );
+    let pipeline = if exact_convergence {
+        pipeline.replace(
+            "clean_rounds = 2\nmax_rounds = 3\ngate = \"major\"",
+            &format!(
+                "clean_rounds = {}\nmax_rounds = {}\ngate = \"{}\"",
+                convergence.clean_rounds, convergence.max_rounds, convergence.gate
+            ),
+        )
+    } else {
+        pipeline
+    };
     let pipeline_id = cas.put(pipeline.as_bytes()).unwrap();
     let mut lock = review_config::lock::Lockfile::empty();
-    let mut entries = Vec::new();
+    let mut entries = source
+        .into_iter()
+        .map(|(path, bytes)| Entry {
+            path,
+            kind: EntryKind::File,
+            content: cas.put(&bytes).unwrap(),
+            size: bytes.len() as u64,
+        })
+        .collect::<Vec<_>>();
     let mut reviewers = Vec::new();
     let mut execution_policy_ids = vec![pipeline_id.clone()];
     if let Some(files) = files {

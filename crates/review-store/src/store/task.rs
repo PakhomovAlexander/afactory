@@ -25,7 +25,9 @@ mod delivery;
 pub mod execution;
 pub mod planning;
 mod report;
+pub use report::read_task_run_report;
 pub mod review_handoff;
+pub mod review_integration;
 mod review_round;
 pub use review_handoff::read_task_transition;
 mod source;
@@ -86,6 +88,30 @@ pub struct DeveloperGrant {
 /// package authority. Possession of actor strings or serialized PlanDecision does not implement
 /// this interface. Every execution adapter must use this same boundary on resume and dispatch.
 pub trait TaskAuthority: Sync {
+    fn validate_review_integration_selection(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _phase: &task::review_integration::TaskReviewIntegrationPhaseV1,
+        _evidence: &review_integration::TaskReviewIntegrationEvidence,
+    ) -> Result<(), String> {
+        Err("Captured Review Integration is not configured".into())
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn validate_review_integration_completion(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _phase: &task::review_integration::TaskReviewIntegrationPhaseV1,
+        _report: &task::report::TaskRunReportV2,
+        _events: &[NewEvent],
+        _evidence: &review_integration::TaskReviewIntegrationEvidence,
+    ) -> Result<(), String> {
+        Err("Captured Review Integration completion is not configured".into())
+    }
+
     /// Recompile both captured Review plans and the successor roots. Runs under the caller's
     /// Store mutex; implementations must be pure and must not re-lock SharedEventStore.
     #[allow(clippy::too_many_arguments)]
@@ -390,6 +416,15 @@ fn references(
         ]);
     }
     match change {
+        TaskChangeV1::ReviewIntegrationSelected { phase_id }
+        | TaskChangeV1::ReviewIntegrationFinished { phase_id, .. } => {
+            let phase = review_integration::read_task_review_integration(cas, phase_id)?;
+            refs.insert(phase_id.clone());
+            refs.extend(phase.artifact_refs());
+            if let TaskChangeV1::ReviewIntegrationFinished { report_id, .. } = change {
+                refs.extend(report::references(cas, report_id)?);
+            }
+        }
         TaskChangeV1::ReviewContinued { handoff_id } => {
             let handoff = review_handoff::read_task_review_handoff(cas, handoff_id)?;
             refs.insert(handoff_id.clone());
@@ -627,6 +662,10 @@ impl TaskProjection {
         } else {
             self.check_lease(transition)?;
             match &transition.change {
+                TaskChangeV1::ReviewIntegrationSelected { .. }
+                | TaskChangeV1::ReviewIntegrationFinished { .. } => {
+                    self.apply_review_integration(cas, &transition.change, transition.now_unix_ms)?;
+                }
                 TaskChangeV1::ReviewContinued { handoff_id } => {
                     self.apply_review_handoff(cas, handoff_id, transition.now_unix_ms)?;
                 }
@@ -870,7 +909,7 @@ impl TaskProjection {
                                     .map(|value| (name.clone(), value.clone()))
                             })
                             .collect();
-                        let expected_evidence: BTreeSet<_> = execution
+                        let mut expected_evidence: BTreeSet<_> = execution
                             .graph
                             .coverage
                             .values()
@@ -882,6 +921,27 @@ impl TaskProjection {
                             })
                             .flat_map(|port| port.artifact_ids.iter().cloned())
                             .collect();
+                        if let Some(integration) = execution.active_review_integration() {
+                            if !integration.finished() {
+                                return Err(conflict(
+                                    "Task must seal its activated Integration before finishing",
+                                ));
+                            }
+                            expected_evidence.insert(integration.phase_id().to_string());
+                            if let Some(report_id) = integration.report_id() {
+                                expected_evidence.insert(report_id.to_string());
+                            }
+                            if let Some((output_id, _)) = execution.outputs.get(integration.node())
+                            {
+                                expected_evidence.insert(output_id.clone());
+                            }
+                        } else if execution.graph.review_integration.is_some()
+                            && result.acceptance == TaskAcceptanceV1::Satisfied
+                        {
+                            return Err(conflict(
+                                "Task acceptance requires the captured Integration disposition",
+                            ));
+                        }
                         if result.outputs != expected_outputs
                             || result.evidence != expected_evidence
                         {
@@ -1009,6 +1069,7 @@ impl EventStore {
         // access; a removed or corrupted active artifact must never inherit cached authority.
         if let Some(state) = &state {
             review_handoff::validate_cached(self, cas, state)?;
+            review_integration::validate_cached(self, cas, state)?;
             execution::broker::validate_cached(cas, state)?;
             execution::owned::validate_cached(cas, state)?;
             if state.planning.is_some() {
@@ -1091,7 +1152,9 @@ impl EventStore {
             }
             if !matches!(
                 event.event_type,
-                EventType::TaskTransitionV1 | EventType::TaskTransitionV2
+                EventType::TaskTransitionV1
+                    | EventType::TaskTransitionV2
+                    | EventType::TaskTransitionV3
             ) {
                 return Err(conflict("Task log contains a foreign event"));
             }
@@ -1153,6 +1216,11 @@ impl EventStore {
             } else {
                 return Err(conflict("Task transition precedes genesis"));
             }
+        }
+        if let Some(state) = &state
+            && state.next_sequence != first
+        {
+            review_integration::validate_cached(self, cas, state)?;
         }
         *self.task_cache.borrow_mut() = state.clone();
         Ok(state)
@@ -1740,7 +1808,7 @@ impl EventStore {
             }
             plan
         };
-        if let Some(round) = review_round::ReviewRoundFence::capture(cas, &state.revision)? {
+        if let Some(round) = review_round::ReviewRoundFence::for_state(cas, &state)? {
             round.validate(&self.conn)?;
         }
         Ok((state, plan))

@@ -384,6 +384,201 @@ fn resource_manifest(loaded: &Loaded) -> review_core::CampaignManifestV1 {
 }
 
 #[test]
+fn original_review_task_envelope_preserves_round_caps_and_all_retry_wall_bounds() {
+    use crate::captured_review::ReviewMode;
+    use review_core::task::plan::WorkerExecutionV1;
+    let definition = PIPELINE.replace("version = 2", "version = 2\ncheck_timeout_seconds = 2")
+        + "\n[[checks]]\nname = \"one\"\nprogram = \"/bin/true\"\n"
+        + "\n[[checks]]\nname = \"two\"\nprogram = \"/bin/true\"\n"
+        + "\n[budgets]\nunit = \"tokens\"\nattempt = 9\nrun = 70\n"
+        + "\n[convergence]\nclean_rounds = 2\nmax_rounds = 3\ngate = \"major\"\n";
+    let loaded = crate::Definition::from_toml(&definition)
+        .unwrap()
+        .load()
+        .unwrap();
+    let mut manifest = resource_manifest(&loaded);
+    let mut executions: BTreeMap<_, _> = loaded
+        .reviewers()
+        .keys()
+        .map(|name| (name.clone(), WorkerExecutionV1::Command {}))
+        .collect();
+    let policy = resources::ReviewResourcePolicy {
+        uncapped_attempt_tokens: 1000,
+    };
+    let probe = review_graph::task::OperatorAttemptCost {
+        tokens: 4,
+        wall_ms: 5000,
+    };
+    let light = policy
+        .task_limits(
+            &loaded,
+            &manifest,
+            ReviewMode::Light,
+            &executions,
+            &probe,
+            1000,
+        )
+        .unwrap();
+    assert_eq!(
+        light.tokens, 70,
+        "The fallback cannot replace a captured Round cap"
+    );
+    assert_eq!(
+        light.max_attempts, 5,
+        "Two retryable Workers and one complete Gate sequence"
+    );
+    assert_eq!(
+        light.deadline_unix_ms, 41_000,
+        "Four nine-second Worker Attempts plus two two-second checks"
+    );
+    manifest.convergence.clean_rounds = 2;
+    manifest.convergence.max_rounds = 3;
+    executions.insert(
+        "second".into(),
+        WorkerExecutionV1::Model {
+            provider: "personal".into(),
+            provider_kind: "claude".into(),
+            principal_id: content_id(&json!({"account":1})).unwrap(),
+            model: "claude-fable-5-1".into(),
+            effort: "high".into(),
+        },
+    );
+    let heavy = policy
+        .task_limits(
+            &loaded,
+            &manifest,
+            ReviewMode::Heavy,
+            &executions,
+            &probe,
+            1000,
+        )
+        .unwrap();
+    assert_eq!(
+        heavy.tokens, 210,
+        "Probes consume the existing Round cap, not an added token grant"
+    );
+    assert_eq!(heavy.max_attempts, 18);
+    assert_eq!(heavy.deadline_unix_ms, 136_000);
+    assert_eq!(heavy.verification.tokens, 0);
+    assert!(
+        policy
+            .task_limits(
+                &loaded,
+                &manifest,
+                ReviewMode::Light,
+                &executions,
+                &probe,
+                1000
+            )
+            .is_err()
+    );
+    let mut missing = executions.clone();
+    missing.remove("second");
+    assert!(
+        policy
+            .task_limits(
+                &loaded,
+                &manifest,
+                ReviewMode::Heavy,
+                &missing,
+                &probe,
+                1000
+            )
+            .is_err()
+    );
+    let original = manifest.clone();
+    manifest.budgets.as_mut().unwrap().run_tokens += 1;
+    assert!(
+        policy
+            .task_limits(
+                &loaded,
+                &manifest,
+                ReviewMode::Heavy,
+                &executions,
+                &probe,
+                1000
+            )
+            .is_err()
+    );
+    assert!(
+        policy
+            .task_limits(
+                &loaded,
+                &original,
+                ReviewMode::Heavy,
+                &executions,
+                &probe,
+                review_core::json::SAFE_INTEGER_MAX as u64
+            )
+            .is_err()
+    );
+}
+
+#[test]
+fn original_review_task_envelope_counts_owned_children_and_only_eligible_integration_phases() {
+    use crate::captured_review::ReviewMode;
+    use review_core::task::plan::WorkerExecutionV1;
+    let definition = include_str!("../../../tests/fixtures/dynamic-v5.toml").to_string()
+        + "\n[[checks]]\nname = \"build\"\nprogram = \"/bin/true\"\n"
+        + "\n[integration]\npost_apply_checks = [\"build\"]\n"
+        + "\n[convergence]\nclean_rounds = 2\nmax_rounds = 3\ngate = \"major\"\n";
+    let loaded = crate::Definition::from_toml(&definition)
+        .unwrap()
+        .load()
+        .unwrap();
+    let mut manifest = resource_manifest(&loaded);
+    manifest.convergence.clean_rounds = 2;
+    manifest.convergence.max_rounds = 3;
+    let executions = loaded
+        .reviewers()
+        .keys()
+        .map(|name| (name.clone(), WorkerExecutionV1::Command {}))
+        .collect();
+    let policy = resources::ReviewResourcePolicy {
+        uncapped_attempt_tokens: 1,
+    };
+    let probe = review_graph::task::OperatorAttemptCost {
+        tokens: 4,
+        wall_ms: 5000,
+    };
+    let heavy = policy
+        .task_limits(
+            &loaded,
+            &manifest,
+            ReviewMode::Heavy,
+            &executions,
+            &probe,
+            1000,
+        )
+        .unwrap();
+    // Two Scatter children, each with its own retry; one retryable whole-Subject closeout;
+    // one Gate sequence. Integration can run after only the first two Rounds.
+    assert_eq!(heavy.max_attempts, (4 + 2 + 1) * 3 + 2);
+    assert_eq!(heavy.tokens, loaded.budgets().unwrap().run * 3);
+    assert_eq!(
+        heavy.deadline_unix_ms,
+        1000 + (6 * 9000 + loaded.check_timeout_seconds() * 1000) * 3
+            + 2 * loaded.check_timeout_seconds() * 1000
+    );
+    manifest.convergence.clean_rounds = 1;
+    manifest.convergence.max_rounds = 1;
+    let light = policy
+        .task_limits(
+            &loaded,
+            &manifest,
+            ReviewMode::Light,
+            &executions,
+            &probe,
+            1000,
+        )
+        .unwrap();
+    assert_eq!(
+        light.max_attempts, 7,
+        "Light Review never grants a promotion Attempt"
+    );
+}
+
+#[test]
 fn captured_review_resources_preserve_node_retry_and_round_caps_on_the_task_ledger() {
     use super::resources::{ReviewResourcePolicy, review_token_scopes};
     let definition = PIPELINE.replace(

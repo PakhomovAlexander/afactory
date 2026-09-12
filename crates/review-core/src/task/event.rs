@@ -9,6 +9,16 @@ use crate::is_digest;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskChangeV1 {
+    #[serde(skip)]
+    ReviewIntegrationSelected {
+        phase_id: String,
+    },
+    #[serde(skip)]
+    ReviewIntegrationFinished {
+        phase_id: String,
+        report_id: String,
+        integration_committed_event_id: Option<String>,
+    },
     /// Internal normalized form. Only TaskTransition@2 can carry Review handoff authority.
     #[serde(skip)]
     ReviewContinued {
@@ -113,6 +123,10 @@ impl TaskTransitionV1 {
             require(is_digest(id), "Invalid Task transition artifact ID")?;
         }
         match &self.change {
+            TaskChangeV1::ReviewIntegrationSelected { .. }
+            | TaskChangeV1::ReviewIntegrationFinished { .. } => {
+                Err("Review Integration requires TaskTransition@3".into())
+            }
             TaskChangeV1::ReviewContinued { .. } => {
                 Err("Review continuation requires TaskTransition@2".into())
             }
@@ -153,6 +167,12 @@ impl TaskTransitionV1 {
 
     pub fn artifact_refs(&self) -> Vec<&str> {
         match &self.change {
+            TaskChangeV1::ReviewIntegrationSelected { phase_id } => vec![phase_id],
+            TaskChangeV1::ReviewIntegrationFinished {
+                phase_id,
+                report_id,
+                ..
+            } => vec![phase_id, report_id],
             TaskChangeV1::ReviewContinued { handoff_id } => vec![handoff_id],
             TaskChangeV1::SourceRefreshed {
                 revision_id,
@@ -237,6 +257,108 @@ impl TaskTransitionV2 {
             epoch: self.epoch,
             now_unix_ms: self.now_unix_ms,
             change: TaskChangeV1::ReviewContinued { handoff_id },
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TaskChangeV3 {
+    ReviewIntegrationSelected {
+        phase_id: String,
+    },
+    ReviewIntegrationFinished {
+        phase_id: String,
+        report_id: String,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "super::present_option"
+        )]
+        integration_committed_event_id: Option<String>,
+    },
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskTransitionV3 {
+    pub writer: String,
+    pub epoch: u64,
+    pub now_unix_ms: u64,
+    pub change: TaskChangeV3,
+}
+impl TaskTransitionV3 {
+    pub fn validate(&self) -> Result<(), String> {
+        let phase = match &self.change {
+            TaskChangeV3::ReviewIntegrationSelected { phase_id } => phase_id,
+            TaskChangeV3::ReviewIntegrationFinished {
+                phase_id,
+                report_id,
+                integration_committed_event_id,
+            } => {
+                require(
+                    is_digest(report_id)
+                        && integration_committed_event_id
+                            .as_deref()
+                            .is_none_or(super::review_integration::event_id),
+                    "Invalid Integration finalization evidence",
+                )?;
+                phase_id
+            }
+        };
+        require(is_digest(phase), "Invalid Integration phase identity")?;
+        TaskTransitionV1 {
+            writer: self.writer.clone(),
+            epoch: self.epoch,
+            now_unix_ms: self.now_unix_ms,
+            change: TaskChangeV1::Resumed {},
+        }
+        .validate()
+    }
+    pub fn from_integration(value: &TaskTransitionV1) -> Option<Self> {
+        let change = match &value.change {
+            TaskChangeV1::ReviewIntegrationSelected { phase_id } => {
+                TaskChangeV3::ReviewIntegrationSelected {
+                    phase_id: phase_id.clone(),
+                }
+            }
+            TaskChangeV1::ReviewIntegrationFinished {
+                phase_id,
+                report_id,
+                integration_committed_event_id,
+            } => TaskChangeV3::ReviewIntegrationFinished {
+                phase_id: phase_id.clone(),
+                report_id: report_id.clone(),
+                integration_committed_event_id: integration_committed_event_id.clone(),
+            },
+            _ => return None,
+        };
+        Some(Self {
+            writer: value.writer.clone(),
+            epoch: value.epoch,
+            now_unix_ms: value.now_unix_ms,
+            change,
+        })
+    }
+    pub fn into_transition(self) -> TaskTransitionV1 {
+        let change = match self.change {
+            TaskChangeV3::ReviewIntegrationSelected { phase_id } => {
+                TaskChangeV1::ReviewIntegrationSelected { phase_id }
+            }
+            TaskChangeV3::ReviewIntegrationFinished {
+                phase_id,
+                report_id,
+                integration_committed_event_id,
+            } => TaskChangeV1::ReviewIntegrationFinished {
+                phase_id,
+                report_id,
+                integration_committed_event_id,
+            },
+        };
+        TaskTransitionV1 {
+            writer: self.writer,
+            epoch: self.epoch,
+            now_unix_ms: self.now_unix_ms,
+            change,
         }
     }
 }
