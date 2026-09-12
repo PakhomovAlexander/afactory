@@ -9,7 +9,7 @@ nodes. Reports explain execution; domain acceptance still requires its typed ver
 ```text
 Task node
    |
-   +-- prepare context fails -----> durable diagnostic, zero Attempts
+   +-- reserve -> capture fails ---> release + diagnostic, zero started Attempts
    |
    v
 start Attempt -> invoke Worker -> settle charge -> publish Task output

@@ -200,3 +200,9 @@ Schema parity, all 21 Task Store tests, all 70 pipeline tests (one opt-in probe 
 documentation tests and byte-identical frozen reproduction.
 Legacy Review still requires the actual reservation/context and domain-selected-evidence
 adapters; these recovery primitives alone do not complete its cutover.
+
+The next Review preparation boundary reserves the real common Attempt before pure context
+capture and binds admitted context before start ([ADR-0066](../adr/0066-reserve-task-attempts-before-binding-exact-context.md)).
+Legacy combined preparation records remain readable. Runtime and Store tests reject changed
+identity and unbound starts, release unstarted failures, fence old writers and preserve paid
+replay. Full checkpoint validation is pending; legacy Review conversion remains required.

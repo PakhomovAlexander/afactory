@@ -9,6 +9,7 @@ use review_core::task::plan::ExecutionPlanV1;
 use review_core::task::provider::*;
 use review_core::task::{ArtifactInputV1, TaskResultV1, TaskRevisionV1};
 use review_graph::task::{CompiledOperator, CompiledTask};
+use review_store::store::task::execution::ReservedTaskAttempt;
 use review_store::{Cas, store::task::execution::PreparedTaskAttempt};
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
@@ -188,6 +189,18 @@ impl TaskOperatorHost for ProviderTaskDomain<'_> {
         self.inner.commit_domain_output(cas, input, id, output)
     }
 
+    fn prepare_context_for_attempt(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: &ReservedTaskAttempt,
+    ) -> Result<String, String> {
+        if self.slots(input).is_none() {
+            self.inner.prepare_context_for_attempt(cas, input, attempt)
+        } else {
+            self.prepare_context(cas, input, attempt.feedback_ids())
+        }
+    }
     fn prepare_context(
         &self,
         cas: &Cas,
@@ -258,6 +271,20 @@ impl TaskDomain for ProviderTaskDomain<'_> {
             return Err("Provider context changed its admitted capability or input".into());
         }
         Ok(())
+    }
+    fn validate_context_for_attempt(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: &ReservedTaskAttempt,
+        id: &str,
+    ) -> Result<(), String> {
+        if self.slots(input).is_none() {
+            self.inner
+                .validate_context_for_attempt(cas, input, attempt, id)
+        } else {
+            self.validate_context(cas, input, attempt.feedback_ids(), id)
+        }
     }
     fn validate_output(
         &self,

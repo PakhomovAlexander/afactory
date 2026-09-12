@@ -90,6 +90,19 @@ pub enum TaskExecutionRecordV1 {
         /// Admitted retry feedback, never diagnostic prose or in-memory transcript state.
         feedback_ids: Vec<String>,
     },
+    /// Reserves the real Attempt identity before rendering its exact context.
+    Reserved {
+        invocation_id: String,
+        attempt_id: String,
+        reservation_id: String,
+        reserved_tokens: u64,
+        deadline_unix_ms: u64,
+        feedback_ids: Vec<String>,
+    },
+    ContextBound {
+        attempt_id: String,
+        context_id: String,
+    },
     Started {
         attempt_id: String,
     },
@@ -140,6 +153,15 @@ impl TaskExecutionRecordV1 {
                 refs.extend([invocation_id.as_str(), context_id.as_str()]);
                 refs.extend(feedback_ids.iter().map(String::as_str));
             }
+            Self::Reserved {
+                invocation_id,
+                feedback_ids,
+                ..
+            } => {
+                refs.push(invocation_id.as_str());
+                refs.extend(feedback_ids.iter().map(String::as_str));
+            }
+            Self::ContextBound { context_id, .. } => refs.push(context_id.as_str()),
             Self::Settled {
                 result,
                 raw_artifact_ids,
@@ -188,6 +210,14 @@ impl TaskExecutionRecordV1 {
                 deadline_unix_ms,
                 feedback_ids,
                 ..
+            }
+            | Self::Reserved {
+                attempt_id,
+                reservation_id,
+                reserved_tokens,
+                deadline_unix_ms,
+                feedback_ids,
+                ..
             } => {
                 require(
                     reservation_id
@@ -213,7 +243,9 @@ impl TaskExecutionRecordV1 {
                 )?;
                 Some(attempt_id)
             }
-            Self::Started { attempt_id } => Some(attempt_id),
+            Self::Started { attempt_id } | Self::ContextBound { attempt_id, .. } => {
+                Some(attempt_id)
+            }
             Self::Released { attempt_id, reason } => {
                 require(
                     !reason.trim().is_empty() && reason.chars().count() <= 65536,

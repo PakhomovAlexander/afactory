@@ -20,7 +20,7 @@ use review_core::task::{ArtifactInputV1, TaskRevisionV1};
 use review_core::{ArtifactEnvelope, Producer};
 use review_graph::task::{CompiledOperator, CompiledTask};
 use review_graph::{ArtifactMap, Dispatch, Node, NodeFailureClass, RunReport};
-use review_store::store::task::execution::PreparedTaskAttempt;
+use review_store::store::task::execution::{PreparedTaskAttempt, ReservedTaskAttempt};
 use review_store::store::task::{TaskAuthority, TaskLease, TaskProjection, task_run_id};
 use review_store::{Cas, EventStore, SharedEventStore, validate_envelope};
 
@@ -54,6 +54,17 @@ pub trait TaskOperatorHost: Sync {
         input: &TaskInvocationV1,
         feedback_ids: &[String],
     ) -> Result<String, String>;
+
+    /// Same pure capture boundary, with the actual persisted reservation available to render
+    /// adapters whose invocation protocol includes Attempt identity and resource authority.
+    fn prepare_context_for_attempt(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: &ReservedTaskAttempt,
+    ) -> Result<String, String> {
+        self.prepare_context(cas, input, attempt.feedback_ids())
+    }
 
     /// A paid operation receives its durably started Attempt capability. Implementations must
     /// report failed usage too. Pure installed operators receive None and cannot launch Workers.
@@ -267,23 +278,51 @@ impl<'a> TaskRuntime<'a> {
     }
 
     fn prepare(&self, input: &TaskInvocationV1) -> Result<PreparedTaskAttempt, String> {
-        let feedback = self
-            .projection()?
-            .execution
-            .ok_or("Task has no execution")?
-            .retry_feedback(&input.node);
-        let context_id = self.host.prepare_context(self.cas, input, &feedback)?;
-        self.store
+        let attempt = self
+            .store
             .lock()
             .expect("Task Store")
-            .prepare_task_attempt(
-                self.cas,
-                &self.lease,
-                &input.node,
-                &context_id,
-                self.authority,
-            )
-            .map_err(|e| e.to_string())
+            .reserve_task_attempt(self.cas, &self.lease, &input.node, self.authority)
+            .map_err(|e| e.to_string())?;
+        // Release the Store lock before pure host capture; it may read shared domain evidence.
+        let context = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.host
+                .prepare_context_for_attempt(self.cas, input, &attempt)
+        }))
+        .unwrap_or_else(|_| Err("Task context capture panicked".into()));
+        let result = context.and_then(|context_id| {
+            self.store
+                .lock()
+                .expect("Task Store")
+                .bind_task_attempt_context(
+                    self.cas,
+                    &self.lease,
+                    &attempt,
+                    &context_id,
+                    self.authority,
+                )
+                .map_err(|e| e.to_string())
+        });
+        if result.is_err() {
+            // Failure is recorded in the RunReport. Release uses a bounded stable reason,
+            // never arbitrary host error text; old-writer recovery covers a lost lease.
+            self.store
+                .lock()
+                .expect("Task Store")
+                .release_reserved_task_attempt(
+                    self.cas,
+                    &self.lease,
+                    &attempt,
+                    "Task context was not admitted",
+                )
+                .map_err(|e| {
+                    format!(
+                        "{}; reservation release failed: {e}",
+                        result.as_ref().unwrap_err()
+                    )
+                })?;
+        }
+        result
     }
 
     fn record_output(

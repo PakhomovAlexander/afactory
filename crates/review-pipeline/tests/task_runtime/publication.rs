@@ -291,6 +291,8 @@ fn pre_attempt_context_failure_remains_inspectable_after_reopening() {
         .unwrap();
     let execution = state.execution.unwrap();
     assert_eq!(execution.budget.begun_attempts(), 0);
+    assert_eq!(execution.budget.reserved_tokens(), 0);
+    assert!(execution.pending_attempts().is_empty());
     assert_eq!(execution.budget.committed_tokens(), 0);
     let report: TaskRunReportV1 =
         serde_json::from_value(f.cas.get_json(&state.run_reports[0]).unwrap()["payload"].clone())

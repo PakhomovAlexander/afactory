@@ -24,14 +24,59 @@ struct RecordedAttempt {
     plan_id: String,
     reservation: TaskReservation,
     prepared_epoch: u64,
+    context_id: Option<String>,
+    feedback_ids: Vec<String>,
     started: bool,
     released: bool,
     settlement: Option<TaskExecutionRecordV1>,
 }
 
+/// Unstarted reservation authority. Only the Store can construct this capability; a Worker
+/// cannot choose its identity, feedback, writer epoch or resource allowance.
+#[derive(Debug, Clone)]
+pub struct ReservedTaskAttempt {
+    task_id: String,
+    invocation_id: String,
+    plan_id: String,
+    writer_epoch: u64,
+    id: String,
+    node: String,
+    reservation: TaskReservation,
+    feedback_ids: Vec<String>,
+}
+
+impl ReservedTaskAttempt {
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+    pub fn plan_id(&self) -> &str {
+        &self.plan_id
+    }
+    pub fn writer_epoch(&self) -> u64 {
+        self.writer_epoch
+    }
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn node(&self) -> &str {
+        &self.node
+    }
+    pub fn reservation(&self) -> &TaskReservation {
+        &self.reservation
+    }
+    pub fn invocation_id(&self) -> &str {
+        &self.invocation_id
+    }
+    pub fn feedback_ids(&self) -> &[String] {
+        &self.feedback_ids
+    }
+}
+
 /// The common Store returns this after publishing the reservation. It is not a wire type.
 #[derive(Debug, Clone)]
 pub struct PreparedTaskAttempt {
+    task_id: String,
+    writer_epoch: u64,
     id: String,
     node: String,
     reservation: TaskReservation,
@@ -39,6 +84,12 @@ pub struct PreparedTaskAttempt {
 }
 
 impl PreparedTaskAttempt {
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+    pub fn writer_epoch(&self) -> u64 {
+        self.writer_epoch
+    }
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -103,7 +154,8 @@ pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError>
     let mut invocation_ids = Vec::new();
     match &record {
         TaskExecutionRecordV1::Invocation { invocation_id }
-        | TaskExecutionRecordV1::Prepared { invocation_id, .. } => {
+        | TaskExecutionRecordV1::Prepared { invocation_id, .. }
+        | TaskExecutionRecordV1::Reserved { invocation_id, .. } => {
             invocation_ids.push(invocation_id.clone())
         }
         TaskExecutionRecordV1::Published { output_id, .. }
@@ -131,6 +183,34 @@ pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError>
 }
 
 impl TaskExecutionProjection {
+    fn check_reservation(
+        &self,
+        lease: &TaskLease,
+        attempt: &ReservedTaskAttempt,
+    ) -> Result<&RecordedAttempt, StoreError> {
+        let recorded = self
+            .attempts
+            .get(&attempt.id)
+            .ok_or_else(|| conflict("Unknown Task reservation"))?;
+        if attempt.task_id != lease.task_id
+            || attempt.writer_epoch != lease.epoch
+            || recorded.prepared_epoch != lease.epoch
+            || recorded.invocation_id != attempt.invocation_id
+            || recorded.plan_id != attempt.plan_id
+            || recorded.reservation != attempt.reservation
+            || recorded.feedback_ids != attempt.feedback_ids
+            || recorded.started
+            || recorded.released
+            || recorded.settlement.is_some()
+            || self.invocations.get(&attempt.node).map(|(id, _)| id) != Some(&attempt.invocation_id)
+        {
+            return Err(conflict(
+                "Task reservation is stale or belongs to another authority",
+            ));
+        }
+        Ok(recorded)
+    }
+
     pub(super) fn enter_execution(
         &mut self,
         graph: CompiledTask,
@@ -420,6 +500,31 @@ impl TaskExecutionProjection {
 }
 
 impl TaskProjection {
+    fn check_prepared_capability(
+        &self,
+        lease: &TaskLease,
+        attempt: &PreparedTaskAttempt,
+    ) -> Result<(), StoreError> {
+        let recorded = self
+            .execution
+            .as_ref()
+            .and_then(|e| e.attempts.get(&attempt.id))
+            .ok_or_else(|| conflict("Unknown prepared Task Attempt"))?;
+        if attempt.task_id != lease.task_id
+            || attempt.writer_epoch != lease.epoch
+            || recorded.prepared_epoch != lease.epoch
+            || recorded.context_id.as_deref() != Some(attempt.context_id.as_str())
+            || recorded.reservation != attempt.reservation
+            || recorded.reservation.node != attempt.node
+            || self.plan_id.as_ref() != Some(&recorded.plan_id)
+        {
+            return Err(conflict(
+                "Prepared Task capability differs from admitted context or authority",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn apply_execution(
         &mut self,
         cas: &Cas,
@@ -432,6 +537,8 @@ impl TaskProjection {
             record,
             TaskExecutionRecordV1::Invocation { .. }
                 | TaskExecutionRecordV1::Prepared { .. }
+                | TaskExecutionRecordV1::Reserved { .. }
+                | TaskExecutionRecordV1::ContextBound { .. }
                 | TaskExecutionRecordV1::Started { .. }
                 | TaskExecutionRecordV1::Published { .. }
         );
@@ -491,6 +598,14 @@ impl TaskProjection {
                 deadline_unix_ms,
                 feedback_ids,
                 ..
+            }
+            | TaskExecutionRecordV1::Reserved {
+                invocation_id,
+                attempt_id,
+                reservation_id,
+                reserved_tokens,
+                deadline_unix_ms,
+                feedback_ids,
             } => {
                 let input = invocation(cas, invocation_id)?;
                 if execution.invocations.get(&input.node).map(|(id, _)| id) != Some(invocation_id)
@@ -550,18 +665,45 @@ impl TaskProjection {
                         plan_id: input.plan_id.clone(),
                         reservation,
                         prepared_epoch: self.epoch,
+                        context_id: match &record {
+                            TaskExecutionRecordV1::Prepared { context_id, .. } => {
+                                Some(context_id.clone())
+                            }
+                            _ => None,
+                        },
+                        feedback_ids: feedback_ids.clone(),
                         started: false,
                         released: false,
                         settlement: None,
                     },
                 );
             }
-            TaskExecutionRecordV1::Started { attempt_id } => {
+            TaskExecutionRecordV1::ContextBound {
+                attempt_id,
+                context_id,
+            } => {
                 let attempt = execution
                     .attempts
                     .get_mut(attempt_id)
                     .ok_or_else(|| conflict("Unknown Task Attempt"))?;
                 if attempt.started
+                    || attempt.released
+                    || attempt.settlement.is_some()
+                    || attempt.prepared_epoch != self.epoch
+                    || attempt.context_id.is_some()
+                    || self.plan_id.as_ref() != Some(&attempt.plan_id)
+                {
+                    return Err(conflict("Task context cannot bind this reservation"));
+                }
+                attempt.context_id = Some(context_id.clone());
+            }
+            TaskExecutionRecordV1::Started { attempt_id } => {
+                let attempt = execution
+                    .attempts
+                    .get_mut(attempt_id)
+                    .ok_or_else(|| conflict("Unknown Task Attempt"))?;
+                if attempt.context_id.is_none()
+                    || attempt.started
                     || attempt.released
                     || attempt.settlement.is_some()
                     || attempt.prepared_epoch != self.epoch
@@ -847,6 +989,123 @@ impl EventStore {
         Ok(())
     }
 
+    /// Reserve before rendering, so exact context can include the real Attempt authority.
+    /// This does not start work or consume an Attempt; the reservation can still be released.
+    pub fn reserve_task_attempt(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        node: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<ReservedTaskAttempt, StoreError> {
+        let (state, _) = self.checked_task_dispatch(cas, lease, authority)?;
+        let mut execution = state
+            .execution
+            .ok_or_else(|| conflict("Task has no recorded invocation"))?;
+        let (invocation_id, input) = execution
+            .invocations
+            .get(node)
+            .ok_or_else(|| conflict("Unknown Task invocation"))?;
+        let time = now()?;
+        let reservation = execution.budget.prepare(node, time).map_err(conflict)?;
+        let attempt = execution.ledger.dispatch(node);
+        let reserved = ReservedTaskAttempt {
+            task_id: lease.task_id.clone(),
+            invocation_id: invocation_id.clone(),
+            plan_id: input.plan_id.clone(),
+            writer_epoch: lease.epoch,
+            id: attempt.0,
+            node: node.into(),
+            reservation,
+            feedback_ids: execution.retry_feedback(node),
+        };
+        self.task_execution_record(
+            cas,
+            lease,
+            TaskExecutionRecordV1::Reserved {
+                invocation_id: reserved.invocation_id.clone(),
+                attempt_id: reserved.id.clone(),
+                reservation_id: reserved.reservation.id.clone(),
+                reserved_tokens: reserved.reservation.tokens,
+                deadline_unix_ms: reserved.reservation.deadline_unix_ms,
+                feedback_ids: reserved.feedback_ids.clone(),
+            },
+            time,
+        )?;
+        Ok(reserved)
+    }
+
+    /// Bind only the context admitted for this exact live reservation. A second binding is
+    /// rejected, including under the same writer; recovery releases unstarted reservations.
+    pub fn bind_task_attempt_context(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        attempt: &ReservedTaskAttempt,
+        context_id: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<PreparedTaskAttempt, StoreError> {
+        let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
+        let execution = state
+            .execution
+            .as_ref()
+            .ok_or_else(|| conflict("Task has no execution"))?;
+        let recorded = execution.check_reservation(lease, attempt)?;
+        if recorded.context_id.is_some() {
+            return Err(conflict("Task reservation already has a bound context"));
+        }
+        let input = invocation(cas, &attempt.invocation_id)?;
+        authority
+            .validate_context_for_attempt(cas, &state.revision, &plan, &input, attempt, context_id)
+            .map_err(conflict)?;
+        // Domain callbacks cannot leave stale plan, revocation or artifact authority admitted.
+        self.check_task_dispatch(cas, lease, authority)?;
+        self.task_execution_record(
+            cas,
+            lease,
+            TaskExecutionRecordV1::ContextBound {
+                attempt_id: attempt.id.clone(),
+                context_id: context_id.into(),
+            },
+            now()?,
+        )?;
+        Ok(PreparedTaskAttempt {
+            task_id: lease.task_id.clone(),
+            writer_epoch: lease.epoch,
+            id: attempt.id.clone(),
+            node: attempt.node.clone(),
+            reservation: attempt.reservation.clone(),
+            context_id: context_id.into(),
+        })
+    }
+
+    pub fn release_reserved_task_attempt(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        attempt: &ReservedTaskAttempt,
+        reason: &str,
+    ) -> Result<(), StoreError> {
+        let state = self
+            .task_projection(cas, lease.task_id())?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        state
+            .execution
+            .as_ref()
+            .ok_or_else(|| conflict("Task has no execution"))?
+            .check_reservation(lease, attempt)?;
+        self.task_execution_record(
+            cas,
+            lease,
+            TaskExecutionRecordV1::Released {
+                attempt_id: attempt.id.clone(),
+                reason: reason.into(),
+            },
+            now()?,
+        )?;
+        Ok(())
+    }
+
     pub fn prepare_task_attempt(
         &mut self,
         cas: &Cas,
@@ -909,6 +1168,8 @@ impl EventStore {
             time,
         )?;
         Ok(PreparedTaskAttempt {
+            task_id: lease.task_id.clone(),
+            writer_epoch: lease.epoch,
             id: attempt.0,
             node: node.into(),
             reservation,
@@ -923,7 +1184,8 @@ impl EventStore {
         attempt: &PreparedTaskAttempt,
         authority: &dyn TaskAuthority,
     ) -> Result<(), StoreError> {
-        self.check_task_dispatch(cas, lease, authority)?;
+        let (state, _) = self.checked_task_dispatch(cas, lease, authority)?;
+        state.check_prepared_capability(lease, attempt)?;
         self.task_execution_record(
             cas,
             lease,
@@ -942,6 +1204,10 @@ impl EventStore {
         attempt: &PreparedTaskAttempt,
         reason: &str,
     ) -> Result<(), StoreError> {
+        let state = self
+            .task_projection(cas, lease.task_id())?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        state.check_prepared_capability(lease, attempt)?;
         self.task_execution_record(
             cas,
             lease,

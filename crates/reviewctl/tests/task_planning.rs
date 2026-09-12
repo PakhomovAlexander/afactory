@@ -550,7 +550,12 @@ fn planner_repairs_once_from_durable_compiler_feedback_and_never_runs_its_propos
         .as_array()
         .unwrap()
         .iter()
-        .filter(|entry| entry["record"]["kind"] == "prepared")
+        .filter(|entry| {
+            matches!(
+                entry["record"]["kind"].as_str(),
+                Some("prepared" | "reserved")
+            )
+        })
         .collect();
     assert_eq!(
         prepared[1]["record"]["feedback_ids"]

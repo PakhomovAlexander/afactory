@@ -129,3 +129,5 @@ options you rejected and why — that is the part future-you needs.
 - [0063 — Require goal acceptance alongside embedded Review](0063-require-goal-acceptance-alongside-embedded-review.md)
 - [0064 — Reuse structural validation with fresh authority checks](0064-reuse-structural-validation-with-fresh-authority-checks.md)
 - [0065 — Persist Task run diagnostics and recover domain publication](0065-persist-task-run-diagnostics-and-recover-domain-publication.md)
+- [0066 — Reserve Task Attempts before binding exact
+  context](0066-reserve-task-attempts-before-binding-exact-context.md)

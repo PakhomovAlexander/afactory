@@ -20,7 +20,7 @@ use review_store::Cas;
 use review_store::store::task::{DeveloperGrant, TaskAuthority, task_run_id};
 
 use super::{TaskOperatorHost, TaskWorkOutput, envelope};
-use review_store::store::task::execution::PreparedTaskAttempt;
+use review_store::store::task::execution::{PreparedTaskAttempt, ReservedTaskAttempt};
 
 /// Installed host policy chooses the actual environment; a Pipeline cannot assert isolation.
 pub trait TaskEnvironment: Sync {
@@ -141,6 +141,15 @@ pub trait TaskDomain: TaskOperatorHost {
         feedback: &[String],
         context_id: &str,
     ) -> Result<(), String>;
+    fn validate_context_for_attempt(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: &ReservedTaskAttempt,
+        context_id: &str,
+    ) -> Result<(), String> {
+        self.validate_context(cas, input, attempt.feedback_ids(), context_id)
+    }
     fn validate_output(
         &self,
         cas: &Cas,
@@ -245,6 +254,18 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         id: &str,
     ) -> Result<(), String> {
         self.domain.validate_context(cas, input, feedback, id)
+    }
+    fn validate_context_for_attempt(
+        &self,
+        cas: &Cas,
+        _: &TaskRevisionV1,
+        _: &ExecutionPlanV1,
+        input: &TaskInvocationV1,
+        attempt: &ReservedTaskAttempt,
+        id: &str,
+    ) -> Result<(), String> {
+        self.domain
+            .validate_context_for_attempt(cas, input, attempt, id)
     }
     fn validate_output(
         &self,
@@ -616,6 +637,18 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
             None => self.domain.prepare_context(cas, input, feedback),
         }
     }
+    fn prepare_context_for_attempt(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: &ReservedTaskAttempt,
+    ) -> Result<String, String> {
+        if self.workers.contains_key(&input.node) {
+            self.prepare_context(cas, input, attempt.feedback_ids())
+        } else {
+            self.domain.prepare_context_for_attempt(cas, input, attempt)
+        }
+    }
     fn execute(
         &self,
         cas: &Cas,
@@ -675,6 +708,19 @@ impl TaskDomain for CapturedTaskHost<'_> {
             self.domain
                 .validate_context(cas, input, feedback, context_id)
         }
+    }
+    fn validate_context_for_attempt(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: &ReservedTaskAttempt,
+        context_id: &str,
+    ) -> Result<(), String> {
+        if self.workers.contains_key(&input.node) {
+            self.validate_context(cas, input, attempt.feedback_ids(), context_id)?;
+        }
+        self.domain
+            .validate_context_for_attempt(cas, input, attempt, context_id)
     }
     fn validate_output(
         &self,

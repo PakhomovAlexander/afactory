@@ -179,6 +179,18 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
             context_id: id.clone(),
             feedback_ids: vec![],
         },
+        TaskExecutionRecordV1::Reserved {
+            invocation_id: id.clone(),
+            attempt_id: attempt_id.clone(),
+            reservation_id: "reservation:0".into(),
+            reserved_tokens: 10,
+            deadline_unix_ms: 1000,
+            feedback_ids: vec![id.clone()],
+        },
+        TaskExecutionRecordV1::ContextBound {
+            attempt_id: attempt_id.clone(),
+            context_id: id.clone(),
+        },
         TaskExecutionRecordV1::Started {
             attempt_id: attempt_id.clone(),
         },

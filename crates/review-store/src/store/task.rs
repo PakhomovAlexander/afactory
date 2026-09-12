@@ -121,6 +121,26 @@ pub trait TaskAuthority: Sync {
     ) -> Result<(), String> {
         Err("Task context admission is not configured".into())
     }
+    /// Adapters whose prompt includes Attempt authority validate the exact Store reservation.
+    /// This runs after pure capture and before the context can become executable.
+    fn validate_context_for_attempt(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        invocation: &review_core::task::execution::TaskInvocationV1,
+        attempt: &execution::ReservedTaskAttempt,
+        context_id: &str,
+    ) -> Result<(), String> {
+        self.validate_context(
+            cas,
+            task,
+            plan,
+            invocation,
+            attempt.feedback_ids(),
+            context_id,
+        )
+    }
     /// Recompute acceptance from exact durable output/verification receipts, not result prose.
     fn validate_result(
         &self,

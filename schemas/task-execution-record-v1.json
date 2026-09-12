@@ -75,6 +75,74 @@
       "additionalProperties": false,
       "required": [
         "kind",
+        "invocation_id",
+        "attempt_id",
+        "reservation_id",
+        "reserved_tokens",
+        "deadline_unix_ms",
+        "feedback_ids"
+      ],
+      "properties": {
+        "kind": {
+          "const": "reserved"
+        },
+        "invocation_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]{26}$"
+        },
+        "reservation_id": {
+          "type": "string",
+          "pattern": "^reservation:[0-9]{1,20}$"
+        },
+        "reserved_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "deadline_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "feedback_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "maxItems": 16,
+          "uniqueItems": true
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "attempt_id",
+        "context_id"
+      ],
+      "properties": {
+        "kind": {
+          "const": "context_bound"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]{26}$"
+        },
+        "context_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
         "attempt_id"
       ],
       "properties": {

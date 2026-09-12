@@ -16,6 +16,8 @@ use serde_json::json;
 
 #[path = "task_runtime/publication.rs"]
 mod publication;
+#[path = "task_runtime/reservation.rs"]
+mod reservation;
 
 struct Fixture {
     _directory: tempfile::TempDir,
