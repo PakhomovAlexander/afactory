@@ -227,6 +227,9 @@ inputs; the Store compares Task and Review prefixes in one transaction. Receipt 
 guards consume the checked selection without adding a legacy Attempt or charge. Two Store
 regressions cover publication order, revocation, replay, forged append, changed routing or
 metadata, Proposal disposition and competing-Store comparisons. All 60 schema parity tests pass.
-All Store and pipeline suites, workspace Clippy, formatting and Markdown pass. The full workspace
-gate is pending. The legacy entry-point
+All 146 Store tests (two opt-in probes ignored), all 71 pipeline tests (one opt-in probe ignored),
+workspace Clippy, formatting and Markdown pass. The full workspace gate at `2445f8f` (stacked as
+`f54d16a`) passes **819 tests, zero failures, 15 ignored**, across 113 suites, including
+documentation tests and byte-identical frozen reproduction. The preceding operation checkpoint
+`63aa222` passes Check, CLI smoke and container probes in CI run `34670847456`. The legacy entry-point
 and broker adapters, owned Scatter and original-allowance Round continuation remain required.

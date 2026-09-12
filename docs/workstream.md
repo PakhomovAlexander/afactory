@@ -14,8 +14,10 @@ pass 811 local tests, documentation tests and frozen reproduction at `d0d4ad0`; 
 passes at `c45a55b`. Actual reservation followed by exact-context binding passes 814 tests,
 documentation tests and frozen reproduction at `7ba2338` (stacked as `2d8421e`). One-invocation
 Review operation extraction, typed side metadata and common Attempt currentness pass the full
-gate at `d63d8b2`: 816 tests, zero failures, 15 ignored. The legacy entry-point cutover and P14
-release evidence remain required. The completed
+gate at `d63d8b2`: 816 tests, zero failures, 15 ignored; CI passes at `63aa222`. Canonical Review
+selection from the common Task ledger passes the complete gate at `2445f8f` (stacked as
+`f54d16a`): 819 tests, zero failures, 15 ignored. The legacy entry-point cutover and P14 release
+evidence remain required. The completed
 M0–M9 record below remains the compatibility foundation.
 
 **Status:** M0–M9 are complete and shipped in private release `v0.6.0` from exact `main` commit
