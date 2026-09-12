@@ -151,6 +151,9 @@ pub struct CompiledTask {
     pub replaced_workers: BTreeMap<String, BTreeSet<String>>,
     pub max_parallel: u32,
     pub allowances: BTreeMap<String, NodeAllowance>,
+    /// Aggregate caps for exact nodes or bounded child groups, charged by the common ledger.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub token_scopes: BTreeMap<String, review_attempt::task_budget::TaskTokenScope>,
 }
 
 impl CompiledTask {
@@ -307,6 +310,11 @@ impl CompiledTask {
         // unconditional non-verifier. Provider admission guards cannot hide mandatory work.
         let mut minimum_tokens = limits.verification.tokens;
         let mut minimum_attempts = u64::from(limits.verification.attempts);
+        let mut scope_minimum: BTreeMap<String, u64> = self
+            .token_scopes
+            .keys()
+            .map(|name| (name.clone(), 0))
+            .collect();
         let mut root_attempts = self
             .allowances
             .values()
@@ -317,6 +325,17 @@ impl CompiledTask {
                 .nodes
                 .get(name)
                 .ok_or("Allowance has no compiled node")?;
+            let protected = allowance
+                .tokens_per_attempt
+                .checked_mul(u64::from(allowance.verification_attempts))
+                .ok_or("Task scope verifier token overflow")?;
+            for (scope, minimum) in &mut scope_minimum {
+                if self.token_scopes[scope].contains(name) {
+                    *minimum = minimum
+                        .checked_add(protected)
+                        .ok_or("Task scope token total overflow")?;
+                }
+            }
             if allowance.verification_attempts == 0
                 && node.conditions.iter().all(|condition| {
                     self.nodes
@@ -331,6 +350,20 @@ impl CompiledTask {
                     .ok_or("Task resource total overflow")?;
                 minimum_attempts += 1;
                 root_attempts += 1;
+                for (scope, minimum) in &mut scope_minimum {
+                    if self.token_scopes[scope].contains(name) {
+                        *minimum = minimum
+                            .checked_add(allowance.tokens_per_attempt)
+                            .ok_or("Task scope token total overflow")?;
+                    }
+                }
+            }
+        }
+        for (scope, minimum) in scope_minimum {
+            if minimum > self.token_scopes[&scope].tokens {
+                return Err(format!(
+                    "Task token scope {scope} cannot retain verification and mandatory work"
+                ));
             }
         }
         if minimum_tokens > limits.tokens || minimum_attempts > u64::from(limits.max_attempts) {
@@ -343,12 +376,14 @@ impl CompiledTask {
         {
             return Err("Root Pipeline cannot retain verification and mandatory Provider admission within its Attempt bound".into());
         }
-        TaskBudget::new(limits, self.allowances.clone())?.with_call_limits(
-            self.calls
-                .iter()
-                .map(|(scope, call)| (scope.clone(), call.max_attempts))
-                .collect(),
-        )
+        TaskBudget::new(limits, self.allowances.clone())?
+            .with_call_limits(
+                self.calls
+                    .iter()
+                    .map(|(scope, call)| (scope.clone(), call.max_attempts))
+                    .collect(),
+            )?
+            .with_token_scopes(self.token_scopes.clone())
     }
 
     pub fn run(&self, dispatch: &(dyn crate::Dispatch + Sync)) -> Result<crate::RunReport, String> {
@@ -606,6 +641,7 @@ fn compile_structure_mode(
             replaced_workers: BTreeMap::new(),
             max_parallel: definition.max_parallel,
             allowances: BTreeMap::new(),
+            token_scopes: BTreeMap::new(),
         },
     };
     let mut root_inputs = BTreeMap::new();

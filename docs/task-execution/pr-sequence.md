@@ -268,3 +268,14 @@ shim added SDK environment variables; resolving the actual interpreter before is
 all original transport assertions and fixes the fixture. The captured frontend at `50e9e29`
 also passes CI run `34676584751`: Check, CLI smoke and container probes.
 Captured plan admission, actual host/CLI wiring and the previously listed cutover gates remain.
+
+Captured Review loading is now shared with the legacy CLI. Both recorded authority layouts,
+light/heavy convergence, Snapshot reachability and strict package/policy checks are retained.
+Two direct loader regressions and all 19 Campaign lifecycle tests pass; workspace Clippy passes.
+The next common budget checkpoint adds named aggregate token scopes, protected verification
+inside each scope, retained scope authority across graph replacement and late usage charged
+to every original scope. The Attempt/graph/Store regression run passes 214 tests, zero failures,
+two ignored; all seven final scope cases and the real Store reopen/refused-retry case pass.
+Workspace Clippy and changed-document Markdown pass. A complete gate follows. These changes
+support captured executable-plan admission; they do not yet connect the legacy CLI to Task
+execution. ADR-0071 records the shared authority and scope-lifetime boundaries.

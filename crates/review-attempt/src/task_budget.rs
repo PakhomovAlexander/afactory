@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Budget, BudgetLedger, Reservation, Scope};
 
+mod scopes;
+pub use scopes::TaskTokenScope;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeAllowance {
@@ -54,6 +57,8 @@ pub struct TaskBudget {
     last_time: u64,
     breached: bool,
     call_limits: BTreeMap<String, u32>,
+    token_scopes: BTreeMap<String, TaskTokenScope>,
+    captured_token_scopes: BTreeMap<String, TaskTokenScope>,
     retired_attempts: u64,
     deferred_verification: bool,
 }
@@ -130,6 +135,8 @@ impl TaskBudget {
             last_time: 0,
             breached: false,
             call_limits: BTreeMap::new(),
+            token_scopes: BTreeMap::new(),
+            captured_token_scopes: BTreeMap::new(),
             retired_attempts: 0,
             deferred_verification: false,
         })
@@ -178,6 +185,7 @@ impl TaskBudget {
         self.retired_attempts = self.begun_attempts();
         self.nodes.clear();
         self.call_limits.clear();
+        self.token_scopes.clear();
         self.deferred_verification = true;
         self.last_time = now_unix_ms;
         Ok(())
@@ -201,6 +209,23 @@ impl TaskBudget {
         &mut self,
         allowances: BTreeMap<String, NodeAllowance>,
         call_limits: BTreeMap<String, u32>,
+        now_unix_ms: u64,
+        preparation: bool,
+    ) -> Result<(), String> {
+        self.install_graph_with_token_scopes(
+            allowances,
+            call_limits,
+            BTreeMap::new(),
+            now_unix_ms,
+            preparation,
+        )
+    }
+
+    pub fn install_graph_with_token_scopes(
+        &mut self,
+        allowances: BTreeMap<String, NodeAllowance>,
+        call_limits: BTreeMap<String, u32>,
+        token_scopes: BTreeMap<String, TaskTokenScope>,
         now_unix_ms: u64,
         preparation: bool,
     ) -> Result<(), String> {
@@ -231,11 +256,16 @@ impl TaskBudget {
         } else {
             next
         };
-        self.retired_attempts = self.begun_attempts();
-        self.nodes = next.nodes;
-        self.call_limits = next.call_limits;
-        self.deferred_verification = preparation;
-        self.last_time = now_unix_ms;
+        // Installing a new graph can fail on a retained scope's committed usage. Validate
+        // the complete replacement before changing any node credit or active membership.
+        let mut candidate = self.clone();
+        candidate.retired_attempts = self.begun_attempts();
+        candidate.nodes = next.nodes;
+        candidate.call_limits = next.call_limits;
+        candidate.deferred_verification = preparation;
+        candidate.last_time = now_unix_ms;
+        candidate.install_token_scopes(token_scopes)?;
+        *self = candidate;
         Ok(())
     }
 
@@ -389,9 +419,10 @@ impl TaskBudget {
         {
             return Err("Task token limit protects still-required verification".into());
         }
+        let scopes = self.reservation_scopes(node)?;
         let tokens = self
             .tokens
-            .reserve(&[Scope::Run], allowance.tokens_per_attempt)
+            .reserve(&scopes, allowance.tokens_per_attempt)
             .map_err(|e| e.to_string())?;
         let public = TaskReservation {
             id: tokens.id.clone(),
@@ -512,9 +543,13 @@ impl TaskBudget {
         }
         if let Some(previous) = held.settled {
             if actual > previous {
-                let total = add(self.tokens.committed(&Scope::Run), actual - previous)?;
-                add(total, self.tokens.reserved(&Scope::Run))?;
-                self.tokens = self.tokens.clone().with_committed(Scope::Run, total);
+                let mut updated = self.tokens.clone();
+                for scope in held.tokens.scopes() {
+                    let total = add(self.tokens.committed(scope), actual - previous)?;
+                    add(total, self.tokens.reserved(scope))?;
+                    updated = updated.with_committed(scope.clone(), total);
+                }
+                self.tokens = updated;
                 held.settled = Some(actual);
             }
         } else {

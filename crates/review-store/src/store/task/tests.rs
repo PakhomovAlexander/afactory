@@ -6,6 +6,7 @@ mod report;
 mod reservation;
 mod review;
 mod source;
+mod token_scopes;
 
 struct Authority {
     generated: Vec<GeneratedOriginV1>,

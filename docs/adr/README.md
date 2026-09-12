@@ -138,3 +138,4 @@ options you rejected and why — that is the part future-you needs.
 - [0069 — Compile captured Review ports with explicit artifact
   codecs](0069-compile-captured-review-ports-with-explicit-artifact-codecs.md)
 - [0070 — Separate Review domain operations and fence Task dispatch by Round](0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md)
+- [0071 — Share captured Review authority and Task token scopes](0071-share-captured-review-authority-and-task-token-scopes.md)

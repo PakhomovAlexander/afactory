@@ -227,14 +227,16 @@ impl TaskExecutionProjection {
             .budget(self.budget.remaining_limits())
             .map_err(conflict)?;
         self.budget
-            .enter_execution(
+            .install_graph_with_token_scopes(
                 graph.allowances.clone(),
                 graph
                     .calls
                     .iter()
                     .map(|(name, call)| (name.clone(), call.max_attempts))
                     .collect(),
+                graph.token_scopes.clone(),
                 time,
+                false,
             )
             .map_err(conflict)?;
         self.graph = graph;

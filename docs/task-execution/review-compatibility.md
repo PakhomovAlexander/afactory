@@ -86,6 +86,13 @@ The trusted context adapter and legacy CLI still require this connection to be w
 execution. Canonical replay, inspection and broker currentness also need their adapter paths;
 synthetic legacy Attempt lifecycle events cannot substitute for them.
 
+The captured definition loader is now shared with the CLI, retaining package/policy validation,
+Snapshot reachability and recorded light/heavy mode. Common compiled graphs support named
+aggregate token scopes for retries and bounded child groups. Reservations and all usage count
+against the same Run and matching scopes; graph replacement retains original scope charges.
+Review's captured compiler must assign scopes by Campaign and numeric Round, preserving epochs
+without resetting lifetime Task spend ([ADR-0071](../adr/0071-share-captured-review-authority-and-task-token-scopes.md)).
+
 Bounded Scatter must keep its parent DAG fixed while the common runtime owns every child
 invocation and its accounting. Heavy Campaign continuation must retain one original Task
 allowance and all prior spend across Round revisions. A wrapper around `Kernel::run`, disabling

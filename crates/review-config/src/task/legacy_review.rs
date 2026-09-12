@@ -244,6 +244,7 @@ pub fn compile_legacy_review(
         replaced_workers: BTreeMap::new(),
         max_parallel: context.max_parallel,
         allowances: BTreeMap::new(),
+        token_scopes: BTreeMap::new(),
     };
     graph.nodes.insert(
         "root.inputs".into(),

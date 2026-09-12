@@ -221,13 +221,14 @@ impl TaskProjection {
                     .map_err(conflict)?;
                 execution
                     .budget
-                    .install_graph(
+                    .install_graph_with_token_scopes(
                         graph.allowances.clone(),
                         graph
                             .calls
                             .iter()
                             .map(|(n, c)| (n.clone(), c.max_attempts))
                             .collect(),
+                        graph.token_scopes.clone(),
                         time,
                         plan.preparation.is_some(),
                     )
@@ -303,13 +304,14 @@ impl EventStore {
                     return Err("Refreshed plan no longer has its verification time".into());
                 }
                 if let Some(budget) = &mut budget {
-                    budget.install_graph(
+                    budget.install_graph_with_token_scopes(
                         graph.allowances.clone(),
                         graph
                             .calls
                             .iter()
                             .map(|(n, c)| (n.clone(), c.max_attempts))
                             .collect(),
+                        graph.token_scopes.clone(),
                         time,
                         plan.preparation.is_some(),
                     )?;

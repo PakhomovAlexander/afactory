@@ -84,6 +84,12 @@ pub struct Reservation {
     scopes: Vec<Scope>,
 }
 
+impl Reservation {
+    pub(crate) fn scopes(&self) -> &[Scope] {
+        &self.scopes
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 struct Account {
     limit: Option<u64>,
