@@ -186,7 +186,8 @@ The first documentation-test invocation saw in-progress source from the next che
 the earlier compiled dependencies. Restoring the exact committed source and rerunning documentation
 tests plus frozen reproduction passes. Combined gate coverage is 113 suites. No limits or
 assertions were relaxed. The same local heavy positive command fixture decreased from 35.14s
-to 25.89s; this is not a live-model benchmark and Linux CI confirmation remains pending.
+to 25.89s; this is not a live-model benchmark. Linux CI for `facbfb4` passes Check,
+CLI smoke and container probes in run `34666567019`.
 
 The next P06 boundary persists a typed report for every common scheduler run, including
 pre-Attempt context failures. A trusted idempotent domain-publication hook runs after Task
@@ -194,6 +195,8 @@ settlement/publication and before downstream dispatch. Lost acknowledgement leav
 diagnostics and a recoverable waiting Task; reopening reuses the same output and paid Attempt
 ([ADR-0065](../adr/0065-persist-task-run-diagnostics-and-recover-domain-publication.md)).
 Schema parity, all 21 Task Store tests, all 70 pipeline tests (one opt-in probe ignored),
-17 representative CLI tests, formatting, Clippy and Markdown pass. The full gate is next.
+17 representative CLI tests, formatting, Clippy and Markdown pass. The complete gate at
+`d0d4ad0` passes **811 tests, zero failures, 15 ignored**, across 113 suites, including
+documentation tests and byte-identical frozen reproduction.
 Legacy Review still requires the actual reservation/context and domain-selected-evidence
 adapters; these recovery primitives alone do not complete its cutover.
