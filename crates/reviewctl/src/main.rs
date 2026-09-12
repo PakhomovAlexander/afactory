@@ -2744,17 +2744,26 @@ fn findings_summary_line(summary: &FindingsSummaryView) -> String {
 
 /// Wall-clock a set of Rounds took: per (round, epoch), first Attempt start to last Attempt end,
 /// summed across Rounds. `None` when nothing was recorded.
-fn wall_span_ms(rows: &[review_store::AttemptWall]) -> Option<u64> {
+fn wall_span_ms<U>(rows: &[review_store::AttemptWall<U>]) -> Option<u64> {
+    wall_spans_ms(rows.iter().map(|row| {
+        (
+            (row.round, row.epoch),
+            (row.started_unix_ms, row.elapsed_ms),
+        )
+    }))
+}
+
+fn wall_spans_ms(rows: impl IntoIterator<Item = ((u32, u32), (u64, u64))>) -> Option<u64> {
     let mut spans: BTreeMap<(u32, u32), (u64, u64)> = BTreeMap::new();
-    for row in rows {
-        let end = row.started_unix_ms.saturating_add(row.elapsed_ms);
+    for (round, (started, elapsed)) in rows {
+        let end = started.saturating_add(elapsed);
         spans
-            .entry((row.round, row.epoch))
+            .entry(round)
             .and_modify(|(start, finish)| {
-                *start = (*start).min(row.started_unix_ms);
+                *start = (*start).min(started);
                 *finish = (*finish).max(end);
             })
-            .or_insert((row.started_unix_ms, end));
+            .or_insert((started, end));
     }
     if spans.is_empty() {
         return None;
@@ -2921,15 +2930,30 @@ fn read_report_view(
     spend.retain(|round| {
         !round.reviewers.is_empty() || !task_accounting.rounds.contains(&(round.round, round.epoch))
     });
-    let mut wall_rows = store.attempt_wall(&run_id).map_err(|e| e.to_string())?;
-    wall_rows.extend(task_accounting.wall_rows);
-    let wall_ms = attach_attempt_wall(&mut spend, &wall_rows);
+    let wall_rows = store.attempt_wall(&run_id).map_err(|e| e.to_string())?;
+    attach_attempt_wall(&mut spend, &wall_rows);
+    let wall_ms = wall_spans_ms(
+        wall_rows
+            .iter()
+            .map(|row| {
+                (
+                    (row.round, row.epoch),
+                    (row.started_unix_ms, row.elapsed_ms),
+                )
+            })
+            .chain(task_accounting.wall_rows.iter().map(|row| {
+                (
+                    (row.round, row.epoch),
+                    (row.started_unix_ms, row.elapsed_ms),
+                )
+            })),
+    );
     let findings = ledger.finding_views();
     Ok(ReviewReportView {
         schema: if task_accounting.tasks.is_empty() {
             "af/review-report@1"
         } else {
-            "af/review-report@2"
+            "af/review-report@3"
         },
         campaign: campaign.into(),
         runs_recorded: reports.len(),

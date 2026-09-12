@@ -967,7 +967,7 @@ fn late_usage_fences_task_finish_while_preserving_its_prior_review_conclusion() 
             &lease,
             review_core::task::execution::TaskExecutionRecordV1::UsageObserved {
                 attempt_id: attempt_id.clone(),
-                charged_tokens: u64::MAX,
+                charged_tokens: u128::from(u64::MAX),
                 usage_id,
                 raw_artifact_ids: vec![],
             },

@@ -370,7 +370,7 @@ fn review_report_binds_wide_task_charge_and_freezes_its_accounting_prefix() {
                 &lease,
                 TaskExecutionRecordV1::UsageObserved {
                     attempt_id: attempt.into(),
-                    charged_tokens: charge,
+                    charged_tokens: u128::from(charge),
                     usage_id,
                     raw_artifact_ids: vec![],
                 },

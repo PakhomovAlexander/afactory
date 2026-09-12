@@ -36,8 +36,8 @@ pub mod task;
 
 pub use broker::{
     BrokerCredentialModeV1, BrokerFailureReasonV1, BrokerLeaseV1, BrokerOperationOutcomeV1,
-    BrokerOperationPolicyV1, BrokerOperationReceiptV1, ReviewerExecutionBindingV1,
-    broker_authority_usage,
+    BrokerOperationPolicyV1, BrokerOperationReceiptV1, BrokerOperationReceiptV2,
+    ReviewerExecutionBindingV1, broker_authority_usage,
 };
 pub use cache::{
     CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1, MAX_CACHE_BYTES_V1,

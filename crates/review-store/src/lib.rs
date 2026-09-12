@@ -32,7 +32,8 @@ pub use legacy::{
 };
 pub use shared::SharedEventStore;
 pub use store::{
-    AttemptUsage, AttemptWall, EventStore, NewEvent, StoreError, validate_reviewer_result,
+    AttemptUsage, AttemptWall, EventStore, NewEvent, StoreError, TaskAttemptWall,
+    validate_reviewer_result,
 };
 pub use subject::{
     ResolvedChangeSet, ResolvedSubject, ResolvedSubjectScope, resolve_subject,

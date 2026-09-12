@@ -2,8 +2,10 @@ use super::*;
 use review_core::task::execution::*;
 use review_core::task::pipeline::*;
 use review_core::task::plan::*;
+use review_core::task::usage::TaskTokenUsageV1;
 use review_core::task::{self, TaskResultV1, TaskRevisionV1};
 use review_graph::task::{CompileContext, OperatorAttemptCost, OperatorSignature, compile_task};
+use review_store::AttemptWall;
 use review_store::store::task::{DeveloperGrant, TaskAuthority, TaskLease};
 use serde_json::json;
 
@@ -449,7 +451,7 @@ impl Fixture {
                 &self.lease,
                 TaskExecutionRecordV1::Settled {
                     attempt_id: attempt.id().into(),
-                    charged_tokens: charge,
+                    charged_tokens: u128::from(charge),
                     result: TaskAttemptResultV1::Failed {
                         diagnostic_id,
                         feedback_id: None,
@@ -479,7 +481,7 @@ impl Fixture {
                 &self.lease,
                 TaskExecutionRecordV1::UsageObserved {
                     attempt_id: attempt.into(),
-                    charged_tokens: charge,
+                    charged_tokens: u128::from(charge),
                     usage_id,
                     raw_artifact_ids: vec![],
                 },
@@ -566,7 +568,7 @@ fn failures_before_first_conclusion_use_common_provider_and_business_attempts() 
     assert_eq!(provider["reserved_tokens"], "10");
     let view = crate::read_report_view(&f.store, &f.cas, "accounting").unwrap();
     let view = serde_json::to_value(view).unwrap();
-    assert_eq!(view["schema"], "af/review-report@2");
+    assert_eq!(view["schema"], "af/review-report@3");
     assert_eq!(view["runs_recorded"], 0);
     assert_eq!(view["spend"], json!([]));
     assert_eq!(view["task_accounting"][0]["chargeable_tokens"], "12");
@@ -593,7 +595,7 @@ fn frozen_cumulative_reports_are_not_summed_and_late_usage_remains_exact() {
         .iter()
         .find(|attempt| attempt.attempt_id == second)
         .unwrap();
-    assert_eq!(attempt.chargeable_tokens.get(), u64::MAX);
+    assert_eq!(attempt.chargeable_tokens.get(), u128::from(u64::MAX));
     assert_eq!(attempt.reserved_tokens.get(), 10);
     let rows = crate::report_rounds(&history.iter().collect::<Vec<_>>(), &BTreeMap::new()).unwrap();
     assert_eq!(rows[0].task_chargeable_tokens_at_report.unwrap().get(), 7);
@@ -623,7 +625,7 @@ fn frozen_cumulative_reports_are_not_summed_and_late_usage_remains_exact() {
             .find(|attempt| attempt.attempt_id == second)
             .unwrap()
             .charged_tokens,
-        u64::MAX
+        u128::from(u64::MAX)
     );
     let events = f
         .store
@@ -636,6 +638,68 @@ fn frozen_cumulative_reports_are_not_summed_and_late_usage_remains_exact() {
         matches!(&decoded.record, TaskExecutionRecordV1::Settled { attempt_id, .. } if attempt_id == &second).then_some(decoded.envelope.payload)
     }).next().unwrap();
     assert_eq!(terminal["charged_tokens"], "2");
+}
+
+#[test]
+fn inspection_keeps_one_attempts_wide_aggregate_and_native_components_exact() {
+    let mut f = Fixture::new();
+    f.fail("write", 7);
+    let attempt = f.fail("second", 2);
+    let exact = u128::from(u64::MAX) + 17;
+    let usage = TaskTokenUsageV2 {
+        input_tokens: Some(u64::MAX.into()),
+        chargeable_tokens: exact.into(),
+        ..Default::default()
+    };
+    let usage_id = put(&f.cas, task::usage::TASK_TOKEN_USAGE_V2, &usage);
+    f.store
+        .observe_task_usage(
+            &f.cas,
+            &f.lease,
+            TaskExecutionRecordV1::UsageObserved {
+                attempt_id: attempt.clone(),
+                charged_tokens: exact,
+                usage_id,
+                raw_artifact_ids: vec![],
+            },
+        )
+        .unwrap();
+    f.store
+        .record_task_attempt_wall(&review_store::TaskAttemptWall {
+            run_id: task_run_id(&f.task.task_id).unwrap(),
+            attempt_id: attempt.clone(),
+            node_id: "root.nodes.second".into(),
+            round: 0,
+            epoch: 1,
+            started_unix_ms: 1000,
+            elapsed_ms: 15,
+            usage: Some(usage),
+        })
+        .unwrap();
+    let view = crate::read_report_view(&f.store, &f.cas, "accounting").unwrap();
+    let value = serde_json::to_value(&view).unwrap();
+    assert_eq!(value["schema"], "af/review-report@3");
+    assert_eq!(
+        value["task_accounting"][0]["chargeable_tokens"],
+        (exact + 7).to_string()
+    );
+    let row = value["task_accounting"][0]["attempts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["attempt_id"] == attempt)
+        .unwrap();
+    assert_eq!(row["chargeable_tokens"], exact.to_string());
+    assert_eq!(row["wall"]["usage"]["chargeable_tokens"], exact.to_string());
+    assert_eq!(row["wall"]["usage"]["input_tokens"], u64::MAX.to_string());
+    assert_eq!(row["reserved_tokens"], "10");
+    assert_eq!(value["task_accounting"][0]["attempts_started"], "2");
+    assert_eq!(value["wall_ms"], 15);
+    let text = render(&view.task_accounting, false);
+    assert!(
+        text.contains(&format!("{exact} tokens (original cap 10)")),
+        "{text}"
+    );
 }
 
 #[test]
@@ -784,11 +848,12 @@ fn task_report_view_schema_requires_exact_decimals_and_snapshot_identity() {
         crate::report_rounds(&[&f.report_event(u128::MAX, 20)], &BTreeMap::new()).unwrap();
     let value = serde_json::to_value(view).unwrap();
     let schema: serde_json::Value =
-        serde_json::from_str(include_str!("../../../../schemas/review-report-v2.json")).unwrap();
+        serde_json::from_str(include_str!("../../../../schemas/review-report-v3.json")).unwrap();
     let mut options = jsonschema::options();
     for resource in [
         include_str!("../../../../schemas/task-contracts-v1.json"),
         include_str!("../../../../schemas/task-token-usage-v1.json"),
+        include_str!("../../../../schemas/task-token-usage-v2.json"),
         include_str!("../../../../schemas/task-review-accounting-v1.json"),
     ] {
         let resource: serde_json::Value = serde_json::from_str(resource).unwrap();

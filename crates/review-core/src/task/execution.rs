@@ -7,7 +7,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 mod accounting;
-pub use accounting::{TASK_EXECUTION_RECORD_V2, TaskExecutionRecordV2};
+pub use accounting::{
+    TASK_EXECUTION_RECORD_V2, TASK_EXECUTION_RECORD_V3, TaskExecutionRecordV2,
+    TaskExecutionRecordV3,
+};
 
 pub const TASK_INVOCATION_V1: &str = "af/TaskInvocation@1";
 pub const TASK_OUTPUT_V1: &str = "af/TaskOutput@1";
@@ -115,7 +118,8 @@ pub enum TaskExecutionRecordV1 {
     },
     Settled {
         attempt_id: String,
-        charged_tokens: u64,
+        #[serde(deserialize_with = "legacy_charge")]
+        charged_tokens: u128,
         result: TaskAttemptResultV1,
         raw_artifact_ids: Vec<String>,
         #[serde(
@@ -138,10 +142,17 @@ pub enum TaskExecutionRecordV1 {
     /// It neither grants execution authority nor refunds an earlier observation.
     UsageObserved {
         attempt_id: String,
-        charged_tokens: u64,
+        #[serde(deserialize_with = "legacy_charge")]
+        charged_tokens: u128,
         usage_id: String,
         raw_artifact_ids: Vec<String>,
     },
+}
+
+// This enum is also the normalized lifecycle representation. Its v1 wire reader retains
+// the original numeric domain; exact accounting is encoded through the versioned wrappers.
+fn legacy_charge<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u128, D::Error> {
+    u64::deserialize(deserializer).map(u128::from)
 }
 
 impl TaskExecutionRecordV1 {
@@ -206,7 +217,7 @@ impl TaskExecutionRecordV1 {
             self
         {
             require(
-                safe_number(*charged_tokens),
+                *charged_tokens <= crate::json::SAFE_INTEGER_MAX as u128,
                 "Task charge exceeds safe integer bound",
             )?;
         }

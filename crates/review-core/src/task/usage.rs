@@ -117,3 +117,55 @@ pub struct TaskTokenUsageV1 {
     pub reasoning_tokens: Option<DecimalU64>,
     pub chargeable_tokens: DecimalU64,
 }
+
+pub const TASK_TOKEN_USAGE_V2: &str = "af/TaskTokenUsage@2";
+
+/// Exact cumulative charge for one Attempt; optional native counters retain their own range.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskTokenUsageV2 {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub input_tokens: Option<DecimalU64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub output_tokens: Option<DecimalU64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub cache_read_tokens: Option<DecimalU64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub cache_write_tokens: Option<DecimalU64>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub reasoning_tokens: Option<DecimalU64>,
+    pub chargeable_tokens: DecimalU128,
+}
+
+impl From<TaskTokenUsageV1> for TaskTokenUsageV2 {
+    fn from(value: TaskTokenUsageV1) -> Self {
+        Self {
+            input_tokens: value.input_tokens,
+            output_tokens: value.output_tokens,
+            cache_read_tokens: value.cache_read_tokens,
+            cache_write_tokens: value.cache_write_tokens,
+            reasoning_tokens: value.reasoning_tokens,
+            chargeable_tokens: u128::from(value.chargeable_tokens.get()).into(),
+        }
+    }
+}

@@ -443,7 +443,7 @@ fn settle_charged(
             lease,
             TaskExecutionRecordV1::Settled {
                 attempt_id: attempt.into(),
-                charged_tokens,
+                charged_tokens: u128::from(charged_tokens),
                 result: TaskAttemptResultV1::Succeeded {
                     output_id: output.into(),
                 },

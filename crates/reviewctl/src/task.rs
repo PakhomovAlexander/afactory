@@ -418,6 +418,41 @@ enum DeliveryOutcome {
     Failed { reason: String },
 }
 
+/// Inspect the original receipt only after checking its published typed shape. Store binds
+/// delivery identity and status, while these private CLI types own the receipt/target fields.
+pub(super) fn validate_delivery_view(value: &serde_json::Value) -> Result<(), String> {
+    let mut typed = match value.get("schema").and_then(serde_json::Value::as_str) {
+        Some("af/task-delivery-prepared@1") => serde_json::to_value(
+            serde_json::from_value::<DeliveryPrepared>(value.clone())
+                .map_err(|error| format!("Invalid Task delivery preparation: {error}"))?,
+        ),
+        Some("af/task-delivery@1") => serde_json::to_value(
+            serde_json::from_value::<DeliveryReceipt>(value.clone())
+                .map_err(|error| format!("Invalid Task delivery receipt: {error}"))?,
+        ),
+        _ => return Err("Unsupported Task delivery inspection schema".into()),
+    }
+    .map_err(|error| error.to_string())?;
+    // Historical receipts omit this advisory field. Validate its typed default, but neither
+    // require it in those bytes nor add it to the public historical inspection response.
+    if value.get("ignored_paths").is_none() {
+        typed.as_object_mut().unwrap().remove("ignored_paths");
+    }
+    // Serde unit enum variants may ignore extra properties even with deny_unknown_fields.
+    // Comparing the typed shape also closes that case without changing persisted enums.
+    if typed != *value {
+        return Err("Task delivery inspection contains unsupported fields".into());
+    }
+    for field in ["source_snapshot_id", "derived_snapshot_id", "result_id"] {
+        if let Some(id) = typed.get(field)
+            && !id.as_str().is_some_and(review_core::is_digest)
+        {
+            return Err(format!("Task delivery inspection has an invalid {field}"));
+        }
+    }
+    Ok(())
+}
+
 struct DeliveryAssets {
     source_snapshot_id: String,
     source: SnapshotReceipt,

@@ -336,7 +336,10 @@ impl LegacyReviewTaskHost<'_, '_> {
                 }
             };
             result.usage = returned.usage;
-            result.charged_tokens = result.usage.as_ref().map(|usage| usage.chargeable_tokens);
+            result.charged_tokens = result
+                .usage
+                .as_ref()
+                .map(|usage| u128::from(usage.chargeable_tokens));
             result.raw_artifact_ids = returned.raw_artifact_ids;
             let message = returned.message?;
             feedback_code = TaskFeedbackCodeV1::InvalidOutputContract;

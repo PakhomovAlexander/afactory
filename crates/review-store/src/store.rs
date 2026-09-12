@@ -214,7 +214,7 @@ pub struct AttemptUsage {
 /// `af review report`, `af review campaigns`, and `af review ledger`. An absent row means "not
 /// recorded", never "zero".
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct AttemptWall {
+pub struct AttemptWall<U = AttemptUsage> {
     pub run_id: String,
     pub attempt_id: String,
     pub node_id: String,
@@ -223,8 +223,11 @@ pub struct AttemptWall {
     pub started_unix_ms: u64,
     pub elapsed_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub usage: Option<AttemptUsage>,
+    pub usage: Option<U>,
 }
+
+/// Common Task usage may aggregate several native Provider counters in one Attempt.
+pub type TaskAttemptWall = AttemptWall<review_core::task::usage::TaskTokenUsageV2>;
 
 impl EventStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {

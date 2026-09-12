@@ -1624,6 +1624,12 @@ fn delivery_view(cas: &Cas, task: &TaskProjection) -> Result<Option<serde_json::
         .iter()
         .rev()
         .find(|(_, delivery)| &delivery.result_id == result_id)
-        .map(|(_, record)| cas.get_json(&record.receipt_id).map_err(|e| e.to_string()))
+        .map(|(_, record)| {
+            let value = cas
+                .get_json(&record.receipt_id)
+                .map_err(|e| e.to_string())?;
+            super::task::validate_delivery_view(&value)?;
+            Ok(value)
+        })
         .transpose()
 }

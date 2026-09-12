@@ -89,9 +89,10 @@ legacy wrapper invokes automatic Integration after publication. Existing report 
 verdict ordering, cache evidence and the one-conclusion guard retain their original behavior;
 this extraction adds neither an execution ledger nor a new public verdict policy.
 
-The trusted context adapter now uses actual common Attempts and canonical replay. Legacy CLI
-ownership, inspection and broker currentness still need their complete adapter paths; synthetic
-legacy Attempt lifecycle events cannot substitute for them.
+The trusted context adapter now uses actual common Attempts and canonical replay. Task-backed
+inspection reads canonical reports and exact common accounting. Legacy CLI ownership and Broker
+currentness still need their complete adapter paths; synthetic legacy Attempt lifecycle events
+cannot substitute for them.
 
 The captured definition loader is now shared with the CLI, retaining package/policy validation,
 Snapshot reachability and recorded light/heavy mode. Common compiled graphs support named
@@ -130,8 +131,9 @@ recorded artifacts without recreating missing CAS objects. Reviewer metadata, Ga
 and Scatter evidence supplement the selected public outputs, including nodes not consumed by
 the original Ledger. The operation host additionally retains mandatory Finding Set/Demand Set
 companions, actual common Worker execution, canonical publication recovery and domain acceptance.
-Broker/Scatter accounting, heavy-Round handoff and full-width canonical report accounting remain
-required before the legacy entry point changes ownership.
+Canonical `RunReport@6` and the Task-backed Review inspection view retain exact cumulative
+accounting. Broker/Scatter integration and heavy-Round handoff remain required before the legacy
+entry point changes ownership.
 
 Recorded-plan recompilation reads existing root wrappers and refuses their absence, different
 producer, changed Round or changed head; it does not recreate missing CAS objects. Historical

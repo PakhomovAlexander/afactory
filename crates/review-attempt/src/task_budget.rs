@@ -44,7 +44,7 @@ struct Held {
     public: TaskReservation,
     tokens: Reservation,
     begun: bool,
-    settled: Option<u64>,
+    settled: Option<u128>,
     released: bool,
 }
 
@@ -494,6 +494,10 @@ impl TaskBudget {
     /// Failures and fenced work use the same settlement as successful work. A reported
     /// overrun stops new dispatch even when the wider Task limit would otherwise have room.
     pub fn settle(&mut self, id: &str, actual: u64) -> Result<(), String> {
+        self.settle_exact(id, u128::from(actual))
+    }
+
+    pub fn settle_exact(&mut self, id: &str, actual: u128) -> Result<(), String> {
         let held = self
             .reservations
             .get_mut(id)
@@ -509,12 +513,15 @@ impl TaskBudget {
             };
         }
         // The shared token ledger retains wide aggregate charges without narrowing usage.
-        let observed = self.tokens.observed_charge(&held.tokens);
+        let observed = self.tokens.observed_charge_exact(&held.tokens);
         if actual < observed {
             return Err("Task settlement cannot refund already observed usage".into());
         }
-        self.tokens.charge(&held.tokens, actual);
-        self.breached |= actual > held.tokens.amount;
+        if let Err(error) = self.tokens.charge_exact(&held.tokens, actual) {
+            self.breached = true;
+            return Err(error);
+        }
+        self.breached |= actual > u128::from(held.tokens.amount);
         held.settled = Some(actual);
         Ok(())
     }
@@ -527,6 +534,10 @@ impl TaskBudget {
     /// unspent reservation stays held until settlement; an overrun immediately stops dispatch.
     /// After settlement, observations can only increase the charge, including abandoned work.
     pub fn observe_charge(&mut self, id: &str, actual: u64) -> Result<(), String> {
+        self.observe_charge_exact(id, u128::from(actual))
+    }
+
+    pub fn observe_charge_exact(&mut self, id: &str, actual: u128) -> Result<(), String> {
         let held = self
             .reservations
             .get_mut(id)
@@ -538,16 +549,21 @@ impl TaskBudget {
             if actual > previous {
                 let mut updated = self.tokens.clone();
                 for scope in held.tokens.scopes() {
-                    let total = self.tokens.committed(scope) + u128::from(actual - previous);
+                    let Some(total) = self.tokens.committed(scope).checked_add(actual - previous)
+                    else {
+                        self.breached = true;
+                        return Err("Observed budget total overflow".into());
+                    };
                     updated = updated.with_exact_committed(scope.clone(), total);
                 }
                 self.tokens = updated;
                 held.settled = Some(actual);
             }
-        } else {
-            self.tokens.observe_charge(&held.tokens, actual)?;
+        } else if let Err(error) = self.tokens.observe_charge_exact(&held.tokens, actual) {
+            self.breached = true;
+            return Err(error);
         }
-        self.breached |= actual > held.tokens.amount;
+        self.breached |= actual > u128::from(held.tokens.amount);
         Ok(())
     }
     pub fn reserved_tokens(&self) -> u128 {

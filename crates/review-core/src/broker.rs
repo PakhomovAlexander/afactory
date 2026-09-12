@@ -1,5 +1,8 @@
 //! Durable M6.3 contracts for reviewer Execution Bindings and broker operation receipts.
 
+mod exact;
+pub use exact::BrokerOperationReceiptV2;
+
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
@@ -209,6 +212,10 @@ pub struct BrokerOperationReceiptV1 {
 
 impl BrokerOperationReceiptV1 {
     pub fn validate(&self) -> Result<(), String> {
+        self.validate_with_charge_limit(JSON_SAFE_INTEGER)
+    }
+
+    fn validate_with_charge_limit(&self, charge_limit: u64) -> Result<(), String> {
         if !opaque_id(&self.handle_id)
             || self.node.trim().is_empty()
             || !opaque_id(&self.attempt_id)
@@ -223,14 +230,10 @@ impl BrokerOperationReceiptV1 {
                 .response_digest
                 .as_deref()
                 .is_some_and(|digest| !crate::is_digest(digest))
-            || [
-                self.request_bytes,
-                self.response_bytes,
-                self.reserved_usage,
-                self.charged_usage,
-            ]
-            .into_iter()
-            .any(|value| value > JSON_SAFE_INTEGER)
+            || [self.request_bytes, self.response_bytes, self.reserved_usage]
+                .into_iter()
+                .any(|value| value > JSON_SAFE_INTEGER)
+            || self.charged_usage > charge_limit
         {
             return Err("Broker operation receipt has invalid identity, digest, or bounds".into());
         }

@@ -5,7 +5,7 @@ mod encoding;
 pub use encoding::{DecodedTaskExecutionRecord, read_execution_record};
 
 use review_attempt::task_budget::{TaskBudget, TaskReservation};
-use review_attempt::{AttemptId, AttemptLedger, Receipt, Selection};
+use review_attempt::{AttemptId, AttemptLedger, ExactReceipt, Selection};
 use review_core::task::execution::*;
 use review_graph::task::{CompiledOperator, CompiledTask, condition_input};
 
@@ -46,7 +46,7 @@ pub struct TaskAttemptAccounting {
     pub reservation: TaskReservation,
     pub started: bool,
     pub released: bool,
-    pub charged_tokens: u64,
+    pub charged_tokens: u128,
     pub state: Option<review_attempt::AttemptState>,
     pub result: Option<TaskAttemptResultV1>,
 }
@@ -670,7 +670,7 @@ impl TaskProjection {
                 }
                 execution
                     .budget
-                    .observe_charge(&attempt.reservation.id, *charged_tokens)
+                    .observe_charge_exact(&attempt.reservation.id, *charged_tokens)
                     .map_err(conflict)?;
                 let id = AttemptId(attempt_id.clone());
                 let charged = execution
@@ -678,7 +678,10 @@ impl TaskProjection {
                     .attempt(&id)
                     .map_or(0, |a| a.charged)
                     .max(*charged_tokens);
-                execution.ledger.charge(&id, charged);
+                execution
+                    .ledger
+                    .charge_exact(&id, charged)
+                    .map_err(conflict)?;
             }
             TaskExecutionRecordV1::Invocation { invocation_id } => {
                 let input = invocation(cas, invocation_id)?;
@@ -865,7 +868,7 @@ impl TaskProjection {
                     execution.verify_output(cas, &out)?;
                 }
                 if matches!(result, TaskAttemptResultV1::Abandoned { .. })
-                    && *charged_tokens < attempt.reservation.tokens
+                    && *charged_tokens < u128::from(attempt.reservation.tokens)
                 {
                     return Err(conflict(
                         "Abandoned Task work retains its full reserved charge",
@@ -880,21 +883,26 @@ impl TaskProjection {
                     .max(*charged_tokens);
                 execution
                     .budget
-                    .settle(&attempt.reservation.id, charge)
+                    .settle_exact(&attempt.reservation.id, charge)
                     .map_err(conflict)?;
                 execution
                     .ledger
-                    .charge(&AttemptId(attempt_id.clone()), charge);
+                    .charge_exact(&AttemptId(attempt_id.clone()), charge)
+                    .map_err(conflict)?;
                 if !matches!(result, TaskAttemptResultV1::Succeeded { .. })
                     || attempt.prepared_epoch != self.epoch
                 {
                     execution.ledger.fence(&attempt.reservation.node);
                 } else if let TaskAttemptResultV1::Succeeded { output_id } = result {
-                    if execution.ledger.admit(&Receipt {
-                        attempt: AttemptId(attempt_id.clone()),
-                        output: output_id.clone(),
-                        cost: charge,
-                    }) != Selection::Selected
+                    if execution
+                        .ledger
+                        .admit_exact(&ExactReceipt {
+                            attempt: AttemptId(attempt_id.clone()),
+                            output: output_id.clone(),
+                            cost: charge,
+                        })
+                        .map_err(conflict)?
+                        != Selection::Selected
                     {
                         return Err(conflict("Task settlement was quarantined"));
                     }
@@ -987,7 +995,7 @@ impl EventStore {
         {
             return Err(conflict("Current writer still owns a pending Task Attempt"));
         }
-        let walls = self.attempt_wall(&task_run_id(&lease.task_id)?)?;
+        let walls = self.task_attempt_wall(&task_run_id(&lease.task_id)?)?;
         for (id, attempt) in execution
             .attempts
             .iter()
@@ -1000,7 +1008,7 @@ impl EventStore {
                 let observed = walls
                     .iter()
                     .filter(|w| &w.attempt_id == id)
-                    .filter_map(|w| w.usage.as_ref().map(|u| u.chargeable_tokens))
+                    .filter_map(|w| w.usage.as_ref().map(|u| u.chargeable_tokens.get()))
                     .max()
                     .unwrap_or(0)
                     .max(
@@ -1016,7 +1024,7 @@ impl EventStore {
                     .and_then(|wall| wall.usage.as_ref())
                     .map(|usage| {
                         cas.put_artifact(
-                            review_core::task::usage::TASK_TOKEN_USAGE_V1,
+                            review_core::task::usage::TASK_TOKEN_USAGE_V2,
                             review_core::Producer::Attempt {
                                 run_id: task_run_id(&lease.task_id)?,
                                 node_id: attempt.reservation.node.clone(),
@@ -1024,9 +1032,7 @@ impl EventStore {
                             },
                             attempt.context_id.iter().cloned().collect(),
                             None,
-                            serde_json::to_value(
-                                review_core::task::usage::TaskTokenUsageV1::from(usage),
-                            )?,
+                            serde_json::to_value(usage)?,
                         )
                         .map(|(id, _)| id)
                         .map_err(|error| StoreError::Artifact(error.to_string()))
@@ -1034,7 +1040,7 @@ impl EventStore {
                     .transpose()?;
                 TaskExecutionRecordV1::Settled {
                     attempt_id: id.clone(),
-                    charged_tokens: observed.max(attempt.reservation.tokens),
+                    charged_tokens: observed.max(u128::from(attempt.reservation.tokens)),
                     result: TaskAttemptResultV1::Abandoned { diagnostic_id },
                     raw_artifact_ids: vec![],
                     usage_id,

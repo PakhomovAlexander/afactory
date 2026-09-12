@@ -465,3 +465,49 @@ omission/substitution, late overrun before Task finish and expired execution wit
 under unbound, bound and cached Gate policy. A broad host check caught semantic Review Round-cap
 exhaustion being confused with Task resource exhaustion; publication now carries its observed
 resource state separately, preserving complete finding-bearing Review results.
+
+## Exact accounting verification and Broker preparation
+
+The frozen full gate at `1cd3008` (identical internal tree at `f57224a`) passes **915 tests,
+zero failures, 15 ignored**, across 119 suites, plus formatting, Clippy, documentation tests
+and byte-identical frozen reproduction. It is pushed to PR 2; CI is running. The preceding
+operation-host checkpoint `eab8d29` passes CI `34693346220`.
+
+The previous live progress paragraph is preserved here:
+
+The captured Review operation host at `eab8d29` passes the full local gate (**903 tests**, zero
+failures, 15 ignored); exact-head CI is run `34693346220`. It executes captured Review on common
+Attempts and preserves canonical acceptance and restart recovery. The next accounting slice
+adds exact cumulative report receipts and typed reviewer provenance. See
+[Review compatibility](task-execution/review-compatibility.md),
+[ADR-0077](adr/0077-run-captured-review-operations-under-common-task-attempts.md) and
+[ADR-0078](adr/0078-bind-review-conclusions-to-exact-task-accounting.md).
+
+The next slice follows [ADR-0079](../adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md):
+exact cumulative per-Attempt ledger/usage/sidecar records, shared exact Broker transport, and
+public schemas for actual Task file/catalog/compiled graph/inspection/list shapes. Focused
+verification is in progress. Broker binding and late-receipt ingestion, Scatter, continuation,
+legacy CLI ownership, external PR reviews and P14 remain required. The owner reported logging
+into Claude personal; a fresh isolated and Keychain-enabled status still returns false/none.
+No requested PR reviewer ran. The broad Keychain metadata search was rejected by automatic
+approval review because it would include unrelated account information; diagnosis remains
+limited to the configured personal profile.
+
+The published `1cd3008` checkpoint now passes exact-head CI `34695645865`. Both latest main
+revisions were checked again at 13:36 UTC and remain kernel `b8b8963` and Hub `0a09af3`.
+
+Final focused checks for exact per-Attempt accounting and public contracts pass: 48 Attempt
+tests; 169 Store tests (two ignored), including sidecar recovery; 18 captured Review integration
+tests; all 13 common runtime tests; seven Review inspection cases; 69 Core schema parity cases
+plus the separate Broker receipt parity case; 18 Broker tests, preserving all 15 legacy cases;
+and three actual CLI/public-schema fixtures. Captured uncapped Broker authority exceeding the
+new fallback reservation is refused before mutating allowances. Workspace all-target Clippy,
+formatting and Markdown checks pass. The frozen full gate follows.
+
+The first broad runtime regression exposed one stale expected new-write version (@2); the
+updated test reads the emitted @3 record and exact usage @2, while the frozen Store @1/@2
+fixtures remain byte-identical. An initial fallback fixture omitted the required v4 Gate policy;
+its explicit captured Gate now exercises the intended budget assertion. Earlier logs remain.
+Delivery inspection now validates the published typed receipt/target shape before returning
+original CAS JSON. Malformed Store-admitted receipt fixtures fail show/list; historical omitted
+advisory fields remain omitted. No receipt is rewritten and Store delivery authority is unchanged.

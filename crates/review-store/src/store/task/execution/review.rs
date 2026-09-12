@@ -500,7 +500,7 @@ fn validate_attempt_provenance(
     context_id: &str,
     producer: &review_core::Producer,
     reserved_tokens: u64,
-    committed_tokens: u64,
+    committed_tokens: u128,
 ) -> Result<(), StoreError> {
     let value = cas
         .get_json(&metadata.provenance_artifact_id)
@@ -515,7 +515,7 @@ fn validate_attempt_provenance(
     )?;
     let provenance: TaskReviewAttemptProvenanceV1 = serde_json::from_value(frame.payload)?;
     provenance.validate().map_err(conflict)?;
-    if provenance.charged_tokens.get() > committed_tokens {
+    if u128::from(provenance.charged_tokens.get()) > committed_tokens {
         return Err(conflict(
             "Review provenance exceeds its committed Attempt charge",
         ));
@@ -616,7 +616,7 @@ fn validate_legacy_provenance(
     value: &serde_json::Value,
     metadata: &TaskReviewResultMetadataV1,
     context: &TaskReviewContextV1,
-    committed_tokens: u64,
+    committed_tokens: u128,
 ) -> Result<(), StoreError> {
     let fields = [
         "node",
@@ -655,7 +655,7 @@ fn validate_legacy_provenance(
     };
     let charge = safe_counter(&value["cost_tokens"])
         .ok_or_else(|| conflict("Historical Review charge is not exact"))?;
-    if charge > committed_tokens
+    if u128::from(charge) > committed_tokens
         || safe_counter(&value["usage"]["chargeable_tokens"]) != Some(charge)
         || usage.iter().any(|(name, value)| {
             !matches!(

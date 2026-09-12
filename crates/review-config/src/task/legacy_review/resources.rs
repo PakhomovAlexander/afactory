@@ -80,6 +80,13 @@ impl ReviewResourcePolicy {
                         "Task cannot reserve captured Review Worker `{node}`"
                     ));
                 }
+                if let Some(execution) = loaded.reviewer_execution().get(node)
+                    && review_core::broker_authority_usage(&execution.operations)? > tokens
+                {
+                    return Err(format!(
+                        "Captured Broker authority exceeds Review Worker `{node}` reservation"
+                    ));
+                }
                 Ok((
                     node.clone(),
                     NodeAllowance {

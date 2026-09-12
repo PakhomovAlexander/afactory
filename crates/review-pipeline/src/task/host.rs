@@ -650,7 +650,7 @@ impl<'a> CapturedTaskHost<'a> {
         TaskWorkOutput {
             usage: token_usage,
             outputs,
-            charged_tokens,
+            charged_tokens: charged_tokens.map(u128::from),
             raw_artifact_ids,
             usage_id: None,
             feedback_id,

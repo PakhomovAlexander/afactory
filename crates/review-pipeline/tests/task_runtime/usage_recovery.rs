@@ -245,12 +245,18 @@ fn worker_and_provider_cas_failure_recover_full_reported_usage_without_another_c
         assert_eq!(settlement.len(), 1);
         assert_eq!(
             settlement[0].0,
-            review_core::task::execution::TASK_EXECUTION_RECORD_V2
+            review_core::task::execution::TASK_EXECUTION_RECORD_V3
         );
         let recovered_usage =
-            review_runner::task::usage::read_task_usage(&f.cas, &settlement[0].1).unwrap();
-        assert_eq!(recovered_usage.input_tokens, Some(u64::MAX));
-        assert_eq!(recovered_usage.output_tokens, Some(0));
-        assert_eq!(recovered_usage.chargeable_tokens, u64::MAX);
+            review_runner::task::usage::read_task_usage_exact(&f.cas, &settlement[0].1).unwrap();
+        assert_eq!(
+            recovered_usage.input_tokens.map(|n| n.get()),
+            Some(u64::MAX)
+        );
+        assert_eq!(recovered_usage.output_tokens.map(|n| n.get()), Some(0));
+        assert_eq!(
+            recovered_usage.chargeable_tokens.get(),
+            u128::from(u64::MAX)
+        );
     }
 }

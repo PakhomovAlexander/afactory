@@ -18,7 +18,10 @@ pub fn read_execution_record(
         .get_artifact(id)
         .map_err(|error| StoreError::Artifact(error.to_string()))?;
     let kind = envelope.artifact_type.as_str();
-    if !matches!(kind, TASK_EXECUTION_RECORD_V1 | TASK_EXECUTION_RECORD_V2) {
+    if !matches!(
+        kind,
+        TASK_EXECUTION_RECORD_V1 | TASK_EXECUTION_RECORD_V2 | TASK_EXECUTION_RECORD_V3
+    ) {
         return Err(conflict("Unsupported Task execution record version"));
     }
     let record = match kind {
@@ -32,6 +35,11 @@ pub fn read_execution_record(
             record.validate().map_err(conflict)?;
             record.into_record()
         }
+        TASK_EXECUTION_RECORD_V3 => {
+            let record: TaskExecutionRecordV3 = serde_json::from_value(envelope.payload.clone())?;
+            record.validate().map_err(conflict)?;
+            record.into_record()
+        }
         _ => unreachable!(),
     };
     Ok(DecodedTaskExecutionRecord { envelope, record })
@@ -40,9 +48,9 @@ pub fn read_execution_record(
 pub(super) fn encode_record(
     record: &TaskExecutionRecordV1,
 ) -> Result<(&'static str, serde_json::Value), StoreError> {
-    if let Some(accounting) = TaskExecutionRecordV2::from_accounting(record) {
+    if let Some(accounting) = TaskExecutionRecordV3::from_accounting(record) {
         accounting.validate().map_err(conflict)?;
-        Ok((TASK_EXECUTION_RECORD_V2, serde_json::to_value(accounting)?))
+        Ok((TASK_EXECUTION_RECORD_V3, serde_json::to_value(accounting)?))
     } else {
         record.validate().map_err(conflict)?;
         Ok((TASK_EXECUTION_RECORD_V1, serde_json::to_value(record)?))

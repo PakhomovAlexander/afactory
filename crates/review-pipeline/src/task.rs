@@ -30,7 +30,7 @@ pub struct TaskWorkOutput {
     pub usage: Option<review_runner::TokenUsage>,
     pub outputs: Result<BTreeMap<String, ArtifactInputV1>, String>,
     /// None means usage is unavailable, so the complete reservation remains charged.
-    pub charged_tokens: Option<u64>,
+    pub charged_tokens: Option<u128>,
     pub raw_artifact_ids: Vec<String>,
     pub usage_id: Option<String>,
     pub feedback_id: Option<String>,
@@ -572,21 +572,23 @@ impl Dispatch for TaskRuntime<'_, '_> {
                 // diagnostic publication must not hide an already reported Provider overrun.
                 // The event ledger remains authoritative; recovery only raises its charge.
                 let usage_result = match result.usage.take() {
-                    Some(usage) => Ok(Some(usage)),
+                    Some(usage) => Ok(Some(review_core::task::usage::TaskTokenUsageV2::from(
+                        &usage,
+                    ))),
                     None => result
                         .usage_id
                         .as_deref()
-                        .map(|id| review_runner::task::usage::read_task_usage(self.cas, id))
+                        .map(|id| review_runner::task::usage::read_task_usage_exact(self.cas, id))
                         .transpose(),
                 };
                 let usage = usage_result.as_ref().ok().and_then(Option::as_ref);
                 let charge = result
                     .charged_tokens
                     .into_iter()
-                    .chain(usage.as_ref().map(|usage| usage.chargeable_tokens))
+                    .chain(usage.as_ref().map(|usage| usage.chargeable_tokens.get()))
                     .max();
                 result.charged_tokens = charge;
-                let wall = review_store::AttemptWall {
+                let wall = review_store::TaskAttemptWall {
                     run_id: task_run_id(self.lease.task_id()).map_err(|e| e.to_string())?,
                     attempt_id: attempt.id().into(),
                     node_id: node.id.clone(),
@@ -596,29 +598,34 @@ impl Dispatch for TaskRuntime<'_, '_> {
                         .duration_since(UNIX_EPOCH)
                         .map_or(0, |d| d.as_millis() as u64),
                     elapsed_ms: timer.elapsed().as_millis() as u64,
-                    usage: charge.map(|chargeable_tokens| review_store::AttemptUsage {
-                        input_tokens: usage.as_ref().and_then(|u| u.input_tokens),
-                        output_tokens: usage.as_ref().and_then(|u| u.output_tokens),
-                        cache_read_tokens: usage.as_ref().and_then(|u| u.cache_read_tokens),
-                        cache_write_tokens: usage.as_ref().and_then(|u| u.cache_write_tokens),
-                        reasoning_tokens: usage.as_ref().and_then(|u| u.reasoning_tokens),
-                        chargeable_tokens,
+                    usage: charge.map(|chargeable_tokens| {
+                        review_core::task::usage::TaskTokenUsageV2 {
+                            input_tokens: usage.as_ref().and_then(|u| u.input_tokens),
+                            output_tokens: usage.as_ref().and_then(|u| u.output_tokens),
+                            cache_read_tokens: usage.as_ref().and_then(|u| u.cache_read_tokens),
+                            cache_write_tokens: usage.as_ref().and_then(|u| u.cache_write_tokens),
+                            reasoning_tokens: usage.as_ref().and_then(|u| u.reasoning_tokens),
+                            chargeable_tokens: chargeable_tokens.into(),
+                        }
                     }),
                 };
                 self.store
                     .lock()
                     .expect("Task Store")
-                    .record_attempt_wall(&wall)
+                    .record_task_attempt_wall(&wall)
                     .map_err(|error| {
                         format!("Cannot retain Task usage before publication: {error}")
                     })?;
                 let usage = usage_result?;
-                if result.usage_id.is_none()
-                    && let Some(charge) = charge
+                if let Some(charge) = charge
+                    && (result.usage_id.is_none()
+                        || usage
+                            .as_ref()
+                            .is_none_or(|u| u.chargeable_tokens.get() != charge))
                 {
-                    let usage =
-                        usage.unwrap_or_else(|| review_runner::TokenUsage::charge_only(charge));
-                    result.usage_id = Some(review_runner::task::usage::persist_task_usage(
+                    let mut usage = usage.unwrap_or_default();
+                    usage.chargeable_tokens = charge.into();
+                    result.usage_id = Some(review_runner::task::usage::persist_task_usage_exact(
                         self.cas,
                         Producer::Attempt {
                             run_id: wall.run_id,
@@ -649,9 +656,18 @@ impl Dispatch for TaskRuntime<'_, '_> {
             let charged = result
                 .charged_tokens
                 .into_iter()
-                .chain(result.usage.as_ref().map(|usage| usage.chargeable_tokens))
+                .chain(
+                    result
+                        .usage
+                        .as_ref()
+                        .map(|usage| u128::from(usage.chargeable_tokens)),
+                )
                 .max()
-                .unwrap_or_else(|| attempt.as_ref().map_or(0, |a| a.reservation().tokens));
+                .unwrap_or_else(|| {
+                    attempt
+                        .as_ref()
+                        .map_or(0, |a| u128::from(a.reservation().tokens))
+                });
             if attempt.is_none() && charged != 0 {
                 return Err("Pure Task operator reported a paid operation".into());
             }

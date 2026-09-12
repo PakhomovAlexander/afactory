@@ -163,7 +163,7 @@ impl ProviderTaskDomain<'_> {
         TaskWorkOutput {
             usage: returned.usage,
             outputs,
-            charged_tokens,
+            charged_tokens: charged_tokens.map(u128::from),
             raw_artifact_ids: returned.raw_artifact_ids,
             usage_id: None,
             feedback_id: None,

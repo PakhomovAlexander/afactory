@@ -19,13 +19,14 @@ supplement it. Claude calls use only `claude-personal`.
 
 ## Progress
 
-The captured Review operation host at `eab8d29` passes the full local gate (**903 tests**, zero
-failures, 15 ignored); exact-head CI is run `34693346220`. It executes captured Review on common
-Attempts and preserves canonical acceptance and restart recovery. The next accounting slice
-adds exact cumulative report receipts and typed reviewer provenance. See
+The exact Review accounting/inspection checkpoint `1cd3008` passes the full local gate
+(**915 tests**, zero failures, 15 ignored), including byte-identical frozen reproduction.
+It is pushed to PR 2 and passes CI `34695645865`. The preceding operation-host checkpoint `eab8d29`
+passes CI `34693346220`. The current slice retains cumulative charge above u64 within one
+Attempt, adds exact Broker transport and fills public schema gaps. See
 [Review compatibility](task-execution/review-compatibility.md),
-[ADR-0077](adr/0077-run-captured-review-operations-under-common-task-attempts.md) and
-[ADR-0078](adr/0078-bind-review-conclusions-to-exact-task-accounting.md).
+[ADR-0078](adr/0078-bind-review-conclusions-to-exact-task-accounting.md) and
+[ADR-0079](adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md).
 
 The earlier shared Review operations and Round-fencing checkpoint passes the full gate at `5b1461e`
 (internal `9a81fbe`): 839 tests, zero failures, 15 ignored, plus documentation tests and frozen

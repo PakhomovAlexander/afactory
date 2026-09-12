@@ -1,0 +1,599 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:compiled-task:1",
+  "title": "CompiledTask@1 (af.compiled-task/1)",
+  "$comment": "Captured compiler output, not user-granted pipeline authority. Admission recompiles from exact captured artifacts and compares the complete graph. DAG/order, address and slot references, semantic contracts, scope membership and joint resource bounds require that compiler/budget validation. Optional default maps remain optional for frozen payloads. Compiled Worker slot references and independent_from edges are qualified addresses, unlike local Pipeline declarations; root-input output ports may be empty.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "nodes",
+    "order",
+    "inputs",
+    "outputs",
+    "coverage",
+    "calls",
+    "slots",
+    "max_parallel",
+    "allowances"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.compiled-task/1"
+    },
+    "nodes": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "order": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "inputs": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/artifactInput"
+      }
+    },
+    "outputs": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/address"
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/address"
+      }
+    },
+    "calls": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/call"
+      }
+    },
+    "slots": {
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/slot"
+      }
+    },
+    "replaced_workers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "uniqueItems": true
+      }
+    },
+    "max_parallel": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 4294967295
+    },
+    "allowances": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/allowance"
+      }
+    },
+    "token_scopes": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/tokenScope"
+      }
+    }
+  },
+  "$defs": {
+    "address": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "port"
+      ],
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "port": {
+          "type": "string"
+        }
+      }
+    },
+    "reviewOperation": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "generation"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "gate"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "gather"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "ledger"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "slicer"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "slot"
+          ],
+          "properties": {
+            "kind": {
+              "const": "reviewer"
+            },
+            "slot": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "slot"
+          ],
+          "properties": {
+            "kind": {
+              "const": "scatter"
+            },
+            "slot": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "operator": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "root_inputs"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "select"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "bindings"
+          ],
+          "properties": {
+            "kind": {
+              "const": "provider_admission"
+            },
+            "bindings": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "uniqueItems": true
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "review_node",
+            "operation"
+          ],
+          "properties": {
+            "kind": {
+              "const": "review_domain"
+            },
+            "review_node": {
+              "type": "string"
+            },
+            "operation": {
+              "$ref": "#/$defs/reviewOperation"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "operator",
+            "signature"
+          ],
+          "properties": {
+            "kind": {
+              "const": "primitive"
+            },
+            "operator": {
+              "$ref": "#/$defs/primitiveOperator"
+            },
+            "signature": {
+              "type": "string"
+            }
+          }
+        }
+      ]
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operator",
+        "contract",
+        "inputs",
+        "conditions"
+      ],
+      "properties": {
+        "operator": {
+          "$ref": "#/$defs/operator"
+        },
+        "contract": {
+          "$ref": "#/$defs/rootInputContract"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/address"
+          }
+        },
+        "conditions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "outcome"
+            ],
+            "properties": {
+              "source": {
+                "$ref": "#/$defs/address"
+              },
+              "outcome": {
+                "enum": [
+                  "passed",
+                  "failed",
+                  "inconclusive"
+                ]
+              }
+            }
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "operator": {
+                "properties": {
+                  "kind": {
+                    "const": "root_inputs"
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "contract": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/contract"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "call": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "pipeline",
+        "inputs",
+        "outputs",
+        "max_attempts",
+        "max_parallel"
+      ],
+      "properties": {
+        "pipeline": {
+          "type": "string"
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/address"
+          }
+        },
+        "outputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/address"
+          }
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/address"
+          }
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "max_parallel": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "allowance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens_per_attempt",
+        "wall_ms_per_attempt",
+        "max_attempts",
+        "verification_attempts"
+      ],
+      "properties": {
+        "tokens_per_attempt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "wall_ms_per_attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 18446744073709551615
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "verification_attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "tokenScope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens",
+        "members"
+      ],
+      "properties": {
+        "tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "members": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "slot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "worker",
+        "role",
+        "input_type",
+        "output_type",
+        "min_attempts",
+        "max_attempts",
+        "allow_local_replacement",
+        "independent_from"
+      ],
+      "properties": {
+        "worker": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+        },
+        "role": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "input_type": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/artifactType"
+        },
+        "output_type": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/artifactType"
+        },
+        "min_attempts": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "allow_local_replacement": {
+          "type": "boolean"
+        },
+        "independent_from": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"
+          },
+          "uniqueItems": true,
+          "minItems": 0,
+          "$comment": "Canonical ascending order is required by semantic admission; typed round-trips preserve identity."
+        }
+      }
+    },
+    "primitiveOperator": {
+      "oneOf": [
+        {
+          "allOf": [
+            {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/operator"
+            },
+            {
+              "not": {
+                "properties": {
+                  "op": {
+                    "enum": [
+                      "worker",
+                      "verify",
+                      "fix_verify"
+                    ]
+                  }
+                }
+              }
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "slot"
+          ],
+          "properties": {
+            "op": {
+              "enum": [
+                "worker",
+                "verify",
+                "fix_verify"
+              ]
+            },
+            "slot": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"
+            }
+          }
+        }
+      ]
+    },
+    "rootInputContract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "inputs",
+        "outputs"
+      ],
+      "properties": {
+        "inputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/inputPort"
+          },
+          "minProperties": 0
+        },
+        "outputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/outputPort"
+          },
+          "minProperties": 0
+        }
+      }
+    }
+  }
+}

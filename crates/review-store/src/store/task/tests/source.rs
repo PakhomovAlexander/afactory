@@ -385,7 +385,7 @@ fn source_refresh_records_changed_input_when_a_valid_plan_can_no_longer_fit() {
             &lease,
             TaskExecutionRecordV1::Settled {
                 attempt_id: attempt.id().into(),
-                charged_tokens: overrun,
+                charged_tokens: u128::from(overrun),
                 result: TaskAttemptResultV1::Failed {
                     feedback_id: None,
                     diagnostic_id: diagnostic,

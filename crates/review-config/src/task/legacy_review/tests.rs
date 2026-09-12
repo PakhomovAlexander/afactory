@@ -616,3 +616,62 @@ fn scatter_result_contract_tracks_inherited_history_contract() {
         assert_eq!(compilation.graph.slots[slot].output_type, expected);
     }
 }
+
+#[test]
+fn uncapped_broker_authority_must_fit_the_captured_fallback_reservation() {
+    use super::resources::ReviewResourcePolicy;
+    let mut definition = crate::Definition::from_toml(PIPELINE).unwrap();
+    definition.version = 4;
+    definition.gate = Some(toml::from_str("provider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"").unwrap());
+    for node in &mut definition.nodes {
+        if matches!(node.kind, crate::NodeKindSpec::Reviewer) {
+            node.execution = Some(crate::ReviewerExecutionSpec {
+                credential_mode: review_core::BrokerCredentialModeV1::Brokered,
+                auto_apply: false,
+                operations: vec![review_core::BrokerOperationPolicyV1 {
+                    name: "ask".into(),
+                    destination: "provider.personal".into(),
+                    method: "inference".into(),
+                    max_request_bytes: 100,
+                    max_response_bytes: 100,
+                    max_calls: 2,
+                    max_usage: 18,
+                }],
+            });
+        }
+    }
+    let loaded = definition.load().unwrap();
+    let manifest = resource_manifest(&loaded);
+    assert!(manifest.budgets.is_none());
+    let mut context = context(&loaded);
+    let before: BTreeMap<_, _> = context
+        .workers
+        .iter()
+        .map(|(name, worker)| (name.clone(), worker.allowance.clone()))
+        .collect();
+    let error = ReviewResourcePolicy {
+        uncapped_attempt_tokens: 17,
+    }
+    .apply(&loaded, &manifest, &mut context)
+    .unwrap_err();
+    assert!(error.contains("Broker authority"), "{error}");
+    assert_eq!(
+        context
+            .workers
+            .iter()
+            .map(|(name, worker)| (name.clone(), worker.allowance.clone()))
+            .collect::<BTreeMap<_, _>>(),
+        before
+    );
+    ReviewResourcePolicy {
+        uncapped_attempt_tokens: 18,
+    }
+    .apply(&loaded, &manifest, &mut context)
+    .unwrap();
+    assert!(
+        context
+            .workers
+            .values()
+            .all(|w| w.allowance.tokens_per_attempt == 18)
+    );
+}

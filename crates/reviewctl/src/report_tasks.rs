@@ -6,12 +6,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use review_core::task::execution::TaskAttemptResultV1;
 use review_core::task::plan::ExecutionPlanV1;
 use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
-use review_core::task::usage::{DecimalU64, DecimalU128, TaskTokenUsageV1};
+use review_core::task::usage::{DecimalU64, DecimalU128, TaskTokenUsageV2};
 use review_core::task::{ArtifactInputV1, EXECUTION_PLAN_V1};
 use review_graph::task::{CompiledOperator, CompiledTask, ReviewOperation};
 use review_store::store::task::execution::TaskAttemptAccounting;
 use review_store::store::task::task_run_id;
-use review_store::{AttemptWall, Cas, EventStore};
+use review_store::{Cas, EventStore, TaskAttemptWall};
 
 #[derive(serde::Serialize)]
 pub(super) struct TaskAccountingView {
@@ -46,7 +46,7 @@ struct TaskAttemptView {
     outcome: &'static str,
     reservation_id: String,
     reserved_tokens: DecimalU64,
-    chargeable_tokens: DecimalU64,
+    chargeable_tokens: DecimalU128,
     #[serde(skip_serializing_if = "Option::is_none")]
     result: Option<TaskAttemptResultV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -66,12 +66,12 @@ struct TaskWallView {
     started_unix_ms: u64,
     elapsed_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    usage: Option<TaskTokenUsageV1>,
+    usage: Option<TaskTokenUsageV2>,
 }
 
 pub(super) struct TaskAccountingReport {
     pub tasks: Vec<TaskAccountingView>,
-    pub wall_rows: Vec<AttemptWall>,
+    pub wall_rows: Vec<TaskAttemptWall>,
     pub rounds: BTreeSet<(u32, u32)>,
 }
 
@@ -186,7 +186,7 @@ pub(super) fn read(
             .rounds
             .extend(rounds.iter().map(|round| (round.round, round.epoch)));
         let walls: BTreeMap<_, _> = store
-            .attempt_wall(&task_run_id(&id).map_err(|error| error.to_string())?)
+            .task_attempt_wall(&task_run_id(&id).map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string())?
             .into_iter()
             .map(|row| (row.attempt_id.clone(), row))
@@ -213,7 +213,7 @@ pub(super) fn read(
             let wall = walls.get(&attempt.attempt_id).map(|row| TaskWallView {
                 started_unix_ms: row.started_unix_ms,
                 elapsed_ms: row.elapsed_ms,
-                usage: row.usage.as_ref().map(wide_usage),
+                usage: row.usage.clone(),
             });
             if let (Some(row), Some(round)) = (walls.get(&attempt.attempt_id), &plan.round) {
                 let mut row = row.clone();
@@ -298,17 +298,6 @@ fn outcome(attempt: &TaskAttemptAccounting) -> &'static str {
         None if attempt.released => "released",
         None if attempt.started => "running",
         None => "reserved",
-    }
-}
-
-fn wide_usage(usage: &review_store::AttemptUsage) -> TaskTokenUsageV1 {
-    TaskTokenUsageV1 {
-        input_tokens: usage.input_tokens.map(Into::into),
-        output_tokens: usage.output_tokens.map(Into::into),
-        cache_read_tokens: usage.cache_read_tokens.map(Into::into),
-        cache_write_tokens: usage.cache_write_tokens.map(Into::into),
-        reasoning_tokens: usage.reasoning_tokens.map(Into::into),
-        chargeable_tokens: usage.chargeable_tokens.into(),
     }
 }
 

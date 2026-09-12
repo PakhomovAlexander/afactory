@@ -563,3 +563,70 @@ fn full_native_usage_is_charged_above_u64_totals_without_releasing_siblings() {
     assert_eq!(ledger.reserved_tokens(), 0);
     assert_eq!(ledger.begun_attempts(), 2);
 }
+
+#[test]
+fn exact_attempt_usage_survives_settlement_and_plan_invalidation() {
+    use review_attempt::task_budget::TaskTokenScope;
+    let mut ledger = budget(4, 200, 1000)
+        .with_token_scopes(BTreeMap::from([(
+            "round.one".into(),
+            TaskTokenScope {
+                tokens: 200,
+                members: ["implement".into(), "review".into()].into(),
+            },
+        )]))
+        .unwrap();
+    spend(&mut ledger, "implement", 1, 7);
+    let active = ledger.prepare("implement", 2).unwrap();
+    ledger.begin(&active.id, 2).unwrap();
+    let sibling = ledger.prepare("review.verify", 2).unwrap();
+    let actual = u128::from(u64::MAX) + 7;
+    ledger.observe_charge_exact(&active.id, actual).unwrap();
+    ledger.observe_charge(&active.id, 1).unwrap();
+    assert_eq!(ledger.committed_tokens(), actual + 7);
+    assert_eq!(ledger.reserved_tokens(), 30);
+    assert_eq!(active.tokens, 40);
+    assert_eq!(active.deadline_unix_ms, 102);
+    assert!(ledger.begin(&sibling.id, 3).is_err());
+    assert!(ledger.settle(&active.id, u64::MAX).is_err());
+    ledger.settle_exact(&active.id, actual).unwrap();
+    ledger.settle_exact(&active.id, actual).unwrap();
+    ledger.release(&sibling.id).unwrap();
+    ledger.invalidate_plan(4).unwrap();
+    ledger.observe_charge_exact(&active.id, actual + 1).unwrap();
+    ledger.observe_charge_exact(&active.id, actual).unwrap();
+    assert_eq!(ledger.committed_tokens(), actual + 8);
+    assert_eq!(ledger.scope_committed_tokens("round.one"), Some(actual + 8));
+    assert_eq!(ledger.reserved_tokens(), 0);
+    assert_eq!(ledger.begun_attempts(), 2);
+    assert_eq!(ledger.remaining_limits().deadline_unix_ms, 1000);
+    assert!(ledger.breached());
+    assert!(
+        ledger
+            .install_graph(BTreeMap::new(), BTreeMap::new(), 5, true)
+            .is_err()
+    );
+}
+
+#[test]
+fn late_exact_total_overflow_keeps_every_scope_and_fails_closed() {
+    use review_attempt::task_budget::TaskTokenScope;
+    let mut ledger = budget(4, 200, 1000)
+        .with_token_scopes(BTreeMap::from([(
+            "round.one".into(),
+            TaskTokenScope {
+                tokens: 200,
+                members: ["implement".into()].into(),
+            },
+        )]))
+        .unwrap();
+    let first = spend(&mut ledger, "implement", 1, 0);
+    let second = spend(&mut ledger, "implement", 2, 1);
+    ledger.observe_charge_exact(&first, u128::MAX - 1).unwrap();
+    assert!(ledger.observe_charge_exact(&second, 2).is_err());
+    assert_eq!(ledger.committed_tokens(), u128::MAX);
+    assert_eq!(ledger.scope_committed_tokens("round.one"), Some(u128::MAX));
+    assert_eq!(ledger.reserved_tokens(), 0);
+    assert!(ledger.breached());
+    assert!(ledger.prepare("review.verify", 3).is_err());
+}

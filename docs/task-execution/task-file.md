@@ -25,9 +25,12 @@ including after local files change. Inspection remains possible with a newer exe
 execution currently requires the exact recorded engine. A finished Task returns its recorded
 result on another `run`, with unchanged Attempt count and spend.
 
-For an existing explicit Pipeline, `af task start --file ticket.json` combines planning and
-execution. Generated-plan approval and automatic Pipeline selection remain separate unfinished
-increment packages; this entry point does not bypass their common Store guards.
+`af task start --file ticket.json` combines planning and execution. Without an explicit Pipeline,
+selection uses captured applicability facts, strategy priorities and resource feasibility.
+Generation requires a captured Planner and developer signing policy; its exact proposed plan
+waits for signed approval before execution. See the public [Task file](../../schemas/task-file-v1.json)
+and [Task catalog](../../schemas/task-catalog-v1.json) schemas for the input shapes. Package existence, signing keys and joint
+resource feasibility still require admission validation.
 
 ```text
 ticket + captured S0
@@ -62,5 +65,13 @@ verifies the materialized result, and supports retry/recovery with the same comm
 no commit, push, PR or remote call. The common Store keeps delivery receipts alongside the Task;
 it does not create the historical `tasks.sqlite` execution store.
 
-Version-1 implementation definitions still use their explicit compatibility path while the
-entry-point cutover is in progress. Historical Task and Review artifacts are not rewritten.
+New Tasks using version-1 implementation definitions are adapted to the common runtime for
+dispatch, accounting, acceptance and delivery. Historical Task resumes retain their compatibility
+path, and historical Task and Review artifacts are not rewritten.
+
+JSON inspection uses [`af/task-inspection@3`](../../schemas/task-inspection-v3.json) and list entries
+use [`af/task-list-entry@2`](../../schemas/task-list-entry-v2.json); their
+`chargeable_tokens` values are exact unsigned decimal strings. Inspection retains original
+execution-record versions, and `explain` includes the captured
+[`af.compiled-task/1`](../../schemas/compiled-task-v1.json) graph and
+ExecutionPlan. Public schemas describe these shapes without replacing Store replay validation.

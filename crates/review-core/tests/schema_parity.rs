@@ -32,7 +32,15 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 109] = [
+const SCHEMAS: [&str; 117] = [
+    "task-file-v1.json",
+    "task-catalog-v1.json",
+    "compiled-task-v1.json",
+    "task-inspection-v3.json",
+    "task-list-entry-v2.json",
+    "task-execution-record-v3.json",
+    "task-token-usage-v2.json",
+    "broker-operation-receipt-v2.json",
     "task-review-attempt-provenance-v1.json",
     "task-review-accounting-v1.json",
     "run-report-v6.json",
@@ -543,25 +551,27 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
         .unwrap_or_else(|| panic!("unregistered schema: {name}"))
         .get_or_init(|| {
             let resources = RESOURCES.get_or_init(|| {
-                [
-                    "finding-report-v1.json",
-                    "reviewer-result-v1.json",
-                    "run-report-v5.json",
-                    "task-contracts-v1.json",
-                    "task-token-usage-v1.json",
-                    "task-review-accounting-v1.json",
-                    "task-operator-signature-v1.json",
-                    "task-kind-v1.json",
-                    "task-invocation-v1.json",
-                    "task-review-result-selected-v1.json",
-                    "subject-v1.json",
-                    "change-set-v1.json",
-                    "change-attestation-v1.json",
-                    "verification-continuation-v1.json",
-                ]
-                .into_iter()
-                .map(schema)
-                .collect()
+                SCHEMAS
+                    .into_iter()
+                    .chain([
+                        "finding-report-v1.json",
+                        "reviewer-result-v1.json",
+                        "run-report-v5.json",
+                        "task-contracts-v1.json",
+                        "task-token-usage-v1.json",
+                        "task-token-usage-v2.json",
+                        "task-review-accounting-v1.json",
+                        "task-operator-signature-v1.json",
+                        "task-kind-v1.json",
+                        "task-invocation-v1.json",
+                        "task-review-result-selected-v1.json",
+                        "subject-v1.json",
+                        "change-set-v1.json",
+                        "change-attestation-v1.json",
+                        "verification-continuation-v1.json",
+                    ])
+                    .map(schema)
+                    .collect()
             });
             let root = schema(name);
             let mut options = jsonschema::options();

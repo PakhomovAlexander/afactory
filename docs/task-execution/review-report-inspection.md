@@ -2,7 +2,7 @@
 
 `af review report` keeps `af/review-report@1` and its numeric fields for historical Campaigns.
 When a captured Review Task is present, JSON uses
-[`af/review-report@2`](../../schemas/review-report-v2.json). The existing `spend` array still
+[`af/review-report@3`](../../schemas/review-report-v3.json). The existing `spend` array still
 describes legacy Review Attempts and Provider operations. The additional `task_accounting`
 array reads each distinct Task's validated common execution ledger, including failures before
 the first canonical report or selected Reviewer output. Inspection opens the Store and CAS
@@ -10,8 +10,10 @@ read-only and does not create events, receipts or missing artifacts.
 
 Each Task entry reports current cumulative `chargeable_tokens`, outstanding `reserved_tokens`,
 and started Attempt counts. Token totals are canonical u128 decimal strings; Attempt counts,
-original reservation caps, per-Attempt charges and Provider usage components are canonical u64
-decimal strings. Sequence numbers and wall-clock fields retain their ordinary numeric shape.
+original reservation caps and native Provider usage components are canonical u64 decimal strings.
+Per-Attempt cumulative charges use u128 decimal strings, including totals of several Broker
+operations. The earlier [`@2` schema](../../schemas/review-report-v2.json) remains available for
+its u64 per-Attempt representation. Sequence numbers and wall-clock fields retain their ordinary numeric shape.
 
 Counts include failed, abandoned and fenced work, and exclude reservations released before
 starting. The three categories add up to the common budget's started Attempt count. A Provider
