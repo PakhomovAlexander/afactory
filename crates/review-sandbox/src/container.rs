@@ -533,8 +533,11 @@ mod tests {
             ContainerProvider::probe_paths(paths.clone(), Some(start + Duration::from_millis(500)));
         assert!(start.elapsed() < Duration::from_secs(2));
         assert!(!unavailable.usable());
+        // A busy host may time out before the first script reaches its body. The observed
+        // attempted runtime and deadline failure are authoritative; a script marker is not.
         assert!(
-            directory.path().join("runtime0.marker").exists(),
+            matches!(&unavailable, Availability::Unusable { runtime, reason }
+            if runtime == &paths[0] && reason.contains("did not finish")),
             "{unavailable:?}"
         );
         assert!(!directory.path().join("runtime1.marker").exists());
