@@ -15,10 +15,17 @@ fn select() -> JiraSelector {
 fn transport(root: &std::path::Path, body: &str) -> CurlJiraTransport {
     let program = root.join("curl-fixture");
     // Resolve the test interpreter before isolation; Apple's /usr/bin shim adds SDK settings.
-    let python = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+    let launcher = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
         .map(|path| path.join("python3"))
         .find(|path| path.is_file())
         .unwrap();
+    let resolved = std::process::Command::new(launcher)
+        .args(["-c", "import sys; print(sys.executable)"])
+        .output()
+        .unwrap();
+    assert!(resolved.status.success(), "resolve the fixture interpreter");
+    let python = std::path::PathBuf::from(String::from_utf8(resolved.stdout).unwrap().trim());
+    assert!(python.is_absolute() && python.is_file());
     std::fs::write(&program, format!("#!{}\n{body}\n", python.display())).unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
     CurlJiraTransport {
