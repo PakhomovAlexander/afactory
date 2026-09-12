@@ -461,7 +461,7 @@ fn embedded_review_never_accepts_findings_missing_reviewers_or_failed_checks() {
             );
             assert_eq!(
                 result["attempts"],
-                if case == "failed_checks" { 2 } else { 4 }
+                if case == "failed_checks" { 2 } else { 5 }
             );
         }
     }
@@ -479,8 +479,8 @@ fn implementation_embeds_the_same_locked_review_and_one_task_budget() {
     assert_eq!(plan["attempts"], 0);
     let result = af(&repo, &state, &["run", "pagination-cli"]);
     assert_eq!(
-        result["attempts"], 4,
-        "Implementation, checks, and two reviewers share four Attempts"
+        result["attempts"], 5,
+        "Implementation, checks, two reviewers and goal evaluation share five Attempts"
     );
     assert_eq!(result["result"]["acceptance"], "satisfied");
     assert_eq!(
@@ -529,6 +529,42 @@ fn implementation_embeds_the_same_locked_review_and_one_task_budget() {
             .get_json(alone["selected_results"][reviewer].as_str().unwrap())
             .unwrap();
         assert_eq!(embedded_result["payload"], standalone_result["payload"]);
+        let revision = captured
+            .get_json(result["revision_id"].as_str().unwrap())
+            .unwrap();
+        let requirement = &revision["payload"]["inputs"]["requirements"]["artifact_ids"][0];
+        assert!(
+            embedded_result["input_artifacts"]
+                .as_array()
+                .unwrap()
+                .contains(requirement)
+        );
+        assert!(
+            !standalone_result["input_artifacts"]
+                .as_array()
+                .unwrap()
+                .contains(requirement)
+        );
+        let verified = captured
+            .get_json(
+                result["result"]["outputs"]["evaluation"]["artifact_ids"][0]
+                    .as_str()
+                    .unwrap(),
+            )
+            .unwrap();
+        let evaluation = captured
+            .get_json(verified["payload"]["evaluation_id"].as_str().unwrap())
+            .unwrap();
+        assert!(
+            evaluation["input_artifacts"]
+                .as_array()
+                .unwrap()
+                .contains(requirement)
+        );
+        assert_eq!(
+            evaluation["subject_snapshot_id"],
+            result["result"]["outputs"]["snapshot"]["snapshot_id"]
+        );
     }
 }
 

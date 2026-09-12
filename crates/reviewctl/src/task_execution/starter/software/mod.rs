@@ -22,6 +22,11 @@ fn derived(ty: &str) -> PipelinePortV1 {
     };
     value
 }
+fn optional_requirements() -> PipelinePortV1 {
+    let mut value = port("af/Requirements@1");
+    value.optional = true;
+    value
+}
 fn history() -> PipelinePortV1 {
     let mut value = port(REVIEW_HISTORY_V1);
     value.root_default = Some(RootDefaultV1::EmptyReviewHistory);
@@ -317,6 +322,7 @@ fn review(correctness: &TaskWorkerManifest, bugs: &TaskWorkerManifest) -> Pipeli
             ("base", base),
             ("history", history()),
             ("continuation", continuation),
+            ("requirements", optional_requirements()),
         ]),
         ports(&[
             ("review", same(TASK_REVIEW_ROUND_V1)),
@@ -354,11 +360,11 @@ fn review(correctness: &TaskWorkerManifest, bugs: &TaskWorkerManifest) -> Pipeli
     for (name, worker) in [("correctness", correctness), ("bugs", bugs)] {
         p.slots.insert(name.into(), slot(worker, "review", &[], 1));
         p.nodes.push(when(
-            node(
-                name,
-                TaskOperatorV1::Verify { slot: name.into() },
-                reduction.clone(),
-            ),
+            node(name, TaskOperatorV1::Verify { slot: name.into() }, {
+                let mut incoming = reduction.clone();
+                incoming.insert("requirements".into(), input("requirements"));
+                incoming
+            }),
             "checks",
             ReceiptOutcomeV1::Passed,
         ));
@@ -475,6 +481,7 @@ fn reviewed(
                 ("source", output("seal", "snapshot")),
                 ("base", input("source")),
                 ("history", input("history")),
+                ("requirements", input("requirements")),
             ]),
         ),
         node(
@@ -606,6 +613,11 @@ fn repair(
         ]);
         cover(&mut p, "repaired", "result");
     }
+    p.contract
+        .outputs
+        .insert("checks".into(), derived(TASK_CHECK_RECEIPT_V1));
+    p.outputs
+        .insert("checks".into(), output("checks", "result"));
     p
 }
 
@@ -710,6 +722,81 @@ fn reviewed_repair(
         ("verification", output("final_verification", "output")),
     ]);
     p.coverage = BTreeMap::from([("verified".into(), output("final_verification", "output"))]);
+    p.nodes.push(node(
+        "final_checks",
+        TaskOperatorV1::Select {},
+        inputs(&[
+            ("condition", output("accept", "result")),
+            ("passed", output("review", "checks")),
+            (
+                "failed",
+                output(if heavy { "second_review" } else { "repair" }, "checks"),
+            ),
+            ("inconclusive", output("review", "checks")),
+        ]),
+    ));
+    p
+}
+
+// Review and goal acceptance refer to the selected final Snapshot. Keep Review's original
+// Snapshot artifact and reuse its exact checks; the evaluator has one protected Attempt.
+fn with_goal_acceptance(
+    mut p: PipelineDefinitionV1,
+    evaluator: &TaskWorkerManifest,
+) -> PipelineDefinitionV1 {
+    let authors: Vec<_> = ["implementer", "repairer"]
+        .into_iter()
+        .filter(|s| p.slots.contains_key(*s))
+        .collect();
+    p.slots
+        .insert("evaluator".into(), slot(evaluator, "evaluate", &authors, 1));
+    let snapshot = p.outputs["snapshot"].clone();
+    let (checks, condition) = if p.nodes.iter().any(|n| n.id == "final_checks") {
+        (output("final_checks", "output"), "final_checks")
+    } else {
+        p.nodes.push(node(
+            "final_checks",
+            TaskOperatorV1::Select {},
+            inputs(&[
+                ("condition", output("accept", "result")),
+                ("passed", output("review", "checks")),
+                ("failed", output("review", "checks")),
+                ("inconclusive", output("review", "checks")),
+            ]),
+        ));
+        (output("final_checks", "output"), "final_checks")
+    };
+    p.nodes.push(when(
+        node(
+            "evaluate_goal",
+            TaskOperatorV1::Verify {
+                slot: "evaluator".into(),
+            },
+            inputs(&[
+                ("source", snapshot.clone()),
+                ("requirements", input("requirements")),
+                ("checks", checks.clone()),
+            ]),
+        ),
+        condition,
+        ReceiptOutcomeV1::Passed,
+    ));
+    p.nodes.push(node(
+        "accept_goal",
+        TaskOperatorV1::Accept {},
+        inputs(&[
+            ("source", snapshot),
+            ("checks", checks),
+            ("evaluation", output("evaluate_goal", "result")),
+        ]),
+    ));
+    p.contract
+        .outputs
+        .insert("evaluation".into(), derived(VERIFICATION_RESULT_V1));
+    p.outputs
+        .insert("evaluation".into(), output("accept_goal", "result"));
+    cover(&mut p, "goal", "evaluation");
+    p.max_attempts += 1;
     p
 }
 
@@ -813,6 +900,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
         .evidence
         .insert("result".into(), BTreeSet::from([policy_id]));
     let reviewer_inputs = ports(&[
+        ("requirements", optional_requirements()),
         ("source", port(SOURCE_TREE_V1)),
         ("history", port(REVIEW_HISTORY_V1)),
         ("subject", same(TASK_REVIEW_SUBJECT_V1)),
@@ -866,7 +954,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
     );
     let light = review(&correctness, &bugs);
     let implementation_reviewed = reviewed(&author, &correctness, &bugs);
-    let mut generated = implementation_reviewed.clone();
+    let mut generated = with_goal_acceptance(implementation_reviewed.clone(), &evaluator);
     generated.name = "generated/implementation".into();
     generated.accepts.required_facts.clear();
     let proposal = json!({"schema":"af.pipeline-proposal/1","root":generated.name,"definitions":{generated.name.clone():String::from_utf8(toml_bytes(&generated)?).map_err(|e|e.to_string())?}});
@@ -878,9 +966,15 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
         light,
         repair(&repairer, &fix_verifier, false),
         repair(&repairer, &fix_verifier, true),
-        reviewed_repair(&implementation_reviewed, &repairer, &fix_verifier, false),
-        reviewed_repair(&implementation_reviewed, &repairer, &fix_verifier, true),
-        implementation_reviewed,
+        with_goal_acceptance(
+            reviewed_repair(&implementation_reviewed, &repairer, &fix_verifier, false),
+            &evaluator,
+        ),
+        with_goal_acceptance(
+            reviewed_repair(&implementation_reviewed, &repairer, &fix_verifier, true),
+            &evaluator,
+        ),
+        with_goal_acceptance(implementation_reviewed, &evaluator),
     ];
     let mut files = BTreeMap::from([
         (".af/code-policy.toml".into(), toml_bytes(&policy)?),
@@ -1032,22 +1126,22 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
             "implementation-reviewed",
             "implement",
             Some(FileVerification::Review),
+            5,
             4,
-            3,
         ),
         (
             "implementation-repair-targeted",
             "implement",
             Some(FileVerification::ReviewOrTargetedFixes),
-            7,
-            5,
+            8,
+            6,
         ),
         (
             "implementation-repair-heavy",
             "implement",
             Some(FileVerification::Review),
-            10,
-            8,
+            11,
+            9,
         ),
         ("review-light", "review", None, 3, 3),
         ("review-heavy", "review", None, 6, 6),
@@ -1062,7 +1156,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
             } else {
                 GOAL.into()
             },
-            requirements: (kind == "implement").then(|| json!({
+            requirements: Some(json!({
                 "schema": "tutorial.pagination/1", "module": "pagination.py", "function": "paginate",
                 "offset_default": 0, "limit_default": 2, "bounds": "nonnegative_integers",
                 "preserve_input": true
@@ -1101,7 +1195,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
     task.pipeline.as_mut().unwrap().fallback = PipelineFallbackV1::Generate;
     task.facts
         .insert("standard".into(), TaskFactV1::Boolean(false));
-    task.limits.max_attempts = 6;
+    task.limits.max_attempts = 7;
     task.limits.wall_ms = 900000;
     files.insert("planning.json".into(), json_bytes(&task)?);
     files.insert(".af/task-catalog.toml".into(), toml_bytes(&catalog)?);

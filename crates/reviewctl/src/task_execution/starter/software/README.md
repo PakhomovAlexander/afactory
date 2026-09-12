@@ -14,7 +14,9 @@ af task run implementation-reviewed --json
 ```
 
 The Task implements pagination, seals its output and calls the shared Review Pipeline with
-independent correctness and bounds reviewers. It accepts only current checked and reviewed code.
+independent correctness and bounds reviewers. A final independent evaluator checks the exact
+Task requirements on the selected Snapshot using the same current check receipts. Both Review
+and goal acceptance must pass; the reviewed path uses five Attempts.
 The source checkout stays unchanged. To inspect the result in a new worktree:
 
 ```sh

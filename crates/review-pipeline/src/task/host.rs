@@ -684,12 +684,19 @@ impl TaskDomain for CapturedTaskHost<'_> {
                 for id in &value.artifact_ids {
                     let artifact = envelope(cas, id)?;
                     for retained_port in worker.signature.retains.get(port).into_iter().flatten() {
-                        for expected in &input
-                            .inputs
-                            .get(retained_port)
-                            .ok_or("Retained receipt input is absent")?
-                            .artifact_ids
-                        {
+                        let Some(retained) = input.inputs.get(retained_port) else {
+                            if worker
+                                .signature
+                                .contract
+                                .inputs
+                                .get(retained_port)
+                                .is_some_and(|port| port.optional)
+                            {
+                                continue;
+                            }
+                            return Err("Retained receipt input is absent".into());
+                        };
+                        for expected in &retained.artifact_ids {
                             if !artifact.input_artifacts.contains(expected) {
                                 return Err("Worker output lost a retained input receipt".into());
                             }

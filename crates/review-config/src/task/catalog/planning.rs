@@ -431,7 +431,9 @@ impl TaskPlanCompiler {
             graph.budget(task.limits.clone())?;
             Ok(graph)
         } else {
-            compile_task(task, root, &context)
+            let graph = compile_task(task, root, &context)?;
+            self.validate_requirements_inputs(&graph)?;
+            Ok(graph)
         }
     }
 }

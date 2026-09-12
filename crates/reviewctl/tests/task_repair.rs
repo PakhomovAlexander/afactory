@@ -27,7 +27,7 @@ fn bounded_repair_preserves_one_round_and_delivers_verified_s2() {
     let (code, result) = run(&repo, &state, &["task", "run", "repair-cli"]);
     assert_eq!(code, 0, "{result:#}");
     assert_eq!(result["result"]["acceptance"], "satisfied");
-    assert_eq!(result["attempts"], 7);
+    assert_eq!(result["attempts"], 8);
     assert_eq!(result["review_rounds"].as_array().unwrap().len(), 1);
     assert_eq!(result["review_rounds"][0]["round"], 1);
     assert_eq!(
@@ -171,7 +171,7 @@ fn repair_rejects_missing_stale_and_negative_receipts_and_current_check_failures
         assert_ne!(value["result"]["acceptance"], "satisfied", "{case}");
         assert_eq!(
             value["attempts"],
-            if case == "failed_checks" { 6 } else { 7 },
+            if case == "failed_checks" { 6 } else { 8 },
             "{case}"
         );
         assert_eq!(
@@ -267,7 +267,7 @@ fn clean_review_selects_s1_without_spending_the_repair_allowance() {
     commit_fixture(&repo);
     let (code, result) = run(&repo, &state, &["task", "start", "--file", "ticket.json"]);
     assert_eq!(code, 0, "{result:#}");
-    assert_eq!(result["attempts"], 4);
+    assert_eq!(result["attempts"], 5);
     assert_eq!(result["result"]["acceptance"], "satisfied");
     assert_eq!(result["review_rounds"][0]["conclusion"], "pass");
     assert!(result.get("repair_assessments").is_none());
@@ -301,7 +301,7 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
     }
     let ticket = repo.join("ticket.json");
     let mut value: Value = serde_json::from_slice(&std::fs::read(&ticket).unwrap()).unwrap();
-    value["limits"]["max_attempts"] = 8.into();
+    value["limits"]["max_attempts"] = 9.into();
     std::fs::write(ticket, serde_json::to_vec(&value).unwrap()).unwrap();
     commit_fixture(&repo);
     let (code, plan) = run(&repo, &state, &["task", "plan", "--file", "ticket.json"]);
@@ -408,7 +408,7 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
     let (code, result) = run(&repo, &state, &["task", "run", "repair-cli"]);
     assert_eq!(code, 0, "{result:#}");
     assert_eq!(
-        result["attempts"], 8,
+        result["attempts"], 9,
         "The abandoned verifier still consumes its parent and child allowance"
     );
     let resumed = store.task_projection(&cas, "repair-cli").unwrap().unwrap();

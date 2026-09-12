@@ -33,7 +33,9 @@ the command tutorial's local prerequisites. `--profile software` omits the docum
                  |
            call review-light  <--- same shared definition
                  |
-              acceptance
+         evaluate exact requirements
+                 |
+       require both acceptance obligations
 ```
 
 | Definition | Behavior | Maximum Attempts / protected verification |
@@ -43,9 +45,9 @@ the command tutorial's local prerequisites. `--profile software` omits the docum
 | `builtin/verification` | Check and independently evaluate the exact supplied source | 2 / 2 |
 | `builtin/review-light` | One discovery Round with both configured reviewers | 3 / 3 |
 | `builtin/review-heavy` | Two declared calls to the same Review definition | 6 / 6 |
-| `builtin/implementation-reviewed` | Implement and accept through embedded Review | 4 / 3 |
-| `builtin/implementation-repair-targeted` | One bounded repair with independent targeted verification | 7 / 5 |
-| `builtin/implementation-repair-heavy` | One bounded repair, independent fix verification and full S2 Review | 10 / 8 |
+| `builtin/implementation-reviewed` | Implement, embed Review and evaluate requirements | 5 / 4 |
+| `builtin/implementation-repair-targeted` | One bounded repair, targeted verification and goal evaluation | 8 / 6 |
+| `builtin/implementation-repair-heavy` | One bounded repair, fix verification, full S2 Review and goal evaluation | 11 / 9 |
 | `builtin/release-notes` | Author, render, check sources and independently verify a document | 3 / 2 |
 
 `builtin/repair-targeted` and `builtin/repair-heavy` are shared three-Attempt child components.

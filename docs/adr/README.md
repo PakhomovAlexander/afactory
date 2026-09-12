@@ -126,3 +126,4 @@ options you rejected and why — that is the part future-you needs.
 - [0060 — Generate working starters from supported contracts](0060-generate-working-starters-from-supported-contracts.md)
 - [0061 — Capture read-only issue sources outside execution authority](0061-capture-read-only-issue-sources-outside-execution-authority.md)
 - [0062 — Refresh issue revisions without resetting execution authority](0062-refresh-issue-revisions-without-resetting-execution-authority.md)
+- [0063 — Require goal acceptance alongside embedded Review](0063-require-goal-acceptance-alongside-embedded-review.md)

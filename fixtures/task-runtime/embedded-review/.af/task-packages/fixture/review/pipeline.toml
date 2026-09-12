@@ -36,6 +36,15 @@
 ["contract"."inputs"."base"."affinity"]
 "kind" = "unbound"
 
+["contract"."inputs"."requirements"]
+"artifact_type" = "af/Requirements@1"
+"cardinality" = "one"
+"optional" = true
+"covers" = []
+
+["contract"."inputs"."requirements"."affinity"]
+"kind" = "unbound"
+
 ["contract"."outputs"]
 
 ["contract"."outputs"."history"]
@@ -71,7 +80,6 @@
 "kinds" = ["review"]
 
 ["accepts"."required_facts"]
-
 
 ["slots"]
 
@@ -155,6 +163,10 @@
 "node" = "bind"
 "port" = "subject"
 
+["nodes"."inputs"."requirements"]
+"kind" = "input"
+"port" = "requirements"
+
 ["nodes"."when"]
 "node" = "check"
 "outcome" = "passed"
@@ -185,6 +197,10 @@
 "kind" = "node"
 "node" = "bind"
 "port" = "subject"
+
+["nodes"."inputs"."requirements"]
+"kind" = "input"
+"port" = "requirements"
 
 ["nodes"."when"]
 "node" = "check"

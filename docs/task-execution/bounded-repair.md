@@ -5,7 +5,7 @@ about negative offsets, repairs the code into S2, checks S2, and independently v
 Finding. It uses the same Review package boundary as ordinary reviewed implementation.
 
 ```text
-Task: implement this Jira ticket                  one parent allowance: 7 Attempts
+Task: implement this Jira ticket                  one parent allowance: 8 Attempts
   |
   +--> implement S0 --> seal S1 --> call Review(S0, S1, empty history)
                                       |
@@ -28,14 +28,18 @@ Task: implement this Jira ticket                  one parent allowance: 7 Attemp
                  targeted acceptance
                              |
                              v
-                  typed Select of final Snapshot and acceptance
+                  typed Select of final Snapshot, checks and acceptance
+                             |
+                  independent goal evaluation on selected source
+                             |
+                  require repair guarantee AND goal acceptance
                              |
                   explicit delivery to a new local worktree
 ```
 
 The repair call has a three-Attempt ceiling: repair, checks, and fix verification. The parent
-protects five verification Attempts before implementation starts: three for initial Review
-and two for repair. Conditional paths retain their bounds and selected values across resume. A real-process
+protects six verification Attempts before implementation starts: three for initial Review,
+two for repair and one for the final requirements evaluation. Conditional paths retain their bounds and selected values across resume. A real-process
 interruption test kills the CLI during a started verifier Attempt and resumes after lease expiry;
 the original Round and repair context retain their IDs, and the lost Attempt remains charged.
 A call that cannot hold its protected verification plus unconditional paid work is refused.
@@ -89,4 +93,4 @@ af task deliver repair-cli --confirm repair-cli \
 ```
 
 The fixture verifies one original negative-offset case and the existing pagination check. Its
-seven command Attempts demonstrate mechanics and authority; they are not a paid-model pilot.
+eight command Attempts demonstrate mechanics and authority; they are not a paid-model pilot.

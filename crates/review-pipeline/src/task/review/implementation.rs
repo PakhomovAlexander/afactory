@@ -165,6 +165,24 @@ impl ReviewTaskDomain {
         }) {
             return self.code.assess(cas, task, result);
         }
+        // Requirements acceptance and Review scope are independent obligations on the same
+        // final Snapshot. Evaluate both without changing the captured revision or plan.
+        let mut review_task = task.clone();
+        review_task.acceptance.retain(|_, a| {
+            a.evidence_type != review_core::task::verification::VERIFICATION_RESULT_V1
+        });
+        let mut goal_task = task.clone();
+        goal_task.acceptance.retain(|_, a| {
+            a.evidence_type == review_core::task::verification::VERIFICATION_RESULT_V1
+        });
+        let goal = if goal_task.acceptance.is_empty() {
+            None
+        } else {
+            let mut assessed = result.clone();
+            self.code.assess(cas, &goal_task, &mut assessed)?;
+            Some(assessed)
+        };
+        let task = &review_task;
         let mut missing = BTreeSet::new();
         let mut failed = false;
         for (name, obligation) in &task.acceptance {
@@ -254,6 +272,10 @@ impl ReviewTaskDomain {
             if !passed {
                 missing.insert(name.clone());
             }
+        }
+        if let Some(goal) = goal {
+            missing.extend(goal.missing_obligations);
+            failed |= goal.acceptance == TaskAcceptanceV1::Unsatisfied;
         }
         result.acceptance = if missing.is_empty() {
             TaskAcceptanceV1::Satisfied

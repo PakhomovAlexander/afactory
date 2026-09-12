@@ -84,7 +84,7 @@ fn git_catalog_sync_is_exact_transitive_absent_only_and_runs_offline_after_captu
             "--json",
         ],
     ));
-    assert_eq!(imported["packages"].as_object().unwrap().len(), 6);
+    assert_eq!(imported["packages"].as_object().unwrap().len(), 7);
     let head = Command::new("git")
         .current_dir(&source)
         .args(["rev-parse", "HEAD"])
@@ -167,7 +167,11 @@ fn git_catalog_sync_is_exact_transitive_absent_only_and_runs_offline_after_captu
         ],
     ));
     assert_eq!(result["result"]["acceptance"], "satisfied");
-    assert_eq!(result["attempts"], 4);
+    assert_eq!(result["attempts"], 5);
+    assert_eq!(
+        result["result"]["outputs"]["evaluation"]["artifact_type"],
+        "af/VerificationResult@1"
+    );
     commit(&repo, "unreviewed package mutation");
     let mut task: Value =
         serde_json::from_slice(&std::fs::read(repo.join("ticket.json")).unwrap()).unwrap();

@@ -597,7 +597,7 @@ fn generated_implementation_embeds_review_and_adds_only_its_admitted_history_con
     assert_eq!(after["payload"]["limits"], before["payload"]["limits"]);
     approve(&repo, &state, root.path(), &key);
     let done = run(&repo, &state, &["task", "run", "pagination-cli"], 0);
-    assert_eq!(done["attempts"], 5);
+    assert_eq!(done["attempts"], 6);
     assert_eq!(done["result"]["acceptance"], "satisfied");
     assert_eq!(done["review_rounds"].as_array().unwrap().len(), 1);
 }

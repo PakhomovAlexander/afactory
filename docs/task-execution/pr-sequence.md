@@ -146,3 +146,18 @@ The full refresh and result-scoped delivery gate passes **802 tests, zero failur
 across 112 suites, plus formatting, Clippy and frozen reproduction. Delivery recovery retains the
 exact result identity; a pending delivery blocks refresh until reconciled. Both revisions can be
 delivered independently without changing earlier worktrees. No external PR 2 reviewer has run.
+
+The requirements-acceptance checkpoint adds an independent `goal` obligation alongside Review
+on the selected final Snapshot. Fifteen targeted CLI cases pass across goal refusal, heavy Review,
+issue capture, refresh, repair and starters; eight prior Task-file cases also pass. Native Planner
+capacity tests cover command and model bindings without duplicating Provider admission. The
+complete gate, including exact-requirements provenance and standalone issue Review, passes
+**804 tests, zero failures, 15 ignored**, across 113 suites, plus formatting, Clippy and
+byte-identical frozen reproduction. Markdown checks pass. Earlier verification caught stale
+fixture counts for the additional protected evaluator; those assertions now include its cost.
+An earlier sandbox-cache test also observed an empty-stderr Git failure; its exact binary and
+both subsequent full runs passed that suite without changing its code or limits.
+
+CI for the preceding refresh checkpoint at `3f467c7` passes Check, CLI smoke and live container
+probes in run `34660902042`. Legacy Review migration and the remaining P14 evidence are still
+required. Claude personal remains signed out; no PR 2 reviewer has run.

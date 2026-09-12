@@ -11,12 +11,12 @@
   "facts": {},
   "limits": {
     "tokens": 1000,
-    "max_attempts": 7,
+    "max_attempts": 8,
     "wall_ms": 90000,
     "verification": {
       "tokens": 200,
-      "attempts": 5,
-      "wall_ms": 25000
+      "attempts": 6,
+      "wall_ms": 30000
     }
   },
   "verification": "review_or_targeted_fixes"

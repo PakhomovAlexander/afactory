@@ -1,6 +1,8 @@
 # ADR-0052: Capture local bindings and compose Review acceptance
 
-Status: accepted for the Task increment implementation; unreleased.
+Status: accepted for the Task increment implementation; unreleased. The implementation profile
+choice is superseded by [ADR-0063](0063-require-goal-acceptance-alongside-embedded-review.md),
+which requires independent goal acceptance alongside embedded Review.
 
 ## Context
 

@@ -101,8 +101,7 @@ pub(super) fn start(
         plan,
         graph,
     } = prepare_bootstrap(&cas, &authority, compiler, revision, revision_id)?;
-    let resources =
-        compiler.candidate_resources(&cas, graph.clone(), &revision.limits, clock()?)?;
+    let resources = compiler.compiled_resources(&graph, &revision.limits, clock()?)?;
     if !resources.is_empty() {
         return Err(resources.join("; "));
     }

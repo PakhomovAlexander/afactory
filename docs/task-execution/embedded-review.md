@@ -15,7 +15,7 @@ ticket.json: "Implement this Jira ticket: offset/limit pagination"
                   |
       +-----------v-----------------------------------+
       | call fixture/review                           |
-      | inputs: S0, S1, explicit empty Review history  |
+      | inputs: S0, S1, requirements, empty history     |
       |                                               |
       | bind Subject(S0..S1) --+                       |
       |                       +--> two reviewers      |
@@ -28,15 +28,20 @@ ticket.json: "Implement this Jira ticket: offset/limit pagination"
                   |
        ReviewedImplementation + S1
                   |
+       evaluate(S1, requirements, current checks)
+                  |
+       require Review AND goal acceptance
+                  |
           explicit Task confirmation
                   |
             new local worktree
 ```
 
 `ticket.json` requests `"verification": "review"`. The Task therefore requires
-`af/ReviewedImplementation@1` evidence under the captured Review policy. Its acceptance
-requirement is determined before compilation. A Pipeline that supplies only the independent
-evaluator result cannot satisfy that requested contract.
+`af/ReviewedImplementation@1` evidence under the captured Review policy and a separate
+`af/VerificationResult@1` against the exact Task Requirements under the code policy. The public
+`verification` and `evaluation` outputs cover `verified` and `goal` respectively. Both obligations
+are determined before compilation; both must pass.
 
 ```sh
 af task plan --file ticket.json --state /tmp/reviewed-pagination --json
@@ -53,11 +58,12 @@ exact plan, source, required checks and retained evidence. Findings, missing rev
 unavailable checks cannot become a verified implementation. Failed checks skip reviewers and
 produce unsatisfied implementation acceptance.
 
-The fixture spends four Attempts: one implementation, one aggregate check and two reviewers.
-It has no additional evaluator or child allowance. Its `review.json` selects the identical
+The fixture spends five Attempts: one implementation, one aggregate check, two reviewers and
+one independent evaluator. It reuses current checks and shares one Task allowance. Its `review.json` selects the identical
 Review package for standalone use; the integration test runs that package on the delivered
 source with three Attempts. Standalone Review keeps its own business meaning: a complete
 finding-bearing Review can satisfy the Review Task while still requesting changes.
 
-Bounded repair and generated plan approval remain subsequent implementation packages.
-[Git catalog sync](shared-catalogs.md) can share this composition and its Workers.
+[Bounded repair](bounded-repair.md) selects S1 or S2 before the final goal evaluation. Failed or
+missing evaluation prevents delivery even when Review passes. [Generated plans](generated-plans.md)
+require signed approval; [Git catalog sync](shared-catalogs.md) shares the composition and Workers.

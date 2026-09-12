@@ -46,6 +46,15 @@ covers = []
 kind = "same_as"
 input = "source"
 
+[signature.contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[signature.contract.inputs.requirements.affinity]
+kind = "unbound"
+
 [signature.contract.outputs.result]
 artifact_type = "review.kernel/ReviewerResult@1"
 cardinality = "one"
@@ -59,7 +68,7 @@ input = "source"
 [signature.evidence]
 
 [signature.retains]
-result = ["checks", "history", "source", "subject"]
+result = ["checks", "history", "source", "subject", "requirements"]
 
 [signature.attempt]
 tokens = 0

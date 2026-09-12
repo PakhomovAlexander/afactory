@@ -24,6 +24,7 @@ pub const COMPILED_TASK_V1: &str = "af/CompiledTask@1";
 
 pub mod export;
 pub mod planning;
+mod requirements;
 #[cfg(test)]
 mod tests;
 
@@ -651,6 +652,7 @@ impl TaskPlanCompiler {
                 max_depth: 4,
             },
         )?;
+        self.validate_requirements_inputs(&graph)?;
         self.validate_replacement_schemas(&graph)?;
         if let Err(reason) = graph.budget(task.limits.clone()) {
             resources.push(reason);
@@ -701,6 +703,17 @@ impl TaskPlanCompiler {
         if let Some(cost) = &self.provider_admission {
             graph.install_provider_admission(&bindings, cost)?;
         }
+        self.compiled_resources(&graph, limits, now_unix_ms)
+    }
+
+    /// A compiled graph already includes paid Provider admission. Recheck remaining capacity
+    /// without inserting another operation or altering the recorded plan.
+    pub fn compiled_resources(
+        &self,
+        graph: &CompiledTask,
+        limits: &review_core::task::TaskLimitsV1,
+        now_unix_ms: u64,
+    ) -> Result<Vec<String>, String> {
         let mut reasons = Vec::new();
         if let Err(reason) = graph.budget(limits.clone()) {
             reasons.push(reason);

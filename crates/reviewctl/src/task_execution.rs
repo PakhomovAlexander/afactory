@@ -597,7 +597,10 @@ fn restore_compiler(
                 .map_err(|e| e.to_string())?;
         (
             code_signatures(id, &policy)?,
-            BTreeMap::from([("verified".into(), "snapshot".into())]),
+            BTreeMap::from([
+                ("verified".into(), "snapshot".into()),
+                ("goal".into(), "snapshot".into()),
+            ]),
         )
     };
     if let Some(id) = &authority.review_policy_id {
@@ -851,10 +854,8 @@ fn start_captured(
         .issue
         .as_ref()
         .map(|selected| {
-            if profile == TaskKindProfile::Review || legacy_budget.is_some() {
-                return Err(
-                    "Issue requirements need a Task-file implementation or document profile".into(),
-                );
+            if legacy_budget.is_some() {
+                return Err("Issue requirements need an explicit Task file".into());
             }
             issue::capture(
                 &cas,
@@ -958,7 +959,9 @@ fn start_captured(
         )]);
     }
     if profile == TaskKindProfile::Review {
-        revision.inputs.remove("requirements");
+        if file.requirements.is_none() && file.issue.is_none() {
+            revision.inputs.remove("requirements");
+        }
         revision.authority.allowed_effects.remove("write-source");
         revision.required_outputs = serde_json::from_value(json!({"review":{"artifact_type":TASK_REVIEW_ROUND_V1,"cardinality":"one"},"history":{"artifact_type":REVIEW_HISTORY_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?;
         revision.acceptance = BTreeMap::from([(
@@ -988,6 +991,22 @@ fn start_captured(
             .get_mut("verification")
             .expect("implementation output")
             .artifact_type = evidence_type.into();
+        revision.required_outputs.insert(
+            "evaluation".into(),
+            revision.required_outputs["verification"].clone(),
+        );
+        revision
+            .required_outputs
+            .get_mut("evaluation")
+            .unwrap()
+            .artifact_type = VERIFICATION_RESULT_V1.into();
+        revision.acceptance.insert(
+            "goal".into(),
+            AcceptanceObligationV1 {
+                evidence_type: VERIFICATION_RESULT_V1.into(),
+                verifier_policy: authority.code_policy_id()?.into(),
+            },
+        );
         revision.acceptance.insert(
             "verified".into(),
             AcceptanceObligationV1 {

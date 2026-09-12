@@ -24,7 +24,9 @@ S0 + S2 + original history -------------------- call review
                                                          |
                                             complete S2 Review receipt
                                                          |
-                                               accept implementation
+                                      evaluate exact requirements on S2
+                                                         |
+                                    require Review AND goal acceptance
 ```
 
 The first Round stays closed and finding-bearing. The continuation carries exact current-S2
@@ -44,7 +46,7 @@ the later Review call and its exact checks through `review_accept`. Projects can
 route with `allow_targeted_repairs = false`. A light route that accepts only targeted fixes keeps
 its distinct `af/RepairAllowedImplementation@1` contract and one discovery Round.
 
-The CLI integration fixture verifies two Rounds, ten total Attempts and eight protected
+The CLI integration fixture verifies two Rounds, eleven total Attempts and nine protected
 verification Attempts. It covers positive, negative, unavailable, stale and rediscovered claims,
 plus exact finished replay. The Store projection fixture also proves stale-view refusal before
 mutation and reopening when a later Subject changes. See

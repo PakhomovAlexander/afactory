@@ -46,6 +46,11 @@ acceptance requires current source/content checks and an independent evaluation;
 code Snapshot identity. Captured source text supplies requirements and evidence, never execution
 authority.
 
+**Implementation acceptance**:
+The conjunction of independent verification against exact Task Requirements and the configured
+Review or repair guarantee on the final Snapshot. Passing Review cannot cover a missing or
+negative requirements verdict; every verifier retains the requirements it consumed.
+
 **Task Review Continuation**:
 Exact independently verified repair evidence projected into the next admitted discovery Round.
 It retains the original Round and claim identities, grants no complete-Review coverage and does

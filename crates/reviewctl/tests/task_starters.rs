@@ -110,9 +110,9 @@ fn emitted_starters_validate_and_execute_without_credentials_on_one_common_runti
     for (name, attempts) in [
         ("implementation-small", 3),
         ("implementation-heavy", 3),
-        ("implementation-reviewed", 4),
-        ("implementation-repair-targeted", 4),
-        ("implementation-repair-heavy", 4),
+        ("implementation-reviewed", 5),
+        ("implementation-repair-targeted", 5),
+        ("implementation-repair-heavy", 5),
         ("document", 3),
     ] {
         let file = format!("{name}.json");
@@ -146,9 +146,9 @@ fn emitted_starters_validate_and_execute_without_credentials_on_one_common_runti
 #[test]
 fn starter_repairs_use_current_evidence_and_missing_reviewers_remain_incomplete() {
     for (name, attempts) in [
-        ("implementation-repair-targeted", 7),
-        ("implementation-repair-heavy", 10),
-        ("implementation-reviewed", 4),
+        ("implementation-repair-targeted", 8),
+        ("implementation-repair-heavy", 11),
+        ("implementation-reviewed", 5),
     ] {
         let root = tempfile::tempdir().unwrap();
         let (repo, state) = setup(root.path(), None);
@@ -307,7 +307,7 @@ fn starter_planner_waits_for_a_signed_decision_then_exports_for_a_second_develop
         0,
     );
     let done = task(&repo, &state, &["task", "run", "generated-pagination"], 0);
-    assert_eq!(done["attempts"], 5);
+    assert_eq!(done["attempts"], 6);
     assert_eq!(done["result"]["acceptance"], "satisfied");
     let second = root.path().join("second");
     std::fs::create_dir(&second).unwrap();
@@ -349,7 +349,7 @@ fn starter_planner_waits_for_a_signed_decision_then_exports_for_a_second_develop
         &["task", "start", "--file", "planning.json"],
         0,
     );
-    assert_eq!(reused["attempts"], 4);
+    assert_eq!(reused["attempts"], 5);
     assert!(reused["planning"].is_null());
     assert_eq!(reused["result"]["acceptance"], "satisfied");
     let explanation = task(

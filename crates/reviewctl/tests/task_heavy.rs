@@ -79,11 +79,14 @@ fn configure(repo: &Path, case: &str) {
             reference("accept_repair", "continuation"),
         ),
     ]);
+    repair
+        .outputs
+        .insert("checks".into(), reference("repair_checks", "result"));
     repair.coverage.clear();
     write(&path, &repair);
     let path = packages.join("implementation/pipeline.toml");
     let mut root: PipelineDefinitionV1 = read(&path);
-    root.max_attempts = 10;
+    root.max_attempts = 11;
     root.contract
         .outputs
         .get_mut("verification")
@@ -131,6 +134,10 @@ fn configure(repo: &Path, case: &str) {
         if node.id == "final_snapshot" {
             node.inputs
                 .insert("failed".into(), reference("second_accept", "snapshot"));
+        }
+        if node.id == "final_checks" {
+            node.inputs
+                .insert("failed".into(), reference("second_review", "checks"));
         }
         if node.id == "final_verification" {
             node.inputs
@@ -180,9 +187,9 @@ fn configure(repo: &Path, case: &str) {
     let mut value: Value = serde_json::from_slice(&std::fs::read(&ticket).unwrap()).unwrap();
     value["verification"] = json!("review");
     value["strategy"] = json!("heavy");
-    value["limits"]["max_attempts"] = json!(10);
-    value["limits"]["verification"]["attempts"] = json!(8);
-    value["limits"]["verification"]["wall_ms"] = json!(40000);
+    value["limits"]["max_attempts"] = json!(11);
+    value["limits"]["verification"]["attempts"] = json!(9);
+    value["limits"]["verification"]["wall_ms"] = json!(45000);
     std::fs::write(ticket, serde_json::to_vec_pretty(&value).unwrap()).unwrap();
     for args in [
         ["add", "-A"].as_slice(),
@@ -209,7 +216,7 @@ fn full_s2_review_retains_original_round_and_consumes_independent_fix_receipts()
     assert_eq!(plan["attempts"], 0);
     let (code, result) = run(&repo, &state, &["task", "run", "repair-cli"]);
     assert_eq!(code, 0, "{result:#}");
-    assert_eq!(result["attempts"], 10);
+    assert_eq!(result["attempts"], 11);
     assert_eq!(result["result"]["acceptance"], "satisfied");
     let rounds = result["review_rounds"].as_array().unwrap();
     assert_eq!(rounds.len(), 2);
@@ -256,7 +263,7 @@ fn heavy_review_cannot_erase_negative_missing_stale_or_rediscovered_claims() {
             result["result"]["acceptance"], "unsatisfied",
             "{case}: {result:#}"
         );
-        assert_eq!(result["attempts"], 10, "{case}: {result:#}");
+        assert_eq!(result["attempts"], 11, "{case}: {result:#}");
         assert_eq!(result["review_rounds"][0]["round"], 1);
         assert_eq!(
             result["review_rounds"][1]["conclusion"],

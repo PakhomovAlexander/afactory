@@ -713,6 +713,21 @@ impl CodeTaskDomain {
             .chain(receipt.evaluation_id.iter().map(|id| (id, true)))
         {
             let evidence = envelope(cas, id)?;
+            if evaluator {
+                let requirements = task
+                    .inputs
+                    .get("requirements")
+                    .ok_or("Evaluation lacks the exact Task Requirements")?;
+                if requirements.artifact_type != "af/Requirements@1"
+                    || requirements.artifact_ids.is_empty()
+                    || requirements
+                        .artifact_ids
+                        .iter()
+                        .any(|id| !evidence.input_artifacts.contains(id))
+                {
+                    return Err("Evaluation did not retain the exact Task Requirements".into());
+                }
+            }
             let upstream = match &evidence.producer {
                 review_core::Producer::Attempt {
                     run_id: recorded,

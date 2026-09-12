@@ -221,8 +221,26 @@ pub(crate) fn refresh(
                         revision_id.clone(),
                     ) {
                         Ok(selected) => {
-                            let plan_id = planning::persist_plan(&cas, &selected.plan)?;
-                            (selected.compiler, selected.revision_id, Some(plan_id), None)
+                            let resources = selected.compiler.compiled_resources(
+                                &selected.graph,
+                                &capacity,
+                                clock()?,
+                            )?;
+                            if resources.is_empty() {
+                                let plan_id = planning::persist_plan(&cas, &selected.plan)?;
+                                (selected.compiler, selected.revision_id, Some(plan_id), None)
+                            } else {
+                                eprintln!(
+                                    "Refreshed source needs planning capacity: {}",
+                                    resources.join("; ")
+                                );
+                                (
+                                    selected.compiler,
+                                    selected.revision_id,
+                                    None,
+                                    Some(TaskWaitingReasonV1::NeedsResources),
+                                )
+                            }
                         }
                         Err(reason) => {
                             eprintln!("Refreshed source needs planning prerequisites: {reason}");

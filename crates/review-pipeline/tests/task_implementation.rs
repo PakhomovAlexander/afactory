@@ -301,6 +301,10 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
         evaluate.worker_input_type = Some("af/EvaluationInput@1".into());
         evaluate.worker_output_type = Some(TASK_EVALUATION_V1.into());
         evaluate.outcome_port = Some("result".into());
+        evaluate.retains = BTreeMap::from([(
+            "result".into(),
+            BTreeSet::from(["requirements".into(), "checks".into()]),
+        )]);
         let mut pipeline = pipeline(&implement, &evaluate);
         if case == "named_failure" {
             task.acceptance
@@ -604,6 +608,67 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
                     domain.validate_result(&cas, &task, &forged).is_err(),
                     "forged {field} accepted"
                 );
+            }
+        }
+        if case == "passed" {
+            // Reconstruct a valid envelope chain with unchanged positive payloads but replace
+            // the exact requirements provenance. Domain validation must reject this proof.
+            for stale in [false, true] {
+                let original_id = result.evidence.iter().next().unwrap();
+                let mut receipt: review_core::ArtifactEnvelope =
+                    serde_json::from_value(cas.get_json(original_id).unwrap()).unwrap();
+                let evaluation_id = receipt.payload["evaluation_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned();
+                let mut evaluation: review_core::ArtifactEnvelope =
+                    serde_json::from_value(cas.get_json(&evaluation_id).unwrap()).unwrap();
+                evaluation
+                    .input_artifacts
+                    .retain(|id| !task.inputs["requirements"].artifact_ids.contains(id));
+                if stale {
+                    let other = cas
+                        .put_artifact(
+                            "af/Requirements@1",
+                            producer(),
+                            vec![],
+                            None,
+                            json!({"text":"Another ticket"}),
+                        )
+                        .unwrap()
+                        .0;
+                    evaluation.input_artifacts.push(other);
+                }
+                let forged_evaluation = cas
+                    .put_artifact(
+                        &evaluation.artifact_type,
+                        evaluation.producer,
+                        evaluation.input_artifacts,
+                        evaluation.subject_snapshot_id,
+                        evaluation.payload,
+                    )
+                    .unwrap()
+                    .0;
+                receipt.payload["evaluation_id"] = json!(forged_evaluation);
+                for id in &mut receipt.input_artifacts {
+                    if id == &evaluation_id {
+                        *id = forged_evaluation.clone();
+                    }
+                }
+                let forged_id = cas
+                    .put_artifact(
+                        &receipt.artifact_type,
+                        receipt.producer,
+                        receipt.input_artifacts,
+                        receipt.subject_snapshot_id,
+                        receipt.payload,
+                    )
+                    .unwrap()
+                    .0;
+                let mut forged = result.clone();
+                forged.evidence = BTreeSet::from([forged_id]);
+                let error = domain.validate_result(&cas, &task, &forged).unwrap_err();
+                assert!(error.contains("exact Task Requirements"), "{error}");
             }
         }
         let result_id = cas

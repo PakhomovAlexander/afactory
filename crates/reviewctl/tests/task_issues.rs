@@ -81,6 +81,15 @@ fn local_json_and_toml_capture_equivalent_issue_requirements_then_review_and_del
         )
         .unwrap();
     }
+    let mut review: Value =
+        serde_json::from_slice(&std::fs::read(repo.join("review-light.json")).unwrap()).unwrap();
+    review["task_id"] = json!("issue-review");
+    review["issue"] = json!({"kind":"local","path":"issue.json"});
+    std::fs::write(
+        repo.join("issue-review.json"),
+        serde_json::to_vec(&review).unwrap(),
+    )
+    .unwrap();
     git(&repo, &["add", "-A"]);
     git(&repo, &["commit", "-qm", "capture source authority"]);
     let mut captures = vec![];
@@ -120,7 +129,7 @@ fn local_json_and_toml_capture_equivalent_issue_requirements_then_review_and_del
         )
         .unwrap();
         let result = task(&repo, &state, &["task", "run", &id], 0);
-        assert_eq!(result["attempts"], 4);
+        assert_eq!(result["attempts"], 5);
         assert_eq!(result["result"]["acceptance"], "satisfied");
         assert_eq!(result["review_rounds"].as_array().unwrap().len(), 1);
         assert_eq!(task(&repo, &state, &["task", "run", &id], 0), result);
@@ -162,6 +171,39 @@ fn local_json_and_toml_capture_equivalent_issue_requirements_then_review_and_del
             .unwrap()
             .contains("offset:offset + limit")
     );
+    let reviewed = task(
+        &output,
+        &state,
+        &[
+            "task",
+            "start",
+            "--file",
+            "issue-review.json",
+            "--uncommitted",
+        ],
+        0,
+    );
+    assert_eq!(reviewed["attempts"], 3);
+    assert_eq!(reviewed["result"]["acceptance"], "satisfied");
+    assert_eq!(reviewed["result"]["domain_conclusion"], "pass");
+    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let revision = cas
+        .get_json(reviewed["revision_id"].as_str().unwrap())
+        .unwrap();
+    let requirement = &revision["payload"]["inputs"]["requirements"]["artifact_ids"][0];
+    for id in reviewed["review_rounds"][0]["selected_results"]
+        .as_object()
+        .unwrap()
+        .values()
+    {
+        let result = cas.get_json(id.as_str().unwrap()).unwrap();
+        assert!(
+            result["input_artifacts"]
+                .as_array()
+                .unwrap()
+                .contains(requirement)
+        );
+    }
     assert_eq!(
         Command::new("git")
             .current_dir(&repo)

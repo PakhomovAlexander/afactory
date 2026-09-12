@@ -3,7 +3,9 @@ import runpy
 import sys
 
 request = json.load(sys.stdin)
-assert set(request['inputs']) == {'source', 'subject', 'history', 'checks'}
+assert set(request['inputs']) in [{'source', 'subject', 'history', 'checks'}, {'source', 'subject', 'history', 'checks', 'requirements'}]
+if 'requirements' in request['inputs']:
+    assert request['inputs']['requirements'][0]['payload'].get('specification', {}).get('schema') == 'tutorial.pagination/1'
 assert request['inputs']['checks'][0]['payload']['outcome'] == 'passed'
 passed = True
 try:

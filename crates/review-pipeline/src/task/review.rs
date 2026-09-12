@@ -656,6 +656,19 @@ impl ReviewTaskDomain {
                     "Review result changed its Task, Subject, Snapshot or declared Worker".into(),
                 );
             }
+            if self
+                .graph
+                .inputs
+                .get("requirements")
+                .is_some_and(|requirements| {
+                    requirements
+                        .artifact_ids
+                        .iter()
+                        .any(|id| !artifact.input_artifacts.contains(id))
+                })
+            {
+                return Err("Review result lost the exact Task Requirements".into());
+            }
             selected.insert(name.clone(), id.clone());
             results.push((
                 name.clone(),

@@ -1,7 +1,8 @@
 # Captured issue requirements
 
 Issue adapters produce business input before Pipeline selection. The same implementation and
-embedded Review definitions run after either local or Jira capture.
+embedded Review definitions run after either local or Jira capture. Standalone Review can also
+select an issue source; each reviewer receives and retains its exact captured requirements.
 
 ```text
 Task file + explicit issue source
@@ -13,6 +14,8 @@ Task file + explicit issue source
        normalized Requirements
               |
   shared implementation -> shared Review
+              |
+  evaluate exact requirements on final source
               |
        verified internal Snapshot
               |

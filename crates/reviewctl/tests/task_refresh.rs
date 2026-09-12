@@ -254,7 +254,7 @@ fn interrupted_delivery_blocks_source_refresh(
 fn generated_issue_refresh_reuses_definition_but_requires_a_new_exact_signature() {
     let root = tempfile::tempdir().unwrap();
     let key = minisign::KeyPair::generate_unencrypted_keypair().unwrap();
-    let (repo, state) = setup(root.path(), Some(&key), "planning", 6);
+    let (repo, state) = setup(root.path(), Some(&key), "planning", 7);
     let waiting = task(
         &repo,
         &state,
@@ -313,7 +313,7 @@ fn generated_issue_refresh_reuses_definition_but_requires_a_new_exact_signature(
     );
     approve(&repo, &state, root.path(), &key, "fresh");
     let done = task(&repo, &state, &["task", "run", "issue-refresh"], 0);
-    assert_eq!(done["attempts"], 5);
+    assert_eq!(done["attempts"], 6);
     assert_eq!(done["result"]["acceptance"], "satisfied");
     assert_eq!(
         task(&repo, &state, &["task", "run", "issue-refresh"], 0),
@@ -323,14 +323,14 @@ fn generated_issue_refresh_reuses_definition_but_requires_a_new_exact_signature(
 #[test]
 fn completed_task_refresh_retains_snapshot_and_spend_then_waits_when_capacity_is_used() {
     let root = tempfile::tempdir().unwrap();
-    let (repo, state) = setup(root.path(), None, "implementation-reviewed", 8);
+    let (repo, state) = setup(root.path(), None, "implementation-reviewed", 10);
     let first = task(
         &repo,
         &state,
         &["task", "start", "--file", "ticket.json"],
         0,
     );
-    assert_eq!(first["attempts"], 4);
+    assert_eq!(first["attempts"], 5);
     let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
     let original = revision(&cas, &first);
     interrupted_delivery_blocks_source_refresh(&repo, &state, &cas, &first);
@@ -361,14 +361,14 @@ fn completed_task_refresh_retains_snapshot_and_spend_then_waits_when_capacity_is
         0,
     );
     assert_eq!(refreshed["phase"]["kind"], "ready");
-    assert_eq!(refreshed["attempts"], 4);
+    assert_eq!(refreshed["attempts"], 5);
     let next = revision(&cas, &refreshed);
     assert_eq!(next["inputs"]["source"], original["inputs"]["source"]);
     assert_eq!(next["limits"], original["limits"]);
     assert_eq!(next["authority"], original["authority"]);
     assert!(refreshed["result"].is_null());
     let second = task(&repo, &state, &["task", "run", "issue-refresh"], 0);
-    assert_eq!(second["attempts"], 8);
+    assert_eq!(second["attempts"], 10);
     assert_eq!(second["result"]["acceptance"], "satisfied");
     assert_ne!(
         second["result"]["task_revision_id"],
@@ -407,13 +407,13 @@ fn completed_task_refresh_retains_snapshot_and_spend_then_waits_when_capacity_is
         waiting["delivery"].is_null(),
         "Earlier delivery is history, not this revision's result"
     );
-    assert_eq!(waiting["attempts"], 8);
+    assert_eq!(waiting["attempts"], 10);
     assert_eq!(waiting["chargeable_tokens"], 0);
     let last = revision(&cas, &waiting);
     assert_eq!(last["revision"], 3);
     assert_eq!(last["limits"], original["limits"]);
     let run = task(&repo, &state, &["task", "run", "issue-refresh"], 4);
-    assert_eq!(run["attempts"], 8);
+    assert_eq!(run["attempts"], 10);
     assert_eq!(
         task(&repo, &state, &["task", "refresh", "issue-refresh"], 0),
         waiting
