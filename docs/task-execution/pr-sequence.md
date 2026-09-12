@@ -233,3 +233,12 @@ workspace Clippy, formatting and Markdown pass. The full workspace gate at `2445
 documentation tests and byte-identical frozen reproduction. The preceding operation checkpoint
 `63aa222` passes Check, CLI smoke and container probes in CI run `34670847456`. The legacy entry-point
 and broker adapters, owned Scatter and original-allowance Round continuation remain required.
+
+The common usage checkpoint commits cumulative Provider observations during a started Attempt,
+retains the remaining reservation, and blocks further effects on overrun. Lower terminal reports
+and writer-loss recovery preserve paid evidence without changing original settlement bytes.
+Scope, reservation, replay and recovery regressions pass. The full gate at `53ce07c` (stacked as
+`4349baa`) passes **823 tests, zero failures, 15 ignored**, across 113 suites, plus formatting,
+Clippy, documentation tests and byte-identical frozen reproduction. Markdown passes. Canonical
+Review selection at `96d4061` passes Check, CLI smoke and container probes in CI run
+`34672300202`. The actual legacy frontend/broker, Scatter and Round-continuation cutover remain.
