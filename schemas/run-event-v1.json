@@ -20,6 +20,7 @@
       "type": "string",
       "enum": [
         "TaskTransition@1",
+        "TaskReviewResultSelected@1",
         "BrokerOperationCompleted@1",
         "AttemptAdmitted@1",
         "AttemptDispatched@1",
@@ -101,6 +102,10 @@
     }
   },
   "allOf": [
+    {
+      "if": { "properties": { "type": { "const": "TaskReviewResultSelected@1" } }, "required": ["type"] },
+      "then": { "properties": { "payload": { "$ref": "urn:af:schema:task-review-result-selected:1" } } }
+    },
     {
       "if": { "properties": { "type": { "const": "TaskTransition@1" } }, "required": ["type"] },
       "then": { "properties": { "payload": { "$ref": "urn:af:schema:task-transition:1" } } }

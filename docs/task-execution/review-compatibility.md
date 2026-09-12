@@ -53,10 +53,16 @@ captured Review configuration + exact Round inputs
              downstream gather / Ledger / verdict
 ```
 
-The final two connections still require implementation. A selected-evidence link must bind the
-actual Task, plan, node, Attempt and published output to the exact canonical result. Store receipt
-and Proposal guards, replay, inspection and broker currentness must accept that checked link;
-synthetic legacy Attempt lifecycle events cannot substitute for it.
+The Store connection now binds the actual Task, plan, node, Attempt and published output to the
+exact canonical result through `TaskReviewResultSelected@1`. It derives routing from the
+Attempt's admitted `TaskReviewContext@1`, checks both logs in one transaction, and refuses
+ordinary append of selection JSON. Receipt guards consume the selected result; Proposal guards
+also require the selected side metadata's exact disposition. Reopening reuses one selection and
+one Task charge ([ADR-0067](../adr/0067-project-common-task-selections-into-canonical-review.md)).
+
+The trusted context adapter and legacy CLI still require this connection to be wired into common
+execution. Canonical replay, inspection and broker currentness also need their adapter paths;
+synthetic legacy Attempt lifecycle events cannot substitute for them.
 
 Bounded Scatter must keep its parent DAG fixed while the common runtime owns every child
 invocation and its accounting. Heavy Campaign continuation must retain one original Task

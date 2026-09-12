@@ -8,6 +8,8 @@ use review_graph::task::{CompiledOperator, CompiledTask, condition_input};
 
 use super::*;
 
+pub(in crate::store) mod review;
+
 #[derive(Debug, Clone)]
 pub struct TaskExecutionProjection {
     pub graph: CompiledTask,

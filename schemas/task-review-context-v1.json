@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-review-context:1",
+  "title": "task-review-context@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "subject_id",
+    "campaign_manifest_id",
+    "task_invocation_id",
+    "reviewer_inputs_id",
+    "rendered_input_id",
+    "context_manifest_id",
+    "campaign_id",
+    "review_node",
+    "round_event_id",
+    "invocation_event_id",
+    "attempt_id"
+  ],
+  "properties": {
+    "subject_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "campaign_manifest_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "task_invocation_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "reviewer_inputs_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "rendered_input_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "context_manifest_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "campaign_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "review_node": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256
+    },
+    "round_event_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]{26}$"
+    },
+    "invocation_event_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]{26}$"
+    },
+    "attempt_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]{26}$"
+    }
+  }
+}

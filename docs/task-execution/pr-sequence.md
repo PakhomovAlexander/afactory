@@ -220,3 +220,13 @@ ignored), including Proposal, broker, Scatter and replay coverage. The complete 
 at `d63d8b2` passes **816 tests, zero failures, 15 ignored**, across 113 suites, including
 documentation tests and byte-identical frozen reproduction. Formatting, Clippy and Markdown pass. The [compatibility map](review-compatibility.md) records the
 remaining selected-evidence, bounded Scatter and Round-continuation wiring.
+
+The next Store checkpoint projects a selected and published common Task result into canonical
+Review through `TaskReviewResultSelected@1`. A typed admitted context fixes routing and exact
+inputs; the Store compares Task and Review prefixes in one transaction. Receipt and Proposal
+guards consume the checked selection without adding a legacy Attempt or charge. Two Store
+regressions cover publication order, revocation, replay, forged append, changed routing or
+metadata, Proposal disposition and competing-Store comparisons. All 60 schema parity tests pass.
+All Store and pipeline suites, workspace Clippy, formatting and Markdown pass. The full workspace
+gate is pending. The legacy entry-point
+and broker adapters, owned Scatter and original-allowance Round continuation remain required.

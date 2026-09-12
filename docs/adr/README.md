@@ -131,3 +131,5 @@ options you rejected and why — that is the part future-you needs.
 - [0065 — Persist Task run diagnostics and recover domain publication](0065-persist-task-run-diagnostics-and-recover-domain-publication.md)
 - [0066 — Reserve Task Attempts before binding exact
   context](0066-reserve-task-attempts-before-binding-exact-context.md)
+- [0067 — Project common Task selections into canonical
+  Review](0067-project-common-task-selections-into-canonical-review.md)

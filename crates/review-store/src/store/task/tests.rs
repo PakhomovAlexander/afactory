@@ -4,6 +4,7 @@ use review_core::task::plan::PlanDependencyV1;
 mod planning;
 mod report;
 mod reservation;
+mod review;
 mod source;
 
 struct Authority {
@@ -259,7 +260,14 @@ impl Fixture {
             .unwrap()
     }
 
-    fn with_execution_graph(mut self) -> Self {
+    fn with_execution_graph(self) -> Self {
+        self.with_execution_graph_outputs(BTreeMap::new())
+    }
+
+    fn with_execution_graph_outputs(
+        mut self,
+        additional: BTreeMap<String, task::pipeline::PipelinePortV1>,
+    ) -> Self {
         use review_core::task::pipeline::*;
         use review_graph::task::{
             CompileContext, OperatorAttemptCost, OperatorSignature, compile_task,
@@ -274,7 +282,10 @@ impl Fixture {
                     "input".into(),
                     pipeline.contract.inputs["requirements"].clone(),
                 )]),
-                outputs: BTreeMap::from([("output".into(), output)]),
+                outputs: BTreeMap::from([("output".into(), output)])
+                    .into_iter()
+                    .chain(additional)
+                    .collect(),
             },
             effects: BTreeSet::new(),
             evidence: BTreeMap::from([(
@@ -284,7 +295,7 @@ impl Fixture {
             retains: BTreeMap::new(),
             roles: BTreeSet::from(["author".into()]),
             worker_input_type: Some("af/Requirements@1".into()),
-            worker_output_type: Some("af/CheckedDocument@1".into()),
+            worker_output_type: Some(pipeline.contract.outputs["document"].artifact_type.clone()),
             outcome_port: None,
             attempt: Some(OperatorAttemptCost {
                 tokens: 10,
@@ -754,7 +765,8 @@ fn lease_takeover_fences_old_writer_and_sequence_comparison_is_atomic() {
                 &task_run_id("task-1").unwrap(),
                 &f.cas,
                 &[event],
-                Some(&permit)
+                Some(&permit),
+                None
             )
             .is_err()
     );

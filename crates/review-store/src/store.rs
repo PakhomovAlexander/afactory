@@ -336,7 +336,7 @@ impl EventStore {
         cas: &Cas,
         events: &[NewEvent],
     ) -> Result<Vec<RunEvent>, StoreError> {
-        self.append_batch_inner(run_id, cas, events, None)
+        self.append_batch_inner(run_id, cas, events, None, None)
     }
 
     fn append_batch_inner(
@@ -345,9 +345,19 @@ impl EventStore {
         cas: &Cas,
         events: &[NewEvent],
         task_permit: Option<&task::WritePermit>,
+        review_permit: Option<&task::execution::review::WritePermit>,
     ) -> Result<Vec<RunEvent>, StoreError> {
         if events.is_empty() {
             return Ok(Vec::new());
+        }
+        if events
+            .iter()
+            .any(|e| e.event_type == EventType::TaskReviewResultSelectedV1)
+            && review_permit.is_none()
+        {
+            return Err(StoreError::Conflict(
+                "Task Review selection requires the trusted Task publication entry point".into(),
+            ));
         }
         if events
             .iter()
@@ -439,6 +449,9 @@ impl EventStore {
             )
             .optional()?
             .unwrap_or(0);
+        if let Some(permit) = review_permit {
+            permit.validate(&tx, run_id, first, events)?;
+        }
         if let Some(permit) = task_permit {
             permit.validate(run_id, first, events)?;
         } else {
@@ -2579,6 +2592,58 @@ fn validate_campaign_transition(
                         )));
                     }
                     match event_type {
+                        EventType::TaskReviewResultSelectedV1 => {
+                            task::execution::review::validate_selection(
+                                tx,
+                                cas,
+                                run_id,
+                                active_id,
+                                active_payload,
+                                event,
+                            )?;
+                            let node = event.node_id.as_deref().expect("validated Review node");
+                            let plan = plan.ok_or_else(|| {
+                                StoreError::Conflict(
+                                    "Task Review selection needs pinned Review authority".into(),
+                                )
+                            })?;
+                            let outputs = if let Some(expected) = plan.nodes.get(node) {
+                                if expected.kind != "reviewer" {
+                                    return Err(StoreError::Conflict(
+                                        "Task Review selection belongs to a non-reviewer node"
+                                            .into(),
+                                    ));
+                                }
+                                expected.outputs.clone()
+                            } else {
+                                dynamic_node_authority(tx, cas, run_id, active_id, plan, node)?
+                                    .ok_or_else(|| {
+                                        StoreError::Conflict(
+                                            "Task Review selection has no declared reviewer".into(),
+                                        )
+                                    })?
+                                    .outputs
+                            };
+                            let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
+                                serde_json::from_value(event.payload.clone())?;
+                            let result: review_core::ArtifactEnvelope = serde_json::from_value(
+                                cas.get_json(&selected.result_envelope_id)
+                                    .map_err(|e| StoreError::Artifact(e.to_string()))?,
+                            )?;
+                            if outputs.len() != 1
+                                || outputs[0].artifact_type() != result.artifact_type
+                                || outputs[0].cardinality() != "one"
+                                || outputs[0].optional()
+                            {
+                                return Err(StoreError::Conflict(
+                                    "Selected Task result differs from the pinned Review output contract".into(),
+                                ));
+                            }
+                            batch_selected.insert(
+                                event.attempt_id.clone().expect("validated Review Attempt"),
+                                (node.into(), selected.result_artifact_id),
+                            );
+                        }
                         EventType::ReviewerExecutionBoundV1 => {
                             let node = event.node_id.as_deref().ok_or_else(|| {
                                 StoreError::Conflict(
@@ -3569,6 +3634,9 @@ fn validate_campaign_transition(
                             }
                         }
                         EventType::ProposalPreparedV1 | EventType::ProposalRefusedV1 => {
+                            task::execution::review::validate_proposal(
+                                tx, cas, run_id, active_id, event,
+                            )?;
                             let node = event.node_id.as_deref().ok_or_else(|| {
                                 StoreError::Conflict(format!("{event_type} has no node ID"))
                             })?;
@@ -4888,19 +4956,25 @@ fn selected_attempt_result(
     }
     let rows = tx
         .prepare(
-            "SELECT payload FROM events
+            "SELECT type, payload FROM events
              WHERE run_id = ?1 AND causation_id = ?2 AND node_id = ?3 AND attempt_id = ?4
-               AND type = 'AttemptAdmitted@1' ORDER BY sequence",
+               AND type IN ('AttemptAdmitted@1', 'TaskReviewResultSelected@1') ORDER BY sequence",
         )?
         .query_map(params![run_id, round_event_id, node, attempt], |row| {
-            row.get::<_, String>(0)
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    let [raw] = rows.as_slice() else {
+    let [(kind, raw)] = rows.as_slice() else {
         return Err(StoreError::Conflict(
             "Proposal has no unique selected Attempt admission".into(),
         ));
     };
+    if kind == "TaskReviewResultSelected@1" {
+        let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
+            serde_json::from_str(raw)?;
+        selected.validate().map_err(StoreError::Conflict)?;
+        return Ok(selected.result_artifact_id);
+    }
     let admitted: review_core::event::AttemptAdmittedPayloadV1 = serde_json::from_str(raw)?;
     if admitted.selection != "selected" {
         return Err(StoreError::Conflict(
@@ -5173,6 +5247,7 @@ fn round_runtime_event(event_type: EventType) -> bool {
         || matches!(
             event_type,
             EventType::BrokerOperationCompletedV1
+                | EventType::TaskReviewResultSelectedV1
                 | EventType::ReviewerExecutionBoundV1
                 | EventType::AttemptAdmittedV1
                 | EventType::AttemptDispatchedV1
@@ -5205,6 +5280,7 @@ fn event_uses_authority_plan(event_type: EventType) -> bool {
         || matches!(
             event_type,
             EventType::BrokerOperationCompletedV1
+                | EventType::TaskReviewResultSelectedV1
                 | EventType::ReviewerExecutionBoundV1
                 | EventType::AttemptAdmittedV1
                 | EventType::AttemptFailedV1

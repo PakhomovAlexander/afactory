@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 96] = [
+const SCHEMAS: [&str; 98] = [
     "normalized-task-requirements-v1.json",
     "task-source-capture-v1.json",
     "issue-input-v1.json",
@@ -54,6 +54,8 @@ const SCHEMAS: [&str; 96] = [
     "task-review-subject-v1.json",
     "task-review-round-v1.json",
     "task-review-result-metadata-v1.json",
+    "task-review-context-v1.json",
+    "task-review-result-selected-v1.json",
     "task-check-receipt-v1.json",
     "task-evaluation-v1.json",
     "verification-result-v1.json",
@@ -537,6 +539,7 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     "task-operator-signature-v1.json",
                     "task-kind-v1.json",
                     "task-invocation-v1.json",
+                    "task-review-result-selected-v1.json",
                     "subject-v1.json",
                     "change-set-v1.json",
                     "change-attestation-v1.json",
@@ -2335,4 +2338,72 @@ fn task_review_metadata_retains_typed_canonical_results_and_closed_proposal_disp
             }
         }
     }
+}
+
+#[test]
+fn task_review_context_and_selection_require_exact_closed_execution_identities() {
+    use review_core::task::review_compat::*;
+    let id = format!("sha256:{}", "a".repeat(64));
+    let context = json!({
+        "campaign_id":"review-task", "round_event_id":"a".repeat(26),
+        "invocation_event_id":"b".repeat(26), "review_node":"reviewer",
+        "subject_id":id, "campaign_manifest_id":id, "task_invocation_id":id,
+        "attempt_id":"c".repeat(26), "reviewer_inputs_id":id,
+        "rendered_input_id":id, "context_manifest_id":id,
+    });
+    let selection = json!({
+        "task_id":"task-1", "task_node":"root.nodes.review", "task_revision_id":id,
+        "plan_id":id, "invocation_id":id, "output_id":id, "context_id":id,
+        "result_envelope_id":id, "metadata_envelope_id":id,
+        "result_artifact_id":id, "provenance_artifact_id":id,
+    });
+    let read_context = |value: &Value| {
+        serde_json::from_value::<TaskReviewContextV1>(value.clone())
+            .is_ok_and(|v| v.validate().is_ok())
+    };
+    let read_selection = |value: &Value| {
+        serde_json::from_value::<TaskReviewResultSelectedV1>(value.clone())
+            .is_ok_and(|v| v.validate().is_ok())
+    };
+    for (schema, valid, parse) in [
+        (
+            "task-review-context-v1.json",
+            context,
+            &read_context as &dyn Fn(&Value) -> bool,
+        ),
+        (
+            "task-review-result-selected-v1.json",
+            selection.clone(),
+            &read_selection as &dyn Fn(&Value) -> bool,
+        ),
+    ] {
+        assert_valid(schema, &valid);
+        assert!(parse(&valid));
+        for key in valid.as_object().unwrap().keys() {
+            for replacement in [json!(null), json!("")] {
+                let mut wrong = valid.clone();
+                wrong[key] = replacement;
+                assert_invalid(schema, &wrong, "missing exact Review authority");
+                assert!(!parse(&wrong));
+            }
+        }
+        let mut wrong = valid;
+        wrong["approved"] = json!(true);
+        assert_invalid(
+            schema,
+            &wrong,
+            "serialized data cannot grant selection authority",
+        );
+        assert!(!parse(&wrong));
+    }
+    review_core::event::validate_event_payload(EventType::TaskReviewResultSelectedV1, &selection)
+        .unwrap();
+    assert_valid(
+        "run-event-v1.json",
+        &json!({
+            "event_id":"d".repeat(26), "run_id":"review-task", "sequence":4,
+            "type":"TaskReviewResultSelected@1", "occurred_at":"2026-09-12T00:00:00Z",
+            "payload":selection,
+        }),
+    );
 }

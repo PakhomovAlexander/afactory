@@ -1059,7 +1059,7 @@ impl EventStore {
             first,
             payloads: vec![value],
         };
-        self.append_batch_inner(&run_id, cas, &[event], Some(&permit))?
+        self.append_batch_inner(&run_id, cas, &[event], Some(&permit), None)?
             .pop()
             .ok_or_else(|| conflict("Task transition appended no event"))
     }
