@@ -767,3 +767,19 @@ opened object is a regular file, and retains original byte bounds and explicit r
 symlink behavior. Bounded subprocess controls reject FIFOs without a writer.
 Full-gate tree identity and results will follow after validation. Specialist review, outstanding
 native conformance, the unfrozen pilot and supported consumer release migration remain open.
+
+## Common CLI full-gate verification
+
+Product code `fdffb1cefd6f2a878412f8468324a80427aa3838` has exactly frozen verification tree
+`910d188d8428dcebdb8b1026718c24bf01c6a984`, checked at `32c0f4b2e25cde8dd4a1a143e2ed1781ed4208e8`.
+The complete offline `make check` passes **1,078 tests, zero failures, 15 ignored**, across
+127 suites, formatting, all-target Clippy, documentation tests and byte-identical synthetic
+fixtures. Focused Markdown checks also pass. Actual command/transport fixtures make no live
+model calls. CI for the new published checkpoint remains pending.
+
+The full gate covers shared new Review/doctor execution, protected prospective Round publication,
+conservative original-reservation SIGKILL recovery, source-epoch continuity, factual timing,
+lease-safe output, one typed document from failed doctor and no free legacy fallback when Task
+state is lost. The release remains gated by requested specialist review, native multi-field and
+multi-turn exact usage, expired-Waiting factual recovery, remaining conformance and P14. The
+new conformance edits were excluded from this frozen tree and need their own validation.

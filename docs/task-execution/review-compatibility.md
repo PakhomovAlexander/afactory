@@ -3,7 +3,8 @@
 New `af review run` executions and Provider doctor now use the common Task runtime alongside
 Task-file and embedded Review. Historical paid Campaigns retain their original executor and
 accounting; missing common Task state refuses instead of falling back. The installed CLI
-cutover is implemented and undergoing full validation. See
+cutover passes the full local gate at `fdffb1c` (1,078 tests); CI and remaining native
+conformance are separate requirements. See
 [ADR-0084](../adr/0084-route-new-review-commands-through-the-common-task.md).
 
 ## Adapter boundaries

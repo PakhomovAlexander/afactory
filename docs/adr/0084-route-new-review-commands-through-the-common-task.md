@@ -76,3 +76,8 @@ disposition contracts keep their existing domain meaning. Real CLI fixtures cove
 reuse, original resource continuity, source restart, two-Round inspection and SIGKILL recovery
 after actual lease expiry. Full checkpoint verification is recorded in the Task implementation
 log; this decision does not claim specialist review, live pilot or release completion.
+
+Frozen tree `910d188d8428dcebdb8b1026718c24bf01c6a984` passes the full local gate at
+`32c0f4b`: 1,078 tests, zero failures, 15 ignored across 127 suites, formatting, Clippy,
+documentation tests and byte-identical fixtures. Product `fdffb1c` has that exact tree.
+Subsequent native usage and expired-Waiting recovery corrections remain separate work.

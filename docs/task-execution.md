@@ -19,6 +19,17 @@ supplement it. Claude calls use only `claude-personal`.
 
 ## Progress
 
+The installed Review CLI checkpoint `fdffb1c` exactly matches frozen tree `910d188d` and passes
+**1,078 tests, zero failures, 15 ignored** across 127 suites, plus formatting, Clippy,
+documentation tests and byte-identical fixture reproduction. New Review and Provider doctor
+now use one common Task and its original resources. Real CLI tests preserve canonical outcomes,
+probe charges and reuse, two-Round accounting, source epochs, SIGKILL recovery, missing-state
+refusal and single-document failed doctor output. Output is prepared under lease renewal and
+emitted after successful release. Task-file and local Jira binding reads refuse blocking FIFOs.
+CI for this checkpoint is pending. The next separate conformance slices address exact native
+multi-field/multi-turn usage and factual recovery of selected outputs from expired Waiting.
+See [ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md).
+
 The common Task Broker checkpoint `1a9ab83` matches frozen tree `34fc57e` and passes the
 full local gate: **978 tests, zero failures, 15 ignored**, formatting, Clippy, documentation
 tests and byte-identical fixture reproduction. Provider readiness and business work use
@@ -43,8 +54,7 @@ one original Task Attempt for the shared check sequence; Empty/Conflict selectio
 Attempt. A successful commit requires a complete Review of the derived Snapshot within the
 same Task. Focused tests cover writer fencing, atomic two-log rollback and late charge after
 successful checks. All seven real CLI public-schema tests pass, including original generations
-and inspection@7 after Integration and Handoff@2. The new CLI cutover is implemented and
-undergoing full validation.
+and inspection@7 after Integration and Handoff@2. The later CLI cutover passes its full local gate.
 See [ADR-0083](adr/0083-run-post-round-integration-within-the-original-task.md).
 The debug-profile correction `97bb1c7` passes the same full gate. It addresses the earlier
 CI recovery deadline failure without changing Task limits; published `2cae97c` passes both
@@ -57,7 +67,7 @@ records registration, factual recovery and immutable completion. See
 The earlier shared Review operations and Round-fencing checkpoint passes the full gate at `5b1461e`
 (internal `9a81fbe`): 839 tests, zero failures, 15 ignored, plus documentation tests and frozen
 reproduction. The preceding captured frontend passes CI at `50e9e29`.
-The common Review CLI and Provider doctor cutover is implemented; full validation is in progress.
+The common Review CLI and Provider doctor cutover passes its full local gate.
 Historical paid Campaigns retain their captured execution path. The detailed checkpoint history is
 in [the three-PR record](task-execution/pr-sequence.md).
 
@@ -68,7 +78,7 @@ in [the three-PR record](task-execution/pr-sequence.md).
   implemented and verified locally; PR integration remains pending.
 - [ ] P04–P06: common implementation and Review command execution, Task-file CLI and verified
   local delivery pass real-process fixtures. Fixed command implementation now uses the common
-  runtime; common Review CLI cutover is under full validation and live probes remain.
+  runtime; common Review CLI cutover passes its full local gate; live probes remain.
 - [ ] P07–P09: local Worker replacement, Git catalog sync, Task-kind packages, embedded Review
   and bounded repair are implemented. Heavy history continuation passes the full gate.
 - [ ] P10: deterministic captured selection and CLI routing pass the full gate; PR integration pending.
@@ -159,7 +169,7 @@ All eleven implementation/delivery behavior cases now pass through the common St
 original source preserved as a compatibility fixture. Native timeout and storage-failure tests
 retain reported usage. The final compatibility gate also covers preserved per-Check process
 deadlines inside the aggregate check Attempt. P11 adds the authenticated developer command
-boundary and generated execution. Live Provider boundary probes and full Review entry-point validation belong to the remaining
+boundary and generated execution. Live Provider boundary probes and remaining native Review conformance belong to the remaining
 increment. See the
 [Task-file walkthrough](task-execution/task-file.md),
 [ADR-0048](adr/0048-compile-task-ports-and-fence-developer-plan-decisions.md) and
@@ -194,7 +204,7 @@ across 89 suites; formatting, Clippy and synthetic fixture reproduction passed. 
 checked 96 files with zero errors. Prior candidate gates also passed on read-only archives and
 with the exact cleared Gate environment. No model review was repeated after these corrections.
 
-**Current resume:** finish common Review CLI validation and remaining conformance,
+**Current resume:** finish native usage and expired-Waiting conformance, then remaining
 then finish P14 evidence. The captured-plan performance correction passes local and Linux CI
 gates. Canonical Task-to-Review selection passes the full local gate; in-flight usage accounting
 preserves observed broker spend through settlement and recovery, with a complete local gate of

@@ -1,6 +1,11 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
 **Active increment:** [Task execution](task-execution.md), P00–P14, authorized as three PRs.
+The installed Review CLI checkpoint `fdffb1c` matches frozen `32c0f4b`, tree `910d188d`, and
+passes **1,078 tests, zero failures, 15 ignored** across 127 suites plus formatting, Clippy,
+documentation and byte-identical fixtures. New Review and Provider doctor share the original
+Task, resources and recovery. Exact native cumulative usage and expired-Waiting factual
+publication are the next separate conformance corrections. CI for the CLI checkpoint is pending.
 Captured Review continuation checkpoint `faeb933` (frozen identical tree `cff20f3`) passes
 the complete local gate: **1,018 tests, zero failures, 15 ignored** across 125 suites, plus
 formatting, Clippy, documentation tests and frozen reproduction. Multiple Review Rounds retain
@@ -10,7 +15,7 @@ captured Provider probes already use the common scheduler and ledger. Automatic 
 passes the full local gate at `6fe82f0` (frozen `d2df0ec`, tree `a53e534f`): **1,044 tests,
 zero failures, 15 ignored**, formatting, Clippy, documentation and byte-identical fixtures.
 Published `f453da1` passes Check and container-probes in CI `34711466871`. The common Review
-CLI and Provider doctor cutover is implemented and under full validation. Actual CLI fixtures
+CLI and Provider doctor cutover now passes its full local gate. Actual CLI fixtures
 cover charged probe reuse, original Task resources across Rounds and SIGKILL recovery after
 the original lease expires. See [ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md).
 The debug-profile correction `97bb1c7` passes the same full gate. It addresses the earlier
@@ -23,7 +28,7 @@ The shared Review operations and Round-fencing checkpoint passes the complete lo
 **839 tests, zero failures, 15 ignored**, documentation tests and byte-identical frozen
 reproduction at `9a81fbe` (stacked as `5b1461e`). It shares canonical operations and recovers
 input publication before context capture. The preceding captured frontend passes CI at
-`50e9e29`. Full CLI cutover validation, external PR reviews, remaining conformance and
+`50e9e29`. External PR reviews, remaining conformance and
 P14 pilot/release evidence are still required. The [three-PR checkpoint record](task-execution/pr-sequence.md)
 retains implementation and verification details; [Review compatibility](task-execution/review-compatibility.md)
 records the versioned domain/runtime connections. The completed M0–M9 record below remains
