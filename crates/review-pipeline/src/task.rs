@@ -5,6 +5,7 @@ pub mod code;
 pub mod document;
 pub mod host;
 pub mod lease;
+pub mod legacy_review;
 pub mod planning;
 pub mod provider;
 mod report;
@@ -365,6 +366,10 @@ impl<'a> TaskRuntime<'a> {
 }
 
 impl Dispatch for TaskRuntime<'_> {
+    fn requires_successful_predecessors(&self, node: &Node) -> bool {
+        self.graph.requires_successful_predecessors(&node.id)
+    }
+
     fn task_node_selected(&self, node: &Node, inputs: &ArtifactMap) -> Result<bool, String> {
         self.graph.node_selected(&node.id, inputs, |id| {
             let value = envelope(self.cas, id)?;

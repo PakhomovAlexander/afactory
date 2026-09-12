@@ -135,3 +135,5 @@ options you rejected and why — that is the part future-you needs.
   Review](0067-project-common-task-selections-into-canonical-review.md)
 - [0068 — Retain in-flight Task usage in the common
   budget](0068-retain-inflight-task-usage-in-the-common-budget.md)
+- [0069 — Compile captured Review ports with explicit artifact
+  codecs](0069-compile-captured-review-ports-with-explicit-artifact-codecs.md)

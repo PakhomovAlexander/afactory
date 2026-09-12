@@ -1319,6 +1319,7 @@ name = "review-config"
 version = "0.8.0"
 dependencies = [
  "jsonschema",
+ "review-attempt",
  "review-check",
  "review-core",
  "review-graph",

@@ -84,6 +84,26 @@ pub fn test_diff_round_authority(
 }
 
 #[allow(dead_code)]
+pub fn test_canonical_round_authority_for_pipeline(
+    cas: &Cas,
+    store: &mut EventStore,
+    run_id: &str,
+    snapshot: &Manifest,
+    pipeline: &str,
+) -> RoundAuthority {
+    test_round_authority_with_prior(
+        cas,
+        store,
+        run_id,
+        snapshot,
+        None,
+        pipeline,
+        review_core::CANONICAL_FINDING_IDENTITY_POLICY,
+    )
+    .unwrap()
+}
+
+#[allow(dead_code)]
 pub fn test_diff_round_authority_with_patch(
     cas: &Cas,
     store: &mut EventStore,

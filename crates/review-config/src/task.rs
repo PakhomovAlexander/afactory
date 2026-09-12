@@ -8,6 +8,7 @@ use crate::ConfigError;
 
 pub mod catalog;
 pub mod kind;
+pub mod legacy_review;
 pub mod selection;
 pub mod shared;
 

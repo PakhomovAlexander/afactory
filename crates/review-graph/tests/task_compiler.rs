@@ -79,6 +79,230 @@ fn compilation_is_deterministic_and_root_business_inputs_are_explicit_nodes() {
 }
 
 #[test]
+fn installed_review_retains_its_optional_predecessor_barrier_and_task_branch_decision() {
+    use review_graph::task::{CompiledOperator, CompiledTask, ReviewOperation};
+    use review_graph::{ArtifactMap, Dispatch, Node, NodeOutcome, SuppressionReason};
+    use std::sync::Mutex;
+
+    struct Host<'a> {
+        graph: &'a CompiledTask,
+        upstream_fails: bool,
+        selected: bool,
+        invocations: Mutex<Vec<String>>,
+    }
+    impl Dispatch for Host<'_> {
+        fn requires_successful_predecessors(&self, node: &Node) -> bool {
+            self.graph.requires_successful_predecessors(&node.id)
+        }
+        fn task_node_selected(&self, node: &Node, _: &ArtifactMap) -> Result<bool, String> {
+            Ok(node.id == "root.inputs" || self.selected)
+        }
+        fn record_invocation(&self, node: &Node, _: &ArtifactMap) -> Result<(), String> {
+            self.invocations.lock().unwrap().push(node.id.clone());
+            Ok(())
+        }
+        fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
+            if node.id == "root.inputs" {
+                if self.upstream_fails {
+                    return Err("upstream did not produce a receipt".into());
+                }
+                return Ok(BTreeMap::from([("requirements".into(), vec![])]));
+            }
+            assert!(
+                inputs["input"].is_empty(),
+                "a completed optional producer may have no value"
+            );
+            Ok(BTreeMap::from([(
+                "output".into(),
+                vec!["completed-output".into()],
+            )]))
+        }
+    }
+    let (task, pipelines, signatures) = fixture();
+    let mut graph = compile_task(
+        &task,
+        "builtin/document",
+        &CompileContext {
+            slot_workers: BTreeMap::new(),
+            acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
+            pipelines: &pipelines,
+            signatures: &signatures,
+            max_nodes: 64,
+            max_depth: 4,
+        },
+    )
+    .unwrap();
+    graph
+        .nodes
+        .get_mut("root.inputs")
+        .unwrap()
+        .contract
+        .outputs
+        .get_mut("requirements")
+        .unwrap()
+        .optional = true;
+    graph
+        .nodes
+        .get_mut("root.nodes.write")
+        .unwrap()
+        .contract
+        .inputs
+        .get_mut("input")
+        .unwrap()
+        .optional = true;
+    let ordinary = graph.nodes["root.nodes.write"].operator.clone();
+    for (compatibility, upstream_fails, selected) in [
+        (false, true, true),
+        (true, true, true),
+        (true, false, true),
+        (true, false, false),
+    ] {
+        graph.nodes.get_mut("root.nodes.write").unwrap().operator = if compatibility {
+            CompiledOperator::ReviewDomain {
+                review_node: "gather".into(),
+                operation: ReviewOperation::Gather,
+            }
+        } else {
+            ordinary.clone()
+        };
+        let host = Host {
+            graph: &graph,
+            upstream_fails,
+            selected,
+            invocations: Mutex::new(vec![]),
+        };
+        let report = graph.run(&host).unwrap();
+        let ran = host
+            .invocations
+            .lock()
+            .unwrap()
+            .contains(&"root.nodes.write".to_string());
+        match (compatibility && upstream_fails, selected) {
+            (true, _) => {
+                assert!(!ran);
+                assert!(matches!(
+                    report.outcome("root.nodes.write"),
+                    Some(NodeOutcome::Suppressed {
+                        reason: SuppressionReason::UpstreamMissing
+                    })
+                ));
+            }
+            (false, false) => {
+                assert!(!ran);
+                assert!(matches!(
+                    report.outcome("root.nodes.write"),
+                    Some(NodeOutcome::Suppressed {
+                        reason: SuppressionReason::BranchNotSelected
+                    })
+                ));
+            }
+            (false, true) => {
+                assert!(ran);
+                assert!(matches!(
+                    report.outcome("root.nodes.write"),
+                    Some(NodeOutcome::Completed { .. })
+                ));
+            }
+        }
+    }
+}
+
+#[test]
+fn installed_review_worker_is_guarded_by_the_same_compiled_provider_admission() {
+    use review_core::task::plan::{EffectiveWorkerBindingV1, WorkerExecutionV1};
+    use review_graph::task::{CompiledOperator, OperatorAttemptCost, ReviewOperation};
+    let (task, pipelines, signatures) = fixture();
+    let mut graph = compile_task(
+        &task,
+        "builtin/document",
+        &CompileContext {
+            slot_workers: BTreeMap::new(),
+            acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
+            pipelines: &pipelines,
+            signatures: &signatures,
+            max_nodes: 64,
+            max_depth: 4,
+        },
+    )
+    .unwrap();
+    let CompiledOperator::Primitive {
+        operator: TaskOperatorV1::Worker { slot },
+        ..
+    } = &graph.nodes["root.nodes.write"].operator
+    else {
+        panic!("fixture Worker")
+    };
+    let slot = slot.clone();
+    graph.nodes.get_mut("root.nodes.write").unwrap().operator = CompiledOperator::ReviewDomain {
+        review_node: "correctness".into(),
+        operation: ReviewOperation::Reviewer { slot: slot.clone() },
+    };
+    let bindings = BTreeMap::from([(
+        slot.clone(),
+        EffectiveWorkerBindingV1 {
+            package_digest: "a".repeat(64),
+            package_artifact_id: "b".repeat(64),
+            invocation_policy_id: "c".repeat(64),
+            execution: WorkerExecutionV1::Model {
+                provider: "personal".into(),
+                provider_kind: "fixture".into(),
+                principal_id: "fixture-principal".into(),
+                model: "fixture-model".into(),
+                effort: "high".into(),
+            },
+        },
+    )]);
+    graph
+        .install_provider_admission(
+            &bindings,
+            &OperatorAttemptCost {
+                tokens: 11,
+                wall_ms: 12,
+            },
+        )
+        .unwrap();
+    let admissions: Vec<_> = graph
+        .nodes
+        .iter()
+        .filter(|(_, node)| matches!(node.operator, CompiledOperator::ProviderAdmission { .. }))
+        .collect();
+    assert_eq!(admissions.len(), 1);
+    let (id, admission) = admissions[0];
+    assert!(
+        matches!(&admission.operator, CompiledOperator::ProviderAdmission { bindings } if bindings == &BTreeSet::from([slot]))
+    );
+    assert_eq!(graph.allowances[id].tokens_per_attempt, 11);
+    assert_eq!(
+        graph.nodes["root.nodes.write"]
+            .conditions
+            .last()
+            .unwrap()
+            .source
+            .node,
+        *id
+    );
+    assert_eq!(
+        graph.nodes["root.nodes.write"]
+            .conditions
+            .last()
+            .unwrap()
+            .outcome,
+        ReceiptOutcomeV1::Passed
+    );
+    assert!(
+        graph
+            .install_provider_admission(
+                &bindings,
+                &OperatorAttemptCost {
+                    tokens: 11,
+                    wall_ms: 12
+                }
+            )
+            .is_err()
+    );
+}
+
+#[test]
 fn declarations_cannot_invent_worker_contracts_evidence_or_effect_authority() {
     let (mut task, pipelines, signatures) = fixture();
     let mut wrong = signatures.clone();

@@ -17,6 +17,13 @@ pub type ArtifactMap = BTreeMap<String, Vec<String>>;
 /// What the caller does when a node is dispatched. The scheduler owns *when* and *whether*, the
 /// caller owns *what* — so scheduling can be tested without models, checks, or a filesystem.
 pub trait Dispatch {
+    /// A failed predecessor is different from a successful optional empty output. The
+    /// installed Review frontend retains its complete predecessor barrier through Task
+    /// execution; ordinary Task operators may handle optional missing inputs themselves.
+    fn requires_successful_predecessors(&self, node: &Node) -> bool {
+        node.kind != NodeKind::Task
+    }
+
     /// Task-only branch decision over admitted, named inputs. This runs before invocation
     /// publication and may suppress an inactive branch without manufacturing a receipt.
     fn task_node_selected(&self, _node: &Node, _inputs: &ArtifactMap) -> Result<bool, String> {
@@ -214,7 +221,7 @@ impl<'a> Scheduler<'a> {
                     }
 
                     let dependencies = self.plan.dependencies_of(node_id);
-                    if node.kind != NodeKind::Task
+                    if dispatch.requires_successful_predecessors(node)
                         && dependencies
                             .iter()
                             .any(|edge| unusable.contains(&edge.from.node))

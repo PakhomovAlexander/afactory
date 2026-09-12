@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 98] = [
+const SCHEMAS: [&str; 100] = [
     "normalized-task-requirements-v1.json",
     "task-source-capture-v1.json",
     "issue-input-v1.json",
@@ -55,6 +55,8 @@ const SCHEMAS: [&str; 98] = [
     "task-review-round-v1.json",
     "task-review-result-metadata-v1.json",
     "task-review-context-v1.json",
+    "legacy-review-round-v1.json",
+    "legacy-review-gate-outcome-v1.json",
     "task-review-result-selected-v1.json",
     "task-check-receipt-v1.json",
     "task-evaluation-v1.json",
@@ -2406,4 +2408,65 @@ fn task_review_context_and_selection_require_exact_closed_execution_identities()
             "payload":selection,
         }),
     );
+}
+
+#[test]
+fn legacy_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
+    use review_core::task::review_compat::{LegacyReviewGateOutcomeV1, LegacyReviewRoundV1};
+    let id = format!("sha256:{}", "a".repeat(64));
+    let round = json!({
+        "campaign_id": "review-ticket", "round_event_id": "a".repeat(26),
+        "campaign_manifest_id": id, "subject_id": id, "head_snapshot_id": id,
+        "round": 1, "epoch": 1,
+    });
+    let gate = json!({"round_event_id": "a".repeat(26), "review_node": "gate",
+        "gate_decision_id": id, "outcome": "passed"});
+    assert_valid("legacy-review-round-v1.json", &round);
+    let parsed = serde_json::from_value::<LegacyReviewRoundV1>(round.clone()).unwrap();
+    parsed.validate().unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), round);
+    for outcome in ["passed", "failed"] {
+        let mut value = gate.clone();
+        value["outcome"] = json!(outcome);
+        assert_valid("legacy-review-gate-outcome-v1.json", &value);
+        let parsed = serde_json::from_value::<LegacyReviewGateOutcomeV1>(value.clone()).unwrap();
+        parsed.validate().unwrap();
+        assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+    }
+    for (field, replacement) in [
+        ("round", json!(0)),
+        ("epoch", json!(0)),
+        ("round_event_id", json!("a".repeat(25))),
+        ("campaign_id", json!("")),
+        ("head_snapshot_id", json!("HEAD")),
+        ("unknown", json!(true)),
+    ] {
+        let mut value = round.clone();
+        value[field] = replacement;
+        assert!(!validator("legacy-review-round-v1.json").is_valid(&value));
+        assert!(
+            serde_json::from_value::<LegacyReviewRoundV1>(value)
+                .map_err(|e| e.to_string())
+                .and_then(|v| v.validate())
+                .is_err()
+        );
+    }
+    for (field, replacement) in [
+        ("outcome", json!("inconclusive")),
+        ("review_node", json!("")),
+        ("gate_decision_id", json!("allow")),
+        ("round_event_id", json!("A".repeat(26))),
+        ("unknown", json!(true)),
+    ] {
+        let mut value = gate.clone();
+        value[field] = replacement;
+        assert!(!validator("legacy-review-gate-outcome-v1.json").is_valid(&value));
+        assert!(
+            serde_json::from_value::<LegacyReviewGateOutcomeV1>(value)
+                .map_err(|e| e.to_string())
+                .and_then(|v| v.validate())
+                .is_err()
+        );
+    }
+    assert!(!validator("task-review-round-v1.json").is_valid(&round));
 }

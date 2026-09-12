@@ -1083,6 +1083,12 @@ impl Loaded {
         &self.plan.order
     }
 
+    /// Borrow the validated topology for installed compatibility compilation. This does not
+    /// dispatch it, expose mutable authority, or bypass captured package/manifest admission.
+    pub fn planned(&self) -> &review_graph::Planned {
+        &self.plan
+    }
+
     pub fn node_is_gated(&self, node: &str) -> bool {
         !self.plan.gates_for(node).is_empty()
     }

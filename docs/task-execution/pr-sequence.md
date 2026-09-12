@@ -242,3 +242,11 @@ Scope, reservation, replay and recovery regressions pass. The full gate at `53ce
 Clippy, documentation tests and byte-identical frozen reproduction. Markdown passes. Canonical
 Review selection at `96d4061` passes Check, CLI smoke and container probes in CI run
 `34672300202`. The actual legacy frontend/broker, Scatter and Round-continuation cutover remain.
+
+The in-flight usage checkpoint at `166bc45` passed CI run `34674082508`: Check, CLI smoke and
+container probes. The next installed frontend checkpoint compiles explicit Review contracts,
+original-node mappings, typed fan-in lanes, inherited Gate conditions and shared Provider guards.
+It preserves flat and enveloped artifact identities and captures an exact Round before Generation.
+The compiler/graph suites pass 123 tests, zero failures; the new schema and real-Store capture
+checks pass, and workspace Clippy passes. Full verification is next. This does not yet cut over
+the legacy CLI or execute Scatter through the common runtime. ADR-0069 records the boundary.

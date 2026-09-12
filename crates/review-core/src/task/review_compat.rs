@@ -7,6 +7,85 @@ use serde::{Deserialize, Serialize};
 
 pub const TASK_REVIEW_RESULT_METADATA_V1: &str = "af/TaskReviewResultMetadata@1";
 pub const TASK_REVIEW_CONTEXT_V1: &str = "af/TaskReviewContext@1";
+pub const LEGACY_REVIEW_ROUND_V1: &str = "af/LegacyReviewRound@1";
+pub const LEGACY_REVIEW_GATE_OUTCOME_V1: &str = "af/LegacyReviewGateOutcome@1";
+
+/// Input binding for the installed legacy frontend. Unlike TaskReviewRound@1 (a completed
+/// canonical reduction), this names one exact Campaign Round awaiting execution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LegacyReviewRoundV1 {
+    pub campaign_id: String,
+    pub round_event_id: String,
+    pub campaign_manifest_id: String,
+    pub subject_id: String,
+    pub head_snapshot_id: String,
+    pub round: u32,
+    pub epoch: u32,
+}
+
+impl LegacyReviewRoundV1 {
+    pub fn artifact_refs(&self) -> Vec<&str> {
+        vec![
+            &self.campaign_manifest_id,
+            &self.subject_id,
+            &self.head_snapshot_id,
+        ]
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        require(
+            !self.campaign_id.is_empty() && self.campaign_id.chars().count() <= 256,
+            "Legacy Review Round needs a bounded Campaign identity",
+        )?;
+        require(
+            event_id(&self.round_event_id) && self.round > 0 && self.epoch > 0,
+            "Legacy Review Round needs an exact event, Round and epoch",
+        )?;
+        require(
+            self.artifact_refs().into_iter().all(is_digest),
+            "Legacy Review Round needs exact captured authority and Subject identities",
+        )
+    }
+}
+
+/// A branch receipt beside the unchanged raw GateDecision@1. Setup failure produces no
+/// receipt. The host validates `outcome` against that exact decision's executed result.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LegacyReviewGateOutcomeV1 {
+    pub round_event_id: String,
+    pub review_node: String,
+    pub gate_decision_id: String,
+    pub outcome: super::pipeline::ReceiptOutcomeV1,
+}
+
+impl LegacyReviewGateOutcomeV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        use super::pipeline::ReceiptOutcomeV1;
+        require(
+            event_id(&self.round_event_id)
+                && !self.review_node.is_empty()
+                && self.review_node.chars().count() <= 256
+                && is_digest(&self.gate_decision_id),
+            "Legacy Review Gate outcome needs exact Round, node and decision identities",
+        )?;
+        require(
+            matches!(
+                self.outcome,
+                ReceiptOutcomeV1::Passed | ReceiptOutcomeV1::Failed
+            ),
+            "Only an executed Gate decision supplies a Review branch outcome",
+        )
+    }
+}
+
+fn event_id(id: &str) -> bool {
+    id.len() == 26
+        && id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+}
 
 /// Exact context captured by the compatibility host after the common Attempt reservation.
 /// The host must recompute the declared inputs and rendered bytes during context admission.

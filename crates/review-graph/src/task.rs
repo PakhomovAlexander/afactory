@@ -83,10 +83,28 @@ pub enum CompiledOperator {
     ProviderAdmission {
         bindings: BTreeSet<String>,
     },
+    /// Installed compatibility frontend only. A reusable Pipeline cannot invent canonical
+    /// Review operations or make these declarations through TaskOperatorV1.
+    ReviewDomain {
+        review_node: String,
+        operation: ReviewOperation,
+    },
     Primitive {
         operator: TaskOperatorV1,
         signature: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReviewOperation {
+    Generation,
+    Gate,
+    Reviewer { slot: String },
+    Gather,
+    Ledger,
+    Slicer,
+    Scatter { slot: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +154,14 @@ pub struct CompiledTask {
 }
 
 impl CompiledTask {
+    /// Review requires a complete predecessor barrier, including optional input producers.
+    /// Ordinary Task operators retain conditional/optional-input recovery semantics.
+    pub fn requires_successful_predecessors(&self, node: &str) -> bool {
+        self.nodes
+            .get(node)
+            .is_some_and(|node| matches!(node.operator, CompiledOperator::ReviewDomain { .. }))
+    }
+
     pub fn require_provider_admission(
         &mut self,
         bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV1>,
@@ -180,15 +206,22 @@ impl CompiledTask {
             }
             let mut protected = false;
             for (id, node) in &mut self.nodes {
-                if let CompiledOperator::Primitive {
-                    operator:
-                        TaskOperatorV1::Worker { slot }
-                        | TaskOperatorV1::Verify { slot }
-                        | TaskOperatorV1::FixVerify { slot },
-                    ..
-                } = &node.operator
-                    && slots.contains(slot)
-                {
+                let slot = match &node.operator {
+                    CompiledOperator::Primitive {
+                        operator:
+                            TaskOperatorV1::Worker { slot }
+                            | TaskOperatorV1::Verify { slot }
+                            | TaskOperatorV1::FixVerify { slot },
+                        ..
+                    }
+                    | CompiledOperator::ReviewDomain {
+                        operation:
+                            ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot },
+                        ..
+                    } => Some(slot),
+                    _ => None,
+                };
+                if slot.is_some_and(|slot| slots.contains(slot)) {
                     node.conditions.push(CompiledCondition {
                         source: Address {
                             node: name.clone(),

@@ -39,6 +39,13 @@ receipt adapter must feed these observations through the common Store.
 
 ## Required cutover
 
+The installed frontend now compiles the captured topology into an explicit public Task
+contract, typed per-edge lanes and inherited Gate conditions. Flat JSON is adapted through
+explicit codecs; existing envelopes keep their original identities and historical Snapshots.
+`LegacyReviewRound@1` binds input capture to the exact current Campaign Round. Generation and
+capture reopen without creating execution events. The legacy CLI still awaits plan admission
+and operation-host wiring ([ADR-0069](../adr/0069-compile-captured-review-ports-with-explicit-artifact-codecs.md)).
+
 ```text
 captured Review configuration + exact Round inputs
                          |
