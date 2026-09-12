@@ -47,6 +47,7 @@ mod onboard;
 mod project;
 mod providers;
 mod report_tasks;
+mod review_task;
 mod selfmgmt;
 mod task;
 mod task_execution;
@@ -1154,7 +1155,7 @@ fn main() {
                                 .into(),
                         )
                     } else {
-                        provider_doctor(&run_options(args, "provider doctor")).map(|()| 0)
+                        provider_doctor(&run_options(args, "provider doctor"))
                     }
                 }
             },
@@ -1755,8 +1756,8 @@ fn open_campaign_store_read_only(state: &Path) -> Result<EventStore, String> {
 
 fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let store = open_campaign_store(&state)?;
-    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    let store = open_campaign_store_read_only(&state)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let ledger = LedgerProjection::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?
         .into_ledger();
@@ -1833,11 +1834,17 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
         })
         .count();
     let summary = findings_summary(&findings);
-    let wall = wall_span_ms(
+    let task_accounting =
+        report_tasks::read(&store, &cas, &campaign_run_id(&options.campaign), &events)?;
+    let wall = task_accounting.wall_ms(
         &store
             .attempt_wall(&campaign_run_id(&options.campaign))
             .map_err(|e| e.to_string())?,
     );
+    let task_summary = report_tasks::summary(&task_accounting.tasks);
+    if !task_summary.is_empty() {
+        eprintln!("{task_summary}");
+    }
     eprintln!(
         "round {}; {} findings: {}; {} required demands open/stale{}",
         ledger.round,
@@ -2164,6 +2171,8 @@ struct CampaignView {
     rounds: Vec<ReportRoundView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wall_ms: Option<u64>,
+    #[serde(skip)]
+    task_accounting: Vec<report_tasks::TaskAccountingView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     findings: Option<FindingsSummaryView>,
     /// The state directory's name beneath the root, and — when asked for — what it holds.
@@ -2508,7 +2517,8 @@ fn read_campaign_view(
         .collect::<Vec<_>>();
     let rounds = report_rounds(&reports, &round_authority)?;
     let last = rounds.last();
-    let wall_ms = wall_span_ms(
+    let task_accounting = report_tasks::read(store, &cas, run_id, &events)?;
+    let wall_ms = task_accounting.wall_ms(
         &store
             .attempt_wall(run_id)
             .map_err(|error| error.to_string())?,
@@ -2531,6 +2541,7 @@ fn read_campaign_view(
         verdict: last.map(|round| round.verdict.clone()),
         rounds,
         wall_ms,
+        task_accounting: task_accounting.tasks,
         findings,
         state_dir: state
             .file_name()
@@ -2584,6 +2595,9 @@ fn print_campaigns_text(view: &CampaignListView) {
         );
         if let Some(wall) = campaign.wall_ms {
             println!("  wall: {}", human_duration(wall));
+        }
+        for summary in report_tasks::summary(&campaign.task_accounting).lines() {
+            println!("  {summary}");
         }
         if let Some(findings) = &campaign.findings {
             println!("  findings: {}", findings_summary_line(findings));
@@ -2937,22 +2951,7 @@ fn read_report_view(
     });
     let wall_rows = store.attempt_wall(&run_id).map_err(|e| e.to_string())?;
     attach_attempt_wall(&mut spend, &wall_rows);
-    let wall_ms = wall_spans_ms(
-        wall_rows
-            .iter()
-            .map(|row| {
-                (
-                    (row.round, row.epoch),
-                    (row.started_unix_ms, row.elapsed_ms),
-                )
-            })
-            .chain(task_accounting.wall_rows.iter().map(|row| {
-                (
-                    (row.round, row.epoch),
-                    (row.started_unix_ms, row.elapsed_ms),
-                )
-            })),
-    );
+    let wall_ms = task_accounting.wall_ms(&wall_rows);
     let findings = ledger.finding_views();
     Ok(ReviewReportView {
         schema: if task_accounting.tasks.is_empty() {
@@ -4588,7 +4587,7 @@ fn admit_review_providers(
     Ok(admissions)
 }
 
-fn provider_doctor(options: &Options) -> Result<(), String> {
+fn provider_doctor(options: &Options) -> Result<i32, String> {
     if options.campaign.is_none() {
         return Err("provider doctor requires `--campaign NAME` so admission evidence can be reused by review run".into());
     }
@@ -4601,6 +4600,10 @@ fn provider_doctor(options: &Options) -> Result<(), String> {
     std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
     let repo = Repo::open(&options.repo, &git_home)
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
+    let campaign = campaign_run_id(options.campaign.as_deref().unwrap_or("local"));
+    if review_task::uses_common(&cas, &store, &campaign)? {
+        return review_task::doctor(options, &cas, &mut store, &repo, &campaign);
+    }
     let authority::PreparedRun {
         loaded,
         run_id,
@@ -4635,7 +4638,7 @@ fn provider_doctor(options: &Options) -> Result<(), String> {
         }
         println!("  committed {spent} tokens; no Gates or Workers ran");
     }
-    Ok(())
+    Ok(0)
 }
 
 fn run(options: &Options) -> Result<RunVerdict, String> {
@@ -4649,6 +4652,11 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
     let repo = Repo::open(&options.repo, &git_home)
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
+
+    let campaign = campaign_run_id(options.campaign.as_deref().unwrap_or("local"));
+    if review_task::uses_common(&cas, &store, &campaign)? {
+        return review_task::run(options, &cas, &mut store, &repo, &campaign);
+    }
 
     let authority::PreparedRun {
         loaded,

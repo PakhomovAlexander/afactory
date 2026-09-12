@@ -392,6 +392,10 @@ impl LegacyReviewPlanCompiler {
             integration: envelope.artifact_type == REVIEW_TASK_POLICY_V4,
         })
     }
+    pub fn resources(&self) -> &ReviewResourcePolicy {
+        &self.policy.settings.resources
+    }
+
     pub fn policy_id(&self) -> &str {
         &self.policy_id
     }

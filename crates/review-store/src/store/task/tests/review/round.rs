@@ -2,11 +2,18 @@ use super::*;
 use crate::store::task::review_round::ReviewRoundFence;
 
 pub(in crate::store::task::tests) fn round_fixture() -> (Fixture, LegacyReviewRoundV1) {
+    round_fixture_with_source(false)
+}
+pub(in crate::store::task::tests) fn round_fixture_with_source(
+    real_source: bool,
+) -> (Fixture, LegacyReviewRoundV1) {
     let mut f = Fixture::new(false).with_execution_graph();
-    let context = canonical_context(
+    let context = super::canonical_context_with_source(
         &mut f,
         &format!("sha256:{}", "a".repeat(64)),
         &"a".repeat(26),
+        review_core::contract::REVIEWER_RESULT_V1,
+        real_source,
     );
     let subject: review_core::SubjectV1 =
         serde_json::from_value(f.cas.get_json(&context.subject_id).unwrap()).unwrap();

@@ -1,8 +1,10 @@
 # Review command compatibility
 
-The legacy `af review run` entry point still uses its original execution owner. Task-file Review
-and embedded Review already use the common Task runtime. The full increment requires the
-legacy entry point to use that same runtime while preserving canonical Review evidence.
+New `af review run` executions and Provider doctor now use the common Task runtime alongside
+Task-file and embedded Review. Historical paid Campaigns retain their original executor and
+accounting; missing common Task state refuses instead of falling back. The installed CLI
+cutover is implemented and undergoing full validation. See
+[ADR-0084](../adr/0084-route-new-review-commands-through-the-common-task.md).
 
 ## Adapter boundaries
 
@@ -37,14 +39,14 @@ not double-charge. The original settlement bytes and exact replay comparison are
 ([ADR-0068](../adr/0068-retain-inflight-task-usage-in-the-common-budget.md)). The actual broker
 receipt adapter must feed these observations through the common Store.
 
-## Required cutover
+## Installed cutover
 
 The installed frontend now compiles the captured topology into an explicit public Task
 contract, typed per-edge lanes and inherited Gate conditions. Flat JSON is adapted through
 explicit codecs; existing envelopes keep their original identities and historical Snapshots.
 `LegacyReviewRound@1` binds input capture to the exact current Campaign Round. Generation and
 capture reopen without creating execution events. The compiler and operation host now exercise
-common plan admission and execution; the legacy CLI still awaits the complete command cutover
+common plan admission and execution, including the installed CLI cutover
 ([ADR-0069](../adr/0069-compile-captured-review-ports-with-explicit-artifact-codecs.md)).
 
 ```text
@@ -132,8 +134,8 @@ and Scatter evidence supplement the selected public outputs, including nodes not
 the original Ledger. The operation host additionally retains mandatory Finding Set/Demand Set
 companions, actual common Worker execution, canonical publication recovery and domain acceptance.
 Canonical `RunReport@6` and the Task-backed Review inspection view retain exact cumulative
-accounting. Broker/Scatter integration and heavy-Round handoff remain required before the legacy
-entry point changes ownership.
+accounting. Broker and owned Scatter execution, heavy-Round handoff and post-Round Integration
+now use that same runtime. The CLI keeps paid historical Campaigns on their captured path.
 
 Recorded-plan recompilation reads existing root wrappers and refuses their absence, different
 producer, changed Round or changed head; it does not recreate missing CAS objects. Historical

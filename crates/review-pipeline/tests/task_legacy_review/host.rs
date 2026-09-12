@@ -16,6 +16,8 @@ mod integration;
 mod native;
 #[path = "host/owned.rs"]
 mod owned;
+#[path = "host/presentation.rs"]
+mod presentation;
 #[path = "host/probe_runtime.rs"]
 mod probe_runtime;
 
@@ -131,6 +133,23 @@ fn captured_command_review_uses_common_attempt_selection_and_replays_canonical_o
         let runtime =
             TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host)
                 .unwrap();
+        let before_doctor = runtime.projection().unwrap();
+        let doctor = runtime.execute_provider_admissions().unwrap();
+        assert!(doctor.ready() && doctor.outcomes.is_empty());
+        let after_doctor = runtime.projection().unwrap();
+        assert_eq!(after_doctor.run_reports, before_doctor.run_reports);
+        assert_eq!(
+            after_doctor.execution.as_ref().map(|e| (
+                &e.outputs,
+                e.budget.committed_tokens(),
+                e.budget.begun_attempts()
+            )),
+            before_doctor.execution.as_ref().map(|e| (
+                &e.outputs,
+                e.budget.committed_tokens(),
+                e.budget.begun_attempts()
+            ))
+        );
         let report = runtime.execute().unwrap();
         assert!(report.complete(), "{report:?}");
         let state = runtime.projection().unwrap();

@@ -1,0 +1,918 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:review-outcome:2",
+  "title": "Installed common Review outcome@2",
+  "$comment": "Read-only CLI presentation. round_outcome retains the canonical Review Round verdict; outcome controls this command exit. task.committed_tokens is the original common Task budget including all Attempts, Providers, retries, Rounds and late charges. totals.selected_attempts describes only selected Review transport observations. All observation/usage counters use bounded canonical decimal strings. Exact Task/result/plan/Round identity, selection and accounting prefixes remain Store authority; this schema grants none. Historical review-outcome@1 remains unchanged.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "campaign_mode",
+    "candidate",
+    "run_id",
+    "authority",
+    "task",
+    "node_outcomes",
+    "blocked_gates",
+    "attempts",
+    "totals",
+    "findings",
+    "ledger_production",
+    "available_node_results",
+    "round_outcome",
+    "outcome",
+    "continuation_required",
+    "next_action"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/review-outcome@2"
+    },
+    "campaign_mode": {
+      "enum": [
+        "light",
+        "heavy"
+      ]
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "executable",
+        "binary_sha256"
+      ],
+      "properties": {
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "executable": {
+          "type": "string",
+          "minLength": 1
+        },
+        "binary_sha256": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        }
+      }
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "authority": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authority_snapshot_id",
+        "campaign_manifest_id",
+        "subject_id",
+        "head_snapshot_id",
+        "round_event_id",
+        "round",
+        "epoch"
+      ],
+      "properties": {
+        "authority_snapshot_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "campaign_manifest_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "subject_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "head_snapshot_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "round_event_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]{26}$"
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "task": {
+      "$ref": "#/$defs/task"
+    },
+    "node_outcomes": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "node",
+              "kind",
+              "output_artifacts"
+            ],
+            "properties": {
+              "node": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "completed"
+              },
+              "output_artifacts": {
+                "type": "array",
+                "items": {
+                  "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "node",
+              "kind",
+              "error"
+            ],
+            "properties": {
+              "node": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "failed"
+              },
+              "error": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "node",
+              "kind",
+              "reason"
+            ],
+            "properties": {
+              "node": {
+                "type": "string",
+                "minLength": 1
+              },
+              "kind": {
+                "const": "suppressed"
+              },
+              "reason": {
+                "enum": [
+                  "branch_not_selected",
+                  "gate_blocked",
+                  "upstream_missing"
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "blocked_gates": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "attempts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "node",
+          "attempt_id",
+          "cost_tokens",
+          "usage",
+          "context_manifest",
+          "raw_artifact",
+          "result_artifact"
+        ],
+        "properties": {
+          "node": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "attempt_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9]{26}$"
+          },
+          "cost_tokens": {
+            "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+          },
+          "usage": {
+            "$ref": "urn:af:schema:task-token-usage:1"
+          },
+          "context_manifest": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "entries",
+              "rendered_bytes",
+              "estimated_tokens"
+            ],
+            "properties": {
+              "entries": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "name",
+                    "required_by",
+                    "rendered_bytes",
+                    "estimated_tokens"
+                  ],
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "required_by": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "artifact_id": {
+                      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                    },
+                    "artifact_type": {
+                      "type": "string",
+                      "minLength": 1
+                    },
+                    "rendered_bytes": {
+                      "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+                    },
+                    "estimated_tokens": {
+                      "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+                    }
+                  }
+                }
+              },
+              "rendered_bytes": {
+                "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+              },
+              "estimated_tokens": {
+                "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+              }
+            }
+          },
+          "raw_artifact": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "result_artifact": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          }
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selected_attempts",
+        "open_required_demands",
+        "open_or_stale_demand_ids"
+      ],
+      "properties": {
+        "selected_attempts": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "count",
+            "cost_tokens",
+            "context",
+            "usage"
+          ],
+          "properties": {
+            "count": {
+              "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+            },
+            "cost_tokens": {
+              "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+            },
+            "context": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "rendered_bytes",
+                "estimated_tokens"
+              ],
+              "properties": {
+                "rendered_bytes": {
+                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                },
+                "estimated_tokens": {
+                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                }
+              }
+            },
+            "usage": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "chargeable_tokens"
+              ],
+              "properties": {
+                "input_tokens": {
+                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                },
+                "output_tokens": {
+                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                },
+                "cache_read_tokens": {
+                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                },
+                "cache_write_tokens": {
+                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                },
+                "reasoning_tokens": {
+                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                },
+                "chargeable_tokens": {
+                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                }
+              }
+            }
+          }
+        },
+        "open_required_demands": {
+          "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+        },
+        "open_or_stale_demand_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "key",
+          "severity",
+          "effective_severity",
+          "status",
+          "scope",
+          "file",
+          "line",
+          "title",
+          "aliases"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1
+          },
+          "severity": {
+            "enum": [
+              "minor",
+              "major",
+              "blocker"
+            ]
+          },
+          "effective_severity": {
+            "anyOf": [
+              {
+                "enum": [
+                  "minor",
+                  "major",
+                  "blocker"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "enum": [
+              "open",
+              "pending-verification",
+              "fixed",
+              "rejected",
+              "wontfix",
+              "contested"
+            ]
+          },
+          "scope": {
+            "enum": [
+              "in",
+              "out",
+              "unknown"
+            ]
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "aliases": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "ledger_production": {
+      "enum": [
+        "produced_clean",
+        "produced_with_findings",
+        "not_produced_upstream_missing",
+        "not_produced_failed",
+        "not_produced_gate_blocked"
+      ]
+    },
+    "available_node_results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "node",
+          "attempt_id",
+          "result_artifact_id",
+          "spend_tokens",
+          "severities",
+          "findings"
+        ],
+        "properties": {
+          "node": {
+            "type": "string",
+            "minLength": 1
+          },
+          "attempt_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9]{26}$"
+          },
+          "result_artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "spend_tokens": {
+            "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+          },
+          "severities": {
+            "type": "array",
+            "items": {
+              "enum": [
+                "minor",
+                "major",
+                "blocker"
+              ]
+            },
+            "uniqueItems": true
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "severity",
+                "title",
+                "body",
+                "file",
+                "line",
+                "locations"
+              ],
+              "properties": {
+                "severity": {
+                  "anyOf": [
+                    {
+                      "enum": [
+                        "minor",
+                        "major",
+                        "blocker"
+                      ]
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "title": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "body": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "file": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "line": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "locations": {
+                  "anyOf": [
+                    {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "path"
+                        ],
+                        "properties": {
+                          "path": {
+                            "type": "string"
+                          },
+                          "line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 4294967295
+                          },
+                          "end_line": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 4294967295
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "round_outcome": {
+      "$ref": "#/$defs/verdict"
+    },
+    "outcome": {
+      "$ref": "#/$defs/verdict"
+    },
+    "continuation_required": {
+      "type": "boolean"
+    },
+    "next_action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "start_another_campaign"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "done",
+            "fix_then_gate",
+            "resume_incomplete_round",
+            "continue_campaign",
+            "human_decision",
+            "invalid_verdict"
+          ]
+        },
+        "start_another_campaign": {
+          "const": false
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  },
+  "$defs": {
+    "task": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "revision_id",
+        "plan_id",
+        "phase",
+        "result",
+        "limits",
+        "committed_tokens",
+        "begun_attempts",
+        "budget_breached"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "revision_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "plan_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "phase": {
+          "$ref": "urn:af:schema:task-phase:1"
+        },
+        "result": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:task-result:1"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limits": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/limits"
+        },
+        "committed_tokens": {
+          "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+        },
+        "begun_attempts": {
+          "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+        },
+        "budget_breached": {
+          "type": "boolean"
+        }
+      }
+    },
+    "verdict": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "clean"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "properties": {
+            "kind": {
+              "const": "fail"
+            },
+            "reason": {
+              "enum": [
+                "not_converged",
+                "exhausted",
+                "invalid_converged_failure"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "missing_nodes"
+          ],
+          "properties": {
+            "kind": {
+              "const": "incomplete"
+            },
+            "missing_nodes": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "node",
+                  "reason"
+                ],
+                "properties": {
+                  "node": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "reason": {
+                    "type": "string"
+                  }
+                }
+              },
+              "minItems": 1
+            }
+          }
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "task": {
+            "properties": {
+              "phase": {
+                "properties": {
+                  "kind": {
+                    "const": "finished"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "task": {
+            "properties": {
+              "result": {
+                "$ref": "urn:af:schema:task-result:1"
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "task": {
+            "properties": {
+              "result": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "outcome": {
+            "properties": {
+              "kind": {
+                "const": "clean"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "task": {
+            "properties": {
+              "phase": {
+                "properties": {
+                  "kind": {
+                    "const": "finished"
+                  }
+                }
+              },
+              "result": {
+                "allOf": [
+                  {
+                    "$ref": "urn:af:schema:task-result:1"
+                  },
+                  {
+                    "properties": {
+                      "acceptance": {
+                        "const": "satisfied"
+                      }
+                    }
+                  }
+                ]
+              },
+              "budget_breached": {
+                "const": false
+              }
+            }
+          },
+          "continuation_required": {
+            "const": false
+          },
+          "next_action": {
+            "properties": {
+              "kind": {
+                "const": "done"
+              }
+            }
+          },
+          "round_outcome": {
+            "properties": {
+              "kind": {
+                "const": "clean"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "next_action": {
+            "properties": {
+              "kind": {
+                "const": "done"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "properties": {
+              "kind": {
+                "const": "clean"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "continuation_required": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "properties": {
+              "kind": {
+                "not": {
+                  "const": "clean"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}

@@ -36,6 +36,7 @@ pub(crate) mod catalog;
 pub(super) mod developer;
 pub(crate) mod domain;
 pub(super) mod export;
+mod input_file;
 mod inspection;
 mod issue;
 mod legacy;
@@ -309,7 +310,7 @@ fn captured_file(cas: &Cas, manifest: &Manifest, path: &str) -> Result<Vec<u8>, 
         .map_err(|e| e.to_string())
 }
 
-fn engine(cas: &Cas) -> Result<String, String> {
+pub(super) fn engine(cas: &Cas) -> Result<String, String> {
     // Process-local only: every fresh process proves its running engine bytes. Reconstructing
     // the compiler within one capture must not reread a large debug executable a second time.
     static DIGEST: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
@@ -749,12 +750,7 @@ pub(super) fn start_review(options: StartOptions) -> Result<i32, String> {
 
 fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32, String> {
     let started = clock()?;
-    let mut bytes = Vec::new();
-    std::fs::File::open(&options.file)
-        .map_err(|e| e.to_string())?
-        .take(16 * 1024 * 1024 + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|e| e.to_string())?;
+    let bytes = input_file::read(&options.file, 16 * 1024 * 1024)?;
     let file: TaskFile = parse(&options.file, &bytes)?;
     if file.schema != "af.task-file/1"
         || !is_name(&file.task_id)

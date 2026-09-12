@@ -14,6 +14,8 @@ pub struct RecordedReviewRoundConclusion {
     pub plan_id: String,
     pub task_report_id: String,
     pub canonical_report_event_id: String,
+    /// Original Review node names, ports and raw artifact IDs, in captured pipeline order.
+    pub report: RunReport,
     pub verdict: crate::RunVerdict,
     pub resources_failed: bool,
     pub can_continue: bool,
@@ -21,6 +23,17 @@ pub struct RecordedReviewRoundConclusion {
 }
 
 impl LegacyReviewTaskHost<'_, '_> {
+    /// Current durable Campaign Ledger, including facts appended through common Task APIs.
+    pub fn ledger(&self) -> review_store::Ledger {
+        self.domain.rebuild_ledger_projection().ledger().clone()
+    }
+
+    /// Selected transport observations for this exact Round, in the legacy presentation shape.
+    /// Cumulative and late usage charges remain authoritative in the common Task budget.
+    pub fn selected_attempt_evidence(&self) -> Result<Vec<crate::AttemptEvidence>, String> {
+        self.domain.selected_attempt_evidence()
+    }
+
     /// Compatibility entry point for callers that are finishing this Task. Heavy callers
     /// publish a Round conclusion first and separately choose continuation or finalization.
     pub fn assemble_recorded_result(&self, cas: &Cas) -> Result<TaskResultV1, String> {
@@ -289,6 +302,7 @@ impl LegacyReviewTaskHost<'_, '_> {
             plan_id: self.plan_id.clone(),
             task_report_id: report_id.clone(),
             canonical_report_event_id: canonical.event_id,
+            report: original,
             verdict,
             resources_failed,
             can_continue,

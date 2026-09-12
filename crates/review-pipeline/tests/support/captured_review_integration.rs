@@ -221,6 +221,12 @@ pub(super) fn admit_integration(
 /// One Task named integration-review, Campaign review, stored in cas/ and events.sqlite.
 /// A real Proposal is checked, promoted, handed off and resolved by the next complete Review.
 pub fn run_integration_handoff() -> tempfile::TempDir {
+    run_integration_handoff_with_preparation_delay(std::time::Duration::ZERO)
+}
+
+pub fn run_integration_handoff_with_preparation_delay(
+    delay: std::time::Duration,
+) -> tempfile::TempDir {
     use review_core::task::review_handoff::*;
     use review_store::store::task::review_handoff::capture_task_review_handoff;
     let dir = tempfile::tempdir().unwrap();
@@ -239,6 +245,16 @@ pub fn run_integration_handoff() -> tempfile::TempDir {
     }
     let (compiler, lease) =
         admit_integration(&cas, &mut store, &toml::to_string(&definition).unwrap());
+    let lease = if delay.is_zero() {
+        lease
+    } else {
+        // Use the production CLI's 15-second renewable lease, without changing any Task
+        // execution deadline, Attempt allowance or captured Campaign cap.
+        store.release_task_lease(&cas, &lease).unwrap();
+        store
+            .take_task_lease(&cas, lease.task_id(), "delayed-preparation", 15_000)
+            .unwrap()
+    };
     let shared = SharedEventStore::new(&mut store);
     let host = LegacyReviewTaskHost::new(
         &cas,
@@ -278,7 +294,7 @@ pub fn run_integration_handoff() -> tempfile::TempDir {
     );
     let before = runtime.projection().unwrap();
     let attempts = before.execution.as_ref().unwrap().attempt_accounting();
-    let mut locked = shared.lock().unwrap();
+    let locked = shared.lock().unwrap();
     let events = locked.replay("review").unwrap();
     let commit: review_core::IntegrationCommittedPayloadV1 = serde_json::from_value(
         events
@@ -313,39 +329,41 @@ pub fn run_integration_handoff() -> tempfile::TempDir {
     ]);
     refs.sort();
     refs.dedup();
-    let opened = locked.campaign_opened("review").unwrap().unwrap();
-    let round = locked
-        .append(
-            "review",
-            &cas,
-            NewEvent::new(
-                EventType::RoundStartedV1,
-                serde_json::to_value(&next).unwrap(),
-            )
-            .caused_by(opened.event_id)
-            .referencing(refs),
-        )
+    let derived: review_core::SourceSnapshot =
+        serde_json::from_value(cas.get_json(&commit.derived_snapshot_id).unwrap()).unwrap();
+    refs.push(derived.artifact_manifest.unwrap());
+    let permit = locked
+        .prepare_task_review_round_publication(&cas, &lease, &authority)
         .unwrap();
-    let projection = review_store::LedgerProjection::from_events(
-        "review",
-        &locked.replay("review").unwrap(),
-        &cas,
-    )
-    .unwrap();
-    let mut ingest = review_store::Ingest::from_projection(&mut locked, &cas, "review", projection)
-        .unwrap()
-        .under_round(&round.event_id);
-    while ingest.ledger().round < next.round {
-        ingest.advance().unwrap();
-    }
-    drop(ingest);
+    let round_id = permit.event_id_at(0).unwrap();
+    let proposed = vec![
+        NewEvent::new(
+            EventType::RoundStartedV1,
+            serde_json::to_value(&next).unwrap(),
+        )
+        .caused_by(&committed_id)
+        .correlating(&next.subject_id)
+        .referencing(refs),
+        NewEvent::new(
+            EventType::GenerationAdvancedV1,
+            serde_json::json!({"round":next.round}),
+        )
+        .caused_by(&round_id),
+    ];
+    let preview = locked
+        .preview_task_review_round(&cas, &lease, &permit, &proposed, &authority)
+        .unwrap();
     let successor = LegacyReviewPlanCompiler::reopen(
         &cas,
-        CapturedLegacyReviewRound::load(&cas, &locked, "review", &round.event_id).unwrap(),
+        CapturedLegacyReviewRound::from_prospective(&cas, &preview).unwrap(),
         &before.revision.provenance.adapter_id,
         compiler.policy_id(),
     )
     .unwrap();
+    assert!(
+        successor.round().check_current(&cas, &locked).is_err(),
+        "preview must never grant live Round authority"
+    );
     drop(locked);
     let revision = successor
         .prepare_continuation_revision(&cas, &before.revision_id, &before.revision)
@@ -353,27 +371,129 @@ pub fn run_integration_handoff() -> tempfile::TempDir {
     let revision_id = artifact(&cas, review_core::task::TASK_REVISION_V1, &revision);
     let (plan, _) = successor.compile(&cas, &revision_id).unwrap();
     let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V1, &plan);
-    let handoff = TaskReviewHandoffV1 {
-        task_id: lease.task_id().into(),
-        predecessor_revision_id: before.revision_id.clone(),
-        predecessor_plan_id: before.plan_id.clone().unwrap(),
-        successor_revision_id: revision_id,
-        successor_plan_id: plan_id,
-        predecessor_round_id: before.revision.inputs["round"].artifact_ids[0].clone(),
-        successor_round_id: revision.inputs["round"].artifact_ids[0].clone(),
-        evidence: TaskReviewHandoffEvidenceV1::IntegratedRound {
-            report_event_id: conclusion.canonical_report_event_id,
+    let handoff = preview.prepare_handoff(&cas, &plan_id).unwrap();
+    assert_eq!(handoff.successor_revision_id, revision_id);
+    assert_eq!(
+        handoff.evidence,
+        TaskReviewHandoffEvidenceV1::IntegratedRound {
+            report_event_id: conclusion.canonical_report_event_id.clone(),
             phase_id: phase.phase_id().into(),
             integration_committed_event_id: committed_id,
-        },
-    };
+        }
+    );
     let handoff_id = capture_task_review_handoff(&cas, &handoff).unwrap();
     assert_eq!(
         cas.get_artifact(&handoff_id).unwrap().artifact_type,
         TASK_REVIEW_HANDOFF_V2
     );
+    if !delay.is_zero() {
+        let started = std::time::Instant::now();
+        review_pipeline::task::lease::with_heartbeat(&shared, &cas, &lease, || {
+            // Deterministic stand-in for slow Git/CAS/compiler preparation. No Store lock
+            // or paid work is held while the real common lease renewal thread runs.
+            std::thread::sleep(delay);
+            Ok(())
+        })
+        .unwrap();
+        assert!(started.elapsed() > std::time::Duration::from_secs(15));
+        assert!(
+            shared
+                .lock()
+                .unwrap()
+                .preview_task_review_round(&cas, &lease, &permit, &proposed, &authority)
+                .is_err(),
+            "the old permit must notice the real lease-renewal Task prefix"
+        );
+    }
+    let permit = shared
+        .lock()
+        .unwrap()
+        .prepare_task_review_round_publication(&cas, &lease, &authority)
+        .unwrap();
+    let refreshed = shared
+        .lock()
+        .unwrap()
+        .preview_task_review_round(&cas, &lease, &permit, &proposed, &authority)
+        .unwrap();
+    assert_eq!(refreshed.round_event(), preview.round_event());
+    assert_eq!(refreshed.history(), preview.history());
+    assert_eq!(refreshed.prepare_handoff(&cas, &plan_id).unwrap(), handoff);
     let next_authority =
         CapturedTaskAuthority::for_legacy_review(&successor, &host, &NoTaskDeveloper);
+    let before_publish_task = shared
+        .lock()
+        .unwrap()
+        .replay(&review_store::store::task::task_run_id(lease.task_id()).unwrap())
+        .unwrap();
+    let appended = shared
+        .lock()
+        .unwrap()
+        .publish_task_review_round(
+            &cas,
+            &lease,
+            &permit,
+            &proposed,
+            &authority,
+            &review_store::store::task::review_round_publication::TaskReviewRoundSuccessor {
+                handoff_id: &handoff_id,
+                authority: &next_authority,
+            },
+        )
+        .unwrap();
+    assert_eq!(appended[0], *preview.round_event());
+    assert_eq!(
+        shared
+            .lock()
+            .unwrap()
+            .replay(&review_store::store::task::task_run_id(lease.task_id()).unwrap())
+            .unwrap(),
+        before_publish_task
+    );
+    let durable_successor = LegacyReviewPlanCompiler::reopen(
+        &cas,
+        CapturedLegacyReviewRound::load(&cas, &shared.lock().unwrap(), "review", &round_id)
+            .unwrap(),
+        &before.revision.provenance.adapter_id,
+        compiler.policy_id(),
+    )
+    .unwrap();
+    durable_successor.recompile(&cas, &revision, &plan).unwrap();
+    // Recover a process that died after the canonical successor landed but before common
+    // Task handoff. Its predecessor compiler/host must hydrate historical roots without
+    // inventing another Source capture, currentness permit or budget.
+    let mut recovered_store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+    let recovered_compiler = LegacyReviewPlanCompiler::reopen(
+        &cas,
+        CapturedLegacyReviewRound::load_recorded(
+            &cas,
+            &recovered_store,
+            "review",
+            compiler.round().binding().round_event_id.as_str(),
+        )
+        .unwrap(),
+        &before.revision.provenance.adapter_id,
+        compiler.policy_id(),
+    )
+    .unwrap();
+    let recovered_shared = SharedEventStore::new(&mut recovered_store);
+    let recovered_host = LegacyReviewTaskHost::new(
+        &cas,
+        recovered_shared.clone(),
+        &recovered_compiler,
+        lease.clone(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let next_authority = CapturedTaskAuthority::for_legacy_review(
+        &durable_successor,
+        &recovered_host,
+        &NoTaskDeveloper,
+    );
+    recovered_shared
+        .lock()
+        .unwrap()
+        .continue_task_review(&cas, &lease, &handoff_id, &next_authority)
+        .unwrap();
     shared
         .lock()
         .unwrap()

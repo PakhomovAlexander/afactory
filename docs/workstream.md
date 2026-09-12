@@ -9,7 +9,10 @@ can explain an earlier recorded plan without changing either log. Owned slices a
 captured Provider probes already use the common scheduler and ledger. Automatic Integration
 passes the full local gate at `6fe82f0` (frozen `d2df0ec`, tree `a53e534f`): **1,044 tests,
 zero failures, 15 ignored**, formatting, Clippy, documentation and byte-identical fixtures.
-Its CI and legacy CLI cutover remain in progress.
+Published `f453da1` passes Check and container-probes in CI `34711466871`. The common Review
+CLI and Provider doctor cutover is implemented and under full validation. Actual CLI fixtures
+cover charged probe reuse, original Task resources across Rounds and SIGKILL recovery after
+the original lease expires. See [ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md).
 The debug-profile correction `97bb1c7` passes the same full gate. It addresses the earlier
 CI recovery deadline failure without changing Task limits; published `2cae97c` passes both
 checks in CI `34708574515`.
@@ -20,10 +23,10 @@ The shared Review operations and Round-fencing checkpoint passes the complete lo
 **839 tests, zero failures, 15 ignored**, documentation tests and byte-identical frozen
 reproduction at `9a81fbe` (stacked as `5b1461e`). It shares canonical operations and recovers
 input publication before context capture. The preceding captured frontend passes CI at
-`50e9e29`. The legacy CLI execution cutover, external PR reviews, remaining conformance and
+`50e9e29`. Full CLI cutover validation, external PR reviews, remaining conformance and
 P14 pilot/release evidence are still required. The [three-PR checkpoint record](task-execution/pr-sequence.md)
 retains implementation and verification details; [Review compatibility](task-execution/review-compatibility.md)
-records the outstanding domain/runtime connections. The completed M0–M9 record below remains
+records the versioned domain/runtime connections. The completed M0–M9 record below remains
 the compatibility foundation.
 
 **Status:** M0–M9 are complete and shipped in private release `v0.6.0` from exact `main` commit

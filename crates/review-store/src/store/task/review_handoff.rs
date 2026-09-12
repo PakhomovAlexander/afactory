@@ -123,7 +123,7 @@ fn round(
     payload(cas, id, LEGACY_REVIEW_ROUND_V1)
 }
 
-fn validate_revisions(
+pub(super) fn validate_revisions(
     cas: &Cas,
     value: &TaskReviewHandoffV1,
 ) -> Result<

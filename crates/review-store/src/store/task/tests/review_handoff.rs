@@ -6,7 +6,7 @@ use review_core::task::review_compat::*;
 use review_core::task::review_handoff::*;
 use review_graph::task::CompiledTask;
 
-struct HandoffAuthority<'a>(&'a Authority);
+pub(super) struct HandoffAuthority<'a>(pub(super) &'a Authority);
 impl TaskAuthority for HandoffAuthority<'_> {
     fn validate_plan(
         &self,

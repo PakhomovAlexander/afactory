@@ -740,3 +740,30 @@ The same tree includes the previously token-free validated WholeTree review poli
 selector. CI remains required for this checkpoint. The next CLI capture/resume/publication and
 presentation changes are excluded from this frozen tree. No requested specialist reviewer or
 live-model pilot has run, and consumer release migration remains pending.
+
+## 2026-09-12 common installed Review CLI checkpoint
+
+The published Integration checkpoint `f453da1cb2edb6b828b100f15cc4544f0b17a2fe` passes Check
+and container-probes in CI `34711466871`. The following installed CLI slice is implemented
+and under full validation. New Review and Provider doctor commands capture or restore one
+Task with original limits, deadline, Round authority and model bindings. Historical paid
+Campaigns retain their versioned path; absent common state cannot create a free fallback.
+
+Actual CLI coverage checks canonical Findings, Demands, disposition and source-epoch behavior;
+strict outcome@2 and doctor@2 schemas; a paid synthetic native probe reused by subsequent
+Review; and no premature business report from doctor. The real SIGKILL regression waits for
+the original lease expiry, retains the completed Gate and exact original Task/plan/resources,
+conservatively recovers the interrupted reservation and permits only the bounded reviewer retry.
+Two-Round report/ledger inspection keeps both event logs unchanged and derives timing without
+adding cumulative report snapshots. Delayed successor preparation stays under heartbeat and
+revalidates the exact prospective history plus original remaining allowance before publication.
+
+These are command and synthetic transport fixtures, with zero live model calls. Existing
+external review caps are unchanged. Previously uncapped new Review work receives the explicit
+300,000-token Attempt fallback captured by the installed policy once; resume never resets it.
+[ADR-0084](../adr/0084-route-new-review-commands-through-the-common-task.md) records the cutover.
+The same checkpoint makes Task-file and local Jira binding reads nonblocking, checks the
+opened object is a regular file, and retains original byte bounds and explicit regular-file
+symlink behavior. Bounded subprocess controls reject FIFOs without a writer.
+Full-gate tree identity and results will follow after validation. Specialist review, outstanding
+native conformance, the unfrozen pilot and supported consumer release migration remain open.

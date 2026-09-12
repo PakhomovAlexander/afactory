@@ -32,7 +32,13 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 140] = [
+const SCHEMAS: [&str; 146] = [
+    "provider-doctor-v2.json",
+    "review-outcome-v2.json",
+    "task-context-v1.json",
+    "task-builtin-context-v1.json",
+    "task-provider-context-v1.json",
+    "document-context-v1.json",
     "task-inspection-v7.json",
     "task-plan-inspection-v1.json",
     "task-inspection-v6.json",
@@ -2874,5 +2880,13 @@ mod task_review_handoff;
 #[path = "schema_parity/task_review_inspection.rs"]
 mod task_review_inspection;
 
+#[path = "schema_parity/task_contexts.rs"]
+mod task_contexts;
 #[path = "schema_parity/task_review_integration.rs"]
 mod task_review_integration;
+
+#[path = "schema_parity/review_outcome.rs"]
+mod review_outcome;
+
+#[path = "schema_parity/provider_doctor.rs"]
+mod provider_doctor;

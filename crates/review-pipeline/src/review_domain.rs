@@ -5,6 +5,7 @@
 use super::*;
 
 pub(crate) mod integration;
+mod presentation;
 mod report;
 
 fn gate_remaining(

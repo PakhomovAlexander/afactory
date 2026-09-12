@@ -35,16 +35,7 @@ struct JiraBinding {
 }
 
 fn read_bounded(path: &Path, max: u64) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .map_err(|_| "Cannot open local source binding input")?
-        .take(max + 1)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "Cannot read local source binding input")?;
-    if bytes.len() as u64 > max {
-        return Err("Local source binding input exceeds its byte bound".into());
-    }
-    Ok(bytes)
+    super::input_file::read(path, max)
 }
 
 pub(super) struct CapturedIssue {

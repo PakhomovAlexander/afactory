@@ -19,6 +19,9 @@ use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, NewEvent, 
 
 use crate::{CampaignMode, Options, campaign_run_id};
 
+mod task_round;
+pub(crate) use task_round::{prepare_next_round, prepare_recorded_round};
+
 pub(super) fn requested_git_timeout(configured: Option<Duration>) -> Duration {
     configured.unwrap_or(Duration::from_secs(
         review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS,
@@ -1611,156 +1614,12 @@ fn capture_round(
     } else {
         Vec::new()
     };
-    let capture = Capture::new(repo, cas);
-    let candidate_ref = options.candidate.as_deref().unwrap_or("HEAD");
-    let mut snapshot = if options.uncommitted {
-        capture
-            .dirty()
-            .map_err(|error| format!("capturing revalidated worktree: {error}"))?
-    } else {
-        capture
-            .committed(candidate_ref)
-            .map_err(|error| format!("capturing candidate `{candidate_ref}`: {error}"))?
-    };
-    let authority_snapshot: SourceSnapshot = serde_json::from_value(
-        cas.get_json(&campaign.manifest.authority_snapshot_id)
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    if snapshot.repository_id != authority_snapshot.repository_id {
-        return Err(
-            "candidate HEAD belongs to a different repository than the Campaign authority".into(),
-        );
-    }
-    let base_snapshot = if campaign.loaded.subject_kind() == SubjectKind::Diff {
-        Some(
-            serde_json::from_value::<SourceSnapshot>(
-                cas.get_json(
-                    campaign
-                        .manifest
-                        .base_snapshot_id
-                        .as_deref()
-                        .ok_or("diff Campaign has no pinned Base Snapshot")?,
-                )
-                .map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string())?,
-        )
-    } else {
-        None
-    };
-    if let Some(base_snapshot) = &base_snapshot
-        && snapshot.submodules != base_snapshot.submodules
-    {
-        let mut paths: Vec<String> = snapshot
-            .submodules
-            .iter()
-            .chain(&base_snapshot.submodules)
-            .map(|submodule| submodule.path.clone())
-            .collect();
-        paths.sort();
-        paths.dedup();
-        return Err(format!(
-            "diff capture refuses changed gitlinks until submodule sandbox policy is explicit: {}",
-            paths.join(", ")
-        ));
-    }
-    let tree_diff = if campaign.loaded.subject_kind() == SubjectKind::Diff {
-        let base_snapshot = base_snapshot.as_ref().expect("diff Base was loaded");
-        let base_manifest_id = base_snapshot
-            .artifact_manifest
-            .as_deref()
-            .ok_or("Campaign Base Snapshot has no artifact manifest")?;
-        let base_manifest: Manifest = serde_json::from_value(
-            cas.get_json(base_manifest_id)
-                .map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        let base_tree = capture
-            .rehydrate_committed(base_snapshot, &base_manifest)
-            .map_err(|error| format!("rehydrating pinned Base: {error}"))?;
-        if snapshot.dirty {
-            let (head_tree, diff) = repo
-                .tree_diff_synthetic_head(&base_tree, &snapshot.manifest, cas)
-                .map_err(|error| error.to_string())?;
-            snapshot.tree_id = Some(head_tree);
-            Some(diff)
-        } else {
-            Some(
-                repo.tree_diff(
-                    &base_tree,
-                    snapshot
-                        .tree_id
-                        .as_ref()
-                        .ok_or("committed head has no tree authority")?,
-                )
-                .map_err(|error| error.to_string())?,
-            )
-        }
-    } else {
-        if snapshot.dirty {
-            snapshot.tree_id = Some(
-                repo.synthetic_tree(&snapshot.manifest, cas)
-                    .map_err(|error| error.to_string())?,
-            );
-        }
-        None
-    };
-    if tree_diff
-        .as_ref()
-        .is_some_and(|diff| diff.changes.is_empty())
-    {
-        return Err(
-            "refusing empty Diff before Gates, Provider admission, or Worker dispatch; select a different Base/candidate or a whole-tree pipeline"
-                .into(),
-        );
-    }
-    match &tree_diff {
-        Some(diff) => super::run_progress(
-            options,
-            format_args!(
-                "subject   Diff ({} changed records, {} patch bytes)",
-                diff.changes.len(),
-                diff.patch().len()
-            ),
-        ),
-        None => super::run_progress(options, format_args!("subject   WholeTree")),
-    }
-    let (head_snapshot_id, manifest_id) = publish_snapshot(&snapshot, cas)?;
-    let change_set_id = match tree_diff {
-        Some(diff) => {
-            // Base64 alone expands every three raw bytes to four encoded bytes. Refuse before
-            // building path arrays, base64, serde Values, and canonical JSON when the patch
-            // already cannot fit the authoritative encoded Change Set bound below.
-            let raw_patch_limit = maximum_raw_patch_bytes();
-            if raw_patch_exceeds_change_set_bound(diff.patch().len()) {
-                return Err(format!(
-                    "exact Change Set patch is {} raw bytes; maximum encodable patch is {} raw bytes and partitioning is required",
-                    diff.patch().len(),
-                    raw_patch_limit
-                ));
-            }
-            let base_snapshot_id = campaign
-                .manifest
-                .base_snapshot_id
-                .as_deref()
-                .ok_or("diff Campaign has no pinned Base Snapshot")?;
-            let change_set = diff.change_set(base_snapshot_id, &head_snapshot_id)?;
-            let value = serde_json::to_value(&change_set).map_err(|error| error.to_string())?;
-            review_core::json::admit(&value).map_err(|error| error.to_string())?;
-            let encoded =
-                review_store::canonical::canonicalize(&value).map_err(|error| error.to_string())?;
-            if encoded.len() > MAX_CHANGE_SET_BYTES {
-                return Err(format!(
-                    "exact Change Set is {} bytes; maximum is {} bytes and partitioning is required",
-                    encoded.len(),
-                    MAX_CHANGE_SET_BYTES
-                ));
-            }
-            Some(cas.put(&encoded).map_err(|error| error.to_string())?)
-        }
-        None => None,
-    };
+    let task_round::CapturedRoundSource {
+        snapshot,
+        head_snapshot_id,
+        manifest_id,
+        change_set_id,
+    } = task_round::capture_source(options, cas, repo, campaign)?;
     let mut source_refs = vec![
         campaign.manifest.authority_snapshot_id.clone(),
         campaign.manifest_id.clone(),
@@ -1980,6 +1839,26 @@ fn load_round(
     repository_id: &str,
     ledger_projection: LedgerProjection,
 ) -> Result<RoundInput, String> {
+    let prior_subject_id = payload.subject_id.clone();
+    load_round_with_prior_subject(
+        options,
+        cas,
+        event_id,
+        payload,
+        (repository_id, &prior_subject_id),
+        ledger_projection,
+    )
+}
+
+fn load_round_with_prior_subject(
+    options: &Options,
+    cas: &Cas,
+    event_id: String,
+    payload: RoundStartedPayloadV1,
+    source_authority: (&str, &str),
+    ledger_projection: LedgerProjection,
+) -> Result<RoundInput, String> {
+    let (repository_id, prior_subject_id) = source_authority;
     payload.validate()?;
     let subject: SubjectV1 = serde_json::from_value(
         cas.get_json(&payload.subject_id)
@@ -2027,14 +1906,14 @@ fn load_round(
     let prior_count = validate_round_set(
         cas,
         &payload.prior_finding_set_id,
-        &payload.subject_id,
+        prior_subject_id,
         payload.round,
         "prior_findings",
     )?;
     validate_round_set(
         cas,
         &payload.prior_demand_set_id,
-        &payload.subject_id,
+        prior_subject_id,
         payload.round,
         "demands",
     )?;

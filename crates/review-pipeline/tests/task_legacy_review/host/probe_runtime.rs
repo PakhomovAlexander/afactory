@@ -124,6 +124,15 @@ impl Connector for LocalConnector {
 
 #[test]
 fn provider_probe_and_worker_use_separate_captured_brokers_in_one_common_runtime() {
+    check_probe_and_worker(false);
+}
+
+#[test]
+fn brokered_provider_only_execution_retains_paid_refusals_and_overruns_before_review() {
+    check_probe_and_worker(true);
+}
+
+fn check_probe_and_worker(provider_only: bool) {
     for (installed, accepted, overrun) in [
         (true, true, false),
         (true, false, false),
@@ -228,6 +237,54 @@ fn provider_probe_and_worker_use_separate_captured_brokers_in_one_common_runtime
             runtime
         };
         let complete = installed && accepted && !overrun;
+        if provider_only {
+            let doctor = runtime.execute_provider_admissions().unwrap();
+            assert_eq!(doctor.ready(), complete, "{doctor:?}");
+            assert_eq!(doctor.outcomes.len(), 1);
+            assert_eq!(doctor.outcomes[0].0, provider_node);
+            let projection = runtime.projection().unwrap();
+            assert!(projection.run_reports.is_empty());
+            let execution = projection.execution.unwrap();
+            assert_eq!(
+                execution.invocations.len(),
+                1,
+                "doctor did not dispatch Gates or Workers"
+            );
+            assert_eq!(execution.budget.begun_attempts(), 1);
+            assert_eq!(
+                execution.budget.committed_tokens(),
+                if overrun {
+                    u128::from(u64::MAX)
+                } else if installed {
+                    3
+                } else {
+                    0
+                }
+            );
+            assert_eq!(model.calls.load(Ordering::SeqCst), usize::from(installed));
+            assert_eq!(
+                calls.lock().unwrap().as_slice(),
+                if installed { &[true][..] } else { &[][..] }
+            );
+            assert!(host.selected_attempt_evidence().unwrap().is_empty());
+        }
+        // A fresh runtime has no in-memory pending output or prepared Attempt state.
+        drop(runtime);
+        let runtime = TaskRuntime::with_store(
+            shared.clone(),
+            &cas,
+            captured.lease.clone(),
+            &authority,
+            &host,
+        )
+        .unwrap()
+        .with_broker_provider(slot, &worker)
+        .unwrap();
+        let runtime = if installed {
+            runtime.with_broker_probe(&provider_node, &probe).unwrap()
+        } else {
+            runtime
+        };
         let report = runtime.execute().unwrap();
         if report.complete() != complete {
             let projection = runtime.projection().unwrap();

@@ -742,6 +742,41 @@ fn task_sidecar_uses_decimal_usage_and_captured_round_authority() {
 }
 
 #[test]
+fn common_and_legacy_wall_intervals_merge_without_counting_overlaps_twice() {
+    let legacy = AttemptWall {
+        run_id: "campaign".into(),
+        attempt_id: "legacy".into(),
+        node_id: "reviewer".into(),
+        round: 1,
+        epoch: 1,
+        started_unix_ms: 100,
+        elapsed_ms: 40,
+        usage: None,
+    };
+    let common = TaskAttemptWall {
+        run_id: "task".into(),
+        attempt_id: "common".into(),
+        node_id: "root.reviewer".into(),
+        round: 1,
+        epoch: 1,
+        started_unix_ms: 120,
+        elapsed_ms: 50,
+        usage: None,
+    };
+    let mut report = TaskAccountingReport {
+        tasks: vec![],
+        wall_rows: vec![common.clone()],
+        rounds: BTreeSet::new(),
+    };
+    assert_eq!(report.wall_ms(std::slice::from_ref(&legacy)), Some(70));
+    let mut restarted = common;
+    restarted.epoch = 2;
+    restarted.started_unix_ms = 1000;
+    report.wall_rows.push(restarted);
+    assert_eq!(report.wall_ms(&[legacy]), Some(120));
+}
+
+#[test]
 fn legacy_only_report_view_keeps_its_numeric_shape() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();

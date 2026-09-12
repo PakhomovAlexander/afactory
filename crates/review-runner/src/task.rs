@@ -67,6 +67,56 @@ pub struct TaskContext {
     pub manifest: ContextManifest,
 }
 
+impl TaskContext {
+    /// Structural checks for the existing captured payload. The installed host separately
+    /// rederives exact inputs, instructions, contracts and feedback before context admission.
+    pub fn validate(&self) -> Result<(), String> {
+        self.invocation.validate()?;
+        if !review_core::is_digest(&self.rendered_id)
+            || !review_core::is_digest(&self.contract_id)
+            || self.feedback_ids.len() > 16
+            || self
+                .feedback_ids
+                .iter()
+                .any(|id| !review_core::is_digest(id))
+            || self
+                .feedback_ids
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.feedback_ids.len()
+        {
+            return Err("Task context needs exact identities and bounded distinct feedback".into());
+        }
+        let safe = review_core::json::SAFE_INTEGER_MAX as u64;
+        if self.manifest.entries.len() < 3
+            || self.manifest.rendered_bytes > MAX_WORKER_BYTES as u64
+            || self.manifest.estimated_tokens != self.manifest.rendered_bytes.div_ceil(4)
+            || self.manifest.entries.iter().any(|entry| {
+                entry.name.is_empty()
+                    || entry.required_by.is_empty()
+                    || entry
+                        .artifact_id
+                        .as_deref()
+                        .is_some_and(|id| !review_core::is_digest(id))
+                    || entry.artifact_type.as_deref().is_some_and(|ty| {
+                        !review_core::is_artifact_type(ty)
+                            && !matches!(ty, "af/implement-input@1" | "af/evaluate-input@1")
+                    })
+                    || entry.rendered_bytes > safe
+                    || entry.estimated_tokens > safe
+                    || entry.estimated_tokens != entry.rendered_bytes.div_ceil(4)
+            })
+        {
+            return Err(
+                "Task context manifest exceeds captured counter bounds or changes its estimate"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
+}
+
 pub struct WorkerContract {
     id: String,
     input_schema: Value,
@@ -289,6 +339,7 @@ impl WorkerContract {
             contract_id: self.id.clone(),
             manifest,
         };
+        context.validate()?;
         let refs = invocation
             .inputs
             .values()
@@ -323,6 +374,7 @@ impl WorkerContract {
         }
         let context: TaskContext =
             serde_json::from_value(envelope.payload).map_err(|e| e.to_string())?;
+        context.validate()?;
         if context.contract_id != self.id {
             return Err("Worker context uses another contract".into());
         }

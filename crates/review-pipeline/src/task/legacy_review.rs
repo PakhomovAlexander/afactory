@@ -50,6 +50,22 @@ impl CapturedLegacyReviewRound {
         })
     }
 
+    /// Reconstruct compiler data from Store-validated prospective history. No event has
+    /// landed yet, so normal `check_current` still refuses execution against this Round.
+    pub fn from_prospective(
+        cas: &Cas,
+        preview: &review_store::store::task::review_round_publication::TaskReviewRoundPreview,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            authority: RoundAuthority::from_history(
+                cas,
+                preview.permit().campaign_id(),
+                preview.round_event().clone(),
+                preview.history(),
+            )?,
+        })
+    }
+
     pub fn authority(&self) -> &RoundAuthority {
         &self.authority
     }

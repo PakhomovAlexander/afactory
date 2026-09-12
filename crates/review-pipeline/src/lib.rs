@@ -379,12 +379,24 @@ impl RoundAuthority {
         run_id: &str,
         round: review_core::RunEvent,
     ) -> Result<Self, String> {
-        let opened = store
-            .campaign_opened(run_id)
-            .map_err(|error| error.to_string())?
+        let events = store.replay(run_id).map_err(|error| error.to_string())?;
+        Self::from_history(cas, run_id, round, &events)
+    }
+
+    // Shared pure reconstruction. Prospective callers must hold Store's opaque validated
+    // history preview; this function never grants live Round currentness.
+    pub(crate) fn from_history(
+        cas: &Cas,
+        run_id: &str,
+        round: review_core::RunEvent,
+        events: &[review_core::RunEvent],
+    ) -> Result<Self, String> {
+        let opened = events
+            .iter()
+            .find(|e| e.event_type == EventType::CampaignOpenedV1)
             .ok_or("Round authority has no CampaignOpened@1")?;
         let opened: CampaignOpenedPayloadV1 =
-            serde_json::from_value(opened.payload).map_err(|error| error.to_string())?;
+            serde_json::from_value(opened.payload.clone()).map_err(|error| error.to_string())?;
         let payload: RoundStartedPayloadV1 =
             serde_json::from_value(round.payload.clone()).map_err(|error| error.to_string())?;
         if payload.campaign_manifest_id != opened.campaign_manifest_id {
@@ -399,10 +411,9 @@ impl RoundAuthority {
         let prior_reduction_finding_set_id = if campaign_manifest.finding_identity_policy
             == review_core::CANONICAL_FINDING_IDENTITY_POLICY
         {
-            canonical_prior_finding_set_id(
-                store,
+            canonical_prior_finding_set_id_from_events(
                 cas,
-                run_id,
+                events,
                 round.sequence,
                 payload.round,
                 &opened.campaign_manifest_id,
@@ -521,26 +532,6 @@ impl RoundAuthority {
         ];
         refs
     }
-}
-
-fn canonical_prior_finding_set_id(
-    store: &EventStore,
-    cas: &Cas,
-    run_id: &str,
-    round_sequence: u64,
-    round: u32,
-    campaign_manifest_id: &str,
-    campaign: &CampaignManifestV1,
-) -> Result<String, String> {
-    let events = store.replay(run_id).map_err(|error| error.to_string())?;
-    canonical_prior_finding_set_id_from_events(
-        cas,
-        &events,
-        round_sequence,
-        round,
-        campaign_manifest_id,
-        campaign,
-    )
 }
 
 fn canonical_prior_finding_set_id_from_events(
@@ -1650,63 +1641,7 @@ impl<'a> Kernel<'a> {
     /// Selected Attempt evidence for this exact Round epoch, loaded from the durable provenance
     /// artifacts referenced by `AttemptAdmitted@1`.
     pub fn selected_attempt_evidence(&self) -> Result<Vec<AttemptEvidence>, String> {
-        let events = self
-            .domain
-            .store
-            .lock()
-            .expect("event store")
-            .replay(&self.domain.run_id)
-            .map_err(|error| error.to_string())?;
-        let mut evidence = Vec::new();
-        for event in events.into_iter().filter(|event| {
-            event.event_type == EventType::AttemptAdmittedV1
-                && event.causation_id.as_deref()
-                    == Some(self.domain.authority.round_event_id.as_str())
-        }) {
-            let payload: AttemptAdmittedPayloadV1 =
-                serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
-            if payload.selection != "selected" {
-                continue;
-            }
-            let node = event.node_id.ok_or("selected Attempt has no node ID")?;
-            let attempt_id = event
-                .attempt_id
-                .ok_or("selected Attempt has no Attempt ID")?;
-            let provenance_id = payload
-                .provenance_artifact
-                .ok_or("selected Attempt has no provenance artifact")?;
-            let provenance = self
-                .domain
-                .cas
-                .get_json(&provenance_id)
-                .map_err(|error| error.to_string())?;
-            if provenance["node"].as_str() != Some(node.as_str())
-                || provenance["attempt"].as_str() != Some(attempt_id.as_str())
-                || provenance["cost_tokens"].as_u64() != Some(payload.cost_tokens)
-            {
-                return Err("selected Attempt provenance contradicts its admission event".into());
-            }
-            evidence.push(AttemptEvidence {
-                node,
-                attempt_id,
-                cost_tokens: payload.cost_tokens,
-                usage: serde_json::from_value(provenance["usage"].clone())
-                    .map_err(|error| error.to_string())?,
-                context_manifest: serde_json::from_value(provenance["context_manifest"].clone())
-                    .map_err(|error| error.to_string())?,
-                raw_artifact: provenance["raw"]
-                    .as_str()
-                    .ok_or("selected Attempt provenance has no raw artifact")?
-                    .to_string(),
-                result_artifact: payload
-                    .result_artifact
-                    .ok_or("selected Attempt has no result artifact")?,
-            });
-        }
-        evidence.sort_by(|left, right| {
-            (&left.node, &left.attempt_id).cmp(&(&right.node, &right.attempt_id))
-        });
-        Ok(evidence)
+        self.domain.selected_attempt_evidence()
     }
 
     pub fn gate_decision(&self, node_id: &str) -> Option<GateDecision> {

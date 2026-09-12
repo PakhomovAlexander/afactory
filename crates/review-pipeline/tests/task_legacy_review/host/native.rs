@@ -141,6 +141,15 @@ fn admitted_plan_with_provider(
 
 #[test]
 fn packaged_review_uses_one_captured_provider_binding_for_admission_and_business_work() {
+    check_native_provider_reuse(false);
+}
+
+#[test]
+fn native_provider_only_execution_reuses_original_attempts_before_full_review() {
+    check_native_provider_reuse(true);
+}
+
+fn check_native_provider_reuse(provider_only: bool) {
     for (provider_kind, admitted, retry, wide) in [
         ("claude", true, false, false),
         ("claude", true, true, false),
@@ -161,7 +170,7 @@ fn packaged_review_uses_one_captured_provider_binding_for_admission_and_business
             wide,
         };
         let shared = SharedEventStore::new(&mut store);
-        for _ in 0..2 {
+        for pass in 0..if provider_only { 4 } else { 2 } {
             let models = plan
                 .bindings
                 .iter()
@@ -183,6 +192,48 @@ fn packaged_review_uses_one_captured_provider_binding_for_admission_and_business
             let runtime =
                 TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host)
                     .unwrap();
+            if provider_only && pass < 2 {
+                let doctor = runtime.execute_provider_admissions().unwrap();
+                assert_eq!(doctor.ready(), admitted, "{doctor:?}");
+                assert_eq!(doctor.outcomes.len(), 1);
+                let projection = runtime.projection().unwrap();
+                assert!(
+                    projection.run_reports.is_empty(),
+                    "doctor is not a graph report"
+                );
+                let execution = projection.execution.unwrap();
+                assert_eq!(
+                    execution.invocations.len(),
+                    1,
+                    "no Gates, roots or Workers ran"
+                );
+                let node = &doctor.outcomes[0].0;
+                assert!(execution.invocations.contains_key(node));
+                assert_eq!(execution.budget.committed_tokens(), 1);
+                assert_eq!(execution.budget.begun_attempts(), 1);
+                assert_eq!(execution.attempt_accounting()[0].reservation.node, *node);
+                assert_eq!(
+                    model.calls.load(Ordering::SeqCst),
+                    1,
+                    "failed and selected probes retain the original cap"
+                );
+                assert!(host.selected_attempt_evidence().unwrap().is_empty());
+                assert!(
+                    !shared
+                        .lock()
+                        .unwrap()
+                        .replay("review")
+                        .unwrap()
+                        .iter()
+                        .any(|e| matches!(
+                            e.event_type,
+                            EventType::AttemptDispatchedV1
+                                | EventType::AttemptAdmittedV1
+                                | EventType::RunReportV6
+                        ))
+                );
+                continue; // Drop and reconstruct the host/runtime from the same durable Task.
+            }
             let report = runtime.execute().unwrap();
             assert_eq!(report.complete(), admitted, "{report:?}");
             let execution = runtime.projection().unwrap().execution.unwrap();
@@ -206,9 +257,24 @@ fn packaged_review_uses_one_captured_provider_binding_for_admission_and_business
                     .get_artifact(provenance.usage_id.as_ref().unwrap())
                     .unwrap();
                 assert_eq!(usage.payload["chargeable_tokens"], "11");
+                let evidence = host.selected_attempt_evidence().unwrap();
+                assert_eq!(
+                    evidence.len(),
+                    1,
+                    "Provider admission and retry failures are not selected Review evidence"
+                );
+                assert_eq!(evidence[0].node, "reviewer");
+                assert_eq!(evidence[0].attempt_id, provenance.attempt_id);
+                assert_eq!(evidence[0].cost_tokens, 11);
+                assert_eq!(evidence[0].usage.chargeable_tokens, 11);
+                assert_eq!(evidence[0].raw_artifact, provenance.raw_artifact_id);
+                assert_eq!(evidence[0].result_artifact, provenance.result_artifact_id);
                 if wide {
                     assert_eq!(usage.payload["input_tokens"], u64::MAX.to_string());
+                    assert_eq!(evidence[0].usage.input_tokens, Some(u64::MAX));
                 }
+            } else {
+                assert!(host.selected_attempt_evidence().unwrap().is_empty());
             }
             assert_eq!(
                 execution.budget.committed_tokens(),
@@ -564,4 +630,108 @@ fn review_report_binds_wide_task_charge_and_freezes_its_accounting_prefix() {
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].payload, conclusion.payload);
     assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+}
+
+#[test]
+fn late_provider_usage_after_doctor_blocks_business_without_reprobing() {
+    use review_core::task::execution::TaskExecutionRecordV1;
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let path = directory.path().join("events.sqlite");
+    let mut store = EventStore::open(&path).unwrap();
+    let (compiler, lease, plan) = admitted_plan(&cas, &mut store, "trusted_unsafe");
+    let model = Model {
+        provider_kind: "claude",
+        calls: AtomicUsize::new(0),
+        admitted: true,
+        retry: false,
+        wide: false,
+    };
+    let models = || {
+        plan.bindings
+            .iter()
+            .map(|(slot, binding)| {
+                (
+                    slot.clone(),
+                    TaskModelBinding {
+                        binding: binding.clone(),
+                        adapter: &model as &dyn WorkerModelAdapter,
+                    },
+                )
+            })
+            .collect()
+    };
+    let (attempt_id, selected) = {
+        let shared = SharedEventStore::new(&mut store);
+        let host =
+            LegacyReviewTaskHost::new(&cas, shared.clone(), &compiler, lease.clone(), models())
+                .unwrap();
+        let authority =
+            CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+        let runtime =
+            TaskRuntime::with_store(shared, &cas, lease.clone(), &authority, &host).unwrap();
+        assert!(runtime.execute_provider_admissions().unwrap().ready());
+        let state = runtime.projection().unwrap();
+        assert!(state.run_reports.is_empty());
+        let execution = state.execution.unwrap();
+        assert_eq!(execution.budget.begun_attempts(), 1);
+        (
+            execution.attempt_accounting()[0].attempt_id.clone(),
+            execution.outputs,
+        )
+    };
+    let usage = review_core::task::usage::TaskTokenUsageV1 {
+        chargeable_tokens: u64::MAX.into(),
+        ..Default::default()
+    };
+    let usage_id = cas
+        .put_artifact(
+            review_core::task::usage::TASK_TOKEN_USAGE_V1,
+            review_core::Producer::KernelOperation {
+                run_id: review_store::store::task::task_run_id(lease.task_id()).unwrap(),
+                node_id: None,
+                operation_id: "late-provider-usage@1".into(),
+            },
+            vec![],
+            None,
+            serde_json::to_value(usage).unwrap(),
+        )
+        .unwrap()
+        .0;
+    store
+        .observe_task_usage(
+            &cas,
+            &lease,
+            TaskExecutionRecordV1::UsageObserved {
+                attempt_id,
+                charged_tokens: u128::from(u64::MAX),
+                usage_id,
+                raw_artifact_ids: vec![],
+            },
+        )
+        .unwrap();
+    drop(store);
+    let mut store = EventStore::open(&path).unwrap();
+    let shared = SharedEventStore::new(&mut store);
+    let host = LegacyReviewTaskHost::new(&cas, shared.clone(), &compiler, lease.clone(), models())
+        .unwrap();
+    let authority = CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+    let runtime = TaskRuntime::with_store(shared, &cas, lease, &authority, &host).unwrap();
+    assert!(
+        runtime.execute_provider_admissions().unwrap().ready(),
+        "the selected capability receipt is immutable"
+    );
+    assert!(
+        !runtime.execute().unwrap().complete(),
+        "late usage must block business dispatch"
+    );
+    let execution = runtime.projection().unwrap().execution.unwrap();
+    for (node, output) in selected {
+        assert_eq!(execution.outputs.get(&node), Some(&output));
+    }
+    assert!(host.selected_attempt_evidence().unwrap().is_empty());
+    assert_eq!(execution.budget.committed_tokens(), u128::from(u64::MAX));
+    assert_eq!(execution.budget.begun_attempts(), 1);
+    assert!(execution.budget.breached());
+    assert_eq!(model.calls.load(Ordering::SeqCst), 1);
 }

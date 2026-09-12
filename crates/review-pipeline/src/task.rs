@@ -11,6 +11,8 @@ pub mod legacy_review;
 mod owned;
 pub mod planning;
 pub mod provider;
+mod provider_admissions;
+pub use provider_admissions::TaskProviderAdmissionReport;
 mod report;
 pub mod review;
 pub mod source;

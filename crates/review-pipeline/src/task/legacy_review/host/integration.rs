@@ -111,10 +111,6 @@ impl LegacyReviewTaskHost<'_, '_> {
         if self.captured.compilation.graph.review_integration.is_none() {
             return Ok(None);
         }
-        let conclusion = self.publish_recorded_round_conclusion(cas)?;
-        if conclusion.verdict != crate::RunVerdict::Pass || conclusion.resources_failed {
-            return Ok(None);
-        }
         let existing = self
             .domain
             .store
@@ -136,6 +132,12 @@ impl LegacyReviewTaskHost<'_, '_> {
                 )
                 .map_err(|e| e.to_string())?;
             return Ok(Some(existing));
+        }
+        // Existing activation remains factual recovery work after late resource loss. Only
+        // creating a new phase requires a passing, resource-current Round conclusion.
+        let conclusion = self.publish_recorded_round_conclusion(cas)?;
+        if conclusion.verdict != crate::RunVerdict::Pass || conclusion.resources_failed {
+            return Ok(None);
         }
         let policy = self
             .captured

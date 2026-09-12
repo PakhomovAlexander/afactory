@@ -118,8 +118,28 @@ fn prepared_integration_reuses_one_common_attempt_and_replays_its_exact_phase_re
             .into_iter()
             .find(|e| e.event_id == conclusion.canonical_report_event_id)
             .unwrap();
+        let error = shared
+            .lock()
+            .unwrap()
+            .prepare_task_review_round_publication(&cas, &lease, &authority)
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("unresolved captured Integration"),
+            "{error}"
+        );
         let phase = host.select_recorded_integration(&cas).unwrap().unwrap();
         assert!(phase.requires_checks(), "{:?}", phase.phase());
+        let error = shared
+            .lock()
+            .unwrap()
+            .prepare_task_review_round_publication(&cas, &lease, &authority)
+            .unwrap_err();
+        assert!(
+            error.to_string().contains("Integration is unfinished"),
+            "{error}"
+        );
         assert!(
             TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host)
                 .is_err(),
@@ -226,6 +246,27 @@ fn prepared_integration_reuses_one_common_attempt_and_replays_its_exact_phase_re
         .unwrap();
         let reopened_authority =
             CapturedTaskAuthority::for_legacy_review(&compiler, &reopened, &NoTaskDeveloper);
+        let publication = shared
+            .lock()
+            .unwrap()
+            .prepare_task_review_round_publication(&cas, &lease, &reopened_authority);
+        if failed {
+            assert!(
+                publication
+                    .unwrap_err()
+                    .to_string()
+                    .contains("no authorized successor")
+            );
+        } else {
+            let publication = publication.unwrap();
+            assert_eq!(publication.next_round(), 2);
+            assert_eq!(publication.next_epoch(), 1);
+            assert!(!publication.is_restart());
+            assert_eq!(
+                publication.integrated().map(|(id, _)| id),
+                phase.integration_committed_event_id()
+            );
+        }
         let replay = TaskRuntime::with_review_integration(
             shared.clone(),
             &cas,
@@ -360,6 +401,21 @@ fn late_usage_before_checks_retains_a_failed_phase_without_dispatch_or_false_acc
             },
         )
         .unwrap();
+    // A fresh CLI host must recover the already selected phase after late resource loss;
+    // creating a new phase would still require the original passing/resource-current fence.
+    let host = LegacyReviewTaskHost::new(
+        &cas,
+        shared.clone(),
+        &compiler,
+        lease.clone(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let recovered = host.select_recorded_integration(&cas).unwrap().unwrap();
+    assert_eq!(recovered.phase_id(), phase.phase_id());
+    assert_eq!(recovered.phase(), phase.phase());
+    let phase = recovered;
+    let authority = CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
     let runtime = TaskRuntime::with_review_integration(
         shared.clone(),
         &cas,
@@ -811,4 +867,9 @@ fn a_final_check_that_could_not_run_remains_incomplete_with_its_raw_evidence() {
     );
     let id = plan::artifact(&cas, review_core::task::TASK_RESULT_V1, &result);
     runtime.finish(&id).unwrap();
+}
+
+#[test]
+fn delayed_prospective_review_preparation_renews_lease_and_refreshes_only_the_task_prefix() {
+    fixture::run_integration_handoff_with_preparation_delay(std::time::Duration::from_secs(16));
 }

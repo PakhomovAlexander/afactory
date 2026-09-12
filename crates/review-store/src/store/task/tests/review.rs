@@ -86,6 +86,15 @@ fn canonical_context_for_contract(
     attempt: &str,
     contract: &str,
 ) -> TaskReviewContextV1 {
+    canonical_context_with_source(f, invocation, attempt, contract, false)
+}
+pub(in crate::store::task::tests) fn canonical_context_with_source(
+    f: &mut Fixture,
+    invocation: &str,
+    attempt: &str,
+    contract: &str,
+    real_source: bool,
+) -> TaskReviewContextV1 {
     let definition = r#"version = 2
 [subject]
 kind = "whole-tree"
@@ -101,8 +110,31 @@ runner = { program = "/bin/true" }
         definition.replace(review_core::contract::REVIEWER_RESULT_V1, contract)
     };
     let pipeline = f.cas.put(definition.as_bytes()).unwrap();
-    let authority = f.cas.put(b"review authority").unwrap();
-    let head = f.cas.put(b"review head").unwrap();
+    let (authority, head) = if real_source {
+        let manifest = f.cas.put_json(&json!({"entries":[]})).unwrap();
+        let source = review_core::SourceSnapshot {
+            repository_id: "review-source-fixture".into(),
+            vcs: review_core::snapshot::Vcs::Git,
+            capture: review_core::Capture::Committed {
+                tree_id: "a".repeat(40),
+            },
+            content_digest: manifest.clone(),
+            parent_snapshot_id: None,
+            source_revision: Some("b".repeat(40)),
+            artifact_manifest: Some(manifest),
+            submodules: vec![],
+        };
+        let id = f
+            .cas
+            .put_json(&serde_json::to_value(source).unwrap())
+            .unwrap();
+        (id.clone(), id)
+    } else {
+        (
+            f.cas.put(b"review authority").unwrap(),
+            f.cas.put(b"review head").unwrap(),
+        )
+    };
     let facts = f.cas.put_json(&json!({"fixture":"review roots"})).unwrap();
     let subject = f
         .cas

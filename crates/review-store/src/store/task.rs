@@ -29,6 +29,7 @@ pub use report::read_task_run_report;
 pub mod review_handoff;
 pub mod review_integration;
 mod review_round;
+pub mod review_round_publication;
 pub use review_handoff::read_task_transition;
 mod source;
 

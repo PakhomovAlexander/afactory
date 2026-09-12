@@ -75,6 +75,51 @@ pub(super) struct TaskAccountingReport {
     pub rounds: BTreeSet<(u32, u32)>,
 }
 
+impl TaskAccountingReport {
+    /// Merge raw Attempt intervals by their original Round/epoch. Neither cumulative report
+    /// snapshots nor overlapping legacy/common intervals are added as separate durations.
+    pub fn wall_ms(&self, legacy: &[review_store::AttemptWall]) -> Option<u64> {
+        super::wall_spans_ms(
+            legacy
+                .iter()
+                .map(|row| {
+                    (
+                        (row.round, row.epoch),
+                        (row.started_unix_ms, row.elapsed_ms),
+                    )
+                })
+                .chain(self.wall_rows.iter().map(|row| {
+                    (
+                        (row.round, row.epoch),
+                        (row.started_unix_ms, row.elapsed_ms),
+                    )
+                })),
+        )
+    }
+}
+
+pub(super) fn summary(tasks: &[TaskAccountingView]) -> String {
+    tasks
+        .iter()
+        .map(task_summary)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn task_summary(task: &TaskAccountingView) -> String {
+    format!(
+        "Task {}: cumulative charge {} tokens; held {} tokens; {} started Attempts (Provider {}, business {}, other {}); through sequence {}",
+        task.task_id,
+        task.chargeable_tokens.get(),
+        task.reserved_tokens.get(),
+        task.attempts_started.get(),
+        task.provider_attempts_started.get(),
+        task.business_attempts_started.get(),
+        task.other_attempts_started.get(),
+        task.through_sequence
+    )
+}
+
 struct RecordedPlan {
     graph: CompiledTask,
     round: Option<LegacyReviewRoundV1>,
@@ -319,14 +364,17 @@ pub(super) fn render(tasks: &[TaskAccountingView], markdown: bool) -> String {
     )
     .unwrap();
     for task in tasks {
-        writeln!(text, "\nTask {}: cumulative charge {} tokens; held {} tokens; {} started Attempts (Provider {}, business {}, other {}); through sequence {}",
-            task.task_id, task.chargeable_tokens.get(), task.reserved_tokens.get(), task.attempts_started.get(),
-            task.provider_attempts_started.get(), task.business_attempts_started.get(), task.other_attempts_started.get(), task.through_sequence).unwrap();
+        writeln!(text, "\n{}", task_summary(task)).unwrap();
         for attempt in &task.attempts {
             let name = attempt.review_node.as_deref().unwrap_or(&attempt.node);
             writeln!(
                 text,
-                "\n- {}: Attempt {}; {}; {} tokens (original cap {}){}{}",
+                "\n- {}{}: Attempt {}; {}; {} tokens (original cap {}){}{}",
+                attempt
+                    .round
+                    .zip(attempt.epoch)
+                    .map(|(round, epoch)| format!("Round {round} epoch {epoch}, "))
+                    .unwrap_or_default(),
                 name,
                 attempt.attempt_id,
                 attempt.outcome,

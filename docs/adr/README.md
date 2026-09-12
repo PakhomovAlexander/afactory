@@ -153,3 +153,4 @@ options you rejected and why — that is the part future-you needs.
 - [0081 — Register owned Review children in the common Task runtime](0081-register-owned-review-children-in-the-common-task-runtime.md)
 - [0082 — Continue captured Review Rounds within the original Task](0082-continue-captured-review-rounds-within-the-original-task.md)
 - [0083 — Run post-Round Integration within the original Task](0083-run-post-round-integration-within-the-original-task.md)
+- [0084 — Route new Review commands through the common Task](0084-route-new-review-commands-through-the-common-task.md)
