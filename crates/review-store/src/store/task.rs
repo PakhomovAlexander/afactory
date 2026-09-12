@@ -240,11 +240,9 @@ impl WritePermit {
 }
 
 fn envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope, StoreError> {
-    let value = cas
-        .get_json(id)
+    let envelope = cas
+        .get_artifact(id)
         .map_err(|e| StoreError::Artifact(e.to_string()))?;
-    let envelope: ArtifactEnvelope = serde_json::from_value(value)?;
-    validate_envelope(&envelope).map_err(conflict)?;
     if envelope.artifact_id != id || envelope.artifact_type != expected {
         return Err(conflict(format!("Expected exact {expected} artifact {id}")));
     }

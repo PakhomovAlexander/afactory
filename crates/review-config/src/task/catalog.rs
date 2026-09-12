@@ -13,7 +13,7 @@ use review_core::{ArtifactEnvelope, Producer};
 use review_graph::task::{
     CompileContext, CompiledOperator, CompiledTask, OperatorSignature, compile_task,
 };
-use review_store::{Cas, validate_envelope};
+use review_store::Cas;
 use serde::{Deserialize, Serialize};
 
 use super::kind::TaskKindManifest;
@@ -147,10 +147,7 @@ fn capture_producer() -> Producer {
 }
 
 fn read_envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope, String> {
-    let envelope: ArtifactEnvelope =
-        serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    validate_envelope(&envelope)?;
+    let envelope = cas.get_artifact(id).map_err(|e| e.to_string())?;
     if envelope.artifact_id != id || envelope.artifact_type != expected {
         return Err(format!("Expected exact {expected} envelope"));
     }

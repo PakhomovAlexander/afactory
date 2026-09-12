@@ -143,3 +143,5 @@ options you rejected and why — that is the part future-you needs.
 - [0073 — Check Task retry eligibility before reservation](0073-check-task-retry-eligibility-before-reservation.md)
 - [0074 — Isolate concurrent process pipe creation on Apple](0074-isolate-concurrent-process-pipe-creation-on-apple.md)
 - [0075 — Retain exact Task usage with versioned decimal counters](0075-retain-exact-task-usage-with-versioned-decimal-counters.md)
+- [0076 — Decode and verify typed CAS reads
+  once](0076-decode-and-verify-typed-cas-reads-once.md)

@@ -23,7 +23,7 @@ use review_graph::task::{CompiledOperator, CompiledTask};
 use review_graph::{ArtifactMap, Dispatch, Node, NodeFailureClass, RunReport};
 use review_store::store::task::execution::{PreparedTaskAttempt, ReservedTaskAttempt};
 use review_store::store::task::{TaskAuthority, TaskLease, TaskProjection, task_run_id};
-use review_store::{Cas, EventStore, SharedEventStore, validate_envelope};
+use review_store::{Cas, EventStore, SharedEventStore};
 
 pub struct TaskWorkOutput {
     /// Adapter-reported counters survive output/CAS failure until durable accounting.
@@ -107,14 +107,7 @@ pub struct TaskRuntime<'a> {
 }
 
 fn envelope(cas: &Cas, id: &str) -> Result<ArtifactEnvelope, String> {
-    let value: ArtifactEnvelope =
-        serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    validate_envelope(&value)?;
-    if value.artifact_id != id {
-        return Err("Task artifact identity differs from its reference".into());
-    }
-    Ok(value)
+    cas.get_artifact(id).map_err(|e| e.to_string())
 }
 
 fn artifact_map(values: &BTreeMap<String, ArtifactInputV1>) -> ArtifactMap {

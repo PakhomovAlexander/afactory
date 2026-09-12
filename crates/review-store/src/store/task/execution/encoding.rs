@@ -14,16 +14,9 @@ pub fn read_execution_record(
     cas: &Cas,
     id: &str,
 ) -> Result<DecodedTaskExecutionRecord, StoreError> {
-    let raw = cas
-        .get_json(id)
+    let envelope = cas
+        .get_artifact(id)
         .map_err(|error| StoreError::Artifact(error.to_string()))?;
-    let envelope: ArtifactEnvelope = serde_json::from_value(raw)?;
-    crate::validate_envelope(&envelope).map_err(conflict)?;
-    if envelope.artifact_id != id {
-        return Err(conflict(
-            "Task execution envelope differs from its artifact identity",
-        ));
-    }
     let kind = envelope.artifact_type.as_str();
     if !matches!(kind, TASK_EXECUTION_RECORD_V1 | TASK_EXECUTION_RECORD_V2) {
         return Err(conflict("Unsupported Task execution record version"));
