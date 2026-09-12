@@ -852,3 +852,39 @@ bounds and refusal expectations remain unchanged. This checkpoint now needs Linu
 Actual TaskRuntime/host/heartbeat forwarding is the next separate slice. CLI signal policy, live
 Provider evidence, the separately budgeted pilot and release migration remain open. No requested
 specialist PR reviewer has run; this deterministic gate does not replace those reviews.
+
+## 2026-09-13 heartbeat and Provider currentness checkpoint
+
+Native Provider currentness code `bc1799f` matches frozen tree `e3e153e0` and passes the full
+local gate: **1,129 tests, zero failures, 15 ignored** across 132 suites, plus formatting,
+Clippy, documentation tests and byte-identical fixtures. Each native invocation checks the
+captured account and local authentication context before private send, sharing its original
+Attempt deadline and cancellation control. Drift refuses with known-zero new usage and retains
+prior admission/spend. Source cancellation now proves live process cleanup. The check-to-client
+credential race remains explicit in [ADR-0090](../adr/0090-recheck-native-task-provider-identity-before-private-invocation.md).
+
+The preceding heartbeat checkpoint `3d74329`, tree `61cc27fb`, passes 1,123 tests and the same
+full gate. Common Task, planning, Review and doctor connect exact writer-lease failure to
+supervised Worker/Gate/Integration cancellation, preserving paid observations and preventing
+later work. Its first frozen gate hit SQLite I/O while the host disk was full; removing obsolete
+build caches made the unchanged tree pass. The Linux stdin fixture correction preserves the
+intended blocked pipe and passes original-versus-fixed Linux and macOS checks. See
+[ADR-0089](../adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md).
+
+Fresh CI is required for these commits. Published `7bb8bbc` failed Check in CI `34720000638`
+on that Linux stdin fixture; container-probes passed. No requested external PR reviewer has
+run. The configured Claude personal profile still reports false/none; terminal comparison is
+pending. Local Docker stopped responding after disk exhaustion; exact owned-container cleanup
+is unconfirmed and restart approval is pending. Required live probes and P14 evidence remain.
+
+Previous live status, with relative links adjusted:
+
+Native cancellation and billing-completeness code `0ec8467` matches frozen tree `6a656c62`
+and passes the full gate: **1,115 tests, zero failures, 15 ignored** across 132 suites, plus
+formatting, Clippy, documentation tests and byte-identical fixtures. Native controlled calls stop
+the owned process group and retain usage; incomplete billing preserves original reservations
+and known floors through CAS recovery. Valid native reports retain their previous identities.
+The Linux stderr fixture now emits and checks its own diagnostic. Fresh CI remains required;
+TaskRuntime/heartbeat/CLI forwarding is a subsequent uncommitted slice. See
+[ADR-0087](../adr/0087-control-native-task-invocations-through-the-shared-supervisor.md) and
+[ADR-0088](../adr/0088-retain-native-billing-completeness-with-task-usage.md).

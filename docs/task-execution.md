@@ -1,6 +1,6 @@
 # Task execution increment
 
-**Status:** implementation started, 2026-09-10. Baseline is kernel `5464b38` (0.8.0).
+**Status:** implementation in progress, 2026-09-13. Baseline is kernel `5464b38` (0.8.0).
 The accepted hub implementation sequence is P00–P14; kernel contracts, fixtures and progress
 are canonical here. The hub design is in its `docs/architecture/task-execution.md` and the
 delivery plan in `docs/workstreams/task-execution/implementation-plan.md`.
@@ -19,13 +19,35 @@ supplement it. Claude calls use only `claude-personal`.
 
 ## Progress
 
+Native Provider currentness code `bc1799f` matches frozen tree `e3e153e0` and passes the full
+local gate: **1,129 tests, zero failures, 15 ignored** across 132 suites, plus formatting,
+Clippy, documentation tests and byte-identical fixtures. Each native invocation checks the
+captured account and local authentication context before private send, sharing its original
+Attempt deadline and cancellation control. Drift refuses with known-zero new usage and retains
+prior admission/spend. Source cancellation now proves live process cleanup. The check-to-client
+credential race remains explicit in [ADR-0090](adr/0090-recheck-native-task-provider-identity-before-private-invocation.md).
+
+The preceding heartbeat checkpoint `3d74329`, tree `61cc27fb`, passes 1,123 tests and the same
+full gate. Common Task, planning, Review and doctor connect exact writer-lease failure to
+supervised Worker/Gate/Integration cancellation, preserving paid observations and preventing
+later work. Its first frozen gate hit SQLite I/O while the host disk was full; removing obsolete
+build caches made the unchanged tree pass. The Linux stdin fixture correction preserves the
+intended blocked pipe and passes original-versus-fixed Linux and macOS checks. See
+[ADR-0089](adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md).
+
+Fresh CI is required for these commits. Published `7bb8bbc` failed Check in CI `34720000638`
+on that Linux stdin fixture; container-probes passed. No requested external PR reviewer has
+run. The configured Claude personal profile still reports false/none; terminal comparison is
+pending. Local Docker stopped responding after disk exhaustion; exact owned-container cleanup
+is unconfirmed and restart approval is pending. Required live probes and P14 evidence remain.
+
 Native cancellation and billing-completeness code `0ec8467` matches frozen tree `6a656c62`
 and passes the full gate: **1,115 tests, zero failures, 15 ignored** across 132 suites, plus
 formatting, Clippy, documentation tests and byte-identical fixtures. Native controlled calls stop
 the owned process group and retain usage; incomplete billing preserves original reservations
 and known floors through CAS recovery. Valid native reports retain their previous identities.
-The Linux stderr fixture now emits and checks its own diagnostic. Fresh CI remains required;
-TaskRuntime/heartbeat/CLI forwarding is a subsequent uncommitted slice. See
+The Linux stderr fixture now emits and checks its own diagnostic. Its published CI failed the Linux stdin fixture described above;
+common TaskRuntime/heartbeat forwarding passes the later full gate. See
 [ADR-0087](adr/0087-control-native-task-invocations-through-the-shared-supervisor.md) and
 [ADR-0088](adr/0088-retain-native-billing-completeness-with-task-usage.md).
 
@@ -48,7 +70,7 @@ checks cover shared probes, Round continuation, SIGKILL recovery and missing-sta
 Published `b2ce782` failed CI Check during a fake-runtime executable setup; container-probes
 passed. The new checkpoint contains the fixture-only correction without changing deadlines.
 Native cancellation and malformed/missing usage conformance now pass the later local gate.
-Caller forwarding, live Provider and P14 evidence remain in progress. See
+Caller forwarding passes the later full gate; live Provider and P14 evidence remain in progress. See
 [ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md).
 
 The common Task Broker checkpoint `1a9ab83` matches frozen tree `34fc57e` and passes the
