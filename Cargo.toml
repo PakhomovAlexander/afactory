@@ -19,3 +19,12 @@ all = "warn"
 # implementation at production speed in debug/CI too; Task deadlines still include capture.
 [profile.dev.package.sha2]
 opt-level = 3
+
+# Durable Task replay repeatedly validates typed envelopes and canonical JSON. Keep these
+# hot paths optimized in developer/CI builds, with debug assertions and overflow checks intact.
+# Crash-recovery tests retain the same Task deadline, lease wait and verification reserve.
+[profile.dev.package.review-store]
+opt-level = 2
+
+[profile.dev.package.serde_json]
+opt-level = 3
