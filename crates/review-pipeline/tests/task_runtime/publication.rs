@@ -179,7 +179,7 @@ fn publication_recovers(before_attempt: bool) {
             ModelWorkerReturn {
                 raw_artifact_ids: vec![cas.put(&bytes).unwrap()],
                 message: Ok(bytes),
-                usage: Some(review_runner::TokenUsage::charge_only(7)),
+                usage: Some(review_runner::TokenUsage::charge_only(7).into()),
             }
         }
     }

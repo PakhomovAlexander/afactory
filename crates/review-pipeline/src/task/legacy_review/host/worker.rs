@@ -7,7 +7,8 @@ use review_core::task::feedback::{
     TASK_RETRY_FEEDBACK_V1, TaskFeedbackCodeV1, TaskRetryFeedbackV1,
 };
 use review_core::task::review_compat::*;
-use review_runner::{ContextManifest, ReviewerInputs, TokenUsage};
+use review_core::task::usage::TaskTokenUsageV3;
+use review_runner::{ContextManifest, ReviewerInputs};
 
 impl LegacyReviewTaskHost<'_, '_> {
     fn slot(&self, node: &str) -> Result<&str, String> {
@@ -259,7 +260,7 @@ impl LegacyReviewTaskHost<'_, '_> {
         broker: Option<&dyn review_broker::ExactBrokerClient>,
     ) -> TaskWorkOutput {
         let mut result = TaskWorkOutput {
-            usage: Some(TokenUsage::charge_only(0)),
+            usage: Some(TaskTokenUsageV3::charge_only(0)),
             outputs: Err("Review Worker was not started".into()),
             charged_tokens: Some(0),
             raw_artifact_ids: vec![],
@@ -346,7 +347,7 @@ impl LegacyReviewTaskHost<'_, '_> {
             result.charged_tokens = result
                 .usage
                 .as_ref()
-                .map(|usage| u128::from(usage.chargeable_tokens));
+                .map(|usage| usage.chargeable_tokens.get());
             result.raw_artifact_ids = returned.raw_artifact_ids;
             let message = returned.message?;
             feedback_code = TaskFeedbackCodeV1::InvalidOutputContract;
@@ -372,7 +373,7 @@ impl LegacyReviewTaskHost<'_, '_> {
                 result.raw_artifact_ids.push(id.clone());
                 id
             };
-            let unknown = TokenUsage::charge_only(attempt.reservation().tokens);
+            let unknown = TaskTokenUsageV3::charge_only(u128::from(attempt.reservation().tokens));
             let usage = result.usage.as_ref().unwrap_or(&unknown);
             let captured = crate::reviewer_output::capture_task_result(
                 cas,
@@ -386,7 +387,7 @@ impl LegacyReviewTaskHost<'_, '_> {
                     proposal: review_runner::parse_proposal_declaration(text),
                     assigned_finding_ids: &assigned,
                     report_count: parsed.findings.len(),
-                    cost_tokens: usage.chargeable_tokens,
+                    cost_tokens: usage.chargeable_tokens.get(),
                     usage,
                     context_manifest: &manifest,
                     raw_artifact: &raw,
@@ -486,6 +487,17 @@ impl LegacyReviewTaskHost<'_, '_> {
                 cas,
                 &self.lease,
                 &registered,
+                output_id,
+                &self.authority(),
+            )
+        } else if store
+            .task_projection(cas, &self.task.task_id)
+            .map_err(|e| e.to_string())?
+            .is_some_and(|state| state.has_recording_recovery())
+        {
+            store.publish_task_recorded_review_result(
+                cas,
+                &self.lease,
                 output_id,
                 &self.authority(),
             )

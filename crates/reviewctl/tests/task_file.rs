@@ -80,17 +80,23 @@ fn review_file_uses_common_task_state_and_keeps_changes_requested_exit() {
 #[cfg(unix)]
 #[test]
 fn native_model_cli_admission_is_shared_and_account_changes_refuse_dispatch() {
-    native_model_case(false);
+    native_model_case(false, false);
 }
 
 #[cfg(unix)]
 #[test]
 fn native_model_cli_retains_wide_failed_usage_in_json_and_text_inspection() {
-    native_model_case(true);
+    native_model_case(true, false);
 }
 
 #[cfg(unix)]
-fn native_model_case(wide: bool) {
+#[test]
+fn native_codex_multiturn_usage_survives_common_accounting_and_fresh_inspection() {
+    native_model_case(true, true);
+}
+
+#[cfg(unix)]
+fn native_model_case(wide: bool, codex: bool) {
     use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     use std::os::unix::fs::PermissionsExt;
     let directory = tempfile::tempdir().unwrap();
@@ -114,7 +120,7 @@ if sys.argv[1:3]==['auth','status']:
 request=sys.stdin.read()
 with open(home+'/calls','a') as f: f.write('model\n')
 if os.path.isfile(home+'/wide-usage'):
- print(json.dumps({'is_error':True,'result':'fixture provider failed after reporting usage','usage':{'input_tokens':18446744073709551615,'output_tokens':0,'cache_creation_input_tokens':0}}))
+ print(json.dumps({'is_error':True,'result':'fixture provider failed after reporting usage','usage':{'input_tokens':18446744073709551615,'output_tokens':20,'cache_creation_input_tokens':0}}))
  sys.exit(0)
 if request=='Reply with exactly: OK\n':
  result='OK'
@@ -124,10 +130,27 @@ else:
  result=json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'verdict':'approve','summary':'Checked source','reports':[],'benchmark_demands':[],'disputes':[]}]}})
 print(json.dumps({'is_error':False,'result':result,'usage':{'input_tokens':10,'output_tokens':2,'cache_creation_input_tokens':0}}))
 "#;
-    std::fs::write(bin.join("claude"), stub).unwrap();
-    std::fs::set_permissions(bin.join("claude"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let codex_stub = r#"#!/usr/bin/python3
+import os,json,sys
+home=os.environ['CODEX_HOME']
+if sys.argv[1:2]==['app-server']:
+ for line in sys.stdin:
+  request=json.loads(line)
+  if request.get('id')==1: print(json.dumps({'id':1,'result':{}}),flush=True)
+  if request.get('id')==2: print(json.dumps({'id':2,'result':{'account':{'type':'chatgpt','email':open(home+'/account-email').read()}}}),flush=True)
+ sys.exit(0)
+sys.stdin.read()
+with open(home+'/calls','a') as f: f.write('model\n')
+for i,c,o,r,w in [(18446744073709551615,7,18446744073709551615,18446744073709551615,18446744073709551615),(20,3,30,40,50)]:
+ print(json.dumps({'type':'turn.completed','usage':{'input_tokens':i,'cached_input_tokens':c,'output_tokens':o,'reasoning_output_tokens':r,'cache_write_input_tokens':w}}))
+print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after two paid turns'}}))
+"#;
+    let kind = if codex { "codex" } else { "claude" };
+    let provider = format!("{kind}-personal");
+    std::fs::write(bin.join(kind), if codex { codex_stub } else { stub }).unwrap();
+    std::fs::set_permissions(bin.join(kind), std::fs::Permissions::from_mode(0o755)).unwrap();
     let registry = home.join("providers.toml");
-    std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":1,"providers":[{"id":"claude-personal","kind":"claude","auth_dir":home}]})).unwrap()).unwrap();
+    std::fs::write(&registry,toml::to_string(&serde_json::json!({"version":1,"providers":[{"id":provider,"kind":kind,"auth_dir":home}]})).unwrap()).unwrap();
     let catalog_path = repo.join(".af/task-catalog.toml");
     let mut catalog: toml::Value =
         toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
@@ -138,15 +161,15 @@ print(json.dumps({'is_error':False,'result':result,'usage':{'input_tokens':10,'o
         let mut worker: TaskWorkerManifest =
             toml::from_str(&std::fs::read_to_string(path.join("worker.toml")).unwrap()).unwrap();
         worker.runner = TaskWorkerRunner::Model {
-            provider_kind: "claude".into(),
-            model: "claude-fixture-1".into(),
+            provider_kind: kind.into(),
+            model: format!("{kind}-fixture-1"),
             effort: "high".into(),
         };
         worker.signature.attempt.as_mut().unwrap().tokens = 1000;
         std::fs::write(path.join("worker.toml"), toml::to_string(&worker).unwrap()).unwrap();
         catalog["packages"][&package]["digest"] =
             toml::Value::String(review_config::lock::package_digest(&package, &path).unwrap());
-        providers.insert(package, toml::Value::String("claude-personal".into()));
+        providers.insert(package, toml::Value::String(provider.clone()));
     }
     let pipeline_dir = repo.join(".af/task-packages/fixture/review");
     let mut pipeline: review_core::task::pipeline::PipelineDefinitionV1 =
@@ -218,6 +241,11 @@ print(json.dumps({'is_error':False,'result':result,'usage':{'input_tokens':10,'o
     std::fs::write(&email, "developer@example.test").unwrap();
     let output = run(&["task", "run", "review-cli"]);
     if wide {
+        let exact = if codex {
+            2 * u128::from(u64::MAX) + 40
+        } else {
+            u128::from(u64::MAX) + 20
+        };
         assert_eq!(
             output.status.code(),
             Some(4),
@@ -227,7 +255,7 @@ print(json.dumps({'is_error':False,'result':result,'usage':{'input_tokens':10,'o
         );
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
         assert_eq!(result["schema"], "af/task-inspection@3");
-        assert_eq!(result["chargeable_tokens"], "18446744073709551615");
+        assert_eq!(result["chargeable_tokens"], exact.to_string());
         assert_eq!(result["result"]["domain_conclusion"], "incomplete");
         assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
         let shown = run(&["task", "show", "review-cli"]);
@@ -239,10 +267,7 @@ print(json.dumps({'is_error':False,'result':result,'usage':{'input_tokens':10,'o
         let listed: Value = serde_json::from_slice(&listed.stdout).unwrap();
         assert_eq!(listed["schema"], "af/task-list@2");
         assert_eq!(listed["tasks"][0]["schema"], "af/task-list-entry@2");
-        assert_eq!(
-            listed["tasks"][0]["chargeable_tokens"],
-            "18446744073709551615"
-        );
+        assert_eq!(listed["tasks"][0]["chargeable_tokens"], exact.to_string());
         let text = Command::new(env!("CARGO_BIN_EXE_af"))
             .current_dir(&repo)
             .args(["task", "list", "--state"])
@@ -250,7 +275,41 @@ print(json.dumps({'is_error':False,'result':result,'usage':{'input_tokens':10,'o
             .output()
             .unwrap();
         assert!(text.status.success());
-        assert!(String::from_utf8_lossy(&text.stdout).contains("18446744073709551615 tokens"));
+        assert!(String::from_utf8_lossy(&text.stdout).contains(&format!("{exact} tokens")));
+        let cas = review_store::Cas::open(state.join("cas")).unwrap();
+        let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+        let projection = store.task_projection(&cas, "review-cli").unwrap().unwrap();
+        let execution = projection.execution.unwrap();
+        assert_eq!(execution.budget.committed_tokens(), exact);
+        assert_eq!(execution.budget.begun_attempts(), 1);
+        assert_eq!(projection.revision.limits.tokens, 10_000);
+        let walls = store
+            .task_attempt_wall(&review_store::store::task::task_run_id("review-cli").unwrap())
+            .unwrap();
+        let usage = walls[0].usage.as_ref().unwrap();
+        assert_eq!(usage.chargeable_tokens.get(), exact);
+        if codex {
+            assert_eq!(usage.input_tokens.unwrap().get(), u128::from(u64::MAX) + 20);
+            assert_eq!(
+                usage.output_tokens.unwrap().get(),
+                u128::from(u64::MAX) + 30
+            );
+        }
+        let settled = result["execution_records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["record"]["kind"] == "settled")
+            .unwrap();
+        let id = settled["record"]["usage_id"].as_str().unwrap();
+        assert_eq!(
+            cas.get_artifact(id).unwrap().artifact_type,
+            if codex {
+                review_core::task::usage::TASK_TOKEN_USAGE_V3
+            } else {
+                review_core::task::usage::TASK_TOKEN_USAGE_V2
+            }
+        );
         assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
         return;
     }

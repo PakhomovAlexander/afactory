@@ -275,9 +275,12 @@ fn admit_existing(
             .admit_task_plan(cas, lease, &authority)
             .map_err(|e| e.to_string())?;
     } else if matches!(state.phase, TaskPhaseV1::Waiting { .. }) {
-        store
-            .resume_task(cas, lease, &authority)
-            .map_err(|e| e.to_string())?;
+        if now_ms()? >= state.revision.limits.deadline_unix_ms {
+            store.resume_task_for_recording(cas, lease, &authority)
+        } else {
+            store.resume_task(cas, lease, &authority)
+        }
+        .map_err(|e| e.to_string())?;
     }
     Ok(())
 }

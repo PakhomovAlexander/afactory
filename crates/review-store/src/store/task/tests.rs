@@ -4,6 +4,7 @@ use review_core::task::plan::PlanDependencyV1;
 mod broker;
 mod owned;
 mod planning;
+mod recording;
 mod report;
 mod reservation;
 mod retry;

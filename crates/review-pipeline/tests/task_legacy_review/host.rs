@@ -10,6 +10,8 @@ use review_store::SharedEventStore;
 mod broker;
 #[path = "host/continuation.rs"]
 mod continuation;
+#[path = "host/expired_waiting.rs"]
+mod expired_waiting;
 #[path = "host/integration.rs"]
 mod integration;
 #[path = "host/native.rs"]

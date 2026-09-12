@@ -13,7 +13,7 @@ use review_store::{Cas, validate_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ContextManifest, ModelRunner, RunnerError, TokenUsage};
+use crate::{ContextManifest, ModelRunner, RunnerError};
 pub mod legacy;
 pub mod provider;
 pub mod usage;
@@ -415,7 +415,7 @@ fn worker_value(cas: &Cas, id: &str) -> Result<WorkerValue, String> {
 /// Usage and raw evidence survive both nonzero process exits and output-schema refusal.
 pub struct WorkerReturn {
     pub reply: Result<WorkerReply, String>,
-    pub usage: Option<TokenUsage>,
+    pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
     pub raw_artifact_ids: Vec<String>,
     pub feedback_code: Option<TaskFeedbackCodeV1>,
 }
@@ -425,7 +425,7 @@ pub struct WorkerReturn {
 /// performs admission afterwards. Every failure retains raw evidence and any known usage.
 pub struct ModelWorkerReturn {
     pub message: Result<Vec<u8>, String>,
-    pub usage: Option<TokenUsage>,
+    pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
     pub raw_artifact_ids: Vec<String>,
 }
 
@@ -467,7 +467,7 @@ pub trait WorkerModelAdapter: Send + Sync {
         if broker.is_some() {
             return ModelWorkerReturn {
                 message: Err("Worker model adapter does not consume Broker Handles".into()),
-                usage: Some(TokenUsage::charge_only(0)),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 raw_artifact_ids: vec![],
             };
         }
@@ -522,7 +522,7 @@ pub fn invoke_model_with_broker(
         Err(error) => {
             return WorkerReturn {
                 reply: Err(error),
-                usage: Some(TokenUsage::charge_only(0)),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 raw_artifact_ids: vec![],
                 feedback_code: Some(TaskFeedbackCodeV1::ContextRejected),
             };
@@ -576,7 +576,7 @@ pub fn invoke_command(
             });
             WorkerReturn {
                 reply,
-                usage: Some(TokenUsage::charge_only(0)),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 raw_artifact_ids: vec![raw.raw_artifact],
                 feedback_code,
             }
@@ -589,7 +589,7 @@ pub fn invoke_command(
                 _ => vec![],
             },
             reply: Err(error.to_string()),
-            usage: Some(TokenUsage::charge_only(0)),
+            usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
             feedback_code: Some(TaskFeedbackCodeV1::ProcessFailure),
         },
     }
@@ -612,12 +612,12 @@ pub fn invoke_command_bytes(
             } else {
                 Err(format!("Command Worker exited with {}", raw.status))
             },
-            usage: Some(TokenUsage::charge_only(0)),
+            usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
             raw_artifact_ids: vec![raw.raw_artifact],
         },
         Err(error) => {
             let mut result = ModelWorkerReturn::failed(error);
-            result.usage = Some(TokenUsage::charge_only(0));
+            result.usage = Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0));
             result
         }
     }

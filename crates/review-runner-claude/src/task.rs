@@ -80,15 +80,17 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         let cache_write = count("cache_creation_input_tokens");
         let charge = input
             .zip(output)
-            .map(|(i, o)| i.saturating_add(o).saturating_add(cache_write.unwrap_or(0)));
-        let usage = charge.map(|chargeable_tokens| TokenUsage {
-            input_tokens: input,
-            output_tokens: output,
-            cache_read_tokens: count("cache_read_input_tokens"),
-            cache_write_tokens: cache_write,
-            reasoning_tokens: None,
-            chargeable_tokens,
-        });
+            .map(|(i, o)| u128::from(i) + u128::from(o) + u128::from(cache_write.unwrap_or(0)));
+        let usage = charge.map(
+            |chargeable_tokens| review_core::task::usage::TaskTokenUsageV3 {
+                input_tokens: input.map(|n| u128::from(n).into()),
+                output_tokens: output.map(|n| u128::from(n).into()),
+                cache_read_tokens: count("cache_read_input_tokens").map(|n| u128::from(n).into()),
+                cache_write_tokens: cache_write.map(|n| u128::from(n).into()),
+                reasoning_tokens: None,
+                chargeable_tokens: chargeable_tokens.into(),
+            },
+        );
         let success = capture.status.as_ref().is_ok_and(|status| status.success())
             && parsed.as_ref().is_some_and(|v| {
                 v.get("is_error").and_then(serde_json::Value::as_bool) == Some(false)

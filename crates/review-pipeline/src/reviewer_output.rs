@@ -14,7 +14,7 @@ use super::{PreparedProposal, RoundAuthority};
 
 /// One already validated adapter reply. Capturing it seals the actual sandbox and creates
 /// immutable result/provenance artifacts; it cannot select an Attempt or publish domain facts.
-pub(super) struct ReviewerResultCapture<'a> {
+pub(super) struct ReviewerResultCapture<'a, U = review_runner::TokenUsage, C = u64> {
     pub node_id: &'a str,
     pub attempt_id: &'a str,
     pub result: &'a serde_json::Value,
@@ -22,8 +22,8 @@ pub(super) struct ReviewerResultCapture<'a> {
     pub proposal: Result<Option<ReviewerProposalDeclaration>, String>,
     pub assigned_finding_ids: &'a [String],
     pub report_count: usize,
-    pub cost_tokens: u64,
-    pub usage: &'a review_runner::TokenUsage,
+    pub cost_tokens: C,
+    pub usage: &'a U,
     pub context_manifest: &'a review_runner::ContextManifest,
     pub raw_artifact: &'a str,
 }
@@ -46,25 +46,26 @@ pub(super) fn capture_task_result(
     cas: &Cas,
     authority: &RoundAuthority,
     sandbox: review_sandbox::Sandbox,
-    reply: ReviewerResultCapture<'_>,
+    reply: ReviewerResultCapture<'_, review_core::task::usage::TaskTokenUsageV3, u128>,
     context_id: &str,
     usage_known: bool,
 ) -> Result<CapturedReviewerResult, String> {
+    let usage = reply.usage;
     capture_result_inner(
         cas,
         authority,
         sandbox,
         reply,
-        Some((context_id, usage_known)),
+        Some((context_id, usage_known, usage)),
     )
 }
 
-fn capture_result_inner(
+fn capture_result_inner<U: serde::Serialize, C: Copy + Into<u128> + serde::Serialize>(
     cas: &Cas,
     authority: &RoundAuthority,
     sandbox: review_sandbox::Sandbox,
-    reply: ReviewerResultCapture<'_>,
-    task_context: Option<(&str, bool)>,
+    reply: ReviewerResultCapture<'_, U, C>,
+    task_context: Option<(&str, bool, &review_core::task::usage::TaskTokenUsageV3)>,
 ) -> Result<CapturedReviewerResult, String> {
     let sealed = sandbox.seal().map_err(|error| error.to_string())?;
     let result_artifact = cas
@@ -89,7 +90,7 @@ fn capture_result_inner(
             "deleted":sealed.mutations.deleted,
         }))
         .map_err(|error| error.to_string())?;
-    let provenance_artifact = if let Some((context_id, usage_known)) = task_context {
+    let provenance_artifact = if let Some((context_id, usage_known, usage)) = task_context {
         use review_core::task::review_compat::*;
         let envelope = cas.get_artifact(context_id).map_err(|e| e.to_string())?;
         if envelope.artifact_type != TASK_REVIEW_CONTEXT_V1 {
@@ -101,17 +102,27 @@ fn capture_result_inner(
         if context.attempt_id != reply.attempt_id || context.review_node != reply.node_id {
             return Err("Task Review provenance changed its actual Attempt".into());
         }
+        let narrow = review_runner::TokenUsage::try_from(usage).ok();
         let usage_id = usage_known
             .then(|| {
-                review_runner::task::usage::persist_task_usage(
-                    cas,
-                    envelope.producer.clone(),
-                    context_id,
-                    reply.usage,
-                )
+                if let Some(usage) = &narrow {
+                    review_runner::task::usage::persist_task_usage(
+                        cas,
+                        envelope.producer.clone(),
+                        context_id,
+                        usage,
+                    )
+                } else {
+                    review_runner::task::usage::persist_task_usage_exact(
+                        cas,
+                        envelope.producer.clone(),
+                        context_id,
+                        usage,
+                    )
+                }
             })
             .transpose()?;
-        let provenance = TaskReviewAttemptProvenanceV1 {
+        let provenance = TaskReviewAttemptProvenanceV2 {
             context_id: context_id.into(),
             task_invocation_id: context.task_invocation_id,
             attempt_id: reply.attempt_id.into(),
@@ -119,12 +130,23 @@ fn capture_result_inner(
             result_artifact_id: result_artifact.clone(),
             mutations_artifact_id: mutations_artifact,
             raw_artifact_id: reply.raw_artifact.into(),
-            charged_tokens: reply.cost_tokens.into(),
+            charged_tokens: reply.cost_tokens.into().into(),
             usage_id,
         };
         provenance.validate()?;
+        let mut payload = serde_json::to_value(&provenance).map_err(|e| e.to_string())?;
+        let kind = if narrow.is_some() {
+            // The decimal representation is identical, but retain the frozen typed validator.
+            let old: TaskReviewAttemptProvenanceV1 =
+                serde_json::from_value(payload).map_err(|e| e.to_string())?;
+            old.validate()?;
+            payload = serde_json::to_value(old).map_err(|e| e.to_string())?;
+            TASK_REVIEW_ATTEMPT_PROVENANCE_V1
+        } else {
+            TASK_REVIEW_ATTEMPT_PROVENANCE_V2
+        };
         cas.put_artifact(
-            TASK_REVIEW_ATTEMPT_PROVENANCE_V1,
+            kind,
             envelope.producer,
             provenance
                 .artifact_refs()
@@ -132,7 +154,7 @@ fn capture_result_inner(
                 .map(str::to_owned)
                 .collect(),
             Some(authority.head_snapshot_id.clone()),
-            serde_json::to_value(provenance).map_err(|e| e.to_string())?,
+            payload,
         )
         .map_err(|e| e.to_string())?
         .0

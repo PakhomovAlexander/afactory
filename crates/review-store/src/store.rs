@@ -227,7 +227,7 @@ pub struct AttemptWall<U = AttemptUsage> {
 }
 
 /// Common Task usage may aggregate several native Provider counters in one Attempt.
-pub type TaskAttemptWall = AttemptWall<review_core::task::usage::TaskTokenUsageV2>;
+pub type TaskAttemptWall = AttemptWall<review_core::task::usage::TaskTokenUsageV3>;
 
 impl EventStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
@@ -373,6 +373,7 @@ impl EventStore {
                 EventType::TaskTransitionV1
                     | EventType::TaskTransitionV2
                     | EventType::TaskTransitionV3
+                    | EventType::TaskTransitionV4
                     | EventType::TaskBrokerTransitionV1
             )
         }) && task_permit.is_none()

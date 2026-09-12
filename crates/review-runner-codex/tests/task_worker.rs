@@ -99,7 +99,10 @@ fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_messa
                 .map(|id| cas.get(id))
                 .collect::<Vec<_>>(),
         );
-        assert_eq!(returned.usage.unwrap().chargeable_tokens, u64::MAX);
+        assert_eq!(
+            returned.usage.unwrap().chargeable_tokens.get(),
+            u128::from(u64::MAX) + 20
+        );
         if timed_out {
             assert_eq!(returned.raw_artifact_ids.len(), 2);
             assert_eq!(
@@ -165,7 +168,7 @@ fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage
             Duration::from_secs(5),
             false,
         );
-        assert_eq!(returned.usage.as_ref().unwrap().chargeable_tokens, 35);
+        assert_eq!(returned.usage.as_ref().unwrap().chargeable_tokens.get(), 35);
         assert_eq!(
             cas.get(&returned.raw_artifact_ids[0]).unwrap(),
             output.as_bytes()
@@ -175,4 +178,54 @@ fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage
             .and_then(|bytes| contract.validate_reply(&bytes));
         assert_eq!(admitted.is_ok(), valid);
     }
+}
+
+#[test]
+fn multiple_native_turns_retain_exact_components_and_uncached_charge() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let script = temp.path().join("provider");
+    let mut lines = Vec::new();
+    for (input, cached, output, reasoning, write) in [
+        (u64::MAX, 7, u64::MAX, u64::MAX, u64::MAX),
+        (20, 3, 30, 40, 50),
+    ] {
+        lines.push(serde_json::json!({"type":"turn.completed","usage":{"input_tokens":input,"cached_input_tokens":cached,
+            "output_tokens":output,"reasoning_output_tokens":reasoning,"cache_write_input_tokens":write}}).to_string());
+    }
+    lines.push(
+        serde_json::json!({"type":"item.completed","item":{"type":"agent_message","text":"OK"}})
+            .to_string(),
+    );
+    let output = lines.join("\n");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{}'\n",
+            output.replace('\'', "'\\''")
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = CodexTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"input".to_vec(),
+        Duration::from_secs(5),
+        false,
+    );
+    assert_eq!(returned.message.unwrap(), b"OK");
+    let usage = returned.usage.unwrap();
+    let max = u128::from(u64::MAX);
+    assert_eq!(usage.input_tokens.unwrap().get(), max + 20);
+    assert_eq!(usage.output_tokens.unwrap().get(), max + 30);
+    assert_eq!(usage.cache_read_tokens.unwrap().get(), 10);
+    assert_eq!(usage.cache_write_tokens.unwrap().get(), max + 50);
+    assert_eq!(usage.reasoning_tokens.unwrap().get(), max + 40);
+    assert_eq!(usage.chargeable_tokens.get(), 2 * max + 40);
+    assert_eq!(
+        cas.get(&returned.raw_artifact_ids[0]).unwrap(),
+        output.as_bytes()
+    );
 }

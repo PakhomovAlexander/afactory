@@ -2956,6 +2956,8 @@ fn read_report_view(
     Ok(ReviewReportView {
         schema: if task_accounting.tasks.is_empty() {
             "af/review-report@1"
+        } else if task_accounting.has_wide_usage() {
+            "af/review-report@4"
         } else {
             "af/review-report@3"
         },

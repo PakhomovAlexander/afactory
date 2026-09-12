@@ -331,7 +331,7 @@ impl LegacyReviewTaskHost<'_, '_> {
             Ok(outputs)
         })();
         TaskWorkOutput {
-            usage: Some(review_runner::TokenUsage::charge_only(0)),
+            usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
             outputs,
             charged_tokens: Some(0),
             raw_artifact_ids,

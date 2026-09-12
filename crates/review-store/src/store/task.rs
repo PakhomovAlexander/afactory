@@ -24,6 +24,7 @@ mod tests;
 mod delivery;
 pub mod execution;
 pub mod planning;
+mod recording;
 mod report;
 pub use report::read_task_run_report;
 pub mod review_handoff;
@@ -276,6 +277,8 @@ pub struct TaskProjection {
     lease_until: u64,
     last_time: u64,
     resume_phase: Option<TaskPhaseV1>,
+    recording_recovery: Option<recording::RecordingRecovery>,
+    recording_report: Option<recording::RecordingRecovery>,
     decisions: BTreeMap<String, Decision>,
     pub execution: Option<execution::TaskExecutionProjection>,
     pub planning: Option<planning::TaskPlanningProof>,
@@ -417,6 +420,18 @@ fn references(
         ]);
     }
     match change {
+        TaskChangeV1::RecordingResumed { report_id, .. } => {
+            refs.extend(report::references(cas, report_id)?);
+            let state = state.ok_or_else(|| conflict("Recording recovery precedes Task"))?;
+            let execution = state
+                .execution
+                .as_ref()
+                .ok_or_else(|| conflict("Recording recovery has no execution"))?;
+            for (id, _) in execution.outputs.values() {
+                envelope(cas, id, task::execution::TASK_OUTPUT_V1)?;
+                refs.insert(id.clone());
+            }
+        }
         TaskChangeV1::ReviewIntegrationSelected { phase_id }
         | TaskChangeV1::ReviewIntegrationFinished { phase_id, .. } => {
             let phase = review_integration::read_task_review_integration(cas, phase_id)?;
@@ -872,6 +887,23 @@ impl TaskProjection {
                     }
                     self.phase = prior;
                 }
+                TaskChangeV1::RecordingResumed {
+                    task_revision_id,
+                    plan_id,
+                    report_id,
+                } => {
+                    let recovery = self.validate_recording_resume(
+                        cas,
+                        task_revision_id,
+                        plan_id,
+                        report_id,
+                        transition.now_unix_ms,
+                    )?;
+                    self.check_plan_decision(cas, transition.now_unix_ms)?;
+                    self.recording_recovery = Some(recovery);
+                    self.resume_phase = None;
+                    self.phase = TaskPhaseV1::Running {};
+                }
                 TaskChangeV1::Finished { result_id } => {
                     if self
                         .execution
@@ -888,6 +920,13 @@ impl TaskProjection {
                         && matches!(self.phase, TaskPhaseV1::Waiting { .. })
                     {
                         return Err(conflict("A waiting Task cannot claim satisfied acceptance"));
+                    }
+                    if result.acceptance == TaskAcceptanceV1::Satisfied
+                        && self.has_recording_recovery()
+                    {
+                        return Err(conflict(
+                            "A recording-only Task cannot claim satisfied acceptance",
+                        ));
                     }
                     if let Some(execution) = &self.execution {
                         if execution.budget.breached()
@@ -1136,6 +1175,7 @@ impl EventStore {
                     Some(state),
                 )?);
             }
+            active_refs.extend(state.recording_recovery_refs(cas)?);
             for id in active_refs {
                 cas.verify(&id)
                     .map_err(|e| StoreError::Artifact(e.to_string()))?;
@@ -1156,6 +1196,7 @@ impl EventStore {
                 EventType::TaskTransitionV1
                     | EventType::TaskTransitionV2
                     | EventType::TaskTransitionV3
+                    | EventType::TaskTransitionV4
             ) {
                 return Err(conflict("Task log contains a foreign event"));
             }
@@ -1207,6 +1248,8 @@ impl EventStore {
                     lease_until: *lease_until_unix_ms,
                     last_time: transition.now_unix_ms,
                     resume_phase: None,
+                    recording_recovery: None,
+                    recording_report: None,
                     decisions: BTreeMap::new(),
                     execution: None,
                     planning: None,
@@ -1260,20 +1303,23 @@ impl EventStore {
         } else {
             false
         };
-        let valid_until =
-            if owned_record || matches!(transition.change, TaskChangeV1::ReviewContinued { .. }) {
-                state.as_ref().map(|state| {
-                    state.lease_until.min(
-                        state
-                            .plan_id
-                            .as_ref()
-                            .and_then(|id| state.decisions.get(id))
-                            .map_or(u64::MAX, |decision| decision.valid_until),
-                    )
-                })
-            } else {
-                None
-            };
+        let valid_until = if owned_record
+            || matches!(
+                transition.change,
+                TaskChangeV1::ReviewContinued { .. } | TaskChangeV1::RecordingResumed { .. }
+            ) {
+            state.as_ref().map(|state| {
+                state.lease_until.min(
+                    state
+                        .plan_id
+                        .as_ref()
+                        .and_then(|id| state.decisions.get(id))
+                        .map_or(u64::MAX, |decision| decision.valid_until),
+                )
+            })
+        } else {
+            None
+        };
         let refs = references(cas, &transition.change, state.as_ref())?;
         let run_id = task_run_id(task_id)?;
         let event = NewEvent::new(event_type, value.clone()).referencing(refs);

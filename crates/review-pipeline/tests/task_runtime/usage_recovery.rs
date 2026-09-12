@@ -63,10 +63,10 @@ impl WorkerModelAdapter for OutageModel {
             ModelWorkerReturn {
                 message: Err("model output CAS publication failed".into()),
                 raw_artifact_ids: vec![],
-                usage: Some(review_runner::TokenUsage {
-                    input_tokens: Some(u64::MAX),
-                    output_tokens: Some(0),
-                    chargeable_tokens: u64::MAX,
+                usage: Some(review_core::task::usage::TaskTokenUsageV3 {
+                    input_tokens: Some((u128::from(u64::MAX) + 20).into()),
+                    output_tokens: Some(30_u128.into()),
+                    chargeable_tokens: (u128::from(u64::MAX) + 50).into(),
                     ..Default::default()
                 }),
             }
@@ -74,7 +74,7 @@ impl WorkerModelAdapter for OutageModel {
             ModelWorkerReturn {
                 message: Ok(b"OK".to_vec()),
                 raw_artifact_ids: vec![cas.put(b"OK").unwrap()],
-                usage: Some(review_runner::TokenUsage::charge_only(7)),
+                usage: Some(review_runner::TokenUsage::charge_only(7).into()),
             }
         }
     }
@@ -140,18 +140,21 @@ fn worker_and_provider_cas_failure_recover_full_reported_usage_without_another_c
         // including zero, were persisted by the common runtime before canonical publication.
         let wall = f
             .store
-            .attempt_wall(&run)
+            .task_attempt_wall(&run)
             .unwrap()
             .into_iter()
             .find(|wall| {
                 wall.usage
                     .as_ref()
-                    .is_some_and(|usage| usage.chargeable_tokens == u64::MAX)
+                    .is_some_and(|usage| usage.chargeable_tokens.get() == u128::from(u64::MAX) + 50)
             })
             .unwrap();
         let usage = wall.usage.as_ref().unwrap();
-        assert_eq!(usage.input_tokens, Some(u64::MAX));
-        assert_eq!(usage.output_tokens, Some(0));
+        assert_eq!(
+            usage.input_tokens.map(|n| n.get()),
+            Some(u128::from(u64::MAX) + 20)
+        );
+        assert_eq!(usage.output_tokens.map(|n| n.get()), Some(30));
         assert_eq!(usage.cache_read_tokens, None);
         model.restore();
         f.store = EventStore::open(f._directory.path().join("events.sqlite")).unwrap();
@@ -193,7 +196,7 @@ fn worker_and_provider_cas_failure_recover_full_reported_usage_without_another_c
         let execution = state.execution.unwrap();
         assert_eq!(
             execution.budget.committed_tokens(),
-            u128::from(u64::MAX) + if fail_at == 1 { 7 } else { 0 }
+            u128::from(u64::MAX) + 50 + if fail_at == 1 { 7 } else { 0 }
         );
         assert!(execution.budget.breached());
         assert!(execution.pending_attempts().is_empty());
@@ -251,12 +254,12 @@ fn worker_and_provider_cas_failure_recover_full_reported_usage_without_another_c
             review_runner::task::usage::read_task_usage_exact(&f.cas, &settlement[0].1).unwrap();
         assert_eq!(
             recovered_usage.input_tokens.map(|n| n.get()),
-            Some(u64::MAX)
+            Some(u128::from(u64::MAX) + 20)
         );
-        assert_eq!(recovered_usage.output_tokens.map(|n| n.get()), Some(0));
+        assert_eq!(recovered_usage.output_tokens.map(|n| n.get()), Some(30));
         assert_eq!(
             recovered_usage.chargeable_tokens.get(),
-            u128::from(u64::MAX)
+            u128::from(u64::MAX) + 50
         );
     }
 }

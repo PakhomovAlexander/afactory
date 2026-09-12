@@ -164,6 +164,7 @@ pub(super) fn fence_for_transition(
         TaskChangeV1::PlanProposed { .. }
         | TaskChangeV1::PlanAdmitted { .. }
         | TaskChangeV1::PlanDecided { .. }
+        | TaskChangeV1::RecordingResumed { .. }
         | TaskChangeV1::Resumed {} => {}
         TaskChangeV1::LeaseTaken { .. }
         | TaskChangeV1::LeaseRenewed { .. }

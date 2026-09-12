@@ -4,7 +4,8 @@ use crate::TokenUsage;
 use review_core::{
     ArtifactEnvelope, Producer,
     task::usage::{
-        DecimalU64, TASK_TOKEN_USAGE_V1, TASK_TOKEN_USAGE_V2, TaskTokenUsageV1, TaskTokenUsageV2,
+        DecimalU64, TASK_TOKEN_USAGE_V1, TASK_TOKEN_USAGE_V2, TASK_TOKEN_USAGE_V3,
+        TaskTokenUsageV1, TaskTokenUsageV2, TaskTokenUsageV3,
     },
 };
 use review_store::{Cas, validate_envelope};
@@ -76,24 +77,30 @@ impl From<&TokenUsage> for TaskTokenUsageV2 {
     }
 }
 
-pub fn persist_task_usage_exact(
+pub fn persist_task_usage_exact<U: Clone + Into<TaskTokenUsageV3>>(
     cas: &Cas,
     producer: Producer,
     context_id: &str,
-    usage: &TaskTokenUsageV2,
+    usage: &U,
 ) -> Result<String, String> {
+    let usage = usage.clone().into();
+    let narrow = TaskTokenUsageV2::try_from(&usage);
+    let (kind, payload) = match narrow {
+        Ok(value) => (TASK_TOKEN_USAGE_V2, serde_json::to_value(value)),
+        Err(_) => (TASK_TOKEN_USAGE_V3, serde_json::to_value(&usage)),
+    };
     cas.put_artifact(
-        TASK_TOKEN_USAGE_V2,
+        kind,
         producer,
         vec![context_id.into()],
         None,
-        serde_json::to_value(usage).map_err(|error| error.to_string())?,
+        payload.map_err(|error| error.to_string())?,
     )
     .map(|(id, _)| id)
     .map_err(|error| error.to_string())
 }
 
-pub fn read_task_usage_exact(cas: &Cas, id: &str) -> Result<TaskTokenUsageV2, String> {
+pub fn read_task_usage_exact(cas: &Cas, id: &str) -> Result<TaskTokenUsageV3, String> {
     let value = cas.get_json(id).map_err(|error| error.to_string())?;
     if value.get("type").is_some() {
         let envelope: ArtifactEnvelope =
@@ -106,13 +113,33 @@ pub fn read_task_usage_exact(cas: &Cas, id: &str) -> Result<TaskTokenUsageV2, St
             TASK_TOKEN_USAGE_V1 => serde_json::from_value::<TaskTokenUsageV1>(envelope.payload)
                 .map(Into::into)
                 .map_err(|error| error.to_string()),
-            TASK_TOKEN_USAGE_V2 => {
+            TASK_TOKEN_USAGE_V2 => serde_json::from_value::<TaskTokenUsageV2>(envelope.payload)
+                .map(Into::into)
+                .map_err(|error| error.to_string()),
+            TASK_TOKEN_USAGE_V3 => {
                 serde_json::from_value(envelope.payload).map_err(|error| error.to_string())
             }
             _ => Err("Unsupported Task usage artifact version".into()),
         }
     } else {
         let usage: TokenUsage = serde_json::from_value(value).map_err(|error| error.to_string())?;
-        Ok(TaskTokenUsageV2::from(&usage))
+        Ok(TaskTokenUsageV3::from(&usage))
+    }
+}
+
+impl From<&TokenUsage> for TaskTokenUsageV3 {
+    fn from(value: &TokenUsage) -> Self {
+        TaskTokenUsageV1::from(value).into()
+    }
+}
+impl From<TokenUsage> for TaskTokenUsageV3 {
+    fn from(value: TokenUsage) -> Self {
+        Self::from(&value)
+    }
+}
+impl TryFrom<&TaskTokenUsageV3> for TokenUsage {
+    type Error = String;
+    fn try_from(value: &TaskTokenUsageV3) -> Result<Self, Self::Error> {
+        TaskTokenUsageV1::try_from(value).map(Into::into)
     }
 }

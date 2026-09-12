@@ -195,6 +195,18 @@ pub(super) fn admit_heavy_definition(
     LegacyReviewPlanCompiler,
     review_store::store::task::TaskLease,
 ) {
+    admit_heavy_definition_with_limits(cas, store, definition, capture::limits())
+}
+
+pub(super) fn admit_heavy_definition_with_limits(
+    cas: &Cas,
+    store: &mut EventStore,
+    definition: &str,
+    limits: review_core::task::TaskLimitsV1,
+) -> (
+    LegacyReviewPlanCompiler,
+    review_store::store::task::TaskLease,
+) {
     let round = captured_fixture::open_round_authority_with_convergence(
         cas,
         store,
@@ -219,7 +231,7 @@ pub(super) fn admit_heavy_definition(
     )
     .unwrap();
     let task = compiler
-        .prepare_revision(cas, "heavy-review", capture::limits())
+        .prepare_revision(cas, "heavy-review", limits)
         .unwrap();
     let revision_id = plan::artifact(cas, review_core::task::TASK_REVISION_V1, &task);
     let compiled = compiler.compile(cas, &revision_id).unwrap().0;

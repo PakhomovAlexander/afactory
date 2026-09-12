@@ -1,7 +1,7 @@
 //! The wall-clock sidecar: recorded beside the event stream, replaced per Attempt, and absent —
 //! never an error — in a store written before it existed.
 
-use review_core::task::usage::{DecimalU64, TaskTokenUsageV2};
+use review_core::task::usage::{DecimalU128, TaskTokenUsageV2};
 use review_store::{AttemptUsage, AttemptWall, EventStore, TaskAttemptWall};
 
 fn wall(attempt: &str, started_unix_ms: u64, elapsed_ms: u64) -> AttemptWall {
@@ -33,11 +33,14 @@ fn task_wall(attempt: &str, tokens: u128, elapsed_ms: u64) -> TaskAttemptWall {
         epoch: 1,
         started_unix_ms: 1,
         elapsed_ms,
-        usage: Some(TaskTokenUsageV2 {
-            input_tokens: Some(u64::MAX.into()),
-            chargeable_tokens: tokens.into(),
-            ..Default::default()
-        }),
+        usage: Some(
+            TaskTokenUsageV2 {
+                input_tokens: Some(u64::MAX.into()),
+                chargeable_tokens: tokens.into(),
+                ..Default::default()
+            }
+            .into(),
+        ),
     }
 }
 
@@ -240,8 +243,11 @@ fn cumulative_task_usage_preserves_historical_bytes_and_survives_reopen() {
     assert_eq!(rows[0].elapsed_ms, 4);
     let usage = rows[0].usage.as_ref().unwrap();
     assert_eq!(usage.chargeable_tokens.get(), exact);
-    assert_eq!(usage.input_tokens.map(DecimalU64::get), Some(u64::MAX));
-    assert_eq!(usage.output_tokens.map(DecimalU64::get), Some(3000));
+    assert_eq!(
+        usage.input_tokens.map(DecimalU128::get),
+        Some(u128::from(u64::MAX))
+    );
+    assert_eq!(usage.output_tokens.map(DecimalU128::get), Some(3000));
     let conn = rusqlite::Connection::open(&path).unwrap();
     let (old, numeric, kind, new): (String, i64, String, String) = conn.query_row(
         "SELECT usage_v1_json, chargeable_tokens, typeof(usage_v2_json), usage_v2_json FROM attempt_wall",
@@ -363,4 +369,61 @@ fn narrow_task_and_legacy_writes_share_one_monotonic_floor() {
         legacy[0].usage.as_ref().unwrap().input_tokens,
         Some(u64::MAX)
     );
+}
+
+#[test]
+fn native_component_upgrade_preserves_old_bytes_and_refuses_malformed_newest_data() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.sqlite");
+    let store = EventStore::open(&path).unwrap();
+    store.record_attempt_wall(&wall("a", 1, 1)).unwrap();
+    store
+        .record_task_attempt_wall(&task_wall("a", 23_000, 2))
+        .unwrap();
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    let prior = || {
+        conn.query_row(
+            "SELECT usage_v1_json,usage_v2_json FROM attempt_wall",
+            [],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .unwrap()
+    };
+    let old_bytes = prior();
+    let exact = u128::from(u64::MAX) + 20;
+    let mut wide = task_wall("a", exact, 3);
+    let usage = wide.usage.as_mut().unwrap();
+    usage.input_tokens = Some(exact.into());
+    usage.output_tokens = Some(exact.into());
+    usage.cache_read_tokens = Some(exact.into());
+    usage.cache_write_tokens = Some(exact.into());
+    usage.reasoning_tokens = Some(exact.into());
+    store.record_task_attempt_wall(&wide).unwrap();
+    store
+        .record_task_attempt_wall(&task_wall("a", 7, 4))
+        .unwrap();
+    assert_eq!(
+        prior(),
+        old_bytes,
+        "upgrades preserve historical payload text"
+    );
+    drop(store);
+    let store = EventStore::open_read_only(&path).unwrap();
+    assert_eq!(
+        store.task_attempt_wall("campaign-x").unwrap()[0].usage,
+        wide.usage
+    );
+    assert!(store.attempt_wall("campaign-x").is_err());
+    let bytes = std::fs::read(&path).unwrap();
+    drop(store);
+    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    conn.execute("UPDATE attempt_wall SET usage_v3_json='{}'", [])
+        .unwrap();
+    let store = EventStore::open_read_only(&path).unwrap();
+    assert!(
+        store.task_attempt_wall("campaign-x").is_err(),
+        "never fall back to valid v1/v2"
+    );
+    assert!(store.attempt_wall("campaign-x").is_err());
+    assert_eq!(prior(), old_bytes);
 }

@@ -116,6 +116,18 @@ impl TaskProjection {
                 ));
             }
         }
+        self.recording_report = phase
+            .is_none()
+            .then(|| super::recording::RecordingRecovery {
+                revision_id: report.task_revision_id.clone(),
+                plan_id: report.plan_id.clone(),
+                report_id: id.to_string(),
+                outputs: execution
+                    .outputs
+                    .iter()
+                    .map(|(node, (id, _))| (node.clone(), id.clone()))
+                    .collect(),
+            });
         self.run_reports.push(id.to_string());
         Ok(())
     }

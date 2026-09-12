@@ -154,3 +154,5 @@ options you rejected and why — that is the part future-you needs.
 - [0082 — Continue captured Review Rounds within the original Task](0082-continue-captured-review-rounds-within-the-original-task.md)
 - [0083 — Run post-Round Integration within the original Task](0083-run-post-round-integration-within-the-original-task.md)
 - [0084 — Route new Review commands through the common Task](0084-route-new-review-commands-through-the-common-task.md)
+- [0085 — Retain exact native Task usage across multiple turns](0085-retain-exact-native-task-usage-across-multiple-turns.md)
+- [0086 — Record expired Review publication without restarting work](0086-record-expired-review-publication-without-restarting-work.md)

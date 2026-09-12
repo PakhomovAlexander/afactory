@@ -1,7 +1,7 @@
 //! Additive exact-usage sidecar. Historical numeric columns remain readable.
 
 use super::{AttemptUsage, AttemptWall, EventStore, StoreError, TaskAttemptWall};
-use review_core::task::usage::{DecimalU64, TaskTokenUsageV1, TaskTokenUsageV2};
+use review_core::task::usage::{DecimalU64, TaskTokenUsageV1, TaskTokenUsageV2, TaskTokenUsageV3};
 use rusqlite::{Connection, OptionalExtension, Row, Transaction, TransactionBehavior};
 
 impl From<&AttemptUsage> for TaskTokenUsageV1 {
@@ -53,6 +53,24 @@ impl TryFrom<TaskTokenUsageV2> for AttemptUsage {
     }
 }
 
+impl From<&AttemptUsage> for TaskTokenUsageV3 {
+    fn from(value: &AttemptUsage) -> Self {
+        TaskTokenUsageV1::from(value).into()
+    }
+}
+impl TryFrom<TaskTokenUsageV3> for AttemptUsage {
+    type Error = StoreError;
+    fn try_from(value: TaskTokenUsageV3) -> Result<Self, Self::Error> {
+        TaskTokenUsageV1::try_from(&value)
+            .map(Into::into)
+            .map_err(|error| {
+                StoreError::Conflict(format!(
+                    "Task Attempt usage exceeds the legacy u64 range: {error}"
+                ))
+            })
+    }
+}
+
 fn has_usage_column(conn: &Connection, name: &str) -> Result<bool, rusqlite::Error> {
     conn.query_row(
         "SELECT count(*) FROM pragma_table_info('attempt_wall') WHERE name = ?1",
@@ -62,11 +80,14 @@ fn has_usage_column(conn: &Connection, name: &str) -> Result<bool, rusqlite::Err
 }
 
 pub(super) fn migrate(conn: &Connection) -> Result<(), StoreError> {
-    if has_usage_column(conn, "usage_v1_json")? && has_usage_column(conn, "usage_v2_json")? {
+    if has_usage_column(conn, "usage_v1_json")?
+        && has_usage_column(conn, "usage_v2_json")?
+        && has_usage_column(conn, "usage_v3_json")?
+    {
         return Ok(());
     }
     let transaction = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    for name in ["usage_v1_json", "usage_v2_json"] {
+    for name in ["usage_v1_json", "usage_v2_json", "usage_v3_json"] {
         if !has_usage_column(&transaction, name)? {
             transaction
                 .execute_batch(&format!("ALTER TABLE attempt_wall ADD COLUMN {name} TEXT"))?;
@@ -76,7 +97,7 @@ pub(super) fn migrate(conn: &Connection) -> Result<(), StoreError> {
     Ok(())
 }
 
-fn usage(row: &Row<'_>, offset: usize) -> Result<Option<TaskTokenUsageV2>, rusqlite::Error> {
+fn usage(row: &Row<'_>, offset: usize) -> Result<Option<TaskTokenUsageV3>, rusqlite::Error> {
     let error = |column, error| {
         rusqlite::Error::FromSqlConversionFailure(
             column,
@@ -86,9 +107,14 @@ fn usage(row: &Row<'_>, offset: usize) -> Result<Option<TaskTokenUsageV2>, rusql
     };
     // Presence selects the version, including on failure. A malformed newer payload must
     // never fall back to historical bytes or pretend that paid usage was absent.
+    if let Some(exact) = row.get::<_, Option<String>>(offset + 8)? {
+        return serde_json::from_str::<TaskTokenUsageV3>(&exact)
+            .map(Some)
+            .map_err(|e| error(offset + 8, e));
+    }
     if let Some(exact) = row.get::<_, Option<String>>(offset + 7)? {
         return serde_json::from_str::<TaskTokenUsageV2>(&exact)
-            .map(Some)
+            .map(|value| Some(value.into()))
             .map_err(|e| error(offset + 7, e));
     }
     if let Some(exact) = row.get::<_, Option<String>>(offset + 6)? {
@@ -112,12 +138,13 @@ fn usage(row: &Row<'_>, offset: usize) -> Result<Option<TaskTokenUsageV2>, rusql
                 cache_write_tokens: optional(offset + 3)?,
                 reasoning_tokens: optional(offset + 4)?,
                 chargeable_tokens: u128::from(unsigned(chargeable)).into(),
-            })
+            }
+            .into())
         })
         .transpose()
 }
 
-fn merge_usage(current: &mut Option<TaskTokenUsageV2>, previous: Option<TaskTokenUsageV2>) {
+fn merge_usage(current: &mut Option<TaskTokenUsageV3>, previous: Option<TaskTokenUsageV3>) {
     if let Some(previous) = previous {
         match current {
             Some(usage) => {
@@ -154,7 +181,7 @@ impl EventStore {
     }
 
     /// Record an exact cumulative Task usage floor before fallible output publication.
-    /// Native components remain u64; the charge can aggregate multiple Provider operations.
+    /// Native turn components and charge retain their full aggregate range.
     pub fn record_task_attempt_wall(&self, wall: &TaskAttemptWall) -> Result<(), StoreError> {
         self.record_wall(wall, false)
     }
@@ -169,20 +196,36 @@ impl EventStore {
         let previous = transaction
             .query_row(
                 "SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                reasoning_tokens, chargeable_tokens, usage_v1_json, usage_v2_json
+                reasoning_tokens, chargeable_tokens, usage_v1_json, usage_v2_json, usage_v3_json
              FROM attempt_wall WHERE run_id = ?1 AND attempt_id = ?2",
                 rusqlite::params![wall.run_id, wall.attempt_id],
-                |row| Ok((usage(row, 0)?, row.get::<_, Option<String>>(7)?.is_some())),
+                |row| {
+                    Ok((
+                        usage(row, 0)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?.is_some(),
+                    ))
+                },
             )
             .optional()?;
-        let has_v2 = previous.as_ref().is_some_and(|(_, has_v2)| *has_v2);
+        let prior_v2 = previous.as_ref().and_then(|(_, v2, _)| v2.clone());
+        let has_v3 = previous.as_ref().is_some_and(|(_, _, v3)| *v3);
         let mut usage = wall.usage.clone();
-        merge_usage(&mut usage, previous.and_then(|(usage, _)| usage));
-        let exact = if !legacy || has_v2 {
-            usage.as_ref().map(serde_json::to_string).transpose()?
+        merge_usage(&mut usage, previous.and_then(|(usage, _, _)| usage));
+        let wide = has_v3
+            || usage
+                .as_ref()
+                .is_some_and(|u| TaskTokenUsageV2::try_from(u).is_err());
+        let exact = usage.as_ref().map(serde_json::to_string).transpose()?;
+        // Upgrading a row never rewrites the frozen older-version text.
+        let v2 = if wide {
+            prior_v2
+        } else if !legacy || prior_v2.is_some() {
+            exact.clone()
         } else {
             None
         };
+        let v3 = if wide { exact.clone() } else { None };
         let started = bounded(wall.started_unix_ms, "start")?;
         let elapsed = bounded(wall.elapsed_ms, "elapsed")?;
         if legacy {
@@ -197,8 +240,8 @@ impl EventStore {
                 "INSERT OR REPLACE INTO attempt_wall (
                     run_id, attempt_id, node_id, round, epoch, started_unix_ms, elapsed_ms,
                     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                    reasoning_tokens, chargeable_tokens, usage_v1_json, usage_v2_json
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    reasoning_tokens, chargeable_tokens, usage_v1_json, usage_v2_json, usage_v3_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
                 rusqlite::params![
                     wall.run_id,
                     wall.attempt_id,
@@ -214,19 +257,20 @@ impl EventStore {
                     integer(usage.as_ref().and_then(|u| u.reasoning_tokens)),
                     integer(usage.as_ref().map(|u| u.chargeable_tokens)),
                     v1,
-                    exact
+                    v2,
+                    v3
                 ],
             )?;
         } else {
             // Upgrading a measurement preserves existing historical bytes and numeric columns.
             transaction.execute(
                 "INSERT INTO attempt_wall (run_id, attempt_id, node_id, round, epoch,
-                    started_unix_ms, elapsed_ms, usage_v2_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                    started_unix_ms, elapsed_ms, usage_v2_json, usage_v3_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                  ON CONFLICT(run_id, attempt_id) DO UPDATE SET
                     node_id=excluded.node_id, round=excluded.round, epoch=excluded.epoch,
                     started_unix_ms=excluded.started_unix_ms, elapsed_ms=excluded.elapsed_ms,
-                    usage_v2_json=excluded.usage_v2_json",
+                    usage_v2_json=excluded.usage_v2_json, usage_v3_json=excluded.usage_v3_json",
                 rusqlite::params![
                     wall.run_id,
                     wall.attempt_id,
@@ -235,7 +279,8 @@ impl EventStore {
                     i64::from(wall.epoch),
                     started,
                     elapsed,
-                    exact
+                    v2,
+                    v3
                 ],
             )?;
         }
@@ -282,10 +327,11 @@ impl EventStore {
         };
         let v1 = column("usage_v1_json")?;
         let v2 = column("usage_v2_json")?;
+        let v3 = column("usage_v3_json")?;
         let mut statement = self.conn.prepare(&format!(
             "SELECT attempt_id, node_id, round, epoch, started_unix_ms, elapsed_ms,
                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                reasoning_tokens, chargeable_tokens, {v1}, {v2}
+                reasoning_tokens, chargeable_tokens, {v1}, {v2}, {v3}
              FROM attempt_wall WHERE run_id = ?1 ORDER BY started_unix_ms, attempt_id"
         ))?;
         let rows = statement.query_map([run_id], |row| {

@@ -93,7 +93,7 @@ fn presentation_retains_original_review_ports_and_selected_transport_fields_with
         raw_artifact: provenance.raw_artifact_id,
         result_artifact: selection.result_artifact_id,
     };
-    assert_eq!(evidence, [expected]);
+    assert_eq!(evidence, [expected.into()]);
     assert_eq!(host.ledger().findings().len(), 1);
     // Fresh presentation shares the same durable facts, with no legacy Kernel construction.
     let reopened =

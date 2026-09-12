@@ -1,12 +1,12 @@
 //! Common Review presentation reads the original Round and the Campaign's one Task budget.
 //! Selected transport observations never stand in for retries, Provider or late usage charges.
 
-use review_core::task::usage::{DecimalU64, DecimalU128, TaskTokenUsageV1};
+use review_core::task::usage::{DecimalU64, DecimalU128, TaskTokenUsageV1, TaskTokenUsageV3};
 use review_core::task::{
     TaskAcceptanceV1, TaskExecutionV1, TaskLimitsV1, TaskPhaseV1, TaskResultV1,
 };
 use review_graph::{NodeOutcome, RunReport, SuppressionReason};
-use review_pipeline::{AttemptEvidence, RunVerdict};
+use review_pipeline::{RunVerdict, TaskAttemptEvidence};
 use review_store::{Cas, EventStore, Ledger, Verdict};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -44,7 +44,7 @@ struct Presentation<'a> {
     task: TaskView,
     report: &'a RunReport,
     ledger: &'a Ledger,
-    attempts: &'a [AttemptEvidence],
+    attempts: &'a [TaskAttemptEvidence],
     round_verdict: &'a RunVerdict,
     continuation_required: bool,
     ledger_production: &'static str,
@@ -253,35 +253,30 @@ fn add(sum: u128, value: u128) -> Result<u128, String> {
 }
 
 fn sum(
-    attempts: &[AttemptEvidence],
-    select: impl Fn(&AttemptEvidence) -> u64,
+    attempts: &[TaskAttemptEvidence],
+    select: impl Fn(&TaskAttemptEvidence) -> u128,
 ) -> Result<DecimalU128, String> {
     attempts
         .iter()
-        .try_fold(0_u128, |total, attempt| {
-            add(total, u128::from(select(attempt)))
-        })
+        .try_fold(0_u128, |total, attempt| add(total, select(attempt)))
         .map(Into::into)
 }
 
-fn selected_totals(attempts: &[AttemptEvidence]) -> Result<Value, String> {
+fn selected_totals(attempts: &[TaskAttemptEvidence]) -> Result<Value, String> {
     let mut usage = BTreeMap::<&str, DecimalU128>::new();
     for (name, select) in [
         (
             "input_tokens",
-            (|u: &review_runner::TokenUsage| u.input_tokens)
-                as fn(&review_runner::TokenUsage) -> Option<u64>,
+            (|u: &TaskTokenUsageV3| u.input_tokens) as fn(&TaskTokenUsageV3) -> Option<DecimalU128>,
         ),
-        ("output_tokens", |u: &review_runner::TokenUsage| {
-            u.output_tokens
-        }),
-        ("cache_read_tokens", |u: &review_runner::TokenUsage| {
+        ("output_tokens", |u: &TaskTokenUsageV3| u.output_tokens),
+        ("cache_read_tokens", |u: &TaskTokenUsageV3| {
             u.cache_read_tokens
         }),
-        ("cache_write_tokens", |u: &review_runner::TokenUsage| {
+        ("cache_write_tokens", |u: &TaskTokenUsageV3| {
             u.cache_write_tokens
         }),
-        ("reasoning_tokens", |u: &review_runner::TokenUsage| {
+        ("reasoning_tokens", |u: &TaskTokenUsageV3| {
             u.reasoning_tokens
         }),
     ] {
@@ -291,19 +286,19 @@ fn selected_totals(attempts: &[AttemptEvidence]) -> Result<Value, String> {
                 name,
                 values
                     .into_iter()
-                    .try_fold(0_u128, |total, value| add(total, u128::from(value)))?
+                    .try_fold(0_u128, |total, value| add(total, value.get()))?
                     .into(),
             );
         }
     }
     usage.insert(
         "chargeable_tokens",
-        sum(attempts, |a| a.usage.chargeable_tokens)?,
+        sum(attempts, |a| a.usage.chargeable_tokens.get())?,
     );
     Ok(
         json!({"count":u64::try_from(attempts.len()).map_err(|_| "Review Attempt count exceeds u64")?.to_string(),
         "cost_tokens":sum(attempts, |a| a.cost_tokens)?,
-        "context":{"rendered_bytes":sum(attempts, |a| a.context_manifest.rendered_bytes)?,"estimated_tokens":sum(attempts, |a| a.context_manifest.estimated_tokens)?},
+        "context":{"rendered_bytes":sum(attempts, |a| u128::from(a.context_manifest.rendered_bytes))?,"estimated_tokens":sum(attempts, |a| u128::from(a.context_manifest.estimated_tokens))?},
         "usage":usage}),
     )
 }
@@ -319,7 +314,7 @@ fn manifest_value(manifest: &review_runner::ContextManifest) -> Value {
     json!({"entries":entries,"rendered_bytes":manifest.rendered_bytes.to_string(),"estimated_tokens":manifest.estimated_tokens.to_string()})
 }
 
-fn available_results(cas: &Cas, attempts: &[AttemptEvidence]) -> Result<Vec<Value>, String> {
+fn available_results(cas: &Cas, attempts: &[TaskAttemptEvidence]) -> Result<Vec<Value>, String> {
     attempts.iter().map(|attempt| {
         let result = cas.get_json(&attempt.result_artifact).map_err(|e| e.to_string())?;
         let reports = result.get("reports").or_else(|| result.get("findings"))
@@ -374,18 +369,31 @@ impl Presentation<'_> {
                 SuppressionReason::BranchNotSelected=>"branch_not_selected",SuppressionReason::GateBlocked=>"gate_blocked",SuppressionReason::UpstreamMissing=>"upstream_missing",
             }}),
         }).collect();
-        let attempts: Vec<_> = self.attempts.iter().map(|a| json!({
-            "node":a.node,"attempt_id":a.attempt_id,"cost_tokens":a.cost_tokens.to_string(),
-            "usage":TaskTokenUsageV1::from(&a.usage),"context_manifest":manifest_value(&a.context_manifest),
-            "raw_artifact":a.raw_artifact,"result_artifact":a.result_artifact,
-        })).collect();
+        let attempts: Vec<_> = self
+            .attempts
+            .iter()
+            .map(|a| {
+                json!({
+                    "node":a.node,"attempt_id":a.attempt_id,"cost_tokens":a.cost_tokens.to_string(),
+                    "usage":a.usage,"context_manifest":manifest_value(&a.context_manifest),
+                    "raw_artifact":a.raw_artifact,"result_artifact":a.result_artifact,
+                })
+            })
+            .collect();
         let available = if self.ledger_production.starts_with("not_produced_") {
             available_results(cas, self.attempts)?
         } else {
             Vec::new()
         };
+        let schema = if self.attempts.iter().any(|a| {
+            a.cost_tokens > u128::from(u64::MAX) || TaskTokenUsageV1::try_from(&a.usage).is_err()
+        }) {
+            "af/review-outcome@3"
+        } else {
+            "af/review-outcome@2"
+        };
         Ok((
-            json!({"schema":"af/review-outcome@2","campaign_mode":self.mode.as_str(),"candidate":self.candidate,
+            json!({"schema":schema,"campaign_mode":self.mode.as_str(),"candidate":self.candidate,
             "run_id":self.run_id,"authority":self.authority,"task":self.task,
             "node_outcomes":nodes,"blocked_gates":self.report.blocked_gates,"attempts":attempts,
             "totals":{"selected_attempts":selected_totals(self.attempts)?,"open_required_demands":u64::try_from(demands.len()).map_err(|_|"Demand count exceeds u64")?.to_string(),"open_or_stale_demand_ids":demands},
@@ -568,8 +576,12 @@ mod tests {
         task.result.as_ref().unwrap().validate().unwrap();
     }
     fn validator() -> &'static jsonschema::Validator {
+        validator_for(false)
+    }
+    fn validator_for(wide: bool) -> &'static jsonschema::Validator {
         static VALIDATOR: OnceLock<jsonschema::Validator> = OnceLock::new();
-        VALIDATOR.get_or_init(|| {
+        static WIDE: OnceLock<jsonschema::Validator> = OnceLock::new();
+        (if wide { &WIDE } else { &VALIDATOR }).get_or_init(|| {
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas");
             let mut options = jsonschema::options();
             for name in [
@@ -578,6 +590,7 @@ mod tests {
                 "task-result-v1.json",
                 "task-token-usage-v1.json",
                 "task-token-usage-v2.json",
+                "task-token-usage-v3.json",
             ] {
                 let value: Value =
                     serde_json::from_slice(&std::fs::read(dir.join(name)).unwrap()).unwrap();
@@ -586,9 +599,15 @@ mod tests {
                     jsonschema::Resource::from_contents(value).unwrap(),
                 );
             }
-            let schema: Value =
-                serde_json::from_slice(&std::fs::read(dir.join("review-outcome-v2.json")).unwrap())
-                    .unwrap();
+            let schema: Value = serde_json::from_slice(
+                &std::fs::read(dir.join(if wide {
+                    "review-outcome-v3.json"
+                } else {
+                    "review-outcome-v2.json"
+                }))
+                .unwrap(),
+            )
+            .unwrap();
             options.build(&schema).unwrap()
         })
     }
@@ -677,15 +696,16 @@ mod tests {
         }]})).unwrap();
         let raw = cas.put_json(&json!({"captured":"transport"})).unwrap();
         let attempts: Vec<_> = (1..=2)
-            .map(|n| AttemptEvidence {
+            .map(|n| TaskAttemptEvidence {
                 node: format!("scatter#{n}"),
                 attempt_id: format!("{n:026}"),
-                cost_tokens: u64::MAX,
+                cost_tokens: u128::from(u64::MAX),
                 usage: TokenUsage {
                     input_tokens: Some(u64::MAX),
                     chargeable_tokens: u64::MAX,
                     ..TokenUsage::default()
-                },
+                }
+                .into(),
                 context_manifest: ContextManifest {
                     entries: vec![review_runner::ContextEntry {
                         name: "worker_input".into(),
@@ -865,5 +885,42 @@ mod tests {
         let mut inconclusive = clean;
         inconclusive["task"]["result"]["acceptance"] = json!("inconclusive");
         assert!(!validator().is_valid(&inconclusive));
+        let mut exact_attempts = attempts.clone();
+        for attempt in &mut exact_attempts {
+            attempt.cost_tokens += 20;
+            attempt.usage.input_tokens = Some((u128::from(u64::MAX) + 20).into());
+            attempt.usage.chargeable_tokens = attempt.cost_tokens.into();
+        }
+        view.attempts = &exact_attempts;
+        view.task = self::task();
+        view.task.committed_tokens = (selected + 47).into();
+        view.round_verdict = &verdict;
+        view.continuation_required = false;
+        view.ledger_production = "not_produced_upstream_missing";
+        let (wide, _) = view.value(&cas).unwrap();
+        assert_eq!(wide["schema"], "af/review-outcome@3");
+        assert!(
+            validator_for(true).is_valid(&wide),
+            "{:?}",
+            validator_for(true).iter_errors(&wide).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            wide["totals"]["selected_attempts"]["cost_tokens"],
+            (selected + 40).to_string()
+        );
+        assert_eq!(
+            wide["attempts"][0]["usage"]["input_tokens"],
+            (u128::from(u64::MAX) + 20).to_string()
+        );
+        let mut invalid = wide.clone();
+        invalid["schema"] = json!("af/review-outcome@2");
+        assert!(
+            !validator().is_valid(&invalid),
+            "old per-Attempt range stays frozen"
+        );
+        invalid = wide;
+        invalid["attempts"][0]["usage"]["input_tokens"] =
+            json!("340282366920938463463374607431768211456");
+        assert!(!validator_for(true).is_valid(&invalid));
     }
 }

@@ -169,3 +169,108 @@ impl From<TaskTokenUsageV1> for TaskTokenUsageV2 {
         }
     }
 }
+
+pub const TASK_TOKEN_USAGE_V3: &str = "af/TaskTokenUsage@3";
+
+/// One native invocation can contain many turns. Both its components and charge are exact
+/// cumulative counters; the captured reservation remains a separate, unchanged u64 limit.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskTokenUsageV3 {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub input_tokens: Option<DecimalU128>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub output_tokens: Option<DecimalU128>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub cache_read_tokens: Option<DecimalU128>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub cache_write_tokens: Option<DecimalU128>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub reasoning_tokens: Option<DecimalU128>,
+    pub chargeable_tokens: DecimalU128,
+}
+
+impl TaskTokenUsageV3 {
+    pub fn charge_only(chargeable_tokens: u128) -> Self {
+        Self {
+            chargeable_tokens: chargeable_tokens.into(),
+            ..Self::default()
+        }
+    }
+}
+
+impl From<TaskTokenUsageV2> for TaskTokenUsageV3 {
+    fn from(value: TaskTokenUsageV2) -> Self {
+        let widen = |n: DecimalU64| u128::from(n.get()).into();
+        Self {
+            input_tokens: value.input_tokens.map(widen),
+            output_tokens: value.output_tokens.map(widen),
+            cache_read_tokens: value.cache_read_tokens.map(widen),
+            cache_write_tokens: value.cache_write_tokens.map(widen),
+            reasoning_tokens: value.reasoning_tokens.map(widen),
+            chargeable_tokens: value.chargeable_tokens,
+        }
+    }
+}
+
+impl From<TaskTokenUsageV1> for TaskTokenUsageV3 {
+    fn from(value: TaskTokenUsageV1) -> Self {
+        TaskTokenUsageV2::from(value).into()
+    }
+}
+
+impl TryFrom<&TaskTokenUsageV3> for TaskTokenUsageV2 {
+    type Error = String;
+    fn try_from(value: &TaskTokenUsageV3) -> Result<Self, Self::Error> {
+        let narrow = |n: DecimalU128| {
+            u64::try_from(n.get())
+                .map(Into::into)
+                .map_err(|_| "Task usage component exceeds the frozen u64 range".to_owned())
+        };
+        Ok(Self {
+            input_tokens: value.input_tokens.map(narrow).transpose()?,
+            output_tokens: value.output_tokens.map(narrow).transpose()?,
+            cache_read_tokens: value.cache_read_tokens.map(narrow).transpose()?,
+            cache_write_tokens: value.cache_write_tokens.map(narrow).transpose()?,
+            reasoning_tokens: value.reasoning_tokens.map(narrow).transpose()?,
+            chargeable_tokens: value.chargeable_tokens,
+        })
+    }
+}
+
+impl TryFrom<&TaskTokenUsageV3> for TaskTokenUsageV1 {
+    type Error = String;
+    fn try_from(value: &TaskTokenUsageV3) -> Result<Self, Self::Error> {
+        let value = TaskTokenUsageV2::try_from(value)?;
+        Ok(Self {
+            input_tokens: value.input_tokens,
+            output_tokens: value.output_tokens,
+            cache_read_tokens: value.cache_read_tokens,
+            cache_write_tokens: value.cache_write_tokens,
+            reasoning_tokens: value.reasoning_tokens,
+            chargeable_tokens: u64::try_from(value.chargeable_tokens.get())
+                .map_err(|_| "Task usage charge exceeds the frozen u64 range".to_owned())?
+                .into(),
+        })
+    }
+}

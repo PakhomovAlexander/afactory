@@ -240,3 +240,98 @@ fn cumulative_usage_keeps_native_components_and_rejects_invalid_decimal_encoding
     assert_invalid("task-execution-record-v3.json", &started, "accounting only");
     assert!(serde_json::from_value::<TaskExecutionRecordV3>(started).is_err());
 }
+
+#[test]
+fn native_turn_components_have_an_additive_exact_generation() {
+    use review_core::task::usage::{TaskTokenUsageV2, TaskTokenUsageV3};
+    for tokens in [
+        0,
+        u128::from(u64::MAX),
+        u128::from(u64::MAX) + 20,
+        u128::MAX,
+    ] {
+        let usage = TaskTokenUsageV3 {
+            input_tokens: Some(tokens.into()),
+            output_tokens: Some(tokens.into()),
+            cache_read_tokens: Some(tokens.into()),
+            cache_write_tokens: Some(tokens.into()),
+            reasoning_tokens: Some(tokens.into()),
+            chargeable_tokens: tokens.into(),
+        };
+        let value = serde_json::to_value(&usage).unwrap();
+        assert_valid("task-token-usage-v3.json", &value);
+        review_core::json::admit(&value).unwrap();
+        assert_eq!(
+            serde_json::from_value::<TaskTokenUsageV3>(value.clone()).unwrap(),
+            usage
+        );
+        assert_eq!(
+            TaskTokenUsageV2::try_from(&usage).is_ok(),
+            tokens <= u128::from(u64::MAX)
+        );
+        assert_eq!(
+            serde_json::from_value::<TaskTokenUsageV2>(value.clone()).is_ok(),
+            tokens <= u128::from(u64::MAX)
+        );
+        assert_eq!(
+            serde_json::from_value::<TaskTokenUsageV1>(value).is_ok(),
+            tokens <= u128::from(u64::MAX)
+        );
+    }
+    for field in [
+        "input_tokens",
+        "output_tokens",
+        "cache_read_tokens",
+        "cache_write_tokens",
+        "reasoning_tokens",
+        "chargeable_tokens",
+    ] {
+        for bad in [
+            json!(0),
+            json!(null),
+            json!("01"),
+            json!("-1"),
+            json!("340282366920938463463374607431768211456"),
+        ] {
+            let mut value = json!({"chargeable_tokens":"0"});
+            value[field] = bad;
+            assert_invalid("task-token-usage-v3.json", &value, "exact component range");
+            assert!(serde_json::from_value::<TaskTokenUsageV3>(value).is_err());
+        }
+    }
+}
+
+#[test]
+fn task_review_provenance_upgrades_only_the_charge_generation() {
+    use review_core::task::review_compat::{
+        TaskReviewAttemptProvenanceV1, TaskReviewAttemptProvenanceV2,
+    };
+    let id = format!("sha256:{}", "a".repeat(64));
+    let mut value = json!({"context_id":id,"task_invocation_id":id,"attempt_id":"a".repeat(26),
+        "review_node":"reviewer","result_artifact_id":id,"mutations_artifact_id":id,
+        "raw_artifact_id":id,"usage_id":id,"charged_tokens":(u128::from(u64::MAX)+20).to_string()});
+    assert_valid("task-review-attempt-provenance-v2.json", &value);
+    serde_json::from_value::<TaskReviewAttemptProvenanceV2>(value.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    assert_invalid(
+        "task-review-attempt-provenance-v1.json",
+        &value,
+        "frozen provenance range",
+    );
+    assert!(serde_json::from_value::<TaskReviewAttemptProvenanceV1>(value.clone()).is_err());
+    for bad in [
+        json!(null),
+        json!("01"),
+        json!("340282366920938463463374607431768211456"),
+    ] {
+        value["charged_tokens"] = bad;
+        assert_invalid(
+            "task-review-attempt-provenance-v2.json",
+            &value,
+            "strict provenance range",
+        );
+        assert!(serde_json::from_value::<TaskReviewAttemptProvenanceV2>(value.clone()).is_err());
+    }
+}

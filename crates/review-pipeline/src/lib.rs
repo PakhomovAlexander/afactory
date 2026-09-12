@@ -284,6 +284,46 @@ pub struct AttemptEvidence {
     pub result_artifact: String,
 }
 
+/// Exact selected Task transport observations, separate from the frozen legacy view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskAttemptEvidence {
+    pub node: String,
+    pub attempt_id: String,
+    pub cost_tokens: u128,
+    pub usage: review_core::task::usage::TaskTokenUsageV3,
+    pub context_manifest: ContextManifest,
+    pub raw_artifact: String,
+    pub result_artifact: String,
+}
+impl From<AttemptEvidence> for TaskAttemptEvidence {
+    fn from(value: AttemptEvidence) -> Self {
+        Self {
+            node: value.node,
+            attempt_id: value.attempt_id,
+            cost_tokens: u128::from(value.cost_tokens),
+            usage: value.usage.into(),
+            context_manifest: value.context_manifest,
+            raw_artifact: value.raw_artifact,
+            result_artifact: value.result_artifact,
+        }
+    }
+}
+impl TryFrom<TaskAttemptEvidence> for AttemptEvidence {
+    type Error = String;
+    fn try_from(value: TaskAttemptEvidence) -> Result<Self, Self::Error> {
+        Ok(Self {
+            node: value.node,
+            attempt_id: value.attempt_id,
+            cost_tokens: u64::try_from(value.cost_tokens)
+                .map_err(|_| "Task evidence exceeds the legacy charge range".to_owned())?,
+            usage: TokenUsage::try_from(&value.usage)?,
+            context_manifest: value.context_manifest,
+            raw_artifact: value.raw_artifact,
+            result_artifact: value.result_artifact,
+        })
+    }
+}
+
 /// The immutable publication boundary every event emitted by one Round execution inherits.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoundAuthority {

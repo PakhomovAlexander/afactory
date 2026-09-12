@@ -636,7 +636,15 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
         };
         let payload = serde_json::to_value(payload).map_err(|e| e.to_string())?;
         let mut store = self.domain.store.lock().expect("Task Store");
-        if !self.captured.compilation.graph.owned_children.is_empty() {
+        let state = store
+            .task_projection(cas, &self.task.task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Review Task disappeared before invocation publication")?;
+        if state.has_recording_recovery() {
+            store
+                .check_task_recorded_invocation(cas, &self.lease, invocation_id, &self.authority())
+                .map_err(|e| e.to_string())?;
+        } else if !self.captured.compilation.graph.owned_children.is_empty() {
             store
                 .check_current_task_plan_for_recording(cas, &self.lease, &self.authority())
                 .map_err(|e| e.to_string())?;
@@ -645,10 +653,6 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
                 .check_task_dispatch(cas, &self.lease, &self.authority())
                 .map_err(|e| e.to_string())?;
         }
-        let state = store
-            .task_projection(cas, &self.task.task_id)
-            .map_err(|e| e.to_string())?
-            .ok_or("Review Task disappeared before invocation publication")?;
         if state
             .execution
             .as_ref()
@@ -838,7 +842,7 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
             self.execute_reviewer(cas, input, attempt, broker)
         } else {
             TaskWorkOutput {
-                usage: Some(review_runner::TokenUsage::charge_only(0)),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 outputs: if broker.is_some() {
                     Err("Review domain operation does not consume Broker Handles".into())
                 } else {

@@ -13,6 +13,8 @@ use serde_json::{Value, json};
 
 #[path = "task_public_schemas/broker.rs"]
 mod broker;
+#[path = "../../review-pipeline/tests/support/captured_review_continuation.rs"]
+mod captured_continuation;
 #[path = "../../review-pipeline/tests/support/captured_review.rs"]
 mod captured_fixture;
 #[path = "task_public_schemas/continuation.rs"]
@@ -21,6 +23,8 @@ mod continuation;
 mod integration;
 #[path = "task_public_schemas/owned.rs"]
 mod owned;
+#[path = "task_public_schemas/recording.rs"]
+mod recording;
 #[path = "support/task_cli.rs"]
 mod task_cli;
 

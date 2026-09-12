@@ -80,11 +80,14 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
                 } else {
                     Ok(bytes)
                 },
-                usage: Some(review_runner::TokenUsage {
-                    input_tokens: Some(if n == self.overrun_at { u64::MAX } else { cost }),
-                    chargeable_tokens: if n == self.overrun_at { u64::MAX } else { cost },
-                    ..Default::default()
-                }),
+                usage: Some(
+                    review_runner::TokenUsage {
+                        input_tokens: Some(if n == self.overrun_at { u64::MAX } else { cost }),
+                        chargeable_tokens: if n == self.overrun_at { u64::MAX } else { cost },
+                        ..Default::default()
+                    }
+                    .into(),
+                ),
             }
         }
     }
@@ -195,7 +198,10 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
                     let usage =
                         review_runner::task::usage::read_task_usage_exact(&f.cas, &usage_id)
                             .unwrap();
-                    assert_eq!(usage.input_tokens.map(|n| n.get()), Some(u64::MAX));
+                    assert_eq!(
+                        usage.input_tokens.map(|n| n.get()),
+                        Some(u128::from(u64::MAX))
+                    );
                     assert_eq!(usage.chargeable_tokens.get(), u128::from(u64::MAX));
                     wide_receipts += 1;
                 }
@@ -229,9 +235,9 @@ fn one_attempt_retains_aggregate_charge_above_u64_through_failure_and_reopen() {
         ) -> TaskWorkOutput {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let mut result = self.inner.execute(cas, input, attempt);
-            result.usage = Some(review_runner::TokenUsage {
-                input_tokens: Some(u64::MAX),
-                chargeable_tokens: u64::MAX,
+            result.usage = Some(review_core::task::usage::TaskTokenUsageV3 {
+                input_tokens: Some((u128::from(u64::MAX) + 17).into()),
+                chargeable_tokens: (u128::from(u64::MAX) + 17).into(),
                 ..Default::default()
             });
             result.charged_tokens = Some(u128::from(u64::MAX) + 17);
@@ -282,7 +288,7 @@ fn one_attempt_retains_aggregate_charge_above_u64_through_failure_and_reopen() {
     assert_eq!(walls.len(), 1);
     let usage = walls[0].usage.as_ref().unwrap();
     assert_eq!(usage.chargeable_tokens.get(), exact);
-    assert_eq!(usage.input_tokens.map(|n| n.get()), Some(u64::MAX));
+    assert_eq!(usage.input_tokens.map(|n| n.get()), Some(exact));
     assert!(f.store.attempt_wall(&run).is_err());
     let state = f
         .store
@@ -314,7 +320,7 @@ fn one_attempt_retains_aggregate_charge_above_u64_through_failure_and_reopen() {
                 let envelope = f.cas.get_artifact(&id).unwrap();
                 assert_eq!(
                     envelope.artifact_type,
-                    review_core::task::usage::TASK_TOKEN_USAGE_V2
+                    review_core::task::usage::TASK_TOKEN_USAGE_V3
                 );
                 assert_eq!(envelope.payload["chargeable_tokens"], exact.to_string());
                 settled += 1;

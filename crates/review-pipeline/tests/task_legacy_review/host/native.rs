@@ -52,9 +52,9 @@ impl WorkerModelAdapter for Model {
                 )
             }
         };
-        let mut usage = review_runner::TokenUsage::charge_only(usage);
+        let mut usage = review_core::task::usage::TaskTokenUsageV3::charge_only(usage);
         if self.wide && n > 0 {
-            usage.input_tokens = Some(u64::MAX);
+            usage.input_tokens = Some((u128::from(u64::MAX) + 20).into());
         }
         ModelWorkerReturn {
             message: Ok(message.as_bytes().to_vec()),
@@ -249,9 +249,21 @@ fn check_native_provider_reuse(provider_only: bool) {
                 )
                 .unwrap();
                 let frame = cas.get_artifact(&metadata.provenance_artifact_id).unwrap();
-                assert_eq!(frame.artifact_type, TASK_REVIEW_ATTEMPT_PROVENANCE_V1);
-                let provenance: TaskReviewAttemptProvenanceV1 =
-                    serde_json::from_value(frame.payload).unwrap();
+                assert_eq!(
+                    frame.artifact_type,
+                    if wide {
+                        TASK_REVIEW_ATTEMPT_PROVENANCE_V2
+                    } else {
+                        TASK_REVIEW_ATTEMPT_PROVENANCE_V1
+                    }
+                );
+                let provenance: TaskReviewAttemptProvenanceV2 = if wide {
+                    serde_json::from_value(frame.payload).unwrap()
+                } else {
+                    serde_json::from_value::<TaskReviewAttemptProvenanceV1>(frame.payload)
+                        .unwrap()
+                        .into()
+                };
                 assert_eq!(provenance.charged_tokens.get(), 11);
                 let usage = cas
                     .get_artifact(provenance.usage_id.as_ref().unwrap())
@@ -266,12 +278,22 @@ fn check_native_provider_reuse(provider_only: bool) {
                 assert_eq!(evidence[0].node, "reviewer");
                 assert_eq!(evidence[0].attempt_id, provenance.attempt_id);
                 assert_eq!(evidence[0].cost_tokens, 11);
-                assert_eq!(evidence[0].usage.chargeable_tokens, 11);
+                assert_eq!(evidence[0].usage.chargeable_tokens.get(), 11);
                 assert_eq!(evidence[0].raw_artifact, provenance.raw_artifact_id);
                 assert_eq!(evidence[0].result_artifact, provenance.result_artifact_id);
                 if wide {
-                    assert_eq!(usage.payload["input_tokens"], u64::MAX.to_string());
-                    assert_eq!(evidence[0].usage.input_tokens, Some(u64::MAX));
+                    assert_eq!(
+                        usage.payload["input_tokens"],
+                        (u128::from(u64::MAX) + 20).to_string()
+                    );
+                    assert_eq!(
+                        usage.artifact_type,
+                        review_core::task::usage::TASK_TOKEN_USAGE_V3
+                    );
+                    assert_eq!(
+                        evidence[0].usage.input_tokens.map(|n| n.get()),
+                        Some(u128::from(u64::MAX) + 20)
+                    );
                 }
             } else {
                 assert!(host.selected_attempt_evidence().unwrap().is_empty());

@@ -9,6 +9,13 @@ use crate::is_digest;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskChangeV1 {
+    /// Recording-only recovery is never accepted by the frozen resume encoding.
+    #[serde(skip)]
+    RecordingResumed {
+        task_revision_id: String,
+        plan_id: String,
+        report_id: String,
+    },
     #[serde(skip)]
     ReviewIntegrationSelected {
         phase_id: String,
@@ -123,6 +130,9 @@ impl TaskTransitionV1 {
             require(is_digest(id), "Invalid Task transition artifact ID")?;
         }
         match &self.change {
+            TaskChangeV1::RecordingResumed { .. } => {
+                Err("Recording recovery requires TaskTransition@4".into())
+            }
             TaskChangeV1::ReviewIntegrationSelected { .. }
             | TaskChangeV1::ReviewIntegrationFinished { .. } => {
                 Err("Review Integration requires TaskTransition@3".into())
@@ -167,6 +177,13 @@ impl TaskTransitionV1 {
 
     pub fn artifact_refs(&self) -> Vec<&str> {
         match &self.change {
+            TaskChangeV1::RecordingResumed {
+                task_revision_id,
+                plan_id,
+                report_id,
+            } => {
+                vec![task_revision_id, plan_id, report_id]
+            }
             TaskChangeV1::ReviewIntegrationSelected { phase_id } => vec![phase_id],
             TaskChangeV1::ReviewIntegrationFinished {
                 phase_id,
@@ -359,6 +376,88 @@ impl TaskTransitionV3 {
             epoch: self.epoch,
             now_unix_ms: self.now_unix_ms,
             change,
+        }
+    }
+}
+
+/// Resume only factual publication after the original deadline. Store admission pins the
+/// already-published outputs at this exact failed-publication report; this payload grants
+/// no output, invocation, execution or resource authority by itself.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TaskChangeV4 {
+    RecordingResumed {
+        task_revision_id: String,
+        plan_id: String,
+        report_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskTransitionV4 {
+    pub writer: String,
+    pub epoch: u64,
+    pub now_unix_ms: u64,
+    pub change: TaskChangeV4,
+}
+
+impl TaskTransitionV4 {
+    pub fn validate(&self) -> Result<(), String> {
+        let TaskChangeV4::RecordingResumed {
+            task_revision_id,
+            plan_id,
+            report_id,
+        } = &self.change;
+        require(
+            [task_revision_id, plan_id, report_id]
+                .into_iter()
+                .all(|id| is_digest(id)),
+            "Recording recovery requires exact revision, plan and report identities",
+        )?;
+        TaskTransitionV1 {
+            writer: self.writer.clone(),
+            epoch: self.epoch,
+            now_unix_ms: self.now_unix_ms,
+            change: TaskChangeV1::Resumed {},
+        }
+        .validate()
+    }
+    pub fn from_recording(value: &TaskTransitionV1) -> Option<Self> {
+        let TaskChangeV1::RecordingResumed {
+            task_revision_id,
+            plan_id,
+            report_id,
+        } = &value.change
+        else {
+            return None;
+        };
+        Some(Self {
+            writer: value.writer.clone(),
+            epoch: value.epoch,
+            now_unix_ms: value.now_unix_ms,
+            change: TaskChangeV4::RecordingResumed {
+                task_revision_id: task_revision_id.clone(),
+                plan_id: plan_id.clone(),
+                report_id: report_id.clone(),
+            },
+        })
+    }
+    pub fn into_transition(self) -> TaskTransitionV1 {
+        let TaskChangeV4::RecordingResumed {
+            task_revision_id,
+            plan_id,
+            report_id,
+        } = self.change;
+        TaskTransitionV1 {
+            writer: self.writer,
+            epoch: self.epoch,
+            now_unix_ms: self.now_unix_ms,
+            change: TaskChangeV1::RecordingResumed {
+                task_revision_id,
+                plan_id,
+                report_id,
+            },
         }
     }
 }

@@ -39,7 +39,7 @@ pub struct TaskOwnedChildrenInputs {
 
 pub struct TaskWorkOutput {
     /// Adapter-reported counters survive output/CAS failure until durable accounting.
-    pub usage: Option<review_runner::TokenUsage>,
+    pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
     pub outputs: Result<BTreeMap<String, ArtifactInputV1>, String>,
     /// None means usage is unavailable, so the complete reservation remains charged.
     pub charged_tokens: Option<u128>,
@@ -617,9 +617,7 @@ impl TaskRuntime<'_, '_> {
                 // diagnostic publication must not hide an already reported Provider overrun.
                 // The event ledger remains authoritative; recovery only raises its charge.
                 let usage_result = match result.usage.take() {
-                    Some(usage) => Ok(Some(review_core::task::usage::TaskTokenUsageV2::from(
-                        &usage,
-                    ))),
+                    Some(usage) => Ok(Some(usage)),
                     None => result
                         .usage_id
                         .as_deref()
@@ -644,7 +642,7 @@ impl TaskRuntime<'_, '_> {
                         .map_or(0, |d| d.as_millis() as u64),
                     elapsed_ms: timer.elapsed().as_millis() as u64,
                     usage: charge.map(|chargeable_tokens| {
-                        review_core::task::usage::TaskTokenUsageV2 {
+                        review_core::task::usage::TaskTokenUsageV3 {
                             input_tokens: usage.as_ref().and_then(|u| u.input_tokens),
                             output_tokens: usage.as_ref().and_then(|u| u.output_tokens),
                             cache_read_tokens: usage.as_ref().and_then(|u| u.cache_read_tokens),
@@ -705,7 +703,7 @@ impl TaskRuntime<'_, '_> {
                     result
                         .usage
                         .as_ref()
-                        .map(|usage| u128::from(usage.chargeable_tokens)),
+                        .map(|usage| usage.chargeable_tokens.get()),
                 )
                 .max()
                 .unwrap_or_else(|| {

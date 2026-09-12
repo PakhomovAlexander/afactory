@@ -457,6 +457,29 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
+    fn write_runtime(path: &Path, script: &str) {
+        // Linux CI observed ETXTBSY while probing a freshly written fixture. A concurrent
+        // child's inherited writable descriptor is a possible cause. Keep that descriptor
+        // out of this multithreaded parent; reaping this single-threaded writer establishes
+        // that its writable descriptor is closed before probing the executable.
+        let mut writer = std::process::Command::new("/bin/sh");
+        writer
+            .args(["-c", "printf '%s' \"$2\" > \"$1\"", "runtime-fixture"])
+            .arg(path)
+            .arg(script);
+        let output = run_supervised(&mut writer, None, Duration::from_secs(5)).unwrap();
+        assert!(
+            output.status.success(),
+            "writing runtime fixture: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
     /// The real host, whatever it is. Both outcomes are correct; what matters is that the
     /// provider never claims containment it has not verified.
     #[test]
@@ -481,16 +504,10 @@ mod tests {
     fn an_installed_but_broken_runtime_is_unusable_not_usable() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("broken-runtime");
-        std::fs::write(
+        write_runtime(
             &fake,
             "#!/bin/sh\necho 'Cannot connect to the daemon' >&2\nexit 1\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        );
 
         let provider = ContainerProvider::with_runtime(&fake);
         assert!(matches!(
@@ -518,13 +535,11 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn runtime_detection_stops_at_the_callers_deadline() {
-        use std::os::unix::fs::PermissionsExt;
         let directory = tempfile::tempdir().unwrap();
         let paths: Vec<_> = (0..3)
             .map(|n| {
                 let path = directory.path().join(format!("runtime{n}"));
-                std::fs::write(&path, "#!/bin/sh\nprintf x > \"$0.marker\"\nsleep 60\n").unwrap();
-                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+                write_runtime(&path, "#!/bin/sh\nprintf x > \"$0.marker\"\nsleep 60\n");
                 path
             })
             .collect();
@@ -552,9 +567,7 @@ mod tests {
     fn a_wedged_runtime_is_bounded_and_unusable() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("wedged-runtime");
-        std::fs::write(&fake, "#!/bin/sh\nsleep 60\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_runtime(&fake, "#!/bin/sh\nsleep 60\n");
 
         let started = Instant::now();
         let availability =
@@ -570,13 +583,10 @@ mod tests {
     fn a_wedged_container_execution_is_bounded() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("runtime");
-        std::fs::write(
+        write_runtime(
             &fake,
             "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then printf '%s\\n' \"$@\" > \"$0.cleanup\"; exit 0; fi\nsleep 60\n",
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let provider = ContainerProvider::with_runtime(&fake);
 
         let started = Instant::now();
@@ -598,13 +608,10 @@ mod tests {
     fn a_failed_reap_is_distinct_from_a_safely_stopped_timeout() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("runtime");
-        std::fs::write(
+        write_runtime(
             &fake,
             "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then echo 'daemon lost' >&2; exit 1; fi\nsleep 60\n",
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let provider = ContainerProvider::with_runtime(&fake);
 
         let error = provider

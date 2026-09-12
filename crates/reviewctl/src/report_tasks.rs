@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use review_core::task::execution::TaskAttemptResultV1;
 use review_core::task::plan::ExecutionPlanV1;
 use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
-use review_core::task::usage::{DecimalU64, DecimalU128, TaskTokenUsageV2};
+use review_core::task::usage::{DecimalU64, DecimalU128, TaskTokenUsageV3};
 use review_core::task::{ArtifactInputV1, EXECUTION_PLAN_V1};
 use review_graph::task::{CompiledOperator, CompiledTask, ReviewOperation};
 use review_store::store::task::execution::TaskAttemptAccounting;
@@ -66,7 +66,7 @@ struct TaskWallView {
     started_unix_ms: u64,
     elapsed_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    usage: Option<TaskTokenUsageV2>,
+    usage: Option<TaskTokenUsageV3>,
 }
 
 pub(super) struct TaskAccountingReport {
@@ -76,6 +76,13 @@ pub(super) struct TaskAccountingReport {
 }
 
 impl TaskAccountingReport {
+    pub fn has_wide_usage(&self) -> bool {
+        self.wall_rows
+            .iter()
+            .filter_map(|w| w.usage.as_ref())
+            .any(|u| review_core::task::usage::TaskTokenUsageV2::try_from(u).is_err())
+    }
+
     /// Merge raw Attempt intervals by their original Round/epoch. Neither cumulative report
     /// snapshots nor overlapping legacy/common intervals are added as separate durations.
     pub fn wall_ms(&self, legacy: &[review_store::AttemptWall]) -> Option<u64> {

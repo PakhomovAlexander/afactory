@@ -216,7 +216,10 @@ impl ProviderTaskDomain<'_> {
             false,
             broker,
         );
-        let charged_tokens = returned.usage.as_ref().map(|usage| usage.chargeable_tokens);
+        let charged_tokens = returned
+            .usage
+            .as_ref()
+            .map(|usage| usage.chargeable_tokens.get());
         let outputs = (|| {
             let message = returned.message?;
             if message.len() > 64
@@ -258,7 +261,7 @@ impl ProviderTaskDomain<'_> {
         TaskWorkOutput {
             usage: returned.usage,
             outputs,
-            charged_tokens: charged_tokens.map(u128::from),
+            charged_tokens,
             raw_artifact_ids: returned.raw_artifact_ids,
             usage_id: None,
             feedback_id: None,

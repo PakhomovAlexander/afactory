@@ -1427,6 +1427,7 @@ dependencies = [
  "review-sandbox",
  "review-source-git",
  "review-store",
+ "rustix",
  "serde_json",
  "tempfile",
 ]

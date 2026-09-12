@@ -501,7 +501,7 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
             ModelWorkerReturn {
                 raw_artifact_ids: vec![cas.put(&bytes).unwrap()],
                 message: Ok(bytes),
-                usage: Some(review_runner::TokenUsage::charge_only(cost)),
+                usage: Some(review_runner::TokenUsage::charge_only(cost).into()),
             }
         }
     }
@@ -662,11 +662,9 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
             ModelWorkerReturn {
                 raw_artifact_ids: vec![cas.put(&message).unwrap()],
                 message: Ok(message),
-                usage: Some(review_runner::TokenUsage::charge_only(if first {
-                    20
-                } else {
-                    30
-                })),
+                usage: Some(
+                    review_runner::TokenUsage::charge_only(if first { 20 } else { 30 }).into(),
+                ),
             }
         }
     }

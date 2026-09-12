@@ -199,7 +199,7 @@ fn numeric_history_and_cumulative_attempt_usage_reopen_exactly_including_crash_r
                 epoch: 1,
                 started_unix_ms: now().unwrap(),
                 elapsed_ms: 1,
-                usage: Some(usage.clone()),
+                usage: Some(usage.clone().into()),
             })
             .unwrap();
         f.store = EventStore::open(&f.path).unwrap();

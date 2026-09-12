@@ -7,23 +7,43 @@ use review_core::task::review_compat::*;
 
 impl ReviewDomainState<'_> {
     pub(crate) fn selected_attempt_evidence(&self) -> Result<Vec<AttemptEvidence>, String> {
+        self.selected_task_attempt_evidence()?
+            .into_iter()
+            .map(TryInto::try_into)
+            .collect()
+    }
+    pub(crate) fn selected_task_attempt_evidence(
+        &self,
+    ) -> Result<Vec<crate::TaskAttemptEvidence>, String> {
         let events = self
             .store
             .lock()
             .expect("event store")
             .replay(&self.run_id)
-            .map_err(|error| error.to_string())?;
-        selected_attempt_evidence(self.cas, &events, &self.authority.round_event_id)
+            .map_err(|e| e.to_string())?;
+        selected_task_attempt_evidence(self.cas, &events, &self.authority.round_event_id)
     }
 }
 
-/// Events are the verified durable Campaign prefix; exact Round causation excludes prior
-/// epochs. Historical and common selections retain one ordering and one public field shape.
+#[cfg(test)]
 fn selected_attempt_evidence(
     cas: &Cas,
     events: &[RunEvent],
     round_event_id: &str,
 ) -> Result<Vec<AttemptEvidence>, String> {
+    selected_task_attempt_evidence(cas, events, round_event_id)?
+        .into_iter()
+        .map(TryInto::try_into)
+        .collect()
+}
+
+/// Events are the verified durable Campaign prefix; exact Round causation excludes prior
+/// epochs. Historical and common selections retain one ordering and one public field shape.
+fn selected_task_attempt_evidence(
+    cas: &Cas,
+    events: &[RunEvent],
+    round_event_id: &str,
+) -> Result<Vec<crate::TaskAttemptEvidence>, String> {
     let mut evidence = Vec::new();
     for event in events.iter().filter(|event| {
         matches!(
@@ -100,6 +120,7 @@ fn selected_attempt_evidence(
                     .to_string(),
                 result_artifact,
             }
+            .into()
         };
         evidence.push(item);
     }
@@ -114,15 +135,21 @@ fn task_evidence(
     event: &RunEvent,
     selected: &TaskReviewResultSelectedV1,
     provenance_id: &str,
-) -> Result<AttemptEvidence, String> {
+) -> Result<crate::TaskAttemptEvidence, String> {
     let frame = cas
         .get_artifact(provenance_id)
         .map_err(|error| error.to_string())?;
-    if frame.artifact_type != TASK_REVIEW_ATTEMPT_PROVENANCE_V1 {
-        return Err("selected Task Attempt has another provenance type".into());
-    }
-    let provenance: TaskReviewAttemptProvenanceV1 =
-        serde_json::from_value(frame.payload).map_err(|error| error.to_string())?;
+    let provenance: TaskReviewAttemptProvenanceV2 = match frame.artifact_type.as_str() {
+        TASK_REVIEW_ATTEMPT_PROVENANCE_V1 => {
+            serde_json::from_value::<TaskReviewAttemptProvenanceV1>(frame.payload)
+                .map_err(|e| e.to_string())?
+                .into()
+        }
+        TASK_REVIEW_ATTEMPT_PROVENANCE_V2 => {
+            serde_json::from_value(frame.payload).map_err(|e| e.to_string())?
+        }
+        _ => return Err("selected Task Attempt has another provenance type".into()),
+    };
     provenance.validate()?;
     let frame = cas
         .get_artifact(&selected.context_id)
@@ -150,13 +177,13 @@ fn task_evidence(
     let usage = provenance
         .usage_id
         .as_deref()
-        .map(|id| review_runner::task::usage::read_task_usage(cas, id))
+        .map(|id| review_runner::task::usage::read_task_usage_exact(cas, id))
         .transpose()?
-        .unwrap_or_else(|| TokenUsage::charge_only(cost_tokens));
-    if usage.chargeable_tokens != cost_tokens {
+        .unwrap_or_else(|| review_core::task::usage::TaskTokenUsageV3::charge_only(cost_tokens));
+    if usage.chargeable_tokens.get() != cost_tokens {
         return Err("selected Task Attempt provenance contradicts its usage".into());
     }
-    Ok(AttemptEvidence {
+    Ok(crate::TaskAttemptEvidence {
         node: provenance.review_node,
         attempt_id: provenance.attempt_id,
         cost_tokens,

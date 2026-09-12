@@ -642,64 +642,109 @@ fn frozen_cumulative_reports_are_not_summed_and_late_usage_remains_exact() {
 
 #[test]
 fn inspection_keeps_one_attempts_wide_aggregate_and_native_components_exact() {
-    let mut f = Fixture::new();
-    f.fail("write", 7);
-    let attempt = f.fail("second", 2);
-    let exact = u128::from(u64::MAX) + 17;
-    let usage = TaskTokenUsageV2 {
-        input_tokens: Some(u64::MAX.into()),
-        chargeable_tokens: exact.into(),
-        ..Default::default()
-    };
-    let usage_id = put(&f.cas, task::usage::TASK_TOKEN_USAGE_V2, &usage);
-    f.store
-        .observe_task_usage(
+    for wide in [false, true] {
+        let mut f = Fixture::new();
+        f.fail("write", 7);
+        let attempt = f.fail("second", 2);
+        let exact = u128::from(u64::MAX) + 17;
+        let usage = TaskTokenUsageV3 {
+            input_tokens: Some((if wide { exact } else { u128::from(u64::MAX) }).into()),
+            chargeable_tokens: exact.into(),
+            ..Default::default()
+        };
+        let usage_id = put(
             &f.cas,
-            &f.lease,
-            TaskExecutionRecordV1::UsageObserved {
-                attempt_id: attempt.clone(),
-                charged_tokens: exact,
-                usage_id,
-                raw_artifact_ids: vec![],
+            if wide {
+                task::usage::TASK_TOKEN_USAGE_V3
+            } else {
+                task::usage::TASK_TOKEN_USAGE_V2
             },
-        )
-        .unwrap();
-    f.store
-        .record_task_attempt_wall(&review_store::TaskAttemptWall {
-            run_id: task_run_id(&f.task.task_id).unwrap(),
-            attempt_id: attempt.clone(),
-            node_id: "root.nodes.second".into(),
-            round: 0,
-            epoch: 1,
-            started_unix_ms: 1000,
-            elapsed_ms: 15,
-            usage: Some(usage),
-        })
-        .unwrap();
-    let view = crate::read_report_view(&f.store, &f.cas, "accounting").unwrap();
-    let value = serde_json::to_value(&view).unwrap();
-    assert_eq!(value["schema"], "af/review-report@3");
-    assert_eq!(
-        value["task_accounting"][0]["chargeable_tokens"],
-        (exact + 7).to_string()
-    );
-    let row = value["task_accounting"][0]["attempts"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .find(|row| row["attempt_id"] == attempt)
-        .unwrap();
-    assert_eq!(row["chargeable_tokens"], exact.to_string());
-    assert_eq!(row["wall"]["usage"]["chargeable_tokens"], exact.to_string());
-    assert_eq!(row["wall"]["usage"]["input_tokens"], u64::MAX.to_string());
-    assert_eq!(row["reserved_tokens"], "10");
-    assert_eq!(value["task_accounting"][0]["attempts_started"], "2");
-    assert_eq!(value["wall_ms"], 15);
-    let text = render(&view.task_accounting, false);
-    assert!(
-        text.contains(&format!("{exact} tokens (original cap 10)")),
-        "{text}"
-    );
+            &usage,
+        );
+        f.store
+            .observe_task_usage(
+                &f.cas,
+                &f.lease,
+                TaskExecutionRecordV1::UsageObserved {
+                    attempt_id: attempt.clone(),
+                    charged_tokens: exact,
+                    usage_id,
+                    raw_artifact_ids: vec![],
+                },
+            )
+            .unwrap();
+        f.store
+            .record_task_attempt_wall(&review_store::TaskAttemptWall {
+                run_id: task_run_id(&f.task.task_id).unwrap(),
+                attempt_id: attempt.clone(),
+                node_id: "root.nodes.second".into(),
+                round: 0,
+                epoch: 1,
+                started_unix_ms: 1000,
+                elapsed_ms: 15,
+                usage: Some(usage),
+            })
+            .unwrap();
+        let view = crate::read_report_view(&f.store, &f.cas, "accounting").unwrap();
+        let value = serde_json::to_value(&view).unwrap();
+        assert_eq!(
+            value["schema"],
+            if wide {
+                "af/review-report@4"
+            } else {
+                "af/review-report@3"
+            }
+        );
+        assert_eq!(
+            value["task_accounting"][0]["chargeable_tokens"],
+            (exact + 7).to_string()
+        );
+        let row = value["task_accounting"][0]["attempts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["attempt_id"] == attempt)
+            .unwrap();
+        assert_eq!(row["chargeable_tokens"], exact.to_string());
+        assert_eq!(row["wall"]["usage"]["chargeable_tokens"], exact.to_string());
+        assert_eq!(
+            row["wall"]["usage"]["input_tokens"],
+            (if wide { exact } else { u128::from(u64::MAX) }).to_string()
+        );
+        assert_eq!(row["reserved_tokens"], "10");
+        assert_eq!(value["task_accounting"][0]["attempts_started"], "2");
+        assert_eq!(value["wall_ms"], 15);
+        let text = render(&view.task_accounting, false);
+        assert!(
+            text.contains(&format!("{exact} tokens (original cap 10)")),
+            "{text}"
+        );
+
+        if wide {
+            let schema: serde_json::Value =
+                serde_json::from_str(include_str!("../../../../schemas/review-report-v4.json"))
+                    .unwrap();
+            let mut options = jsonschema::options();
+            for raw in [
+                include_str!("../../../../schemas/task-contracts-v1.json"),
+                include_str!("../../../../schemas/task-token-usage-v1.json"),
+                include_str!("../../../../schemas/task-token-usage-v3.json"),
+                include_str!("../../../../schemas/task-review-accounting-v1.json"),
+            ] {
+                let resource: serde_json::Value = serde_json::from_str(raw).unwrap();
+                options.with_resource(
+                    resource["$id"].as_str().unwrap().to_owned(),
+                    jsonschema::Resource::from_contents(resource).unwrap(),
+                );
+            }
+            let validator = options.build(&schema).unwrap();
+            assert!(
+                validator.is_valid(&value),
+                "{:?}",
+                validator.iter_errors(&value).collect::<Vec<_>>()
+            );
+        }
+    }
 }
 
 #[test]

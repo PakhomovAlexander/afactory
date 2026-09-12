@@ -733,7 +733,10 @@ impl<'a> CapturedTaskHost<'a> {
             };
             raw_artifact_ids = result.raw_artifact_ids;
             feedback_code = result.feedback_code;
-            charged_tokens = result.usage.as_ref().map(|usage| usage.chargeable_tokens);
+            charged_tokens = result
+                .usage
+                .as_ref()
+                .map(|usage| usage.chargeable_tokens.get());
             token_usage = result.usage;
             let reply = result.reply?;
             let producer = Producer::Attempt {
@@ -830,7 +833,7 @@ impl<'a> CapturedTaskHost<'a> {
         TaskWorkOutput {
             usage: token_usage,
             outputs,
-            charged_tokens: charged_tokens.map(u128::from),
+            charged_tokens,
             raw_artifact_ids,
             usage_id: None,
             feedback_id,

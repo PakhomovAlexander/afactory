@@ -26,9 +26,15 @@ now use one common Task and its original resources. Real CLI tests preserve cano
 probe charges and reuse, two-Round accounting, source epochs, SIGKILL recovery, missing-state
 refusal and single-document failed doctor output. Output is prepared under lease renewal and
 emitted after successful release. Task-file and local Jira binding reads refuse blocking FIFOs.
-CI for this checkpoint is pending. The next separate conformance slices address exact native
-multi-field/multi-turn usage and factual recovery of selected outputs from expired Waiting.
-See [ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md).
+Published head `b2ce782` failed Check in CI `34715552351` when Linux refused a freshly
+written fake container executable with ETXTBSY; container-probes passed. A fixture-only setup
+correction is being verified without changing production deadlines. The next combined slice
+retains exact native multi-field/multi-turn usage, refuses nonregular Codex final-message files
+and recovers already published selected outputs from expired Waiting without new work. Focused
+checks pass; the full combined gate and fresh Linux CI remain pending. See
+[ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md),
+[exact native usage](adr/0085-retain-exact-native-task-usage-across-multiple-turns.md) and
+[recording recovery](adr/0086-record-expired-review-publication-without-restarting-work.md).
 
 The common Task Broker checkpoint `1a9ab83` matches frozen tree `34fc57e` and passes the
 full local gate: **978 tests, zero failures, 15 ignored**, formatting, Clippy, documentation
@@ -204,8 +210,8 @@ across 89 suites; formatting, Clippy and synthetic fixture reproduction passed. 
 checked 96 files with zero errors. Prior candidate gates also passed on read-only archives and
 with the exact cleared Gate environment. No model review was repeated after these corrections.
 
-**Current resume:** finish native usage and expired-Waiting conformance, then remaining
-then finish P14 evidence. The captured-plan performance correction passes local and Linux CI
+**Current resume:** finish native usage and expired-Waiting conformance, then the remaining
+P14 evidence. The captured-plan performance correction passes local and Linux CI
 gates. Canonical Task-to-Review selection passes the full local gate; in-flight usage accounting
 preserves observed broker spend through settlement and recovery, with a complete local gate of
 823 passing tests and no failures. Refresh, delivery

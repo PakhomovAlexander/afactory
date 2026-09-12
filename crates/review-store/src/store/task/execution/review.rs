@@ -260,7 +260,19 @@ impl EventStore {
         output_id: &str,
         authority: &dyn TaskAuthority,
     ) -> Result<(), StoreError> {
-        self.publish_task_review_result_inner(cas, lease, output_id, None, authority)
+        self.publish_task_review_result_inner(cas, lease, output_id, None, false, authority)
+    }
+
+    /// Recover only the selected output pinned by TaskTransition@4. Frozen ordinary
+    /// selection still requires its dispatch deadline; this adds no execution authority.
+    pub fn publish_task_recorded_review_result(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        output_id: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(), StoreError> {
+        self.publish_task_review_result_inner(cas, lease, output_id, None, true, authority)
     }
 
     pub fn publish_task_owned_review_result(
@@ -271,7 +283,14 @@ impl EventStore {
         output_id: &str,
         authority: &dyn TaskAuthority,
     ) -> Result<(), StoreError> {
-        self.publish_task_review_result_inner(cas, lease, output_id, Some(children), authority)
+        self.publish_task_review_result_inner(
+            cas,
+            lease,
+            output_id,
+            Some(children),
+            false,
+            authority,
+        )
     }
 
     fn publish_task_review_result_inner(
@@ -280,9 +299,14 @@ impl EventStore {
         lease: &TaskLease,
         output_id: &str,
         children: Option<&owned::RegisteredTaskChildren>,
+        recording: bool,
         authority: &dyn TaskAuthority,
     ) -> Result<(), StoreError> {
-        let (state, plan) = self.checked_task_current(cas, lease, authority, children.is_none())?;
+        let (state, plan) = if recording {
+            self.checked_recorded_output(cas, lease, output_id, authority)?
+        } else {
+            self.checked_task_current(cas, lease, authority, children.is_none())?
+        };
         if let Some(children) = children {
             if children.task_id() != lease.task_id() {
                 return Err(conflict("Owned Review capability belongs to another Task"));
@@ -297,7 +321,11 @@ impl EventStore {
         let attempt_id = event.attempt_id.as_deref().expect("derived Attempt");
         Self::validate_task_output(cas, &state, &plan, output_id, Some(attempt_id), authority)?;
         // Recheck after domain validation, including approval revocation and CAS integrity.
-        let (fresh, _) = self.checked_task_current(cas, lease, authority, children.is_none())?;
+        let (fresh, _) = if recording {
+            self.checked_recorded_output(cas, lease, output_id, authority)?
+        } else {
+            self.checked_task_current(cas, lease, authority, children.is_none())?
+        };
         if fresh.next_sequence != state.next_sequence {
             return Err(conflict(
                 "Task changed during Review publication validation",
@@ -349,7 +377,7 @@ impl EventStore {
             self.len(&context.campaign_id)?,
             event.clone(),
         )?;
-        if children.is_some() {
+        if children.is_some() || recording {
             permit.valid_until = fresh.lease_until.min(
                 fresh
                     .plan_id
@@ -427,14 +455,22 @@ fn validate_attempt_provenance(
     if value.get("type").is_none() {
         return validate_legacy_provenance(cas, &value, metadata, context, committed_tokens);
     }
-    let frame = envelope(
-        cas,
-        &metadata.provenance_artifact_id,
-        TASK_REVIEW_ATTEMPT_PROVENANCE_V1,
-    )?;
-    let provenance: TaskReviewAttemptProvenanceV1 = serde_json::from_value(frame.payload)?;
+    let frame = cas
+        .get_artifact(&metadata.provenance_artifact_id)
+        .map_err(|e| conflict(e.to_string()))?;
+    let legacy = frame.artifact_type == TASK_REVIEW_ATTEMPT_PROVENANCE_V1;
+    let provenance: TaskReviewAttemptProvenanceV2 = match frame.artifact_type.as_str() {
+        TASK_REVIEW_ATTEMPT_PROVENANCE_V1 => {
+            let value: TaskReviewAttemptProvenanceV1 =
+                serde_json::from_value(frame.payload.clone())?;
+            value.validate().map_err(conflict)?;
+            value.into()
+        }
+        TASK_REVIEW_ATTEMPT_PROVENANCE_V2 => serde_json::from_value(frame.payload.clone())?,
+        _ => return Err(conflict("Unsupported Task Review provenance version")),
+    };
     provenance.validate().map_err(conflict)?;
-    if u128::from(provenance.charged_tokens.get()) > committed_tokens {
+    if provenance.charged_tokens.get() > committed_tokens {
         return Err(conflict(
             "Review provenance exceeds its committed Attempt charge",
         ));
@@ -460,11 +496,23 @@ fn validate_attempt_provenance(
         cas.verify(reference).map_err(|e| conflict(e.to_string()))?;
     }
     if let Some(id) = provenance.usage_id {
-        use review_core::task::usage::{TASK_TOKEN_USAGE_V1, TaskTokenUsageV1};
-        let usage = envelope(cas, &id, TASK_TOKEN_USAGE_V1)?;
-        let value: TaskTokenUsageV1 = serde_json::from_value(usage.payload)?;
-        if usage.artifact_type != TASK_TOKEN_USAGE_V1
-            || &usage.producer != producer
+        use review_core::task::usage::*;
+        let usage = cas.get_artifact(&id).map_err(|e| conflict(e.to_string()))?;
+        let value: TaskTokenUsageV3 = match usage.artifact_type.as_str() {
+            TASK_TOKEN_USAGE_V1 if legacy => {
+                serde_json::from_value::<TaskTokenUsageV1>(usage.payload.clone())?.into()
+            }
+            TASK_TOKEN_USAGE_V2 if !legacy => {
+                serde_json::from_value::<TaskTokenUsageV2>(usage.payload.clone())?.into()
+            }
+            TASK_TOKEN_USAGE_V3 if !legacy => serde_json::from_value(usage.payload.clone())?,
+            _ => {
+                return Err(conflict(
+                    "Task Review provenance has another usage generation",
+                ));
+            }
+        };
+        if &usage.producer != producer
             || usage.input_artifacts != [context_id]
             || usage.subject_snapshot_id.is_some()
             || value.chargeable_tokens != provenance.charged_tokens
@@ -473,7 +521,7 @@ fn validate_attempt_provenance(
                 "Task Review provenance changed its reported usage",
             ));
         }
-    } else if provenance.charged_tokens.get() != reserved_tokens {
+    } else if provenance.charged_tokens.get() != u128::from(reserved_tokens) {
         return Err(conflict(
             "Unknown Review usage must retain its full reservation",
         ));

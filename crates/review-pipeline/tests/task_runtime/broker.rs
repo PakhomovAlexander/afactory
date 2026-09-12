@@ -34,7 +34,7 @@ impl review_runner::task::WorkerModelAdapter for LocalReadiness {
         review_runner::task::ModelWorkerReturn {
             message: Ok(b"OK".to_vec()),
             raw_artifact_ids: vec![cas.put(b"OK").unwrap()],
-            usage: Some(review_runner::TokenUsage::charge_only(0)),
+            usage: Some(review_runner::TokenUsage::charge_only(0).into()),
         }
     }
 }

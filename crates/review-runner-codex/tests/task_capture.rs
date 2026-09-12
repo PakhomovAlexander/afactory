@@ -42,7 +42,10 @@ fn held_output_retains_reported_overrun_without_admitting_the_message() {
         "{:?}",
         returned.message
     );
-    assert_eq!(returned.usage.unwrap().chargeable_tokens, u64::MAX);
+    assert_eq!(
+        returned.usage.unwrap().chargeable_tokens.get(),
+        u128::from(u64::MAX) + 20
+    );
     assert_eq!(returned.raw_artifact_ids.len(), 2);
     assert_eq!(
         cas.get(&returned.raw_artifact_ids[0]).unwrap(),

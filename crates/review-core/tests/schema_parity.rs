@@ -32,9 +32,12 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 146] = [
+const SCHEMAS: [&str; 152] = [
+    "task-inspection-v8.json",
     "provider-doctor-v2.json",
     "review-outcome-v2.json",
+    "review-outcome-v3.json",
+    "review-report-v4.json",
     "task-context-v1.json",
     "task-builtin-context-v1.json",
     "task-provider-context-v1.json",
@@ -57,8 +60,10 @@ const SCHEMAS: [&str; 146] = [
     "task-execution-record-v4.json",
     "task-owned-child-set-v1.json",
     "task-token-usage-v2.json",
+    "task-token-usage-v3.json",
     "broker-operation-receipt-v2.json",
     "task-review-attempt-provenance-v1.json",
+    "task-review-attempt-provenance-v2.json",
     "task-review-accounting-v1.json",
     "run-report-v6.json",
     "normalized-task-requirements-v1.json",
@@ -115,6 +120,7 @@ const SCHEMAS: [&str; 146] = [
     "task-transition-v1.json",
     "task-transition-v2.json",
     "task-transition-v3.json",
+    "task-transition-v4.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
     "task-run-report-v2.json",
@@ -2890,3 +2896,6 @@ mod review_outcome;
 
 #[path = "schema_parity/provider_doctor.rs"]
 mod provider_doctor;
+
+#[path = "schema_parity/task_recording.rs"]
+mod task_recording;

@@ -1437,6 +1437,9 @@ fn present(
     let events = store
         .replay(&review_store::store::task::task_run_id(id).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
+    let recording_recovery = events
+        .iter()
+        .any(|event| event.event_type == review_core::EventType::TaskTransitionV4);
     let mut history = Vec::new();
     let mut execution = Vec::new();
     let mut broker_records = Vec::new();
@@ -1535,6 +1538,9 @@ fn present(
                 "integration_committed_event_id":phase.integration_committed_event_id(),
             })).collect::<Vec<_>>());
         }
+    }
+    if recording_recovery {
+        value["schema"] = json!("af/task-inspection@8");
     }
     let mut reports = Vec::new();
     for id in &state.run_reports {

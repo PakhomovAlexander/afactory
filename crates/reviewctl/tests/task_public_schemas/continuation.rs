@@ -2,9 +2,6 @@
 use super::*;
 use review_store::{Cas, EventStore};
 
-#[path = "../../../review-pipeline/tests/support/captured_review_continuation.rs"]
-mod captured_continuation;
-
 #[test]
 fn review_continuation_inspection_preserves_exact_history_and_historical_plans() {
     let directory = captured_continuation::run_numeric_rounds(true, false);

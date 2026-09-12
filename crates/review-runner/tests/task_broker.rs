@@ -102,7 +102,7 @@ impl WorkerModelAdapter for NativeModel<'_> {
             } else {
                 Ok(VALID_REPLY.to_vec())
             },
-            usage: Some(TokenUsage::charge_only(u64::MAX)),
+            usage: Some(TokenUsage::charge_only(u64::MAX).into()),
             raw_artifact_ids: vec![cas.put(RAW).unwrap()],
         }
     }
@@ -213,7 +213,10 @@ fn absent_broker_forwards_exact_invocation_and_retains_success_or_failed_evidenc
                 result.feedback_code,
                 failed.then_some(TaskFeedbackCodeV1::ProviderFailure)
             );
-            assert_eq!(result.usage.unwrap().chargeable_tokens, u64::MAX);
+            assert_eq!(
+                result.usage.unwrap().chargeable_tokens.get(),
+                u128::from(u64::MAX)
+            );
             assert_eq!(result.raw_artifact_ids.len(), 1);
             assert_eq!(fixture.cas.get(&result.raw_artifact_ids[0]).unwrap(), RAW);
         }
@@ -251,7 +254,7 @@ fn unsupported_broker_is_refused_before_adapter_or_connector_invocation() {
         result.feedback_code,
         Some(TaskFeedbackCodeV1::ProviderFailure)
     );
-    assert_eq!(result.usage.unwrap().chargeable_tokens, 0);
+    assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 0);
     assert!(result.raw_artifact_ids.is_empty());
     assert_eq!(model.calls.load(Ordering::SeqCst), 0);
     assert_eq!(local.calls.load(Ordering::SeqCst), 0);
@@ -301,7 +304,7 @@ impl WorkerModelAdapter for BrokeredModel {
                 Ok(response.body)
             },
             // Adapter counters remain separate from the execution owner's exact Broker total.
-            usage: Some(TokenUsage::charge_only(3)),
+            usage: Some(TokenUsage::charge_only(3).into()),
             raw_artifact_ids,
         }
     }
@@ -342,7 +345,7 @@ fn brokered_transport_shares_context_and_output_checks_and_retains_failed_usage(
             rejected.feedback_code,
             Some(TaskFeedbackCodeV1::ContextRejected)
         );
-        assert_eq!(rejected.usage.unwrap().chargeable_tokens, 0);
+        assert_eq!(rejected.usage.unwrap().chargeable_tokens.get(), 0);
         assert_eq!(model.calls.load(Ordering::SeqCst), 0);
         assert_eq!(local.calls.load(Ordering::SeqCst), 0);
         let result = invoke_model_with_broker(
@@ -357,7 +360,7 @@ fn brokered_transport_shares_context_and_output_checks_and_retains_failed_usage(
         );
         assert_eq!(result.reply.is_err(), expected_feedback.is_some());
         assert_eq!(result.feedback_code, expected_feedback);
-        assert_eq!(result.usage.unwrap().chargeable_tokens, 3);
+        assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 3);
         assert_eq!(result.raw_artifact_ids.len(), 1);
         assert_eq!(fixture.cas.get(&result.raw_artifact_ids[0]).unwrap(), reply);
         assert_eq!(model.calls.load(Ordering::SeqCst), 1);

@@ -106,7 +106,10 @@ fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_messa
                 .map(|id| cas.get(id))
                 .collect::<Vec<_>>()
         );
-        assert_eq!(returned.usage.unwrap().chargeable_tokens, u64::MAX);
+        assert_eq!(
+            returned.usage.unwrap().chargeable_tokens.get(),
+            u128::from(u64::MAX) + 20
+        );
         if timed_out {
             assert_eq!(returned.raw_artifact_ids.len(), 2);
             assert_eq!(
@@ -168,7 +171,10 @@ fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage
             Duration::from_secs(5),
             false,
         );
-        assert_eq!(returned.usage.as_ref().unwrap().chargeable_tokens, 106);
+        assert_eq!(
+            returned.usage.as_ref().unwrap().chargeable_tokens.get(),
+            106
+        );
         assert_eq!(
             cas.get(&returned.raw_artifact_ids[0]).unwrap(),
             output.as_bytes()
