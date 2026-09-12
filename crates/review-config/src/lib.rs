@@ -14,6 +14,7 @@
 //! Every struct denies unknown fields. A typo in a pipeline must be an error, not a setting that
 //! silently does nothing — the same rule the contracts use, for the same reason.
 
+pub mod captured_review;
 pub mod lock;
 pub mod pipeline_edit;
 pub mod task;

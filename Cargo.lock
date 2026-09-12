@@ -1324,6 +1324,7 @@ dependencies = [
  "review-core",
  "review-graph",
  "review-runner",
+ "review-source-git",
  "review-store",
  "semver",
  "serde",

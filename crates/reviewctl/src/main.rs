@@ -51,20 +51,7 @@ mod task_execution;
 mod topics;
 mod tui;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CampaignMode {
-    Light,
-    Heavy,
-}
-
-impl CampaignMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Light => "light",
-            Self::Heavy => "heavy",
-        }
-    }
-}
+use review_config::captured_review::ReviewMode as CampaignMode;
 
 #[derive(Clone)]
 struct Options {
