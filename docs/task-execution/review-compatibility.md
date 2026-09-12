@@ -117,10 +117,19 @@ its old manifest remains uncapped. Static Node caps retain aggregate retry charg
 Scatter descendants share the captured FanOut cap without inheriting the static parent cap.
 Round scopes include common Provider admission and use the numeric Round rather than its epoch.
 
-This captured compilation remains preparation data. Effective Worker invocation/Provider
-bindings, exact policy and dependency capture, acceptance coverage and TaskAuthority admission
-must be attached before it becomes an executable plan. The operation host, canonical replay,
-common-owned Scatter and heavy-Round handoff remain part of the entry-point cutover above.
+`LegacyReviewPlanCompiler` now attaches exact Worker/Provider bindings, dependency wrappers,
+invocation-policy digests, public evidence coverage and the common TaskAuthority admission
+boundary. Original TOML and ReviewerPackage artifacts remain unchanged; typed dependency
+wrappers retain their exact IDs and file closure. The Task policy is independent of the numeric
+Round and records the bounded fallback and local execution choices. Native runners require
+matching model/effort/backend bindings and the common Provider admission operation.
+
+Plan validation rederives the graph and every dependency, binding, contract and policy from the
+recorded artifacts without recreating missing CAS objects. Reviewer metadata, Gate outcomes
+and Scatter evidence supplement the selected public outputs, including nodes not consumed by
+the original Ledger. This is plan admission, not the completed CLI cutover: canonical Ledger
+companion outputs, operation execution, result acceptance/replay, broker/Scatter accounting and
+heavy-Round handoff remain required before the legacy entry point changes ownership.
 
 Recorded-plan recompilation reads existing root wrappers and refuses their absence, different
 producer, changed Round or changed head; it does not recreate missing CAS objects. Historical

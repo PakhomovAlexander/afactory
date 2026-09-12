@@ -1365,6 +1365,7 @@ dependencies = [
 name = "review-pipeline"
 version = "0.8.0"
 dependencies = [
+ "jsonschema",
  "review-attempt",
  "review-broker",
  "review-check",

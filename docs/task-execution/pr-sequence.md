@@ -397,3 +397,19 @@ charge once (including `u64::MAX + 7` aggregate usage), preserves the original T
 and permits no further model invocation or successful Worker output. All twelve common-runtime
 tests pass. This does not claim recovery of raw output bytes that never reached CAS. No PR
 specialist has run; isolated Claude subscription authentication remains unresolved.
+
+The installed `LegacyReviewPlanCompiler` now prepares and admits exact captured Review plans
+through the existing TaskAuthority boundary. Three closed public schemas describe the captured
+Task policy, original-file dependency wrappers and effective invocation policy. Original package
+IDs/digests remain distinct from the wrapper content identities required by common plan closure.
+Every Reviewer metadata receipt, Gate outcome and Scatter result supplements public-output
+acceptance coverage. Native runners require matching backend/model/effort and common Provider
+admission; binding edits cannot turn them into command Workers or bypass the Round token scope.
+
+Six captured-Review integration tests and all twelve common-runtime tests pass, including real
+Store plan admission, reopen, missing-artifact refusal without CAS repair, graph/binding/allowance
+forgery, exact native settings and schema closure. The 105-schema parity suite passes 64 tests;
+workspace Clippy passes. ProviderTaskDomain now forwards domain invocation publication, and the
+existing lost-ack recovery fixtures exercise that wrapper. No specialist or live model was used.
+The operation host, canonical Ledger companion outputs, result acceptance/replay, broker and
+owned Scatter execution, and same-Task heavy-Round advancement remain unfinished.

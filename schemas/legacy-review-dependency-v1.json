@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:legacy-review-dependency:1",
+  "title": "legacy-review-dependency@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "name",
+    "campaign_manifest_id",
+    "pipeline_id",
+    "lock_id",
+    "files"
+  ],
+  "properties": {
+    "name": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+    },
+    "campaign_manifest_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "pipeline_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "lock_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "review_node": {
+      "type": "string",
+      "minLength": 1
+    },
+    "original_package_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "original_package_digest": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "files": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      }
+    }
+  }
+}

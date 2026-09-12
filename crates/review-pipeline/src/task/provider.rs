@@ -171,6 +171,15 @@ impl ProviderTaskDomain<'_> {
     }
 }
 impl TaskOperatorHost for ProviderTaskDomain<'_> {
+    fn commit_domain_invocation(
+        &self,
+        cas: &Cas,
+        id: &str,
+        input: &TaskInvocationV1,
+    ) -> Result<(), String> {
+        self.inner.commit_domain_invocation(cas, id, input)
+    }
+
     fn commit_domain_output(
         &self,
         cas: &Cas,

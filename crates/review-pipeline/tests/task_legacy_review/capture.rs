@@ -6,9 +6,17 @@ use review_source_git::{Entry, EntryKind};
 use review_store::NewEvent;
 use serde_json::json;
 
-fn open_round(cas: &Cas, store: &mut EventStore) -> String {
+pub(super) fn open_round(cas: &Cas, store: &mut EventStore) -> String {
+    open_round_with_pipeline(cas, store, PIPELINE)
+}
+
+pub(super) fn open_round_with_pipeline(
+    cas: &Cas,
+    store: &mut EventStore,
+    definition: &str,
+) -> String {
     let pipeline = format!(
-        "{PIPELINE}\n[budgets]\nunit = \"tokens\"\nattempt = 19\nrun = 50\n[convergence]\nclean_rounds = 2\nmax_rounds = 3\ngate = \"major\"\n"
+        "{definition}\n[budgets]\nunit = \"tokens\"\nattempt = 19\nrun = 50\n[convergence]\nclean_rounds = 2\nmax_rounds = 3\ngate = \"major\"\n"
     );
     let pipeline_id = cas.put(pipeline.as_bytes()).unwrap();
     let lock = b"version = 1\n";
@@ -98,7 +106,7 @@ fn open_round(cas: &Cas, store: &mut EventStore) -> String {
         .event_id
 }
 
-fn limits() -> TaskLimitsV1 {
+pub(super) fn limits() -> TaskLimitsV1 {
     TaskLimitsV1 {
         tokens: 100,
         max_attempts: 4,
@@ -111,7 +119,7 @@ fn limits() -> TaskLimitsV1 {
     }
 }
 
-fn outputs() -> BTreeMap<String, Address> {
+pub(super) fn outputs() -> BTreeMap<String, Address> {
     BTreeMap::from([(
         "findings".into(),
         Address {

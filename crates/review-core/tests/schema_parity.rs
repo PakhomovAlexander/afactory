@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 102] = [
+const SCHEMAS: [&str; 105] = [
     "normalized-task-requirements-v1.json",
     "task-source-capture-v1.json",
     "issue-input-v1.json",
@@ -56,6 +56,9 @@ const SCHEMAS: [&str; 102] = [
     "task-review-result-metadata-v1.json",
     "task-review-context-v1.json",
     "legacy-review-round-v1.json",
+    "legacy-review-task-policy-v1.json",
+    "legacy-review-dependency-v1.json",
+    "legacy-review-invocation-policy-v1.json",
     "legacy-review-gate-outcome-v1.json",
     "task-review-result-selected-v1.json",
     "task-check-receipt-v1.json",

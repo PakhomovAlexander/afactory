@@ -10,7 +10,7 @@ use super::*;
 struct RecoveringHost<'a> {
     store: SharedEventStore<'a>,
     lease: TaskLease,
-    inner: &'a dyn TaskOperatorHost,
+    inner: &'a dyn TaskDomain,
     proof: &'a std::path::Path,
     fail_after_commit: bool,
     before_attempt: bool,
@@ -111,6 +111,36 @@ impl RecoveringHost<'_> {
         } else {
             Ok(())
         }
+    }
+}
+
+impl TaskDomain for RecoveringHost<'_> {
+    fn validate_context(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        feedback: &[String],
+        context: &str,
+    ) -> Result<(), String> {
+        self.inner.validate_context(cas, input, feedback, context)
+    }
+    fn validate_output(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        input: &TaskInvocationV1,
+        output: &TaskOutputV1,
+    ) -> Result<(), String> {
+        self.inner.validate_output(cas, task, plan, input, output)
+    }
+    fn validate_result(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        result: &TaskResultV1,
+    ) -> Result<(), String> {
+        self.inner.validate_result(cas, task, result)
     }
 }
 
@@ -222,14 +252,16 @@ fn publication_recovers(before_attempt: bool) {
             before_attempt,
             calls: &calls,
         };
-        let runtime = TaskRuntime::with_store(
-            shared.clone(),
-            &f.cas,
-            lease.clone(),
-            &authority,
-            &recovering,
-        )
-        .unwrap();
+        // The real Provider wrapper must preserve invocation publication and lost-ack
+        // recovery even when this graph has no Provider operation of its own.
+        let provider = review_pipeline::task::provider::ProviderTaskDomain {
+            graph: &f.graph,
+            models: &models,
+            inner: &recovering,
+        };
+        let runtime =
+            TaskRuntime::with_store(shared.clone(), &f.cas, lease.clone(), &authority, &provider)
+                .unwrap();
         let report = runtime.execute().unwrap();
         assert_eq!(report.complete(), pass != 0, "{report:?}");
         let state = runtime.projection().unwrap();

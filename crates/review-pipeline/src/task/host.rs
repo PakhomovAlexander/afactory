@@ -204,9 +204,14 @@ impl TaskDeveloper for NoTaskDeveloper {
 }
 
 pub struct CapturedTaskAuthority<'a> {
-    compiler: review_config::task::catalog::CapturedTaskPlanValidator<'a>,
+    compiler: CapturedCompiler<'a>,
     domain: &'a dyn TaskDomain,
     developer: &'a dyn TaskDeveloper,
+}
+
+enum CapturedCompiler<'a> {
+    Task(Box<review_config::task::catalog::CapturedTaskPlanValidator<'a>>),
+    Review(&'a super::legacy_review::plan::LegacyReviewPlanCompiler),
 }
 
 impl<'a> CapturedTaskAuthority<'a> {
@@ -216,7 +221,21 @@ impl<'a> CapturedTaskAuthority<'a> {
         developer: &'a dyn TaskDeveloper,
     ) -> Self {
         Self {
-            compiler: review_config::task::catalog::CapturedTaskPlanValidator::new(compiler),
+            compiler: CapturedCompiler::Task(Box::new(
+                review_config::task::catalog::CapturedTaskPlanValidator::new(compiler),
+            )),
+            domain,
+            developer,
+        }
+    }
+
+    pub fn for_legacy_review(
+        compiler: &'a super::legacy_review::plan::LegacyReviewPlanCompiler,
+        domain: &'a dyn TaskDomain,
+        developer: &'a dyn TaskDeveloper,
+    ) -> Self {
+        Self {
+            compiler: CapturedCompiler::Review(compiler),
             domain,
             developer,
         }
@@ -241,8 +260,14 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         next: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
     ) -> Result<(), String> {
-        self.compiler
-            .validate_planning_inputs(cas, previous, next, plan)
+        match &self.compiler {
+            CapturedCompiler::Task(compiler) => {
+                compiler.validate_planning_inputs(cas, previous, next, plan)
+            }
+            CapturedCompiler::Review(_) => {
+                Err("Installed Review plans do not normalize generated planning inputs".into())
+            }
+        }
     }
     fn validate_plan(
         &self,
@@ -250,8 +275,13 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
-        self.compiler.validate_plan(cas, task, plan)?;
-        Ok(plan.generated_origins.clone())
+        match &self.compiler {
+            CapturedCompiler::Task(compiler) => {
+                compiler.validate_plan(cas, task, plan)?;
+                Ok(plan.generated_origins.clone())
+            }
+            CapturedCompiler::Review(compiler) => compiler.validate_plan(cas, task, plan),
+        }
     }
     fn authorize_decision(
         &self,
