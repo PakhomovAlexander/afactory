@@ -137,3 +137,4 @@ options you rejected and why — that is the part future-you needs.
   budget](0068-retain-inflight-task-usage-in-the-common-budget.md)
 - [0069 — Compile captured Review ports with explicit artifact
   codecs](0069-compile-captured-review-ports-with-explicit-artifact-codecs.md)
+- [0070 — Separate Review domain operations and fence Task dispatch by Round](0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md)

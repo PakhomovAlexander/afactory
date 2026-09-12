@@ -74,6 +74,14 @@ ordinary append of selection JSON. Receipt guards consume the selected result; P
 also require the selected side metadata's exact disposition. Reopening reuses one selection and
 one Task charge ([ADR-0067](../adr/0067-project-common-task-selections-into-canonical-review.md)).
 
+The canonical operations now live in a shared `ReviewDomainState` without a second Attempt
+ledger, retry loop, Worker transport or budget. The legacy Kernel composes that state. The
+common runtime publishes domain invocation identity before reserving an Attempt and rendering
+its context; lost acknowledgement is recoverable with the same durable invocation. New Task
+dispatch and publication compare the captured Round under the same SQLite writer lock.
+Superseded/closed Rounds stop further effects while late usage, settlement and release remain
+recordable ([ADR-0070](../adr/0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md)).
+
 The trusted context adapter and legacy CLI still require this connection to be wired into common
 execution. Canonical replay, inspection and broker currentness also need their adapter paths;
 synthetic legacy Attempt lifecycle events cannot substitute for them.

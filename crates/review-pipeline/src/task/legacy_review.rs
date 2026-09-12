@@ -132,6 +132,12 @@ impl CapturedLegacyReviewRound {
         if node.kind != NodeKind::Generation || mapping.outputs.len() != node.outputs.len() {
             return Err("Review Generation differs from its compiled outputs".into());
         }
+        let raw_outputs = crate::review_domain::generation_outputs(
+            &self.authority,
+            pipeline_version,
+            Some(&self.authority.prior_finding_set_id),
+            node,
+        )?;
         let mut outputs = BTreeMap::new();
         for (port, output) in &mapping.outputs {
             let original = node
@@ -139,30 +145,21 @@ impl CapturedLegacyReviewRound {
                 .iter()
                 .find(|original| original.name == output.review_port)
                 .ok_or("Unknown original Generation output")?;
-            let raw = if crate::is_generation_prior_findings_output(original, pipeline_version) {
-                Some(self.authority.prior_finding_set_id.clone())
-            } else if crate::is_generation_finding_set_output(original) {
-                (self.authority.prior_reduction_finding_set_id != self.authority.finding_genesis_id)
-                    .then(|| self.authority.prior_reduction_finding_set_id.clone())
-            } else if crate::is_change_set_port(original, pipeline_version) {
-                Some(
-                    self.authority
-                        .change_set_id
-                        .clone()
-                        .ok_or("Whole-tree Review has no Change Set")?,
-                )
-            } else {
-                return Err("Unsupported Review Generation output".into());
-            };
-            let Some(raw) = raw else {
+            let raw = &raw_outputs[&original.name];
+            if raw.is_empty() {
                 if !original.optional {
                     return Err("Review genesis requires an optional Finding Set output".into());
                 }
                 continue;
+            }
+            let [raw] = raw.as_slice() else {
+                return Err(
+                    "Review Generation requires exactly one artifact per present output".into(),
+                );
             };
             let ids = vec![output.codec.capture(
                 cas,
-                &raw,
+                raw,
                 self.producer(Some(node.id.clone()), &format!("generation-{port}")),
                 Some(self.authority.head_snapshot_id.clone()),
             )?];

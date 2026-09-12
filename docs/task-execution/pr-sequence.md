@@ -253,3 +253,12 @@ passes **834 tests, zero failures, 15 ignored**, across 114 suites, plus formatt
 documentation tests and byte-identical frozen reproduction. Markdown passes. This does not yet
 cut over the legacy CLI or execute Scatter through the common runtime. ADR-0069 records the
 boundary.
+
+The next compatibility checkpoint extracts canonical Review operations and publication into
+shared domain state while retaining the original legacy execution owner. Task dispatch is
+fenced by the exact current Review Round, including inside the SQLite write comparison, while
+late usage and settlement remain durable. A common invocation-publication hook recovers before
+any Attempt/context capture. The first Store/pipeline compatibility run passes 222 tests with
+zero failures and three ignored across 26 suites; four targeted Round-boundary tests and three
+publication/context tests pass after the final additions. Full-workspace validation follows.
+Captured plan admission, actual host/CLI wiring and the previously listed cutover gates remain.

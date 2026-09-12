@@ -453,7 +453,7 @@ impl EventStore {
             permit.validate(&tx, run_id, first, events)?;
         }
         if let Some(permit) = task_permit {
-            permit.validate(run_id, first, events)?;
+            permit.validate(&tx, run_id, first, events)?;
         } else {
             let task_log: bool = tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM events WHERE run_id = ?1 AND type = 'TaskTransition@1')",
@@ -5327,7 +5327,7 @@ fn broker_receipt_terminates_handle(receipt: &review_core::BrokerOperationReceip
 }
 
 fn latest_round(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &rusqlite::Connection,
     run_id: &str,
 ) -> Result<Option<(String, review_core::RoundStartedPayloadV1)>, StoreError> {
     let row: Option<(String, String)> = tx
@@ -5349,7 +5349,7 @@ const ROUND_TERMINAL_REPORT_SQL: &str = "SELECT type, payload FROM events
      ORDER BY sequence";
 
 fn round_has_terminal_report(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &rusqlite::Connection,
     run_id: &str,
     round_event_id: &str,
 ) -> Result<bool, StoreError> {

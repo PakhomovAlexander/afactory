@@ -25,6 +25,7 @@ mod delivery;
 pub mod execution;
 pub mod planning;
 mod report;
+mod review_round;
 mod source;
 
 fn conflict(message: impl Into<String>) -> StoreError {
@@ -198,11 +199,13 @@ pub(super) struct WritePermit {
     run_id: String,
     first: u64,
     payloads: Vec<serde_json::Value>,
+    review_round: Option<review_round::ReviewRoundFence>,
 }
 
 impl WritePermit {
     pub(super) fn validate(
         &self,
+        connection: &rusqlite::Connection,
         run_id: &str,
         first: i64,
         events: &[NewEvent],
@@ -216,6 +219,9 @@ impl WritePermit {
                 .any(|(e, p)| e.event_type != EventType::TaskTransitionV1 || &e.payload != p)
         {
             return Err(conflict("Task write lost its sequence/lease comparison"));
+        }
+        if let Some(round) = &self.review_round {
+            round.validate(connection)?;
         }
         Ok(())
     }
@@ -1027,6 +1033,7 @@ impl EventStore {
         let value = serde_json::to_value(&transition)?;
         let run_id = task_run_id(task_id)?;
         let event = NewEvent::new(EventType::TaskTransitionV1, value.clone()).referencing(refs);
+        let review_round = review_round::fence_for_transition(cas, &transition, state.as_ref())?;
         if let Some(mut state) = state {
             state.apply(
                 cas,
@@ -1058,6 +1065,7 @@ impl EventStore {
             run_id: run_id.clone(),
             first,
             payloads: vec![value],
+            review_round,
         };
         self.append_batch_inner(&run_id, cas, &[event], Some(&permit), None)?
             .pop()
@@ -1508,6 +1516,9 @@ impl EventStore {
             return Err(conflict("Task is not admitted and running"));
         }
         let plan = self.current_task_plan(cas, &state, authority, time)?;
+        if let Some(round) = review_round::ReviewRoundFence::capture(cas, &state.revision)? {
+            round.validate(&self.conn)?;
+        }
         Ok((state, plan))
     }
 }

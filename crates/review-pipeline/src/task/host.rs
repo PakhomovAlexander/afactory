@@ -614,6 +614,15 @@ impl<'a> CapturedTaskHost<'a> {
 }
 
 impl TaskOperatorHost for CapturedTaskHost<'_> {
+    fn commit_domain_invocation(
+        &self,
+        cas: &Cas,
+        id: &str,
+        input: &TaskInvocationV1,
+    ) -> Result<(), String> {
+        self.domain.commit_domain_invocation(cas, id, input)
+    }
+
     fn commit_domain_output(
         &self,
         cas: &Cas,

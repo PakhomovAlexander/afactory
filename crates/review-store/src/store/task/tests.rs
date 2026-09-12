@@ -754,6 +754,7 @@ fn lease_takeover_fences_old_writer_and_sequence_comparison_is_atomic() {
         run_id: task_run_id("task-1").unwrap(),
         first,
         payloads: vec![value],
+        review_round: None,
     };
     let mut second = EventStore::open(&f.path).unwrap();
     second

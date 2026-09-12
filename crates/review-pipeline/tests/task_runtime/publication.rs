@@ -13,10 +13,37 @@ struct RecoveringHost<'a> {
     inner: &'a dyn TaskOperatorHost,
     proof: &'a std::path::Path,
     fail_after_commit: bool,
+    before_attempt: bool,
     calls: &'a AtomicUsize,
 }
 
 impl TaskOperatorHost for RecoveringHost<'_> {
+    fn commit_domain_invocation(
+        &self,
+        cas: &Cas,
+        id: &str,
+        input: &TaskInvocationV1,
+    ) -> Result<(), String> {
+        if !self.before_attempt || input.node != "root.nodes.write" {
+            return Ok(());
+        }
+        {
+            let store = self.store.lock().unwrap();
+            let state = store
+                .task_projection(cas, self.lease.task_id())
+                .unwrap()
+                .unwrap();
+            let execution = state.execution.unwrap();
+            assert_eq!(execution.invocations[&input.node].0, id);
+            if self.fail_after_commit {
+                assert_eq!(execution.budget.begun_attempts(), 0);
+                assert_eq!(execution.budget.reserved_tokens(), 0);
+                assert!(execution.pending_attempts().is_empty());
+            }
+        }
+        self.publish_proof(id)
+    }
+
     fn prepare_context(
         &self,
         cas: &Cas,
@@ -43,7 +70,7 @@ impl TaskOperatorHost for RecoveringHost<'_> {
         id: &str,
         _: &TaskOutputV1,
     ) -> Result<(), String> {
-        if input.node != "root.nodes.write" {
+        if self.before_attempt || input.node != "root.nodes.write" {
             return Ok(());
         }
         {
@@ -57,6 +84,12 @@ impl TaskOperatorHost for RecoveringHost<'_> {
             assert_eq!(execution.budget.committed_tokens(), 7);
             assert!(execution.pending_attempts().is_empty());
         }
+        self.publish_proof(id)
+    }
+}
+
+impl RecoveringHost<'_> {
+    fn publish_proof(&self, id: &str) -> Result<(), String> {
         // A domain publication succeeds durably, then its caller loses the acknowledgement.
         // Reopening must use the same evidence without invoking the Worker a second time.
         match std::fs::OpenOptions::new()
@@ -83,6 +116,15 @@ impl TaskOperatorHost for RecoveringHost<'_> {
 
 #[test]
 fn domain_publication_recovers_after_restart_without_another_paid_attempt() {
+    publication_recovers(false);
+}
+
+#[test]
+fn domain_invocation_publication_recovers_before_any_attempt_or_context() {
+    publication_recovers(true);
+}
+
+fn publication_recovers(before_attempt: bool) {
     use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
     struct Model;
     impl WorkerModelAdapter for Model {
@@ -177,6 +219,7 @@ fn domain_publication_recovers_after_restart_without_another_paid_attempt() {
             inner: &host,
             proof: &proof,
             fail_after_commit: pass == 0,
+            before_attempt,
             calls: &calls,
         };
         let runtime = TaskRuntime::with_store(
@@ -226,10 +269,14 @@ fn domain_publication_recovers_after_restart_without_another_paid_attempt() {
             assert!(matches!(node.outcome, TaskNodeOutcomeV1::Completed { .. }));
         }
         let execution = state.execution.unwrap();
-        assert_eq!(execution.budget.begun_attempts(), 1);
-        assert_eq!(execution.budget.committed_tokens(), 7);
+        let executed = !before_attempt || pass != 0;
+        assert_eq!(execution.budget.begun_attempts(), u64::from(executed));
+        assert_eq!(
+            execution.budget.committed_tokens(),
+            if executed { 7 } else { 0 }
+        );
         assert_eq!(execution.budget.reserved_tokens(), 0);
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(calls.load(Ordering::SeqCst), usize::from(executed));
         drop(runtime);
         shared
             .lock()

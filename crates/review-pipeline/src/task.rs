@@ -35,6 +35,19 @@ pub struct TaskWorkOutput {
 }
 
 pub trait TaskOperatorHost: Sync {
+    /// Publish domain input identity after the common invocation is durable, before context
+    /// capture or Attempt reservation. Replays call this again; publication must be idempotent
+    /// and must not invoke Workers, checks or Providers. Pure context capture can then reference
+    /// an actual canonical domain invocation event instead of predicting its identity.
+    fn commit_domain_invocation(
+        &self,
+        _cas: &Cas,
+        _invocation_id: &str,
+        _input: &TaskInvocationV1,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Called after the common output is durably published, before downstream dispatch, and
     /// again on replay. Domain publication must be idempotent. This host hook cannot run paid
     /// work: the Attempt is already settled. Its failure preserves the output for recovery.
@@ -220,14 +233,22 @@ impl<'a> TaskRuntime<'a> {
                 .commit_domain_output(self.cas, &input, id, &output)
         }))
         .unwrap_or_else(|_| Err("Task domain publication panicked".into()));
+        self.record_domain_publication(&input.node, result)
+    }
+
+    fn record_domain_publication(
+        &self,
+        node: &str,
+        result: Result<(), String>,
+    ) -> Result<(), String> {
         let mut failures = self
             .publication_failures
             .lock()
             .expect("Task publication failures");
         if result.is_err() {
-            failures.insert(input.node);
+            failures.insert(node.into());
         } else {
-            failures.remove(&input.node);
+            failures.remove(node);
         }
         result
     }
@@ -422,6 +443,18 @@ impl Dispatch for TaskRuntime<'_> {
             .lock()
             .expect("Task Store")
             .record_task_invocation(self.cas, &self.lease, &id, self.authority)
+            .map_err(|e| e.to_string())?;
+        let published = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.host.commit_domain_invocation(self.cas, &id, &input)
+        }))
+        .unwrap_or_else(|_| Err("Task domain invocation publication panicked".into()));
+        self.record_domain_publication(&node.id, published)?;
+        // The callback runs without the Store lock. A concurrent authority change must stop
+        // this invocation even when it is an installed operation with no paid Attempt.
+        self.store
+            .lock()
+            .expect("Task Store")
+            .check_task_dispatch(self.cas, &self.lease, self.authority)
             .map_err(|e| e.to_string())?;
         let replayed = self.projection()?.execution.as_ref().is_some_and(|e| {
             e.outputs.contains_key(&node.id) || e.reusable_output(&node.id).is_some()
