@@ -10,7 +10,9 @@ embedded Review on the final Snapshot. The shared-Store/domain extraction checkp
 805 local tests, zero failures, 15 ignored. Its performance correction passes 807 local tests,
 documentation tests and frozen reproduction, with unchanged deadlines and verifier reserves.
 Linux CI passes at `facbfb4`. Durable scheduler reports and recoverable domain publication
-pass 811 local tests, documentation tests and frozen reproduction at `d0d4ad0`. Review
+pass 811 local tests, documentation tests and frozen reproduction at `d0d4ad0`; Linux CI
+passes at `c45a55b`. Actual reservation followed by exact-context binding passes 814 tests,
+documentation tests and frozen reproduction at `7ba2338` (stacked as `2d8421e`). Review
 compatibility and P14 release evidence remain required. The completed
 M0–M9 record below remains the compatibility foundation.
 

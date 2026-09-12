@@ -205,4 +205,8 @@ The next Review preparation boundary reserves the real common Attempt before pur
 capture and binds admitted context before start ([ADR-0066](../adr/0066-reserve-task-attempts-before-binding-exact-context.md)).
 Legacy combined preparation records remain readable. Runtime and Store tests reject changed
 identity and unbound starts, release unstarted failures, fence old writers and preserve paid
-replay. Full checkpoint validation is pending; legacy Review conversion remains required.
+replay. The complete gate at `7ba2338` (the same code as stacked `2d8421e`) passes
+**814 tests, zero failures, 15 ignored**, across 113 suites, plus formatting, Clippy,
+documentation tests and byte-identical frozen reproduction. Markdown passes.
+The preceding report checkpoint `c45a55b` passes Check, CLI smoke and container probes in
+CI run `34668202469`. Legacy Review conversion remains required.
