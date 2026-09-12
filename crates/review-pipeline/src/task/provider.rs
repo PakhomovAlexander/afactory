@@ -423,6 +423,25 @@ impl TaskOperatorHost for ProviderTaskDomain<'_> {
     }
 }
 impl TaskDomain for ProviderTaskDomain<'_> {
+    #[allow(clippy::too_many_arguments)]
+    fn validate_review_continuation(
+        &self,
+        cas: &Cas,
+        previous: &TaskRevisionV1,
+        next: &TaskRevisionV1,
+        previous_plan: &ExecutionPlanV1,
+        next_plan: &ExecutionPlanV1,
+        handoff: &review_core::task::review_handoff::TaskReviewHandoffV1,
+    ) -> Result<(), String> {
+        self.inner.validate_review_continuation(
+            cas,
+            previous,
+            next,
+            previous_plan,
+            next_plan,
+            handoff,
+        )
+    }
     fn validate_owned_children(
         &self,
         cas: &Cas,

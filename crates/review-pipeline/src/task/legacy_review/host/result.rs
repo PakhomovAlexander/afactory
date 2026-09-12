@@ -6,8 +6,42 @@ use review_core::task::report::*;
 use review_core::task::{TaskAcceptanceV1, TaskExecutionV1};
 use review_graph::{NodeOutcome, RunReport, SuppressionReason};
 
+/// A durable Round conclusion, separate from finishing its Campaign's Task. These public
+/// facts aid presentation; only the Store can authorize a successor Round from exact evidence.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecordedReviewRoundConclusion {
+    pub task_revision_id: String,
+    pub plan_id: String,
+    pub task_report_id: String,
+    pub canonical_report_event_id: String,
+    pub verdict: crate::RunVerdict,
+    pub resources_failed: bool,
+    pub can_continue: bool,
+    result: TaskResultV1,
+}
+
 impl LegacyReviewTaskHost<'_, '_> {
+    /// Compatibility entry point for callers that are finishing this Task. Heavy callers
+    /// publish a Round conclusion first and separately choose continuation or finalization.
     pub fn assemble_recorded_result(&self, cas: &Cas) -> Result<TaskResultV1, String> {
+        let conclusion = self.publish_recorded_round_conclusion(cas)?;
+        if conclusion.can_continue {
+            return Err(
+                "Heavy Review has another permitted Round; publish the Round conclusion and continue the Task before assembling its final result".into(),
+            );
+        }
+        let result = conclusion.result;
+        *self.result.lock().expect("Review result") =
+            Some((conclusion.task_report_id, result.clone()));
+        Ok(result)
+    }
+
+    /// Record or recover this Round's canonical conclusion without authorizing Task finish.
+    /// Reopen after a closed Round reads the exact prior report and never dispatches work.
+    pub fn publish_recorded_round_conclusion(
+        &self,
+        cas: &Cas,
+    ) -> Result<RecordedReviewRoundConclusion, String> {
         let state = self
             .domain
             .store
@@ -187,6 +221,33 @@ impl LegacyReviewTaskHost<'_, '_> {
         // Publication may observe late charges after the projection read above. Its committed
         // exhausted verdict must also fence Task acceptance and execution classification.
         resources_failed |= exhausted_at_publication;
+        let canonical = self
+            .domain
+            .store
+            .lock()
+            .expect("Task Store")
+            .replay(&self.domain.run_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|event| {
+                event.event_type == EventType::RunReportV6
+                    && event.causation_id.as_ref() == Some(&self.domain.authority.round_event_id)
+                    && event.payload["task_accounting"]["task_report_id"].as_str()
+                        == Some(report_id)
+            })
+            .ok_or("Review conclusion has no exact durable canonical report")?;
+        let canonical_report: review_core::RunReportPayloadV6 =
+            serde_json::from_value(canonical.payload).map_err(|e| e.to_string())?;
+        canonical_report.validate()?;
+        if canonical_report.task_accounting.task_revision_id != state.revision_id
+            || canonical_report.task_accounting.plan_id != self.plan_id
+        {
+            return Err("Canonical Review conclusion changed its Task revision or plan".into());
+        }
+        let can_continue = !resources_failed
+            && self.compiler.mode()? == review_config::captured_review::ReviewMode::Heavy
+            && verdict == crate::RunVerdict::Fail(crate::Verdict::NotConverged)
+            && self.domain.authority.round < self.captured.loaded.convergence().max_rounds;
         let acceptance = if !complete || !missing.is_empty() || resources_failed {
             TaskAcceptanceV1::Inconclusive
         } else if verdict == crate::RunVerdict::Pass {
@@ -195,7 +256,7 @@ impl LegacyReviewTaskHost<'_, '_> {
             TaskAcceptanceV1::Unsatisfied
         };
         let result = TaskResultV1 {
-            task_revision_id: state.revision_id,
+            task_revision_id: state.revision_id.clone(),
             execution: if resources_failed {
                 TaskExecutionV1::Exhausted
             } else if complete {
@@ -215,7 +276,15 @@ impl LegacyReviewTaskHost<'_, '_> {
             missing_obligations: missing,
         };
         result.validate()?;
-        *self.result.lock().expect("Review result") = Some((report_id.clone(), result.clone()));
-        Ok(result)
+        Ok(RecordedReviewRoundConclusion {
+            task_revision_id: state.revision_id,
+            plan_id: self.plan_id.clone(),
+            task_report_id: report_id.clone(),
+            canonical_report_event_id: canonical.event_id,
+            verdict,
+            resources_failed,
+            can_continue,
+            result,
+        })
     }
 }

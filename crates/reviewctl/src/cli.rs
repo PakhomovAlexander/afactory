@@ -978,6 +978,9 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
     /// Explain a captured Task's ports, hierarchy, bindings, coverage and budgets
     Explain {
         task_id: String,
+        /// Inspect an exact recorded plan, including an earlier revision's plan
+        #[arg(long, value_name = "PLAN_ID")]
+        plan: Option<String>,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },

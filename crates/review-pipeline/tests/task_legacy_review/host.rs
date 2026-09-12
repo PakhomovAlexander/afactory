@@ -8,6 +8,8 @@ use review_store::SharedEventStore;
 
 #[path = "host/broker.rs"]
 mod broker;
+#[path = "host/continuation.rs"]
+mod continuation;
 #[path = "host/native.rs"]
 mod native;
 #[path = "host/owned.rs"]

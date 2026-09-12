@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-plan-inspection:1",
+  "title": "Recorded Task plan inspection af/task-plan-inspection@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "plan_id",
+    "task_revision_id",
+    "current_plan",
+    "recorded_event_ids",
+    "revision",
+    "plan",
+    "graph"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-plan-inspection@1"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "plan_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "task_revision_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "current_plan": {
+      "type": "boolean"
+    },
+    "recorded_event_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z0-9]{26}$"
+      }
+    },
+    "revision": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/taskRevision"
+    },
+    "plan": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/plan"
+    },
+    "graph": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/graph"
+    }
+  }
+}

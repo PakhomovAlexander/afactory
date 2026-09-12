@@ -15,9 +15,6 @@ use review_store::store::task::execution::PreparedTaskAttempt;
 use review_store::{Cas, EventStore, SharedEventStore};
 use std::collections::BTreeMap;
 
-#[path = "../../../review-pipeline/tests/support/captured_review.rs"]
-mod captured_fixture;
-
 const TASK: &str = "owned-inspection";
 struct AdmissionOnly;
 impl TaskOperatorHost for AdmissionOnly {

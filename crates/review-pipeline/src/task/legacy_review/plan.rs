@@ -24,6 +24,8 @@ pub const REVIEW_DEPENDENCY_V1: &str = "af/LegacyReviewDependency@1";
 pub const REVIEW_INVOCATION_POLICY_V1: &str = "af/LegacyReviewInvocationPolicy@1";
 const ROOT: &str = "af/legacy-review";
 
+mod continuation;
+
 /// Trusted host choices captured once for the Task, including all later numeric Rounds.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -32,7 +32,9 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 129] = [
+const SCHEMAS: [&str; 133] = [
+    "task-plan-inspection-v1.json",
+    "task-inspection-v6.json",
     "task-inspection-v5.json",
     "task-provider-context-v2.json",
     "task-broker-binding-v1.json",
@@ -104,6 +106,8 @@ const SCHEMAS: [&str; 129] = [
     "artifact-envelope-v1.json",
     "task-contracts-v1.json",
     "task-transition-v1.json",
+    "task-transition-v2.json",
+    "task-review-handoff-v1.json",
     "task-delivery-record-v1.json",
     "task-invocation-v1.json",
     "task-output-v1.json",
@@ -2857,3 +2861,8 @@ mod task_provider_probe;
 
 #[path = "schema_parity/task_owned.rs"]
 mod task_owned;
+#[path = "schema_parity/task_review_handoff.rs"]
+mod task_review_handoff;
+
+#[path = "schema_parity/task_review_inspection.rs"]
+mod task_review_inspection;

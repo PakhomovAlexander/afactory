@@ -11,6 +11,26 @@ pub fn open_round_authority(
     definition: &str,
     files: Option<BTreeMap<String, Vec<u8>>>,
 ) -> String {
+    open_round_authority_with_convergence(
+        cas,
+        store,
+        definition,
+        files,
+        review_core::CampaignConvergenceV1 {
+            clean_rounds: 1,
+            max_rounds: 1,
+            gate: "major".into(),
+        },
+    )
+}
+
+pub fn open_round_authority_with_convergence(
+    cas: &Cas,
+    store: &mut EventStore,
+    definition: &str,
+    files: Option<BTreeMap<String, Vec<u8>>>,
+    convergence: review_core::CampaignConvergenceV1,
+) -> String {
     let (attempt_tokens, run_tokens) = if files.is_some() {
         (20_000, 50_000)
     } else {
@@ -103,7 +123,7 @@ pub fn open_round_authority(
         "pipeline": {"path": ".af/pipelines/review.toml", "artifact_id": pipeline_id},
         "reviewer_lock": {"path": ".af/af.lock", "artifact_id": lock_id},
         "reviewers": reviewers, "execution_policy_ids": execution_policy_ids, "project_policy_ids": [],
-        "convergence": {"clean_rounds": 1, "max_rounds": 1, "gate": "major"},
+        "convergence": convergence,
         "reviewer_timeout_seconds": 7, "check_timeout_seconds": 3600,
         "budgets": {"attempt_tokens": attempt_tokens, "run_tokens": run_tokens},
         "finding_identity_policy": review_core::CANONICAL_FINDING_IDENTITY_POLICY,

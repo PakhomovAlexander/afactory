@@ -85,6 +85,10 @@ pub(super) fn fence_for_transition(
     state: Option<&TaskProjection>,
 ) -> Result<Option<ReviewRoundFence>, StoreError> {
     match &transition.change {
+        TaskChangeV1::ReviewContinued { handoff_id } => {
+            let handoff = super::review_handoff::read_task_review_handoff(cas, handoff_id)?;
+            return ReviewRoundFence::capture(cas, &revision(cas, &handoff.successor_revision_id)?);
+        }
         TaskChangeV1::Opened { revision_id, .. }
         | TaskChangeV1::RevisionRecorded { revision_id }
         | TaskChangeV1::SourceRefreshed { revision_id, .. }

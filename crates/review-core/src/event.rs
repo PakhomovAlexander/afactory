@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 pub enum EventType {
     #[serde(rename = "TaskTransition@1")]
     TaskTransitionV1,
+    #[serde(rename = "TaskTransition@2")]
+    TaskTransitionV2,
     #[serde(rename = "TaskBrokerTransition@1")]
     TaskBrokerTransitionV1,
     #[serde(rename = "TaskReviewResultSelected@1")]
@@ -123,8 +125,9 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 54] = [
+    pub const ALL: [Self; 55] = [
         Self::TaskTransitionV1,
+        Self::TaskTransitionV2,
         Self::TaskBrokerTransitionV1,
         Self::TaskReviewResultSelectedV1,
         Self::BrokerOperationCompletedV1,
@@ -183,6 +186,7 @@ impl EventType {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::TaskTransitionV1 => "TaskTransition@1",
+            Self::TaskTransitionV2 => "TaskTransition@2",
             Self::TaskBrokerTransitionV1 => "TaskBrokerTransition@1",
             Self::TaskReviewResultSelectedV1 => "TaskReviewResultSelected@1",
             Self::BrokerOperationCompletedV1 => "BrokerOperationCompleted@1",
@@ -267,6 +271,7 @@ impl EventType {
     pub const fn typed(self) -> (&'static str, u32) {
         match self {
             Self::TaskTransitionV1 => ("TaskTransition", 1),
+            Self::TaskTransitionV2 => ("TaskTransition", 2),
             Self::TaskBrokerTransitionV1 => ("TaskBrokerTransition", 1),
             Self::TaskReviewResultSelectedV1 => ("TaskReviewResultSelected", 1),
             Self::BrokerOperationCompletedV1 => ("BrokerOperationCompleted", 1),
@@ -359,6 +364,7 @@ impl std::str::FromStr for EventType {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "TaskTransition@1" => Ok(Self::TaskTransitionV1),
+            "TaskTransition@2" => Ok(Self::TaskTransitionV2),
             "TaskBrokerTransition@1" => Ok(Self::TaskBrokerTransitionV1),
             "TaskReviewResultSelected@1" => Ok(Self::TaskReviewResultSelectedV1),
             "AttemptAdmitted@1" => Ok(Self::AttemptAdmittedV1),
@@ -1402,6 +1408,11 @@ pub fn validate_event_payload(
         >(payload.clone())
         .map_err(|e| e.to_string())?
         .validate(),
+        EventType::TaskTransitionV2 => {
+            serde_json::from_value::<crate::task::event::TaskTransitionV2>(payload.clone())
+                .map_err(|e| e.to_string())?
+                .validate()
+        }
         EventType::TaskTransitionV1 => {
             serde_json::from_value::<crate::task::event::TaskTransitionV1>(payload.clone())
                 .map_err(|e| e.to_string())?

@@ -128,13 +128,13 @@ impl PreparedTaskAttempt {
     }
 }
 
-fn invocation(cas: &Cas, id: &str) -> Result<TaskInvocationV1, StoreError> {
+pub(super) fn invocation(cas: &Cas, id: &str) -> Result<TaskInvocationV1, StoreError> {
     let value: TaskInvocationV1 = payload(cas, id, TASK_INVOCATION_V1)?;
     value.validate().map_err(conflict)?;
     Ok(value)
 }
 
-fn output(cas: &Cas, id: &str) -> Result<TaskOutputV1, StoreError> {
+pub(super) fn output(cas: &Cas, id: &str) -> Result<TaskOutputV1, StoreError> {
     let value: TaskOutputV1 = payload(cas, id, TASK_OUTPUT_V1)?;
     value.validate().map_err(conflict)?;
     Ok(value)

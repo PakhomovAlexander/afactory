@@ -18,6 +18,7 @@ pub mod repair;
 pub mod report;
 pub mod review;
 pub mod review_compat;
+pub mod review_handoff;
 pub mod source;
 pub mod usage;
 pub mod verification;

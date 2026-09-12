@@ -9,6 +9,11 @@ use crate::is_digest;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskChangeV1 {
+    /// Internal normalized form. Only TaskTransition@2 can carry Review handoff authority.
+    #[serde(skip)]
+    ReviewContinued {
+        handoff_id: String,
+    },
     Opened {
         revision_id: String,
         lease_until_unix_ms: u64,
@@ -108,6 +113,9 @@ impl TaskTransitionV1 {
             require(is_digest(id), "Invalid Task transition artifact ID")?;
         }
         match &self.change {
+            TaskChangeV1::ReviewContinued { .. } => {
+                Err("Review continuation requires TaskTransition@2".into())
+            }
             TaskChangeV1::SourceRefreshed {
                 plan_id, waiting, ..
             } => require(
@@ -145,6 +153,7 @@ impl TaskTransitionV1 {
 
     pub fn artifact_refs(&self) -> Vec<&str> {
         match &self.change {
+            TaskChangeV1::ReviewContinued { handoff_id } => vec![handoff_id],
             TaskChangeV1::SourceRefreshed {
                 revision_id,
                 plan_id,
@@ -178,6 +187,56 @@ impl TaskTransitionV1 {
             TaskChangeV1::ExecutionRecorded { record_id }
             | TaskChangeV1::DeliveryRecorded { record_id } => vec![record_id],
             _ => Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TaskChangeV2 {
+    ReviewContinued { handoff_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskTransitionV2 {
+    pub writer: String,
+    pub epoch: u64,
+    pub now_unix_ms: u64,
+    pub change: TaskChangeV2,
+}
+impl TaskTransitionV2 {
+    pub fn validate(&self) -> Result<(), String> {
+        let TaskChangeV2::ReviewContinued { handoff_id } = &self.change;
+        require(is_digest(handoff_id), "Invalid Review handoff identity")?;
+        TaskTransitionV1 {
+            writer: self.writer.clone(),
+            epoch: self.epoch,
+            now_unix_ms: self.now_unix_ms,
+            change: TaskChangeV1::Resumed {},
+        }
+        .validate()
+    }
+    pub fn from_continuation(value: &TaskTransitionV1) -> Option<Self> {
+        let TaskChangeV1::ReviewContinued { handoff_id } = &value.change else {
+            return None;
+        };
+        Some(Self {
+            writer: value.writer.clone(),
+            epoch: value.epoch,
+            now_unix_ms: value.now_unix_ms,
+            change: TaskChangeV2::ReviewContinued {
+                handoff_id: handoff_id.clone(),
+            },
+        })
+    }
+    pub fn into_transition(self) -> TaskTransitionV1 {
+        let TaskChangeV2::ReviewContinued { handoff_id } = self.change;
+        TaskTransitionV1 {
+            writer: self.writer,
+            epoch: self.epoch,
+            now_unix_ms: self.now_unix_ms,
+            change: TaskChangeV1::ReviewContinued { handoff_id },
         }
     }
 }

@@ -13,6 +13,10 @@ use serde_json::{Value, json};
 
 #[path = "task_public_schemas/broker.rs"]
 mod broker;
+#[path = "../../review-pipeline/tests/support/captured_review.rs"]
+mod captured_fixture;
+#[path = "task_public_schemas/continuation.rs"]
+mod continuation;
 #[path = "task_public_schemas/owned.rs"]
 mod owned;
 #[path = "support/task_cli.rs"]
@@ -352,6 +356,32 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
         0,
     );
     valid(&inspection_schema, &planned);
+    let exact = json_output(
+        cli(
+            &repo,
+            &state,
+            &[
+                "task",
+                "explain",
+                "pagination-cli",
+                "--plan",
+                planned["plan_id"].as_str().unwrap(),
+            ],
+        ),
+        0,
+    );
+    let plan_schema = validator("task-plan-inspection-v1.json");
+    valid(&plan_schema, &exact);
+    assert_eq!(exact["current_plan"], true);
+    assert_eq!(exact["plan"], planned["plan"]);
+    assert_eq!(exact["graph"], planned["graph"]);
+    assert_eq!(exact["task_revision_id"], planned["revision_id"]);
+    let mut invalid = exact.clone();
+    invalid["recorded_event_ids"] = json!([]);
+    assert!(!plan_schema.is_valid(&invalid));
+    let mut invalid = exact;
+    invalid["approved"] = json!(true);
+    assert!(!plan_schema.is_valid(&invalid));
     let listed = json_output(cli(&repo, &state, &["task", "list"]), 0);
     valid(&list_schema, &listed["tasks"][0]);
     assert!(listed["tasks"][0]["outcome"].is_null());

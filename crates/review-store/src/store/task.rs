@@ -25,7 +25,9 @@ mod delivery;
 pub mod execution;
 pub mod planning;
 mod report;
+pub mod review_handoff;
 mod review_round;
+pub use review_handoff::read_task_transition;
 mod source;
 
 fn conflict(message: impl Into<String>) -> StoreError {
@@ -84,6 +86,20 @@ pub struct DeveloperGrant {
 /// package authority. Possession of actor strings or serialized PlanDecision does not implement
 /// this interface. Every execution adapter must use this same boundary on resume and dispatch.
 pub trait TaskAuthority: Sync {
+    /// Recompile both captured Review plans and the successor roots. Runs under the caller's
+    /// Store mutex; implementations must be pure and must not re-lock SharedEventStore.
+    #[allow(clippy::too_many_arguments)]
+    fn validate_review_continuation(
+        &self,
+        _cas: &Cas,
+        _previous: &TaskRevisionV1,
+        _next: &TaskRevisionV1,
+        _previous_plan: &ExecutionPlanV1,
+        _next_plan: &ExecutionPlanV1,
+        _handoff: &task::review_handoff::TaskReviewHandoffV1,
+    ) -> Result<(), String> {
+        Err("Captured Review continuation is not configured".into())
+    }
     fn validate_owned_children(
         &self,
         _cas: &Cas,
@@ -238,6 +254,7 @@ pub struct TaskProjection {
     pub planning: Option<planning::TaskPlanningProof>,
     pub deliveries: Vec<(String, task::delivery::TaskDeliveryRecordV1)>,
     pub run_reports: Vec<String>,
+    pub review_handoffs: Vec<(String, task::review_handoff::TaskReviewHandoffV1)>,
 }
 
 /// Created after replay/transition validation; the shared transaction then compares sequence
@@ -373,6 +390,30 @@ fn references(
         ]);
     }
     match change {
+        TaskChangeV1::ReviewContinued { handoff_id } => {
+            let handoff = review_handoff::read_task_review_handoff(cas, handoff_id)?;
+            refs.insert(handoff_id.clone());
+            refs.extend(handoff.artifact_refs().into_iter().map(str::to_owned));
+            let mut next = state
+                .ok_or_else(|| conflict("Review handoff precedes Task"))?
+                .clone();
+            next.revision = revision(cas, &handoff.successor_revision_id)?;
+            next.revision_id = handoff.successor_revision_id.clone();
+            refs.extend(references(
+                cas,
+                &TaskChangeV1::RevisionRecorded {
+                    revision_id: handoff.successor_revision_id.clone(),
+                },
+                None,
+            )?);
+            refs.extend(references(
+                cas,
+                &TaskChangeV1::PlanProposed {
+                    plan_id: handoff.successor_plan_id.clone(),
+                },
+                Some(&next),
+            )?);
+        }
         TaskChangeV1::SourceRefreshed {
             revision_id,
             plan_id,
@@ -586,6 +627,9 @@ impl TaskProjection {
         } else {
             self.check_lease(transition)?;
             match &transition.change {
+                TaskChangeV1::ReviewContinued { handoff_id } => {
+                    self.apply_review_handoff(cas, handoff_id, transition.now_unix_ms)?;
+                }
                 TaskChangeV1::SourceRefreshed {
                     revision_id,
                     plan_id,
@@ -964,6 +1008,7 @@ impl EventStore {
         // Cached prefix is only a parse memo. Revalidate current revision/plan bytes on every
         // access; a removed or corrupted active artifact must never inherit cached authority.
         if let Some(state) = &state {
+            review_handoff::validate_cached(self, cas, state)?;
             execution::broker::validate_cached(cas, state)?;
             execution::owned::validate_cached(cas, state)?;
             if state.planning.is_some() {
@@ -1044,11 +1089,20 @@ impl EventStore {
                 execution::broker::apply_event(cas, state, &event)?;
                 continue;
             }
-            if event.event_type != EventType::TaskTransitionV1 {
+            if !matches!(
+                event.event_type,
+                EventType::TaskTransitionV1 | EventType::TaskTransitionV2
+            ) {
                 return Err(conflict("Task log contains a foreign event"));
             }
-            let transition: TaskTransitionV1 = serde_json::from_value(event.payload.clone())?;
-            transition.validate().map_err(conflict)?;
+            let transition = read_task_transition(&event)?;
+            if let TaskChangeV1::ReviewContinued { handoff_id } = &transition.change {
+                review_handoff::validate_evidence(
+                    self,
+                    cas,
+                    &review_handoff::read_task_review_handoff(cas, handoff_id)?,
+                )?;
+            }
             let expected = references(cas, &transition.change, state.as_ref())?;
             if expected != event.artifact_refs {
                 return Err(conflict(
@@ -1094,6 +1148,7 @@ impl EventStore {
                     planning: None,
                     deliveries: Vec::new(),
                     run_reports: Vec::new(),
+                    review_handoffs: Vec::new(),
                 });
             } else {
                 return Err(conflict("Task transition precedes genesis"));
@@ -1119,7 +1174,7 @@ impl EventStore {
         transition: TaskTransitionV1,
         owned_prefix: Option<(u64, Option<(String, u64)>)>,
     ) -> Result<RunEvent, StoreError> {
-        transition.validate().map_err(conflict)?;
+        let (event_type, value) = review_handoff::encode_transition(&transition)?;
         let state = self.task_projection(cas, task_id)?;
         let first = state.as_ref().map_or(0, |s| s.next_sequence);
         if owned_prefix
@@ -1136,23 +1191,23 @@ impl EventStore {
         } else {
             false
         };
-        let valid_until = if owned_record {
-            state.as_ref().map(|state| {
-                state.lease_until.min(
-                    state
-                        .plan_id
-                        .as_ref()
-                        .and_then(|id| state.decisions.get(id))
-                        .map_or(u64::MAX, |decision| decision.valid_until),
-                )
-            })
-        } else {
-            None
-        };
+        let valid_until =
+            if owned_record || matches!(transition.change, TaskChangeV1::ReviewContinued { .. }) {
+                state.as_ref().map(|state| {
+                    state.lease_until.min(
+                        state
+                            .plan_id
+                            .as_ref()
+                            .and_then(|id| state.decisions.get(id))
+                            .map_or(u64::MAX, |decision| decision.valid_until),
+                    )
+                })
+            } else {
+                None
+            };
         let refs = references(cas, &transition.change, state.as_ref())?;
-        let value = serde_json::to_value(&transition)?;
         let run_id = task_run_id(task_id)?;
-        let event = NewEvent::new(EventType::TaskTransitionV1, value.clone()).referencing(refs);
+        let event = NewEvent::new(event_type, value.clone()).referencing(refs);
         let review_round = review_round::fence_for_transition(cas, &transition, state.as_ref())?;
         if let Some(mut state) = state {
             state.apply(
@@ -1185,7 +1240,7 @@ impl EventStore {
             run_id: run_id.clone(),
             first,
             payloads: vec![value],
-            event_type: EventType::TaskTransitionV1,
+            event_type,
             valid_until,
             review_round,
             review_prefix: owned_prefix.and_then(|(_, prefix)| prefix),

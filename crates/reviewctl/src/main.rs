@@ -1375,11 +1375,16 @@ fn main() {
                     inspect.state.as_deref(),
                     inspect.json,
                 ),
-                cli::TaskCommand::Explain { task_id, inspect } => task_execution::explain(
+                cli::TaskCommand::Explain {
+                    task_id,
+                    plan,
+                    inspect,
+                } => task_execution::explain(
                     &task_id,
                     &inspect.repo,
                     inspect.state.as_deref(),
                     inspect.json,
+                    plan.as_deref(),
                 ),
                 cli::TaskCommand::Deliver {
                     task_id,

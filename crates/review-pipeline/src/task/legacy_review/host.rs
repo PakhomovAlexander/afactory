@@ -25,6 +25,7 @@ use crate::{DurableReceipt, artifact_ids, port_artifacts};
 mod gate_facts;
 mod owned;
 mod result;
+pub use result::RecordedReviewRoundConclusion;
 mod worker;
 
 type Ports = BTreeMap<String, ArtifactInputV1>;
@@ -1087,6 +1088,43 @@ impl TaskDomain for LegacyReviewTaskHost<'_, '_> {
                 cas.verify(&reference).map_err(|e| e.to_string())?;
             }
         }
+        Ok(())
+    }
+
+    fn validate_review_continuation(
+        &self,
+        cas: &Cas,
+        previous: &TaskRevisionV1,
+        next: &TaskRevisionV1,
+        previous_plan: &ExecutionPlanV1,
+        next_plan: &ExecutionPlanV1,
+        handoff: &review_core::task::review_handoff::TaskReviewHandoffV1,
+    ) -> Result<(), String> {
+        // CapturedTaskAuthority has recompiled the successor with its successor compiler.
+        // This still-live predecessor host supplies the old captured Round authority without
+        // reopening or locking Store inside its validation callback.
+        if previous != &self.task
+            || previous_plan != &self.plan
+            || handoff.predecessor_plan_id != self.plan_id
+            || handoff.predecessor_revision_id != previous_plan.task_revision_id
+            || handoff.successor_revision_id != next_plan.task_revision_id
+            || next.task_id != previous.task_id
+            || next.authority != previous.authority
+            || next.limits != previous.limits
+            || next.provenance != previous.provenance
+        {
+            return Err("Review handoff changed its captured predecessor or Task authority".into());
+        }
+        if matches!(
+            handoff.evidence,
+            review_core::task::review_handoff::TaskReviewHandoffEvidenceV1::ClosedRound { .. }
+        ) && self.compiler.mode()? != review_config::captured_review::ReviewMode::Heavy
+        {
+            return Err(
+                "Only a captured heavy Campaign may continue to another numeric Round".into(),
+            );
+        }
+        self.compiler.recompile(cas, previous, previous_plan)?;
         Ok(())
     }
 }

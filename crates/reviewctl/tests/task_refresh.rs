@@ -292,6 +292,46 @@ fn generated_issue_refresh_reuses_definition_but_requires_a_new_exact_signature(
     assert_eq!(next["limits"], original["limits"]);
     assert_eq!(next["authority"], original["authority"]);
     assert_eq!(next["inputs"]["source"], original["inputs"]["source"]);
+    // Exact plan inspection retains historical generated authority without restoring approval.
+    let old_plan_id = waiting["plan_id"].as_str().unwrap();
+    let old_plan = task(
+        &repo,
+        &state,
+        &["task", "explain", "issue-refresh", "--plan", old_plan_id],
+        0,
+    );
+    assert_eq!(old_plan["schema"], "af/task-plan-inspection@1");
+    assert_eq!(old_plan["current_plan"], false);
+    assert_eq!(old_plan["revision"], original);
+    assert_eq!(old_plan["plan"], approved["plan"]);
+    assert_eq!(old_plan["graph"], approved["graph"]);
+    // A byte-valid plan in CAS alone is insufficient: it must have recorded Task membership.
+    let recorded = cas.get_artifact(old_plan_id).unwrap();
+    let (unrecorded_id, _) = cas
+        .put_artifact(
+            recorded.artifact_type,
+            review_core::Producer::KernelOperation {
+                run_id: review_store::store::task::task_run_id("issue-refresh").unwrap(),
+                node_id: None,
+                operation_id: "unrecorded-copy".into(),
+            },
+            recorded.input_artifacts,
+            recorded.subject_snapshot_id,
+            recorded.payload,
+        )
+        .unwrap();
+    assert_ne!(unrecorded_id, old_plan_id);
+    let rejected = call(
+        &repo,
+        &state,
+        &["task", "explain", "issue-refresh", "--plan", &unrecorded_id],
+    );
+    assert!(!rejected.status.success());
+    assert!(String::from_utf8_lossy(&rejected.stderr).contains("not recorded in this Task"));
+    assert_eq!(
+        task(&repo, &state, &["task", "explain", "issue-refresh"], 0),
+        refreshed
+    );
     for args in [
         vec!["task", "run", "issue-refresh"],
         vec![

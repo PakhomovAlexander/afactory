@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-review-handoff:1",
+  "title": "TaskReviewHandoff@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "predecessor_revision_id",
+    "predecessor_plan_id",
+    "successor_revision_id",
+    "successor_plan_id",
+    "predecessor_round_id",
+    "successor_round_id",
+    "evidence"
+  ],
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+      "maxLength": 128
+    },
+    "predecessor_revision_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "predecessor_plan_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "successor_revision_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "successor_plan_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "predecessor_round_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "successor_round_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "evidence": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "report_event_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "closed_round"
+            },
+            "report_event_id": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "superseded_event_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "superseded_input"
+            },
+            "superseded_event_id": {
+              "type": "string",
+              "pattern": "^[a-z0-9]{26}$"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

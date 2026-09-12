@@ -36,6 +36,7 @@ pub(crate) mod catalog;
 pub(super) mod developer;
 pub(crate) mod domain;
 pub(super) mod export;
+mod inspection;
 mod issue;
 mod legacy;
 mod planning;
@@ -1363,11 +1364,15 @@ pub(super) fn explain(
     repo: &Path,
     state: Option<&Path>,
     json: bool,
+    plan: Option<&str>,
 ) -> Result<i32, String> {
     let (_, state) = state_path(repo, state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let store =
         EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    if let Some(plan_id) = plan {
+        return inspection::explain_plan(&cas, &store, id, plan_id, json);
+    }
     present(&cas, &store, id, json, true)
 }
 
@@ -1454,8 +1459,8 @@ fn present(
             history.push(json!({"sequence":event.sequence,"broker_transition":transition}));
             continue;
         }
-        let transition: review_core::task::event::TaskTransitionV1 =
-            serde_json::from_value(event.payload).map_err(|e| e.to_string())?;
+        let transition =
+            review_store::store::task::read_task_transition(&event).map_err(|e| e.to_string())?;
         if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
             &transition.change
         {
@@ -1493,7 +1498,7 @@ fn present(
             let decision: PlanDecisionV1 = artifact(cas, decision_id, PLAN_DECISION_V1)?;
             decisions.push(json!({"artifact_id":decision_id, "decision":decision, "valid_until_unix_ms":valid_until_unix_ms}));
         }
-        history.push(json!({"sequence":event.sequence,"transition":transition}));
+        history.push(json!({"sequence":event.sequence,"transition":event.payload}));
     }
     if !decisions.is_empty() {
         value["plan_decisions"] = json!(decisions);
@@ -1507,6 +1512,17 @@ fn present(
     if !owned_child_sets.is_empty() {
         value["schema"] = json!("af/task-inspection@5");
         value["owned_child_sets"] = json!(owned_child_sets);
+    }
+    if !state.review_handoffs.is_empty() {
+        value["schema"] = json!("af/task-inspection@6");
+        value["review_handoffs"] =
+            json!(state.review_handoffs.iter().map(|(id, record)| {
+            json!({
+                "artifact_id": id,
+                "artifact_type": review_core::task::review_handoff::TASK_REVIEW_HANDOFF_V1,
+                "record": record,
+            })
+        }).collect::<Vec<_>>());
     }
     let mut reports = Vec::new();
     for id in &state.run_reports {

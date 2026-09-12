@@ -14,6 +14,7 @@ data; it cannot change those committed execution permissions.
 ```sh
 af task plan --file ticket.json --state /tmp/pagination-state --json
 af task explain pagination-cli --state /tmp/pagination-state --json
+af task explain pagination-cli --plan PLAN_ID --state /tmp/pagination-state --json
 af task run pagination-cli --state /tmp/pagination-state --json
 af task show pagination-cli --state /tmp/pagination-state --json
 af task list --state /tmp/pagination-state --json
@@ -75,3 +76,8 @@ use [`af/task-list-entry@2`](../../schemas/task-list-entry-v2.json); their
 execution-record versions, and `explain` includes the captured
 [`af.compiled-task/1`](../../schemas/compiled-task-v1.json) graph and
 ExecutionPlan. Public schemas describe these shapes without replacing Store replay validation.
+
+Exact plan inspection accepts only a plan recorded in the selected Task's history. It emits
+`af/task-plan-inspection@1`, including the original revision, compiled graph, bindings and
+recording event IDs; `current_plan` distinguishes the active plan from an earlier one.
+Inspecting an earlier generated plan leaves the current revision and approval state unchanged.

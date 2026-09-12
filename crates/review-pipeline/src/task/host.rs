@@ -125,6 +125,18 @@ impl TaskEnvironment for EmptyTaskEnvironment {
 /// Domain operators retain their own receipt semantics. This interface cannot create an
 /// Attempt, execute a child graph, authorize a plan, or change the parent's allowance.
 pub trait TaskDomain: TaskOperatorHost {
+    #[allow(clippy::too_many_arguments)]
+    fn validate_review_continuation(
+        &self,
+        _cas: &Cas,
+        _previous: &TaskRevisionV1,
+        _next: &TaskRevisionV1,
+        _previous_plan: &ExecutionPlanV1,
+        _next_plan: &ExecutionPlanV1,
+        _handoff: &review_core::task::review_handoff::TaskReviewHandoffV1,
+    ) -> Result<(), String> {
+        Err("Task domain has no installed Review continuation".into())
+    }
     fn validate_owned_children(
         &self,
         _cas: &Cas,
@@ -279,6 +291,29 @@ impl<'a> CapturedTaskAuthority<'a> {
 }
 
 impl TaskAuthority for CapturedTaskAuthority<'_> {
+    #[allow(clippy::too_many_arguments)]
+    fn validate_review_continuation(
+        &self,
+        cas: &Cas,
+        previous: &TaskRevisionV1,
+        next: &TaskRevisionV1,
+        previous_plan: &ExecutionPlanV1,
+        next_plan: &ExecutionPlanV1,
+        handoff: &review_core::task::review_handoff::TaskReviewHandoffV1,
+    ) -> Result<(), String> {
+        if !matches!(self.compiler, CapturedCompiler::Review(_)) {
+            return Err("Only the captured Review compiler admits a Review continuation".into());
+        }
+        self.validate_plan(cas, next, next_plan)?;
+        self.domain.validate_review_continuation(
+            cas,
+            previous,
+            next,
+            previous_plan,
+            next_plan,
+            handoff,
+        )
+    }
     fn validate_owned_children(
         &self,
         cas: &Cas,
@@ -856,6 +891,25 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
 }
 
 impl TaskDomain for CapturedTaskHost<'_> {
+    #[allow(clippy::too_many_arguments)]
+    fn validate_review_continuation(
+        &self,
+        cas: &Cas,
+        previous: &TaskRevisionV1,
+        next: &TaskRevisionV1,
+        previous_plan: &ExecutionPlanV1,
+        next_plan: &ExecutionPlanV1,
+        handoff: &review_core::task::review_handoff::TaskReviewHandoffV1,
+    ) -> Result<(), String> {
+        self.domain.validate_review_continuation(
+            cas,
+            previous,
+            next,
+            previous_plan,
+            next_plan,
+            handoff,
+        )
+    }
     fn validate_owned_children(
         &self,
         cas: &Cas,

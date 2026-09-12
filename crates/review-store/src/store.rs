@@ -370,7 +370,9 @@ impl EventStore {
         if events.iter().any(|e| {
             matches!(
                 e.event_type,
-                EventType::TaskTransitionV1 | EventType::TaskBrokerTransitionV1
+                EventType::TaskTransitionV1
+                    | EventType::TaskTransitionV2
+                    | EventType::TaskBrokerTransitionV1
             )
         }) && task_permit.is_none()
         {
