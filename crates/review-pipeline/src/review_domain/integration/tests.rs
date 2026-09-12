@@ -69,6 +69,20 @@ fn legacy_check_order_and_one_writable_clone_survive_the_shared_sequence() {
         bounded, legacy,
         "the deadline option changes no successful receipt bytes"
     );
+    let cancellation = std::sync::atomic::AtomicBool::new(false);
+    let controlled = runner
+        .run_recorded(
+            &policy,
+            &Manifest::default(),
+            &snapshot,
+            None,
+            Some(&cancellation),
+        )
+        .unwrap_or_else(|failure| panic!("{}", failure.message));
+    assert_eq!(
+        controlled, legacy,
+        "an inactive control changes no successful canonical Check bytes"
+    );
     assert!(legacy.passed());
     assert_eq!(
         legacy
@@ -119,6 +133,7 @@ fn an_absolute_attempt_deadline_refuses_setup_and_bounds_the_running_check() {
             &Manifest::default(),
             &snapshot,
             Some(started + Duration::from_millis(500)),
+            None,
         )
         .err()
         .unwrap();
@@ -184,6 +199,7 @@ sleep 60
             &Manifest::default(),
             &snapshot,
             None,
+            None,
         )
         .err()
         .unwrap();
@@ -202,4 +218,69 @@ sleep 60
     assert!(std::path::Path::new(&path).is_dir(), "{error}");
     // The fake runtime never creates a daemon process; release its deliberate forensic residue.
     std::fs::remove_dir_all(path).unwrap();
+}
+
+#[test]
+fn controlled_check_sequence_retains_interrupted_raw_result_and_stops_before_the_next_check() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let ready = dir.path().join("ready");
+    let never = dir.path().join("never");
+    let quote = |p: &std::path::Path| p.to_str().unwrap().replace('\'', "'\\''");
+    let checks = [
+        command(
+            "first",
+            &format!(
+                "printf before; printf diagnostic >&2; pwd >'{}'; sleep 30",
+                quote(&ready)
+            ),
+        ),
+        command("next", &format!("touch '{}'", quote(&never))),
+    ];
+    let binding = binding();
+    let sequence = IntegrationCheckSequence {
+        cas: &cas,
+        checks: &checks,
+        check_timeout: Duration::from_secs(20),
+        binding: &binding,
+        container_provider: None,
+    };
+    let flag = AtomicBool::new(false);
+    let snapshot = cas.put(b"derived").unwrap();
+    let failure = std::thread::scope(|scope| {
+        let cancel = scope.spawn(|| {
+            let until = Instant::now() + Duration::from_secs(3);
+            while !ready.is_file() {
+                if Instant::now() >= until {
+                    flag.store(true, Ordering::Release);
+                    panic!("Check never began");
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            flag.store(true, Ordering::Release);
+        });
+        let value = sequence.run_recorded(
+            &policy(&["first", "next"]),
+            &Manifest::default(),
+            &snapshot,
+            None,
+            Some(&flag),
+        );
+        cancel.join().unwrap();
+        value.err().unwrap()
+    });
+    assert!(failure.message.contains("cancelled"), "{}", failure.message);
+    assert_eq!(failure.result_artifact_ids.len(), 1);
+    let result: review_check::CheckResult =
+        serde_json::from_value(cas.get_json(&failure.result_artifact_ids[0]).unwrap()).unwrap();
+    assert_eq!(result.status, CheckStatus::NotRun);
+    assert_eq!(cas.get(&result.stdout.unwrap()).unwrap(), b"before");
+    assert_eq!(cas.get(&result.stderr.unwrap()).unwrap(), b"diagnostic");
+    assert!(!never.exists());
+    let sandbox = std::fs::read_to_string(ready).unwrap();
+    assert!(
+        !std::path::Path::new(sandbox.trim()).exists(),
+        "confirmed local group cleanup releases its one writable clone"
+    );
 }

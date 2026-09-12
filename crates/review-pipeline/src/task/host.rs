@@ -645,6 +645,7 @@ impl<'a> CapturedTaskHost<'a> {
         attempt: &PreparedTaskAttempt,
         worker: &CapturedWorker<'_>,
         broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         use review_core::task::feedback::*;
         let mut raw_artifact_ids = Vec::new();
@@ -711,7 +712,7 @@ impl<'a> CapturedTaskHost<'a> {
                                 .into();
                         }
                     }
-                    review_runner::task::invoke_command(
+                    review_runner::task::invoke_command_controlled(
                         cas,
                         sandbox.root(),
                         tempfile::tempdir().map_err(|e| e.to_string())?.path(),
@@ -719,9 +720,10 @@ impl<'a> CapturedTaskHost<'a> {
                         &worker.contract,
                         attempt.context_id(),
                         Duration::from_millis(remaining),
+                        cancellation,
                     )
                 }
-                WorkerTransport::Model(adapter) => review_runner::task::invoke_model_with_broker(
+                WorkerTransport::Model(adapter) => review_runner::task::invoke_model_controlled(
                     cas,
                     sandbox.root(),
                     *adapter,
@@ -730,6 +732,7 @@ impl<'a> CapturedTaskHost<'a> {
                     Duration::from_millis(remaining),
                     worker.signature.effects.contains("write-source"),
                     broker,
+                    cancellation,
                 ),
             };
             raw_artifact_ids = result.raw_artifact_ids;
@@ -938,9 +941,24 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         attempt: Option<&PreparedTaskAttempt>,
         broker: Option<&dyn review_broker::ExactBrokerClient>,
     ) -> TaskWorkOutput {
+        self.execute_controlled(cas, input, attempt, broker, None)
+    }
+
+    fn execute_controlled(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> TaskWorkOutput {
+        if let Err(error) = crate::task::control::check(cancellation) {
+            return crate::task::control::refused(error);
+        }
+
         match (self.workers.get(&input.node), attempt) {
             (Some(worker), Some(attempt)) => {
-                self.worker_execute(cas, input, attempt, worker, broker)
+                self.worker_execute(cas, input, attempt, worker, broker, cancellation)
             }
             (Some(_), None) => TaskWorkOutput {
                 usage_observation: None,
@@ -951,7 +969,9 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
                 usage_id: None,
                 feedback_id: None,
             },
-            (None, _) => self.domain.execute_with_broker(cas, input, attempt, broker),
+            (None, _) => self
+                .domain
+                .execute_controlled(cas, input, attempt, broker, cancellation),
         }
     }
 }

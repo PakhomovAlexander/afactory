@@ -457,76 +457,88 @@ fn execute_current(
                 .map_err(|e| e.to_string())
         })?;
     let shared = review_store::SharedEventStore::new(store);
-    review_pipeline::task::lease::with_heartbeat(&shared, cas, lease, || {
-        let host = LegacyReviewTaskHost::new(
-            cas,
-            shared.clone(),
-            &captured.compiler,
-            lease.clone(),
-            model_bindings(&captured.plan, &captured.captured, &captured.workers)?,
-        )?
-        .with_cache_source_resolver(super::caches::resolve_kind);
-        let authority =
-            CapturedTaskAuthority::for_legacy_review(&captured.compiler, &host, &NoTaskDeveloper);
-        if !closed {
-            let runtime =
-                TaskRuntime::with_store(shared.clone(), cas, lease.clone(), &authority, &host)?;
-            runtime.execute()?;
-        }
-        let conclusion = host.publish_recorded_round_conclusion(cas)?;
-        let mut continuation_required = conclusion.can_continue;
-        if let Some(mut phase) = host.select_recorded_integration(cas)? {
-            if phase.requires_checks() && !phase.finished() {
-                let runtime = TaskRuntime::with_review_integration(
-                    shared.clone(),
-                    cas,
-                    lease.clone(),
-                    &authority,
-                    &host,
-                    &phase,
-                )?;
-                let (report_id, _) = runtime.execute_review_integration(&phase)?;
-                phase = host.finish_recorded_integration(cas, &phase, &report_id)?;
-            }
-            continuation_required |= phase.integration_committed_event_id().is_some();
-        }
-        let result = if !continuation_required
-            && !matches!(
-                conclusion.verdict,
-                review_pipeline::RunVerdict::Incomplete { .. }
-            ) {
-            let result = host.assemble_recorded_result(cas)?;
-            let mut refs = result.evidence.clone();
-            refs.insert(result.task_revision_id.clone());
-            refs.extend(
-                result
-                    .outputs
-                    .values()
-                    .flat_map(|port| port.artifact_ids.iter().cloned()),
-            );
-            let id = persist(
+    let cancellation = std::sync::atomic::AtomicBool::new(false);
+    review_pipeline::task::lease::with_heartbeat_controlled(
+        &shared,
+        cas,
+        lease,
+        Some(&cancellation),
+        || {
+            let host = LegacyReviewTaskHost::new(
                 cas,
-                lease.task_id(),
-                review_core::task::TASK_RESULT_V1,
-                refs.into_iter().collect(),
-                &result,
-            )?;
-            shared
-                .lock()
-                .expect("Task Store")
-                .finish_task(cas, lease, &id, &authority)
-                .map_err(|e| e.to_string())?;
-            Some(result)
-        } else {
-            None
-        };
-        Ok(RoundExecution {
-            report: conclusion.report,
-            ledger: host.ledger(),
-            attempts: host.selected_attempt_evidence()?,
-            verdict: conclusion.verdict,
-            continuation_required,
-            result,
-        })
-    })
+                shared.clone(),
+                &captured.compiler,
+                lease.clone(),
+                model_bindings(&captured.plan, &captured.captured, &captured.workers)?,
+            )?
+            .with_cache_source_resolver(super::caches::resolve_kind);
+            let authority = CapturedTaskAuthority::for_legacy_review(
+                &captured.compiler,
+                &host,
+                &NoTaskDeveloper,
+            );
+            if !closed {
+                let runtime =
+                    TaskRuntime::with_store(shared.clone(), cas, lease.clone(), &authority, &host)?
+                        .with_cancellation(&cancellation);
+                runtime.execute()?;
+            }
+            let conclusion = host.publish_recorded_round_conclusion(cas)?;
+            let mut continuation_required = conclusion.can_continue;
+            if let Some(mut phase) = host.select_recorded_integration(cas)? {
+                if phase.requires_checks() && !phase.finished() {
+                    let runtime = TaskRuntime::with_review_integration(
+                        shared.clone(),
+                        cas,
+                        lease.clone(),
+                        &authority,
+                        &host,
+                        &phase,
+                    )?
+                    .with_cancellation(&cancellation);
+                    let (report_id, _) = runtime.execute_review_integration(&phase)?;
+                    phase = host.finish_recorded_integration(cas, &phase, &report_id)?;
+                }
+                continuation_required |= phase.integration_committed_event_id().is_some();
+            }
+            let result = if !continuation_required
+                && !matches!(
+                    conclusion.verdict,
+                    review_pipeline::RunVerdict::Incomplete { .. }
+                ) {
+                let result = host.assemble_recorded_result(cas)?;
+                let mut refs = result.evidence.clone();
+                refs.insert(result.task_revision_id.clone());
+                refs.extend(
+                    result
+                        .outputs
+                        .values()
+                        .flat_map(|port| port.artifact_ids.iter().cloned()),
+                );
+                let id = persist(
+                    cas,
+                    lease.task_id(),
+                    review_core::task::TASK_RESULT_V1,
+                    refs.into_iter().collect(),
+                    &result,
+                )?;
+                shared
+                    .lock()
+                    .expect("Task Store")
+                    .finish_task(cas, lease, &id, &authority)
+                    .map_err(|e| e.to_string())?;
+                Some(result)
+            } else {
+                None
+            };
+            Ok(RoundExecution {
+                report: conclusion.report,
+                ledger: host.ledger(),
+                attempts: host.selected_attempt_evidence()?,
+                verdict: conclusion.verdict,
+                continuation_required,
+                result,
+            })
+        },
+    )
 }

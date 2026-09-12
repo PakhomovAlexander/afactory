@@ -68,9 +68,12 @@ through recovery. Valid native calls retain their previous artifact identities. 
 
 The native adapter's controlled invocation boundary can stop an owned process group and retain
 cancelled usage through bounded output draining. Unsupported adapters refuse a supplied control.
-TaskRuntime, heartbeat and CLI signal forwarding are separate caller work; this boundary alone
-does not provide a domain-level Task cancellation command. See
-[ADR-0087](../adr/0087-control-native-task-invocations-through-the-shared-supervisor.md).
+Common CLI Task, planning, Review and doctor execution share that control with their writer
+heartbeat. A failed exact-writer lease check interrupts supervised Workers, commands, Gates and
+Integration checks; the runtime retains paid observations and blocks later work and selection.
+This does not install CLI signal handlers or a domain-level Task cancellation command. See
+[ADR-0087](../adr/0087-control-native-task-invocations-through-the-shared-supervisor.md) and
+[ADR-0089](../adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md).
 
 Codex final-message capture reads a bounded regular file through the held private output
 directory. Symlinks, FIFOs and other nonregular files refuse without blocking or falling back

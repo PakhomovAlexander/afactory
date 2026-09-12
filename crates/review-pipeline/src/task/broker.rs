@@ -74,6 +74,7 @@ struct TaskBrokerBoundary<'a, 'store> {
     cas: &'a Cas,
     authority: &'a dyn TaskAuthority,
     bound: OnceLock<BoundTaskBroker>,
+    cancellation: Option<&'a AtomicBool>,
 }
 
 impl LeaseAuthority for TaskBrokerBoundary<'_, '_> {
@@ -82,6 +83,7 @@ impl LeaseAuthority for TaskBrokerBoundary<'_, '_> {
         lease: &BrokerLeaseV1,
         handle: &BrokerHandle,
     ) -> Result<(), AuthorityError> {
+        super::control::check(self.cancellation).map_err(|_| AuthorityError)?;
         let bound = self.bound.get().ok_or(AuthorityError)?;
         if bound.binding().lease != *lease || bound.binding().handle_id != handle.as_str() {
             return Err(AuthorityError);
@@ -172,6 +174,9 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput {
+        if let Err(error) = super::control::check(self.cancellation) {
+            return failed(error, Some(0));
+        }
         let policies = match self.host.broker_operations(self.cas, input) {
             Ok(policies) => policies,
             Err(error) => return failed(error, Some(0)),
@@ -179,7 +184,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         let Some(policies) = policies else {
             return self
                 .host
-                .execute_with_broker(self.cas, input, attempt, None);
+                .execute_controlled(self.cas, input, attempt, None, self.cancellation);
         };
         let Some(attempt) = attempt else {
             return failed("Task Broker requires a started common Attempt", Some(0));
@@ -229,6 +234,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             cas: self.cas,
             authority: self.authority,
             bound: OnceLock::new(),
+            cancellation: self.cancellation,
         };
         let broker = ExactBroker::issue(
             lease,
@@ -259,8 +265,13 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         // Keep the concrete owner outside catch_unwind and all output handling. The opaque
         // client intentionally exposes no usage accessor to the Worker.
         let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.host
-                .execute_with_broker(self.cas, input, Some(attempt), Some(&broker))
+            self.host.execute_controlled(
+                self.cas,
+                input,
+                Some(attempt),
+                Some(&broker),
+                self.cancellation,
+            )
         }))
         .unwrap_or_else(|_| failed("Task operator panicked", None));
         broker.revoke();

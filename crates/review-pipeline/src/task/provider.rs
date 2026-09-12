@@ -161,6 +161,7 @@ impl ProviderTaskDomain<'_> {
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
         broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         let prepared = (|| {
             let receipt = self.receipt(cas, input)?;
@@ -209,13 +210,14 @@ impl ProviderTaskDomain<'_> {
                 };
             }
         };
-        let returned = model.adapter.invoke_with_broker(
+        let returned = model.adapter.invoke_controlled(
             cas,
             directory.path(),
             PROBE_INPUT.to_vec(),
             timeout,
             false,
             broker,
+            cancellation,
         );
         let charged_tokens = returned
             .usage
@@ -420,10 +422,26 @@ impl TaskOperatorHost for ProviderTaskDomain<'_> {
         attempt: Option<&PreparedTaskAttempt>,
         broker: Option<&dyn review_broker::ExactBrokerClient>,
     ) -> TaskWorkOutput {
+        self.execute_controlled(cas, input, attempt, broker, None)
+    }
+
+    fn execute_controlled(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> TaskWorkOutput {
+        if let Err(error) = crate::task::control::check(cancellation) {
+            return crate::task::control::refused(error);
+        }
+
         if self.slots(input).is_some() {
-            self.probe(cas, input, attempt, broker)
+            self.probe(cas, input, attempt, broker, cancellation)
         } else {
-            self.inner.execute_with_broker(cas, input, attempt, broker)
+            self.inner
+                .execute_controlled(cas, input, attempt, broker, cancellation)
         }
     }
 }

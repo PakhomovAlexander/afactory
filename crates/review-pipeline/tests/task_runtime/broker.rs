@@ -8,7 +8,7 @@ use review_pipeline::task::broker::TaskBrokerProvider;
 use review_store::store::task::task_run_id;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
 };
 
 // This installed fixture performs a local, zero-token Provider readiness probe. Business
@@ -20,6 +20,20 @@ impl review_runner::task::WorkerModelAdapter for LocalReadiness {
     }
     fn model_settings(&self) -> Option<(String, String)> {
         Some(("typed-model".into(), "high".into()))
+    }
+    fn invoke_controlled(
+        &self,
+        cas: &Cas,
+        workdir: &std::path::Path,
+        input: Vec<u8>,
+        timeout: std::time::Duration,
+        writable: bool,
+        broker: Option<&dyn ExactBrokerClient>,
+        cancellation: Option<&AtomicBool>,
+    ) -> review_runner::task::ModelWorkerReturn {
+        assert!(broker.is_none());
+        assert!(!cancellation.is_some_and(|f| f.load(Ordering::Acquire)));
+        self.invoke(cas, workdir, input, timeout, writable)
     }
     fn invoke(
         &self,
@@ -81,6 +95,7 @@ impl Drop for CasOutage {
 struct PaidConnector {
     calls: Arc<AtomicUsize>,
     outage: Option<Arc<CasOutage>>,
+    cancellation: Option<Arc<AtomicBool>>,
 }
 impl Connector for PaidConnector {
     fn execute(&self, call: ConnectorCall<'_>) -> Result<ConnectorReply, ConnectorError> {
@@ -92,6 +107,11 @@ impl Connector for PaidConnector {
             && let Some(outage) = &self.outage
         {
             outage.start();
+        }
+        if ordinal == 1
+            && let Some(flag) = &self.cancellation
+        {
+            flag.store(true, Ordering::Release);
         }
         Ok(ConnectorReply::credential_free(
             b"paid response",
@@ -129,6 +149,22 @@ impl TaskOperatorHost for BrokerHost<'_> {
         _: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput {
         panic!("Broker-aware dispatch was bypassed")
+    }
+    fn execute_controlled(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn ExactBrokerClient>,
+        cancellation: Option<&AtomicBool>,
+    ) -> TaskWorkOutput {
+        if input.node != "root.nodes.write" {
+            return self
+                .inner
+                .execute_controlled(cas, input, attempt, broker, cancellation);
+        }
+        assert!(!cancellation.is_some_and(|f| f.load(Ordering::Acquire)));
+        self.execute_with_broker(cas, input, attempt, broker)
     }
     fn execute_with_broker(
         &self,
@@ -216,8 +252,12 @@ impl TaskDomain for BrokerHost<'_> {
 
 #[test]
 fn broker_scope_preserves_exact_paid_usage_across_malformed_output_panic_and_cas_outage() {
-    for (panic_after_payment, receipt_unavailable) in [(false, false), (true, false), (false, true)]
-    {
+    for (panic_after_payment, receipt_unavailable, controlled) in [
+        (false, false, false),
+        (true, false, false),
+        (false, true, false),
+        (false, false, true),
+    ] {
         // Retain the existing separately accounted readiness Attempt. The business Worker
         // has its original captured model allowance; operations never create more Attempts.
         let mut f = super::wide_usage::configured_fixture();
@@ -283,6 +323,8 @@ fn broker_scope_preserves_exact_paid_usage_across_malformed_output_panic_and_cas
             })
         });
         let connector_outage = outage.clone();
+        let cancellation = Arc::new(AtomicBool::new(false));
+        let connector_cancellation = controlled.then(|| cancellation.clone());
         let (slot, binding) = f.plan.bindings.iter().next().unwrap();
         let provider = TaskBrokerProvider::new(
             binding.clone(),
@@ -292,6 +334,7 @@ fn broker_scope_preserves_exact_paid_usage_across_malformed_output_panic_and_cas
                 Ok(Arc::new(PaidConnector {
                     calls: connector_calls.clone(),
                     outage: connector_outage.clone(),
+                    cancellation: connector_cancellation.clone(),
                 }))
             },
         )
@@ -300,6 +343,11 @@ fn broker_scope_preserves_exact_paid_usage_across_malformed_output_panic_and_cas
             .unwrap()
             .with_broker_provider(slot, &provider)
             .unwrap();
+        let runtime = if controlled {
+            runtime.with_cancellation(&cancellation)
+        } else {
+            runtime
+        };
         let report = runtime.execute();
         let charged = u128::from(u64::MAX) + 7;
         if let Some(outage) = outage {

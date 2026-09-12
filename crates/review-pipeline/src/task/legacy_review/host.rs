@@ -469,6 +469,7 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<Ports, String> {
         let (node, mapping, operation) = self.operation(input)?.ok_or("Not a Review operation")?;
         let raw = self.raw_inputs(cas, input, &mapping)?;
@@ -478,7 +479,9 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
             ReviewOperation::Gate => {
                 let deadline =
                     self.current(attempt.ok_or("Review Gate has no started Attempt")?)?;
-                let result = self.domain.run_gate_before(&node.id, Some(deadline));
+                let result =
+                    self.domain
+                        .run_gate_controlled(&node.id, Some(deadline), cancellation);
                 if result.is_err() {
                     self.domain.record_unmaterialized_cache_failures(
                         &node.id,
@@ -825,13 +828,28 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
         attempt: Option<&PreparedTaskAttempt>,
         broker: Option<&dyn review_broker::ExactBrokerClient>,
     ) -> TaskWorkOutput {
+        self.execute_controlled(cas, input, attempt, broker, None)
+    }
+
+    fn execute_controlled(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> TaskWorkOutput {
+        if let Err(error) = crate::task::control::check(cancellation) {
+            return crate::task::control::refused(error);
+        }
+
         if self.is_provider(input) {
             return self
                 .providers()
-                .execute_with_broker(cas, input, attempt, broker);
+                .execute_controlled(cas, input, attempt, broker, cancellation);
         }
         if self.is_integration(input) {
-            return self.execute_integration(cas, input, attempt, broker);
+            return self.execute_integration(cas, input, attempt, broker, cancellation);
         }
         let reviewer = self
             .operation(input)
@@ -839,7 +857,7 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
             .flatten()
             .is_some_and(|(_, _, op)| matches!(op, ReviewOperation::Reviewer { .. }));
         let mut result = if reviewer {
-            self.execute_reviewer(cas, input, attempt, broker)
+            self.execute_reviewer(cas, input, attempt, broker, cancellation)
         } else {
             TaskWorkOutput {
                 usage_observation: None,
@@ -847,7 +865,7 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
                 outputs: if broker.is_some() {
                     Err("Review domain operation does not consume Broker Handles".into())
                 } else {
-                    self.execute_operation(cas, input, attempt)
+                    self.execute_operation(cas, input, attempt, cancellation)
                 },
                 charged_tokens: Some(0),
                 raw_artifact_ids: vec![],

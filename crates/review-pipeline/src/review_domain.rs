@@ -271,6 +271,17 @@ impl<'a> ReviewDomainState<'a> {
         node_id: &str,
         deadline: Option<std::time::Instant>,
     ) -> Result<Vec<String>, String> {
+        self.run_gate_controlled(node_id, deadline, None)
+    }
+
+    pub(super) fn run_gate_controlled(
+        &self,
+        node_id: &str,
+        deadline: Option<std::time::Instant>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<Vec<String>, String> {
+        crate::task::control::check(cancellation)?;
+
         gate_remaining(self.check_timeout, deadline)?;
         if let Some(binding) = self.gate_execution.as_ref() {
             for requested in &binding.caches {
@@ -486,8 +497,9 @@ impl<'a> ReviewDomainState<'a> {
         // Run the checks holding no lock: each is a build or a test, and the store lock is
         // shared with every other node, so holding it across a check would stall the whole
         // pipeline for the build's duration. The lock is taken only to append each result.
-        let mut runner =
-            CheckRunner::new(self.cas, sandbox.root()).with_timeout(self.check_timeout);
+        let mut runner = CheckRunner::new(self.cas, sandbox.root())
+            .with_timeout(self.check_timeout)
+            .with_cancellation(cancellation);
         for environment in cache_environments {
             for ((local_key, local_value), (container_key, container_value)) in
                 environment.local.into_iter().zip(environment.container)
@@ -500,11 +512,19 @@ impl<'a> ReviewDomainState<'a> {
         }
         let mut results = Vec::with_capacity(self.checks.len());
         for check in &self.checks {
+            crate::task::control::check(cancellation)?;
             runner = runner.with_timeout(gate_remaining(self.check_timeout, deadline)?);
             let mut cleanup_failure = None;
             let result = match container.as_ref() {
                 Some(provider) => runner.run_with(check, |program, args, env, timeout| {
-                    match provider.exec_evidenced(sandbox.root(), program, args, env, timeout) {
+                    match provider.exec_evidenced_controlled(
+                        sandbox.root(),
+                        program,
+                        args,
+                        env,
+                        timeout,
+                        cancellation,
+                    ) {
                         Ok(execution) => Ok((execution.output, execution.stderr_held)),
                         Err(error) => {
                             if !error.cleanup_confirmed() {

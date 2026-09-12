@@ -1063,6 +1063,25 @@ impl TaskOperatorHost for ReviewTaskDomain {
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput {
+        self.execute_controlled(cas, input, attempt, None, None)
+    }
+    fn execute_controlled(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> TaskWorkOutput {
+        if let Err(error) = super::control::check(cancellation) {
+            return super::control::refused(error);
+        }
+        if broker.is_some() {
+            return super::control::refused(
+                "Pure domain operation does not consume Broker Handles",
+            );
+        }
+
         let outputs = match self.operator(input) {
             Ok(TaskOperatorV1::ReviewBind {}) => self
                 .bind(cas, input)
@@ -1072,7 +1091,11 @@ impl TaskOperatorHost for ReviewTaskDomain {
             Ok(TaskOperatorV1::AttestFixes {}) => self.attest_fixes(cas, input),
             Ok(TaskOperatorV1::RepairAccept {}) => self.accept_repair(cas, input),
             Ok(TaskOperatorV1::ReviewContinue {}) => self.continue_review(cas, input),
-            _ => return self.code.execute(cas, input, attempt),
+            _ => {
+                return self
+                    .code
+                    .execute_controlled(cas, input, attempt, broker, cancellation);
+            }
         };
         TaskWorkOutput {
             usage_observation: None,

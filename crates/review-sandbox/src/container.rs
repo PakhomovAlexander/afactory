@@ -321,6 +321,25 @@ impl ContainerProvider {
         environment: &[(String, String)],
         timeout: Duration,
     ) -> Result<ContainerExecution, ContainerExecutionError> {
+        self.exec_evidenced_controlled(sandbox_root, program, args, environment, timeout, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn exec_evidenced_controlled(
+        &self,
+        sandbox_root: &Path,
+        program: &str,
+        args: &[String],
+        environment: &[(String, String)],
+        timeout: Duration,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<ContainerExecution, ContainerExecutionError> {
+        if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+            return Err(ContainerExecutionError::before_launch(
+                "container execution cancelled before launch",
+            ));
+        }
+
         let Availability::Usable { runtime } = &self.availability else {
             return Err(ContainerExecutionError::before_launch(format!(
                 "refusing to run outside a container: {}",
@@ -344,7 +363,7 @@ impl ContainerProvider {
                     "container execution identity is not portable UTF-8",
                 )
             })?;
-        self.exec_evidenced_named(
+        self.exec_evidenced_named_controlled(
             runtime,
             sandbox_root,
             program,
@@ -352,10 +371,12 @@ impl ContainerProvider {
             environment,
             timeout,
             execution_name,
+            cancellation,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     fn exec_evidenced_named(
         &self,
         runtime: &Path,
@@ -366,9 +387,54 @@ impl ContainerProvider {
         timeout: Duration,
         execution_name: &str,
     ) -> Result<ContainerExecution, ContainerExecutionError> {
+        self.exec_evidenced_named_controlled(
+            runtime,
+            sandbox_root,
+            program,
+            args,
+            environment,
+            timeout,
+            execution_name,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn exec_evidenced_named_controlled(
+        &self,
+        runtime: &Path,
+        sandbox_root: &Path,
+        program: &str,
+        args: &[String],
+        environment: &[(String, String)],
+        timeout: Duration,
+        execution_name: &str,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<ContainerExecution, ContainerExecutionError> {
         let mut command = std::process::Command::new(runtime);
         command.args(self.invocation(sandbox_root, program, args, environment, execution_name));
-        match run_bounded_evidenced(command, timeout, "container command") {
+        let executed = match cancellation {
+            None => run_bounded_evidenced(command, timeout, "container command"),
+            Some(flag) => review_process::run_supervised_captured_cancellable(
+                &mut command,
+                None,
+                timeout,
+                flag,
+            )
+            .into_result()
+            .map(|output| ContainerExecution {
+                output: std::process::Output {
+                    status: output.status,
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                },
+                stderr_held: output.stderr_held,
+            })
+            .map_err(std::io::Error::other),
+        };
+        // Cancellation stops the foreground runtime; the existing bounded rm confirms the
+        // daemon no longer owns this writable bind. Never cancel the cleanup itself.
+        match executed {
             Ok(execution) => Ok(execution),
             Err(error) => match remove_container(runtime, execution_name) {
                 Ok(()) => Err(ContainerExecutionError::after_launch(
@@ -625,6 +691,53 @@ mod tests {
             .unwrap_err();
         assert!(!error.cleanup_confirmed(), "{error}");
         assert!(error.to_string().contains("was not confirmed"), "{error}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cancellation_still_confirms_container_removal_without_cancelling_cleanup() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        for cleanup_ok in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let fake = dir.path().join("runtime");
+            write_runtime(
+                &fake,
+                &format!(
+                    "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then printf '%s\\n' \"$@\" > \"$0.cleanup\"; exit {}; fi\nprintf ready > \"$0.ready\"\nsleep 30\n",
+                    if cleanup_ok { 0 } else { 1 }
+                ),
+            );
+            let provider = ContainerProvider::with_runtime(&fake);
+            let flag = AtomicBool::new(false);
+            let started = Instant::now();
+            let error = std::thread::scope(|scope| {
+                let cancel = scope.spawn(|| {
+                    while !fake.with_extension("ready").is_file() {
+                        if started.elapsed() > Duration::from_secs(3) {
+                            flag.store(true, Ordering::Release);
+                            panic!("container never began");
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    flag.store(true, Ordering::Release);
+                });
+                let result = provider.exec_evidenced_controlled(
+                    dir.path(),
+                    "/bin/true",
+                    &[],
+                    &[],
+                    Duration::from_secs(20),
+                    Some(&flag),
+                );
+                cancel.join().unwrap();
+                result.unwrap_err()
+            });
+            assert!(started.elapsed() < Duration::from_secs(3));
+            assert_eq!(error.cleanup_confirmed(), cleanup_ok);
+            assert!(error.to_string().contains("cancel"), "{error}");
+            let cleanup = std::fs::read_to_string(fake.with_extension("cleanup")).unwrap();
+            assert!(cleanup.starts_with("rm\n-f\naf-gate-"), "{cleanup}");
+        }
     }
 
     #[test]

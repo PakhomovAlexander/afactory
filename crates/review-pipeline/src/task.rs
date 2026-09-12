@@ -3,6 +3,7 @@
 
 pub mod broker;
 pub mod code;
+pub(crate) mod control;
 pub mod document;
 pub mod host;
 mod integration;
@@ -18,7 +19,7 @@ pub mod review;
 pub mod source;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Mutex;
+use std::sync::{Mutex, atomic::AtomicBool};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use review_core::task::execution::*;
@@ -133,6 +134,21 @@ pub trait TaskOperatorHost: Sync {
         attempt: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput;
 
+    /// Optional host interruption must be consumed explicitly; None retains existing hosts.
+    fn execute_controlled(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&AtomicBool>,
+    ) -> TaskWorkOutput {
+        if cancellation.is_some() {
+            return control::refused("Task operator does not support cancellation");
+        }
+        self.execute_with_broker(cas, input, attempt, broker)
+    }
+
     /// The runtime supplies an opaque client only after binding the already-started Attempt.
     /// Existing hosts refuse a capability they do not consume before performing any work.
     fn execute_with_broker(
@@ -167,6 +183,7 @@ pub struct TaskRuntime<'store, 'host> {
         Option<review_store::store::task::review_integration::RegisteredTaskReviewIntegration>,
     authority: &'host dyn TaskAuthority,
     host: &'host dyn TaskOperatorHost,
+    cancellation: Option<&'host AtomicBool>,
     broker_providers: BTreeMap<String, &'host broker::TaskBrokerProvider>,
     broker_probes: BTreeMap<String, &'host broker::TaskBrokerProvider>,
     prepared: Mutex<BTreeMap<String, PreparedTaskAttempt>>,
@@ -260,6 +277,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             integration,
             authority,
             host,
+            cancellation: None,
             broker_providers: BTreeMap::new(),
             broker_probes: BTreeMap::new(),
             prepared: Mutex::new(BTreeMap::new()),
@@ -269,12 +287,22 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         })
     }
 
+    pub fn with_cancellation(mut self, cancellation: &'host AtomicBool) -> Self {
+        self.cancellation = Some(cancellation);
+        self
+    }
+
     pub fn execute(&self) -> Result<RunReport, String> {
         if self.integration.is_some() {
             return Err("Activated Integration runtime can execute only its captured phase".into());
         }
-        let report =
-            lease::with_heartbeat(&self.store, self.cas, &self.lease, || self.graph.run(self))?;
+        let report = lease::with_heartbeat_controlled(
+            &self.store,
+            self.cas,
+            &self.lease,
+            self.cancellation,
+            || self.graph.run(self),
+        )?;
         self.record_run_report(&report)?;
         if !self
             .publication_failures
@@ -530,6 +558,7 @@ impl TaskRuntime<'_, '_> {
             .ok_or("Task invocation is not recorded")?;
         // Replaying an already selected result above is factual recovery. Every new operation,
         // including a pure installed operation, still requires current dispatch authority.
+        control::check(self.cancellation)?;
         self.check_node_authority(&node.id, true)?;
         let resolved = state.resolve_node(&node.id).map_err(|e| e.to_string())?;
         let compiled = &resolved.definition;
@@ -561,6 +590,7 @@ impl TaskRuntime<'_, '_> {
                     .ok_or("Selected value is not a declared arm")?;
                 BTreeMap::from([("output".into(), value)])
             };
+            control::check(self.cancellation)?;
             let out = self.record_output(input_id, input, values.clone(), None)?;
             self.pending_outputs
                 .lock()
@@ -571,6 +601,7 @@ impl TaskRuntime<'_, '_> {
         let allowance = resolved.allowance.as_ref();
         let mut last_error = String::new();
         for index in 0..allowance.map_or(1, |a| a.max_attempts) {
+            control::check(self.cancellation)?;
             let attempt = if allowance.is_some() {
                 Some(if index == 0 {
                     self.prepared
@@ -767,6 +798,9 @@ impl TaskRuntime<'_, '_> {
             if attempt.is_none() && (charged != 0 || result.usage_observation.is_some()) {
                 return Err("Pure Task operator reported a paid operation".into());
             }
+            if let Err(error) = control::check(self.cancellation) {
+                result.outputs = Err(error);
+            }
             let produced = result.outputs.and_then(|values| {
                 self.record_output(input_id, input, values.clone(), attempt.as_ref())
                     .map(|id| (id, values))
@@ -890,6 +924,7 @@ impl Dispatch for TaskRuntime<'_, '_> {
             }
             self.check_node_authority(&node.id, false)?;
         } else {
+            control::check(self.cancellation)?;
             self.store
                 .lock()
                 .expect("Task Store")
@@ -906,6 +941,9 @@ impl Dispatch for TaskRuntime<'_, '_> {
         let replayed = self.projection()?.execution.as_ref().is_some_and(|e| {
             e.outputs.contains_key(&node.id) || e.reusable_output(&node.id).is_some()
         });
+        if !replayed {
+            control::check(self.cancellation)?;
+        }
         self.check_node_authority(
             &node.id,
             !replayed && !self.graph.owned_children.contains_key(&node.id),

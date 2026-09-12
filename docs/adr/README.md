@@ -158,3 +158,4 @@ options you rejected and why — that is the part future-you needs.
 - [0086 — Record expired Review publication without restarting work](0086-record-expired-review-publication-without-restarting-work.md)
 - [0087 — Control native Task invocations through the shared supervisor](0087-control-native-task-invocations-through-the-shared-supervisor.md)
 - [0088 — Retain native billing completeness with Task usage](0088-retain-native-billing-completeness-with-task-usage.md)
+- [0089 — Interrupt Task work when its writer heartbeat fails](0089-interrupt-task-work-when-its-writer-heartbeat-fails.md)

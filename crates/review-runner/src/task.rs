@@ -686,6 +686,14 @@ fn capture_command(
     bytes: Vec<u8>,
     timeout: Duration,
 ) -> Result<crate::RawCapture, RunnerError> {
+    command_runner(workdir, runtime_root, timeout)?.capture_with_stdin(cas, command, bytes)
+}
+
+fn command_runner(
+    workdir: &Path,
+    runtime_root: &Path,
+    timeout: Duration,
+) -> Result<ModelRunner, RunnerError> {
     let deadline = std::time::Instant::now()
         .checked_add(timeout)
         .ok_or_else(|| RunnerError::Refused("Command deadline overflow".into()))?;
@@ -717,5 +725,8 @@ fn capture_command(
     for (key, value) in environment {
         runner = runner.with_env(key, value);
     }
-    runner.capture_with_stdin(cas, command, bytes)
+    Ok(runner)
 }
+
+mod command_control;
+pub use command_control::{invoke_command_bytes_controlled, invoke_command_controlled};

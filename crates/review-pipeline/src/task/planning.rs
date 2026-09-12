@@ -54,6 +54,20 @@ impl PlanningTaskDomain<'_> {
     }
 }
 impl TaskOperatorHost for PlanningTaskDomain<'_> {
+    fn execute_controlled(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> TaskWorkOutput {
+        if let Err(error) = super::control::check(cancellation) {
+            return super::control::refused(error);
+        }
+        self.execute_with_broker(cas, input, attempt, broker)
+    }
+
     fn prepare_context(
         &self,
         _: &Cas,
@@ -167,7 +181,23 @@ impl TaskOperatorHost for PlanningTaskHost<'_> {
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput {
-        let mut returned = self.inner.execute(cas, input, attempt);
+        self.execute_controlled(cas, input, attempt, None, None)
+    }
+    fn execute_controlled(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> TaskWorkOutput {
+        if let Err(error) = super::control::check(cancellation) {
+            return super::control::refused(error);
+        }
+
+        let mut returned = self
+            .inner
+            .execute_controlled(cas, input, attempt, broker, cancellation);
         let Some(attempt) = attempt else {
             return returned;
         };

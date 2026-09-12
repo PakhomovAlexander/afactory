@@ -59,30 +59,36 @@ impl TaskRuntime<'_, '_> {
             }
             nodes.push(&planned.nodes[id]);
         }
-        lease::with_heartbeat(&self.store, self.cas, &self.lease, || {
-            let mut outcomes = Vec::new();
-            // These independent, bounded probes deliberately occupy at most one slot. Their
-            // reservations, original scopes, retries, failures and usage use normal Dispatch.
-            for node in nodes {
-                let inputs = ArtifactMap::new();
-                let result = (|| {
-                    self.record_invocation(node, &inputs)?;
-                    let outputs = self.run(node, &inputs)?;
-                    self.record_outputs(node, &outputs)?;
-                    Ok(outputs)
-                })();
-                outcomes.push((
-                    node.id.clone(),
-                    match result {
-                        Ok(outputs) => NodeOutcome::Completed { outputs },
-                        Err(error) => NodeOutcome::Failed {
-                            error,
-                            class: self.failure_class(&node.id),
+        lease::with_heartbeat_controlled(
+            &self.store,
+            self.cas,
+            &self.lease,
+            self.cancellation,
+            || {
+                let mut outcomes = Vec::new();
+                // These independent, bounded probes deliberately occupy at most one slot. Their
+                // reservations, original scopes, retries, failures and usage use normal Dispatch.
+                for node in nodes {
+                    let inputs = ArtifactMap::new();
+                    let result = (|| {
+                        self.record_invocation(node, &inputs)?;
+                        let outputs = self.run(node, &inputs)?;
+                        self.record_outputs(node, &outputs)?;
+                        Ok(outputs)
+                    })();
+                    outcomes.push((
+                        node.id.clone(),
+                        match result {
+                            Ok(outputs) => NodeOutcome::Completed { outputs },
+                            Err(error) => NodeOutcome::Failed {
+                                error,
+                                class: self.failure_class(&node.id),
+                            },
                         },
-                    },
-                ));
-            }
-            Ok(TaskProviderAdmissionReport { outcomes })
-        })
+                    ));
+                }
+                Ok(TaskProviderAdmissionReport { outcomes })
+            },
+        )
     }
 }

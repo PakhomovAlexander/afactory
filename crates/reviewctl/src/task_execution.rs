@@ -1215,7 +1215,9 @@ fn execute(
     host: &CommandTaskHost<'_>,
     domain: &dyn TaskDomain,
 ) -> Result<(), String> {
-    let runtime = TaskRuntime::new(store, cas, lease.clone(), authority, host)?;
+    let cancellation = std::sync::atomic::AtomicBool::new(false);
+    let runtime = TaskRuntime::new(store, cas, lease.clone(), authority, host)?
+        .with_cancellation(&cancellation);
     let report = runtime.execute()?;
     let projection = runtime.projection()?;
     if matches!(projection.phase, TaskPhaseV1::Waiting { .. }) {

@@ -311,8 +311,10 @@ fn run_planner(
     };
     let developer = developer::host(cas, authority, None);
     let trusted = CapturedTaskAuthority::new(compiler, &host, developer.as_ref());
+    let cancellation = std::sync::atomic::AtomicBool::new(false);
     let state = {
-        let runtime = TaskRuntime::new(store, cas, lease.clone(), &trusted, &host)?;
+        let runtime = TaskRuntime::new(store, cas, lease.clone(), &trusted, &host)?
+            .with_cancellation(&cancellation);
         let _report = runtime.execute()?;
         let state = runtime.projection()?;
         if matches!(state.phase, TaskPhaseV1::Waiting { .. }) {
@@ -367,7 +369,8 @@ fn run_planner(
         Ok::<(), String>(())
     })();
     if let Err(error) = admission {
-        let runtime = TaskRuntime::new(store, cas, lease.clone(), &trusted, &host)?;
+        let runtime = TaskRuntime::new(store, cas, lease.clone(), &trusted, &host)?
+            .with_cancellation(&cancellation);
         finish_incomplete(
             cas,
             &runtime,

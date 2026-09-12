@@ -295,6 +295,7 @@ impl CodeTaskDomain {
         input: &TaskInvocationV1,
         attempt: &PreparedTaskAttempt,
         names: &BTreeSet<String>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<ArtifactInputV1, String> {
         let source = input.inputs.get("source").ok_or("Check needs source")?;
         let snapshot_id = source_input(cas, source)?;
@@ -320,6 +321,7 @@ impl CodeTaskDomain {
                 .check_process_wall_ms
                 .map_or(remaining, |limit| limit.min(remaining));
             let runner = CheckRunner::new(cas, sandbox.root())
+                .with_cancellation(cancellation)
                 .with_timeout(Duration::from_millis(remaining))
                 .with_env("HOME", runtime.path().display().to_string())
                 .with_env(
@@ -807,6 +809,25 @@ impl TaskOperatorHost for CodeTaskDomain {
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput {
+        self.execute_controlled(cas, input, attempt, None, None)
+    }
+    fn execute_controlled(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> TaskWorkOutput {
+        if let Err(error) = super::control::check(cancellation) {
+            return super::control::refused(error);
+        }
+        if broker.is_some() {
+            return super::control::refused(
+                "Pure domain operation does not consume Broker Handles",
+            );
+        }
+
         let outputs = (|| match self.operator(input)? {
             TaskOperatorV1::Seal {} => Ok(BTreeMap::from([(
                 "snapshot".into(),
@@ -819,6 +840,7 @@ impl TaskOperatorHost for CodeTaskDomain {
                     input,
                     attempt.ok_or("Check has no started Attempt")?,
                     checks,
+                    cancellation,
                 )?,
             )])),
             TaskOperatorV1::Accept {} => self.accept(cas, input),

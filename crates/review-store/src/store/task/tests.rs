@@ -716,6 +716,17 @@ fn released_lease_allows_immediate_handoff_and_fences_every_old_capability() {
         .take_task_lease(&f.cas, "task-1", "writer-2", 15_000)
         .unwrap();
     assert_eq!(new.epoch(), old.epoch() + 1);
+    let prefix = f.store.len(&task_run_id("task-1").unwrap()).unwrap();
+    assert!(f.store.check_task_lease_current(&f.cas, &old).is_err());
+    assert_eq!(
+        f.store.check_task_lease_current(&f.cas, &new).unwrap(),
+        f.state().lease_until_unix_ms()
+    );
+    assert_eq!(
+        f.store.len(&task_run_id("task-1").unwrap()).unwrap(),
+        prefix,
+        "currentness reads cannot renew or append"
+    );
     assert!(f.store.renew_task_lease(&f.cas, &old, 30_000).is_err());
     assert!(f.store.release_task_lease(&f.cas, &old).is_err());
     f.store.admit_task_plan(&f.cas, &new, &f.authority).unwrap();

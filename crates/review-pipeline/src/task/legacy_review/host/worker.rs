@@ -258,6 +258,7 @@ impl LegacyReviewTaskHost<'_, '_> {
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
         broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         let mut result = TaskWorkOutput {
             usage_observation: None,
@@ -322,25 +323,30 @@ impl LegacyReviewTaskHost<'_, '_> {
                 WorkerExecutionV1::Model { .. } => TaskFeedbackCodeV1::ProviderFailure,
             };
             let returned = match self.execution(&node.id)? {
-                WorkerExecutionV1::Command {} => review_runner::task::invoke_command_bytes(
-                    cas,
-                    sandbox.root(),
-                    runtime.as_ref().expect("command runtime").path(),
-                    &self.captured.loaded.reviewers()[&self.domain.reviewer_binding_node(&node.id)],
-                    bytes,
-                    timeout,
-                ),
+                WorkerExecutionV1::Command {} => {
+                    review_runner::task::invoke_command_bytes_controlled(
+                        cas,
+                        sandbox.root(),
+                        runtime.as_ref().expect("command runtime").path(),
+                        &self.captured.loaded.reviewers()
+                            [&self.domain.reviewer_binding_node(&node.id)],
+                        bytes,
+                        timeout,
+                        cancellation,
+                    )
+                }
                 // Preserve the native Review capability profile: ADR-0042 keeps Claude
                 // read-only, while the legacy Codex adapter permits sandbox Proposals.
                 // A different installed backend has no implicit edit authority.
                 WorkerExecutionV1::Model { provider_kind, .. } => {
-                    self.model(&node.id)?.adapter.invoke_with_broker(
+                    self.model(&node.id)?.adapter.invoke_controlled(
                         cas,
                         sandbox.root(),
                         bytes,
                         timeout,
                         provider_kind == "codex",
                         broker,
+                        cancellation,
                     )
                 }
             };

@@ -113,12 +113,18 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
                     .collect(),
             );
         let inputs = artifact_map(&phase.inputs().map_err(|e| e.to_string())?);
-        let outcome = lease::with_heartbeat(&self.store, self.cas, &self.lease, || {
-            self.record_invocation(&node, &inputs)?;
-            let outputs = self.run(&node, &inputs)?;
-            self.record_outputs(&node, &outputs)?;
-            Ok(outputs)
-        });
+        let outcome = lease::with_heartbeat_controlled(
+            &self.store,
+            self.cas,
+            &self.lease,
+            self.cancellation,
+            || {
+                self.record_invocation(&node, &inputs)?;
+                let outputs = self.run(&node, &inputs)?;
+                self.record_outputs(&node, &outputs)?;
+                Ok(outputs)
+            },
+        );
         let outcome = match outcome {
             Ok(outputs) => NodeOutcome::Completed { outputs },
             Err(error) => {

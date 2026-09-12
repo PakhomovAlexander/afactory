@@ -671,6 +671,23 @@ impl ReviewDomainState<'_> {
         derived_snapshot_id: &str,
         deadline: Option<std::time::Instant>,
     ) -> Result<IntegrationChecksV1, IntegrationCheckFailure> {
+        self.run_integration_checks_controlled(
+            policy,
+            manifest,
+            derived_snapshot_id,
+            deadline,
+            None,
+        )
+    }
+
+    pub(crate) fn run_integration_checks_controlled(
+        &self,
+        policy: &review_config::IntegrationSpec,
+        manifest: &Manifest,
+        derived_snapshot_id: &str,
+        deadline: Option<std::time::Instant>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<IntegrationChecksV1, IntegrationCheckFailure> {
         let binding = self
             .gate_execution
             .as_ref()
@@ -685,7 +702,13 @@ impl ReviewDomainState<'_> {
             binding,
             container_provider: self.container_provider.as_ref(),
         }
-        .run_recorded(policy, manifest, derived_snapshot_id, deadline)
+        .run_recorded(
+            policy,
+            manifest,
+            derived_snapshot_id,
+            deadline,
+            cancellation,
+        )
     }
     fn integration_conflict_event(
         &self,
@@ -770,7 +793,7 @@ impl IntegrationCheckSequence<'_> {
         derived_snapshot_id: &str,
         deadline: Option<std::time::Instant>,
     ) -> Result<IntegrationChecksV1, String> {
-        self.run_recorded(policy, manifest, derived_snapshot_id, deadline)
+        self.run_recorded(policy, manifest, derived_snapshot_id, deadline, None)
             .map_err(|failure| failure.message)
     }
     fn run_recorded(
@@ -779,9 +802,11 @@ impl IntegrationCheckSequence<'_> {
         manifest: &Manifest,
         derived_snapshot_id: &str,
         deadline: Option<std::time::Instant>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<IntegrationChecksV1, IntegrationCheckFailure> {
         let mut result_artifact_ids = Vec::new();
         let outcome = (|| -> Result<IntegrationChecksV1, String> {
+            crate::task::control::check(cancellation)?;
             integration_remaining(self.check_timeout, deadline)?;
             let template = review_sandbox::SandboxTemplate::materialize(manifest, self.cas)
                 .map_err(|error| error.to_string())?;
@@ -821,8 +846,9 @@ impl IntegrationCheckSequence<'_> {
                     .map_err(|error| error.to_string())?,
             };
             integration_remaining(self.check_timeout, deadline)?;
-            let mut runner =
-                CheckRunner::new(self.cas, sandbox.root()).with_timeout(self.check_timeout);
+            let mut runner = CheckRunner::new(self.cas, sandbox.root())
+                .with_timeout(self.check_timeout)
+                .with_cancellation(cancellation);
             let selected: BTreeSet<_> = policy
                 .post_apply_checks
                 .iter()
@@ -834,11 +860,19 @@ impl IntegrationCheckSequence<'_> {
                 .iter()
                 .filter(|definition| selected.contains(definition.name.as_str()))
             {
+                crate::task::control::check(cancellation)?;
                 runner = runner.with_timeout(integration_remaining(self.check_timeout, deadline)?);
                 let mut cleanup_failure = None;
                 let result = match container.as_ref() {
                     Some(provider) => runner.run_with(definition, |program, args, env, timeout| {
-                        match provider.exec_evidenced(sandbox.root(), program, args, env, timeout) {
+                        match provider.exec_evidenced_controlled(
+                            sandbox.root(),
+                            program,
+                            args,
+                            env,
+                            timeout,
+                            cancellation,
+                        ) {
                             Ok(execution) => Ok((execution.output, execution.stderr_held)),
                             Err(error) => {
                                 if !error.cleanup_confirmed() {

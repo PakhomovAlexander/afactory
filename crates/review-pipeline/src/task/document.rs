@@ -726,6 +726,20 @@ impl DocumentTaskDomain {
 }
 
 impl TaskOperatorHost for DocumentTaskDomain {
+    fn execute_controlled(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> TaskWorkOutput {
+        if let Err(error) = super::control::check(cancellation) {
+            return super::control::refused(error);
+        }
+        self.execute_with_broker(cas, input, attempt, broker)
+    }
+
     fn prepare_context(
         &self,
         cas: &Cas,

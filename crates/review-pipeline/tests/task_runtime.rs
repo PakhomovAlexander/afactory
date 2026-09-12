@@ -16,6 +16,8 @@ use serde_json::json;
 
 #[path = "task_runtime/broker.rs"]
 mod broker;
+#[path = "task_runtime/control.rs"]
+mod control;
 #[path = "task_runtime/publication.rs"]
 mod publication;
 #[path = "task_runtime/reservation.rs"]

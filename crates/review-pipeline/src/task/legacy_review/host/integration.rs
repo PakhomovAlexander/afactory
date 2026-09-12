@@ -234,6 +234,7 @@ impl LegacyReviewTaskHost<'_, '_> {
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
         broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         let mut raw_artifact_ids = Vec::new();
         let outputs = (|| {
@@ -264,7 +265,7 @@ impl LegacyReviewTaskHost<'_, '_> {
                 return Err("Integration changed its registered phase".into());
             }
             let prepared = self.prepared_integration(cas, &phase, &evidence)?;
-            let checks = match self.domain.run_integration_checks_recorded(
+            let checks = match self.domain.run_integration_checks_controlled(
                 self.captured
                     .loaded
                     .integration()
@@ -272,6 +273,7 @@ impl LegacyReviewTaskHost<'_, '_> {
                 &prepared.derived_manifest,
                 &prepared.derived_snapshot_id,
                 Some(deadline),
+                cancellation,
             ) {
                 Ok(checks) => checks,
                 Err(failure) => {

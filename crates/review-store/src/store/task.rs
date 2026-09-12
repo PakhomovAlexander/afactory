@@ -1433,6 +1433,24 @@ impl EventStore {
         })
     }
 
+    /// Check the exact existing writer capability without renewing or granting dispatch.
+    pub fn check_task_lease_current(
+        &self,
+        cas: &Cas,
+        lease: &TaskLease,
+    ) -> Result<u64, StoreError> {
+        let state = self
+            .task_projection(cas, lease.task_id())?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        state.check_lease(&TaskTransitionV1 {
+            writer: lease.writer.clone(),
+            epoch: lease.epoch,
+            now_unix_ms: now()?,
+            change: TaskChangeV1::Resumed {},
+        })?;
+        Ok(state.lease_until_unix_ms())
+    }
+
     pub fn renew_task_lease(
         &mut self,
         cas: &Cas,

@@ -10,6 +10,8 @@ use std::process::Command;
 
 #[path = "campaign_loop/contracts.rs"]
 mod contracts;
+#[path = "campaign_loop/heartbeat.rs"]
+mod heartbeat;
 
 fn git(repo: &Path, home: &Path, args: &[&str]) {
     let out = Command::new("git")
@@ -1608,10 +1610,8 @@ fn a_declined_finding_is_not_sent_back_to_reviewers() {
     );
 }
 
-#[test]
-fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
-    let dir = tempfile::tempdir().unwrap();
-    let (repo, home, state) = fixture(dir.path());
+fn native_diff_fixture(directory: &Path) -> (PathBuf, PathBuf, String) {
+    let (repo, home, state) = fixture(directory);
     let codex = home.join("codex");
     std::fs::write(
         &codex,
@@ -1739,6 +1739,16 @@ gate = "major"
     set_pipeline(&repo, &pipeline);
     git(&repo, &home, &["add", "-A"]);
     git(&repo, &home, &["commit", "-qm", "declare diff subject"]);
+
+    (repo, home, state)
+}
+
+#[test]
+fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = native_diff_fixture(dir.path());
+    let codex = home.join("codex");
+    let provider_registry = home.join(".config/afactory/providers.toml");
 
     let (code, plan_stdout, plan_stderr) = invoke_reviewctl(
         &repo,

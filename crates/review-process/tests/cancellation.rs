@@ -73,9 +73,11 @@ fn cancellation_retains_prefixes_and_stops_running_stdin_and_each_held_drain() {
                 "sleep 30 & child=$!; printf 'prefix'; printf 'diagnostic' >&2; printf '%s %s' $$ $child >\"$1\"; wait"
             }
             // The descendant deliberately retains the parent's stdin, which blocks a large
-            // writer after the leader has exited. The other two cases isolate each drain.
+            // writer after the leader has exited. Save it before background execution: some
+            // /bin/sh implementations first replace a background command's fd 0 with /dev/null,
+            // so <&0 would duplicate that replacement. The other cases isolate each drain.
             "stdin" => {
-                "sleep 30 <&0 >/dev/null 2>/dev/null & child=$!; printf 'prefix'; printf 'diagnostic' >&2; printf '%s %s' $$ $child >\"$1\"; exit 0"
+                "exec 3<&0; sleep 30 <&3 3<&- >/dev/null 2>/dev/null & child=$!; printf 'prefix'; printf 'diagnostic' >&2; printf '%s %s' $$ $child >\"$1\"; exit 0"
             }
             "stdout" => {
                 "sleep 30 </dev/null 2>/dev/null & child=$!; printf 'prefix'; printf 'diagnostic' >&2; printf '%s %s' $$ $child >\"$1\"; exit 0"
@@ -103,8 +105,6 @@ fn cancellation_retains_prefixes_and_stops_running_stdin_and_each_held_drain() {
                     }
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                let at = Instant::now();
-                flag.store(true, Ordering::Release);
                 assert_eq!(
                     ids.len(),
                     2,
@@ -113,6 +113,12 @@ fn cancellation_retains_prefixes_and_stops_running_stdin_and_each_held_drain() {
                 if mode != "running" {
                     assert!(gone(ids[0]), "must cancel after leader reaping: {mode}");
                 }
+                assert!(
+                    !dead(ids[1]),
+                    "descendant must be live at cancellation: {mode}"
+                );
+                let at = Instant::now();
+                flag.store(true, Ordering::Release);
                 (ids, at)
             });
             let input = (mode == "stdin").then(|| vec![b'x'; 4 * 1024 * 1024]);
