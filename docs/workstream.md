@@ -8,6 +8,8 @@ one Task, its original budget, late paid usage and exact handoff history. Fresh 
 can explain an earlier recorded plan without changing either log. Owned slices and separately
 captured Provider probes already use the common scheduler and ledger. Automatic Integration
 and legacy CLI cutover remain in progress.
+The debug-profile correction `97bb1c7` passes the same full gate. It addresses the earlier
+CI recovery deadline failure without changing Task limits; corrective CI remains pending.
 
 Common Task workflows, shared packages, embedding, repair, selection/generation, exact-plan
 approval, export, starters and issue/document Tasks are implemented on the PR branches.

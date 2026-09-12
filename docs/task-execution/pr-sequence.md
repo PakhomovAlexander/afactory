@@ -687,3 +687,15 @@ Task and Review logs before and after inspection. The owned checkpoint's contain
 at `d15804c` in run `34706164966`; its main Check job was still running at the last observation.
 The continuation checkpoint still needs CI. Automatic Integration, legacy CLI migration,
 remaining conformance and pilot/release evidence remain. No specialist reviewer has run.
+
+CI `34706164966` for owned checkpoint `d15804c` ultimately failed the interrupted-repair test:
+the original Task deadline expired after successful fix-verifier recovery and before the final
+goal evaluator. Container probes passed. The unchanged focused fixture passed locally in 44.17
+seconds. Optimizing `review-store` and `serde_json` in debug builds reduced the same fixture to
+30.13 seconds locally; this is a development-test measurement, not a live-model performance claim.
+Debug assertions, overflow checks, Task/Worker deadlines, lease wait and all fixture assertions
+remain unchanged. Build-profile commit `97bb1c75715c6c0f4fc63330f7576bb4af85df55` matches frozen
+verification `05a3d133d40a6f608528b5fe9cb5d0d8fe49bf67`, tree
+`0ac26ae5ff93742b2eabf3773f6fe0f968c09a32`. The full gate again passes **1,018 tests, zero
+failures, 15 ignored**, across 125 suites, formatting, Clippy, documentation tests and
+byte-identical fixtures. CI for this corrective checkpoint remains required.

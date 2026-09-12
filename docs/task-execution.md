@@ -35,7 +35,9 @@ The continuation checkpoint `faeb933` matches frozen tree `cff20f3` and passes t
 documentation tests and byte-identical fixture reproduction. Numeric Rounds and input epochs
 retain one Task, its original limits and cumulative paid usage; every successor plan requires
 its own admission. Fresh CLI inspection preserves handoff history and historical plans.
-Automatic Integration and the legacy CLI cutover remain. The proposed
+Automatic Integration and the legacy CLI cutover remain.
+The debug-profile correction `97bb1c7` passes the same full gate. It addresses the earlier
+CI recovery deadline failure without changing Task limits; corrective CI remains pending. The proposed
 [owned-child decision](adr/0081-register-owned-review-children-in-the-common-task-runtime.md)
 records registration, factual recovery and immutable completion. See
 [Review compatibility](task-execution/review-compatibility.md) and
