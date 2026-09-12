@@ -511,3 +511,87 @@ its explicit captured Gate now exercises the intended budget assertion. Earlier 
 Delivery inspection now validates the published typed receipt/target shape before returning
 original CAS JSON. Malformed Store-admitted receipt fixtures fail show/list; historical omitted
 advisory fields remain omitted. No receipt is rewritten and Store delivery authority is unchanged.
+
+## Common Task Broker binding and scoped execution
+
+The previous live progress paragraph is preserved here:
+
+The exact Review accounting/inspection checkpoint `1cd3008` passes the full local gate
+(**915 tests**, zero failures, 15 ignored), including byte-identical frozen reproduction.
+It is pushed to PR 2 and passes CI `34695645865`. The preceding operation-host checkpoint `eab8d29`
+passes CI `34693346220`. The current slice retains cumulative charge above u64 within one
+Attempt, adds exact Broker transport and fills public schema gaps. See
+[Review compatibility](task-execution/review-compatibility.md),
+[ADR-0078](adr/0078-bind-review-conclusions-to-exact-task-accounting.md) and
+[ADR-0079](adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md).
+
+Published `1aa111e` (frozen identical tree at `2e5c95b`) passes the complete gate: 939 tests,
+zero failures, 15 ignored across 122 suites, formatting, Clippy, documentation and byte-identical
+fixtures. Exact-head CI `34698337013` is running; its container probes pass. Latest main
+revisions checked at 14:33 UTC remain kernel `b8b8963` and Hub `0a09af3`.
+
+The next local slice binds Broker handles to original common Task Attempts and records
+operation receipts plus cumulative usage under one Task sequence/transaction. Nine Store
+regressions cover exact 7 + u64::MAX on one Attempt, late paid receipts after writer, Round
+or source-plan replacement, lower settlement, replay, forged append and operation quotas.
+The fault-injection test also preserves the actual non-uniqueness SQLite error and proves
+receipt/accounting rollback; eight existing sequence regressions pass. The whole Store Task
+module passes 48 tests. Core passes 97 tests, with three private-corpus cases ignored, plus
+the later Broker-bearing inspection schema case.
+
+Runner hooks pass nine focused tests and native adapter checks; captured Review integration
+passes 22 tests, including exact policy/identity substitution and absent-capability refusals.
+All 14 common runtime tests and workspace all-target Clippy pass. The additional real CAS-outage
+variant preserves cumulative 7 + u64::MAX in the original sidecar and recovers it under a new
+writer with no extra connector call; malformed-output and panic variants retain the same floor.
+The fixture includes one separately accounted zero-token local readiness Attempt. It does not
+claim that unsupported native Brokered Provider admission works.
+
+Initial runtime fixture attempts correctly failed because command Workers have zero model-token
+authority, and the manifest validator refused an attempted paid command fixture. The final
+fixture uses the existing captured model allowance and a local readiness adapter. A presumed
+third revoked-call receipt was corrected to assert no third admitted operation. Crash recovery
+uses actual writer-lease expiry: the Store correctly refuses releasing a lease with pending
+Attempts. These setup/test observations and their original logs are retained in `.scratch`.
+
+Brokered Provider admission is the next explicit authority slice: its own captured probe policy,
+operation vector and existing admission allowance, with no automatic use of downstream Worker
+authority. New typed Broker targets and versioned probe context/receipt/settings are being
+implemented. Scatter, heavy continuation, legacy CLI ownership, remaining conformance, external
+PR review and P14 remain required. The configured Claude personal profile remains false/none
+after the owner-requested retry; no requested PR reviewer or live-model pilot ran.
+
+## Separate captured Broker authority for Provider readiness
+
+`LegacyReviewTaskPolicy@2` captures explicitly configured Provider probes independently from
+Reviewer operations. The compiler records exact probe dependencies and graph references,
+retains conservative execution/business-policy/probe-policy grouping, and preserves V1 bytes
+and read-only reconstruction. Operations must fit the original Provider reservation; no
+allowance increases, synthetic Worker package or second execution ledger is introduced.
+`TaskProviderContext@2` and `TaskProviderAdmission@2` identify the separate probe policy.
+The Store verifies its exact Task authority, dependency content, protected bindings and
+original Provider node/Attempt. A captured Review Round still fences that Provider Attempt.
+
+Focused evidence: 13 Store Broker tests pass, including four new Provider authority cases;
+12 Graph tests and 26 captured Review tests pass. Core's additional fixed-context schema case
+passes after correcting a test's mistaken 22-byte count to the actual 23-byte request. The
+new real connector test adds success, readiness refusal, missing local probe configuration
+and paid overrun cases. It retains exact Provider/Worker policies, credentials, deadlines,
+contexts, original reservations and late usage on reopen, with no repeat connector calls.
+A lower native usage value cannot refund the Broker charge. The initial fixture Gate correctly
+blocked because `/bin/true` is absent on macOS; it now uses the established `/bin/sh -c 'exit 0'`
+fixture, with the same required Gate and no product change. Compile/setup failure logs remain
+in `.scratch`. The full frozen-tree gate and exact-head CI are still required for this slice.
+
+### Previous progress paragraph
+
+Published exact per-Attempt checkpoint `1aa111e` passes the full local gate (**939 tests**,
+zero failures, 15 ignored), including byte-identical frozen reproduction. CI `34698337013`
+is green with container probes green; prior `1cd3008` passes CI `34695645865`.
+The next local slice connects exact Broker operations to the original Task Attempt and retains
+late paid receipts, panic/CAS-outage usage and typed inspection. Focused Store, Runner,
+captured Review and common runtime checks pass. Brokered Provider admission needs its own
+captured probe policy and is being completed before legacy CLI cutover. See
+[Review compatibility](task-execution/review-compatibility.md),
+[ADR-0079](adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md) and
+[ADR-0080](adr/0080-bind-broker-evidence-to-the-original-task-attempt.md).

@@ -368,6 +368,181 @@ fn declarations_cannot_invent_worker_contracts_evidence_or_effect_authority() {
 }
 
 #[test]
+fn explicit_provider_probes_preserve_reservations_and_exact_grouping() {
+    use review_core::task::plan::{EffectiveWorkerBindingV1, WorkerExecutionV1};
+    use review_core::task::provider::{TaskProviderProbePolicyV1, TaskProviderProbeProtocolV1};
+    use review_core::{BrokerCredentialModeV1, BrokerOperationPolicyV1};
+    use review_graph::task::{CapturedProviderProbe, CompiledOperator, OperatorAttemptCost};
+    let (task, pipelines, signatures) = fixture();
+    let mut base = compile_task(
+        &task,
+        "builtin/document",
+        &CompileContext {
+            slot_workers: BTreeMap::new(),
+            acceptance_outputs: BTreeMap::from([("checked".into(), "document".into())]),
+            pipelines: &pipelines,
+            signatures: &signatures,
+            max_nodes: 64,
+            max_depth: 4,
+        },
+    )
+    .unwrap();
+    let CompiledOperator::Primitive {
+        operator: TaskOperatorV1::Worker { slot },
+        ..
+    } = &base.nodes["root.nodes.write"].operator
+    else {
+        panic!("Worker")
+    };
+    let first = slot.clone();
+    let second = "root.second".to_string();
+    let mut node = base.nodes["root.nodes.write"].clone();
+    let CompiledOperator::Primitive {
+        operator: TaskOperatorV1::Worker { slot },
+        ..
+    } = &mut node.operator
+    else {
+        unreachable!()
+    };
+    *slot = second.clone();
+    base.nodes.insert("root.nodes.second".into(), node);
+    base.slots
+        .insert(second.clone(), base.slots[&first].clone());
+    base.allowances.insert(
+        "root.nodes.second".into(),
+        base.allowances["root.nodes.write"].clone(),
+    );
+    let digest = |c: char| format!("sha256:{}", c.to_string().repeat(64));
+    let binding = EffectiveWorkerBindingV1 {
+        package_digest: digest('a'),
+        package_artifact_id: digest('b'),
+        invocation_policy_id: digest('c'),
+        execution: WorkerExecutionV1::Model {
+            provider: "personal".into(),
+            provider_kind: "fixture".into(),
+            principal_id: "account".into(),
+            model: "resolved".into(),
+            effort: "high".into(),
+        },
+    };
+    let bindings = BTreeMap::from([
+        (first.clone(), binding.clone()),
+        (second.clone(), binding.clone()),
+    ]);
+    let probe = CapturedProviderProbe {
+        policy_id: digest('d'),
+        policy: TaskProviderProbePolicyV1 {
+            authority_policy_id: digest('e'),
+            execution: binding.execution,
+            credential_mode: BrokerCredentialModeV1::Brokered,
+            probe_protocol: TaskProviderProbeProtocolV1::OkV1,
+            operations: vec![BrokerOperationPolicyV1 {
+                name: "probe".into(),
+                destination: "fixture".into(),
+                method: "generate".into(),
+                max_request_bytes: 128,
+                max_response_bytes: 128,
+                max_calls: 1,
+                max_usage: 7,
+            }],
+        },
+    };
+    let probes = BTreeMap::from([(first.clone(), probe.clone()), (second.clone(), probe)]);
+    let cost = OperatorAttemptCost {
+        tokens: 7,
+        wall_ms: 19,
+    };
+    let mut old = base.clone();
+    old.install_provider_admission(&bindings, &cost).unwrap();
+    let mut empty = base.clone();
+    empty
+        .install_provider_admission_with_probes(&bindings, &cost, &BTreeMap::new())
+        .unwrap();
+    assert_eq!(
+        serde_json::to_vec(&old).unwrap(),
+        serde_json::to_vec(&empty).unwrap()
+    );
+    for split in 0..4 {
+        let mut bindings = bindings.clone();
+        let mut probes = probes.clone();
+        match split {
+            1 => bindings.get_mut(&second).unwrap().invocation_policy_id = digest('f'),
+            2 => probes.get_mut(&second).unwrap().policy_id = digest('f'),
+            3 => {
+                let WorkerExecutionV1::Model { provider, .. } =
+                    &mut bindings.get_mut(&second).unwrap().execution
+                else {
+                    unreachable!()
+                };
+                *provider = "another-alias".into();
+                probes.get_mut(&second).unwrap().policy.execution =
+                    bindings[&second].execution.clone();
+                probes.get_mut(&second).unwrap().policy_id = digest('f');
+            }
+            _ => {}
+        }
+        let mut graph = base.clone();
+        graph
+            .install_provider_admission_with_probes(&bindings, &cost, &probes)
+            .unwrap();
+        let admissions: Vec<_> = graph
+            .nodes
+            .iter()
+            .filter(|(_, n)| {
+                matches!(
+                    n.operator,
+                    CompiledOperator::ProviderAdmissionBrokered { .. }
+                )
+            })
+            .collect();
+        assert_eq!(admissions.len(), if split == 0 { 1 } else { 2 });
+        for (name, node) in admissions {
+            assert_eq!(
+                node.contract.outputs["result"].artifact_type,
+                "af/TaskProviderAdmission@2"
+            );
+            let allowance = &graph.allowances[name];
+            assert_eq!(
+                (
+                    allowance.tokens_per_attempt,
+                    allowance.wall_ms_per_attempt,
+                    allowance.max_attempts
+                ),
+                (7, 19, 1)
+            );
+        }
+        for node in ["root.nodes.write", "root.nodes.second"] {
+            assert_eq!(
+                graph.nodes[node].conditions.last().unwrap().outcome,
+                ReceiptOutcomeV1::Passed
+            );
+        }
+    }
+    for mutation in 0..5 {
+        let mut probes = probes.clone();
+        let probe = probes.get_mut(&first).unwrap();
+        match mutation {
+            0 => probe.policy.operations[0].max_usage = 8,
+            1 => probe.policy.execution = WorkerExecutionV1::Command {},
+            2 => probe.policy.credential_mode = BrokerCredentialModeV1::TrustedUnsafe,
+            3 => probe.policy_id = "mutable".into(),
+            4 => {
+                let mut probe = probe.clone();
+                probe.policy_id = digest('f');
+                probes.insert("root.unknown".into(), probe);
+            }
+            _ => unreachable!(),
+        }
+        assert!(
+            base.clone()
+                .install_provider_admission_with_probes(&bindings, &cost, &probes)
+                .is_err(),
+            "mutation {mutation}"
+        );
+    }
+}
+
+#[test]
 fn embedding_checks_the_child_interface_without_applying_its_root_kind_selector() {
     let (task, mut pipelines, signatures) = fixture();
     let mut parent = pipelines["builtin/document"].clone();

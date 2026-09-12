@@ -6,6 +6,9 @@ use review_core::task::plan::{
     EffectiveWorkerBindingV1, ExecutionPlanV1, GeneratedOriginV1, PlanDependencyV1,
     WorkerExecutionV1,
 };
+use review_core::task::provider::{
+    TASK_PROVIDER_PROBE_POLICY_V1, TaskProviderProbePolicyV1, TaskProviderProbeProtocolV1,
+};
 use review_core::task::{
     AcceptanceObligationV1, PipelineChoiceV1, PipelineFallbackV1, RequiredOutputV1,
     TaskAuthorityV1, TaskProvenanceV1, TaskRevisionV1,
@@ -15,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
 pub const REVIEW_TASK_POLICY_V1: &str = "af/LegacyReviewTaskPolicy@1";
+pub const REVIEW_TASK_POLICY_V2: &str = "af/LegacyReviewTaskPolicy@2";
 pub const REVIEW_DEPENDENCY_V1: &str = "af/LegacyReviewDependency@1";
 pub const REVIEW_INVOCATION_POLICY_V1: &str = "af/LegacyReviewInvocationPolicy@1";
 const ROOT: &str = "af/legacy-review";
@@ -76,6 +80,30 @@ struct ReviewTaskPolicy {
     settings: ReviewPlanSettings,
 }
 
+/// Probe operations are separately approved; business operations are never copied here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewProviderProbeSettingsV1 {
+    pub probe_protocol: TaskProviderProbeProtocolV1,
+    pub operations: Vec<review_core::BrokerOperationPolicyV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReviewPlanSettingsV2 {
+    pub review: ReviewPlanSettings,
+    /// Original Review node IDs with explicitly configured Brokered Provider probes.
+    pub provider_probes: BTreeMap<String, ReviewProviderProbeSettingsV1>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ReviewTaskPolicyV2 {
+    engine_id: String,
+    campaign_manifest_id: String,
+    settings: ReviewPlanSettingsV2,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReviewDependency {
@@ -134,9 +162,37 @@ pub struct LegacyReviewPlanCompiler {
     round: CapturedLegacyReviewRound,
     policy_id: String,
     policy: ReviewTaskPolicy,
+    policy_v2: Option<ReviewTaskPolicyV2>,
 }
 
 impl LegacyReviewPlanCompiler {
+    pub fn capture_v2(
+        cas: &Cas,
+        round: CapturedLegacyReviewRound,
+        engine_id: String,
+        settings: ReviewPlanSettingsV2,
+    ) -> Result<Self, String> {
+        settings.review.validate()?;
+        cas.verify(&engine_id).map_err(|e| e.to_string())?;
+        let policy = ReviewTaskPolicyV2 {
+            engine_id,
+            campaign_manifest_id: round.binding().campaign_manifest_id,
+            settings,
+        };
+        let envelope = capture_or_read(
+            cas,
+            REVIEW_TASK_POLICY_V2,
+            "policy",
+            vec![
+                policy.engine_id.clone(),
+                policy.campaign_manifest_id.clone(),
+            ],
+            &policy,
+            None,
+        )?;
+        Self::reopen(cas, round, &policy.engine_id, &envelope.artifact_id)
+    }
+
     /// Called only by the trusted host while preparing the original Task policy.
     pub fn capture(
         cas: &Cas,
@@ -174,8 +230,26 @@ impl LegacyReviewPlanCompiler {
         policy_id: &str,
     ) -> Result<Self, String> {
         let envelope = cas.get_artifact(policy_id).map_err(|e| e.to_string())?;
-        let policy: ReviewTaskPolicy =
-            serde_json::from_value(envelope.payload.clone()).map_err(|e| e.to_string())?;
+        let (policy, policy_v2) = match envelope.artifact_type.as_str() {
+            REVIEW_TASK_POLICY_V1 => (
+                serde_json::from_value::<ReviewTaskPolicy>(envelope.payload.clone())
+                    .map_err(|e| e.to_string())?,
+                None,
+            ),
+            REVIEW_TASK_POLICY_V2 => {
+                let v2: ReviewTaskPolicyV2 =
+                    serde_json::from_value(envelope.payload.clone()).map_err(|e| e.to_string())?;
+                (
+                    ReviewTaskPolicy {
+                        engine_id: v2.engine_id.clone(),
+                        campaign_manifest_id: v2.campaign_manifest_id.clone(),
+                        settings: v2.settings.review.clone(),
+                    },
+                    Some(v2),
+                )
+            }
+            _ => return Err("Expected a captured Review Task policy".into()),
+        };
         policy.settings.validate()?;
         if policy.engine_id != engine_id
             || policy.campaign_manifest_id != round.binding().campaign_manifest_id
@@ -184,15 +258,21 @@ impl LegacyReviewPlanCompiler {
                 "Review Task policy differs from the installed engine or captured Campaign".into(),
             );
         }
+        let payload = if let Some(v2) = &policy_v2 {
+            serde_json::to_value(v2)
+        } else {
+            serde_json::to_value(&policy)
+        }
+        .map_err(|e| e.to_string())?;
         capture_or_read(
             cas,
-            REVIEW_TASK_POLICY_V1,
+            &envelope.artifact_type,
             "policy",
             vec![
                 policy.engine_id.clone(),
                 policy.campaign_manifest_id.clone(),
             ],
-            &policy,
+            &payload,
             Some(policy_id),
         )?;
         let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
@@ -216,10 +296,34 @@ impl LegacyReviewPlanCompiler {
             return Err("Review executions differ from captured Worker nodes".into());
         }
         validate_executions(&loaded, &policy.settings.executions)?;
+        if let Some(v2) = &policy_v2 {
+            for (node, settings) in &v2.settings.provider_probes {
+                let execution = policy
+                    .settings
+                    .executions
+                    .get(node)
+                    .ok_or("Provider probe refers to an unknown Review Worker")?;
+                if loaded.reviewer_execution().get(node).is_none_or(|binding| {
+                    binding.credential_mode != review_core::BrokerCredentialModeV1::Brokered
+                }) {
+                    return Err(
+                        "Provider probe requires a captured Brokered Reviewer policy".into(),
+                    );
+                }
+                let probe = probe_policy(policy_id, execution, settings);
+                probe.validate()?;
+                if review_core::broker_authority_usage(&probe.operations)?
+                    > policy.settings.provider_admission.tokens
+                {
+                    return Err("Provider probe exceeds the original admission reservation".into());
+                }
+            }
+        }
         Ok(Self {
             round,
             policy_id: policy_id.into(),
             policy,
+            policy_v2,
         })
     }
     pub fn policy_id(&self) -> &str {
@@ -429,15 +533,20 @@ impl LegacyReviewPlanCompiler {
         recorded: Option<&ExecutionPlanV1>,
     ) -> Result<(ExecutionPlanV1, CapturedReviewCompilation), String> {
         // Check policy bytes on every admission/resume, even when the compiler stays in memory.
+        let (policy_type, policy_payload) = if let Some(v2) = &self.policy_v2 {
+            (REVIEW_TASK_POLICY_V2, serde_json::to_value(v2))
+        } else {
+            (REVIEW_TASK_POLICY_V1, serde_json::to_value(&self.policy))
+        };
         capture_or_read(
             cas,
-            REVIEW_TASK_POLICY_V1,
+            policy_type,
             "policy",
             vec![
                 self.policy.engine_id.clone(),
                 self.policy.campaign_manifest_id.clone(),
             ],
-            &self.policy,
+            &policy_payload.map_err(|e| e.to_string())?,
             Some(&self.policy_id),
         )?;
         let revision = cas.get_artifact(revision_id).map_err(|e| e.to_string())?;
@@ -568,18 +677,76 @@ impl LegacyReviewPlanCompiler {
             );
             dependencies.insert(package.name.clone(), package);
         }
+        let mut probes = BTreeMap::new();
+        if let Some(v2) = &self.policy_v2 {
+            for (index, (node, settings)) in v2.settings.provider_probes.iter().enumerate() {
+                let mapping = &captured.compilation.nodes[node];
+                let slot = match &captured.compilation.graph.nodes[&mapping.task_node].operator {
+                    CompiledOperator::ReviewDomain {
+                        operation:
+                            ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot },
+                        ..
+                    } => slot,
+                    _ => return Err("Provider probe requires a Review Worker slot".into()),
+                };
+                let policy = probe_policy(&self.policy_id, &bindings[slot].execution, settings);
+                let name = format!("af/provider-probe-{index}");
+                let recorded_id = recorded
+                    .map(|plan| {
+                        plan.dependencies
+                            .get(&name)
+                            .map(|dependency| dependency.artifact_id.as_str())
+                            .ok_or("Recorded Review plan lacks its Provider probe policy")
+                    })
+                    .transpose()?;
+                let envelope = capture_or_read(
+                    cas,
+                    TASK_PROVIDER_PROBE_POLICY_V1,
+                    "provider-probe",
+                    vec![self.policy_id.clone()],
+                    &policy,
+                    recorded_id,
+                )?;
+                dependencies.insert(
+                    name.clone(),
+                    PlanDependencyV1 {
+                        name,
+                        artifact_id: envelope.artifact_id.clone(),
+                        content_digest: envelope.content_id,
+                    },
+                );
+                probes.insert(
+                    slot.clone(),
+                    review_graph::task::CapturedProviderProbe {
+                        policy_id: envelope.artifact_id,
+                        policy,
+                    },
+                );
+            }
+        }
         let graph = &mut captured.compilation.graph;
-        graph.install_provider_admission(&bindings, &self.policy.settings.provider_admission)?;
+        graph.install_provider_admission_with_probes(
+            &bindings,
+            &self.policy.settings.provider_admission,
+            &probes,
+        )?;
         graph.budget(task.limits.clone())?;
+        let mut graph_refs = vec![
+            revision_id.into(),
+            self.policy.engine_id.clone(),
+            self.policy_id.clone(),
+        ];
+        graph_refs.extend(
+            probes
+                .values()
+                .map(|probe| probe.policy_id.clone())
+                .collect::<BTreeSet<_>>(),
+        );
         let graph = capture_or_read(
             cas,
             review_config::task::catalog::COMPILED_TASK_V1,
             "graph",
-            vec![
-                revision_id.into(),
-                self.policy.engine_id.clone(),
-                self.policy_id.clone(),
-            ],
+            graph_refs,
             graph,
             recorded.map(|plan| plan.compiled_graph_id.as_str()),
         )?;
@@ -702,6 +869,20 @@ fn capture_or_read<T: Serialize>(
         cas.put_artifact(ty, producer, refs, None, payload)
             .map(|(_, artifact)| artifact)
             .map_err(|e| e.to_string())
+    }
+}
+
+fn probe_policy(
+    authority_policy_id: &str,
+    execution: &WorkerExecutionV1,
+    settings: &ReviewProviderProbeSettingsV1,
+) -> TaskProviderProbePolicyV1 {
+    TaskProviderProbePolicyV1 {
+        authority_policy_id: authority_policy_id.into(),
+        execution: execution.clone(),
+        credential_mode: review_core::BrokerCredentialModeV1::Brokered,
+        probe_protocol: settings.probe_protocol,
+        operations: settings.operations.clone(),
     }
 }
 

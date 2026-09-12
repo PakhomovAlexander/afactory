@@ -55,9 +55,7 @@ impl LegacyReviewTaskHost<'_, '_> {
                 WorkerExecutionV1::Command {} => {
                     review_core::BrokerCredentialModeV1::CredentialFree
                 }
-                WorkerExecutionV1::Model { .. } => {
-                    review_core::BrokerCredentialModeV1::TrustedUnsafe
-                }
+                WorkerExecutionV1::Model { .. } => self.model(node)?.adapter.credential_mode(),
             };
             if self
                 .captured
@@ -68,19 +66,15 @@ impl LegacyReviewTaskHost<'_, '_> {
             {
                 return Err("Review transport differs from the captured credential mode".into());
             }
-            if self
-                .captured
-                .loaded
-                .reviewer_execution()
-                .get(node)
-                .is_some_and(|policy| {
-                    policy.credential_mode == review_core::BrokerCredentialModeV1::Brokered
-                        || !policy.operations.is_empty()
-                })
+            if actual_mode == review_core::BrokerCredentialModeV1::Brokered
+                && self
+                    .captured
+                    .loaded
+                    .reviewer_execution()
+                    .get(node)
+                    .is_none_or(|policy| policy.operations.is_empty())
             {
-                return Err(
-                    "Review broker operations require the common Task broker bridge".into(),
-                );
+                return Err("Brokered Review requires exact captured operation authority".into());
             }
             match self.execution(node)? {
                 WorkerExecutionV1::Command {} => {}
@@ -268,6 +262,7 @@ impl LegacyReviewTaskHost<'_, '_> {
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
     ) -> TaskWorkOutput {
         let mut result = TaskWorkOutput {
             usage: Some(TokenUsage::charge_only(0)),
@@ -282,6 +277,16 @@ impl LegacyReviewTaskHost<'_, '_> {
             let attempt = attempt.ok_or("Review Worker has no started common Attempt")?;
             let deadline = self.current(attempt)?;
             let (node, mapping, _) = self.operation(input)?.ok_or("Not a Review Worker")?;
+            let brokered = match self.execution(&node.id)? {
+                WorkerExecutionV1::Command {} => false,
+                WorkerExecutionV1::Model { .. } => {
+                    self.model(&node.id)?.adapter.credential_mode()
+                        == review_core::BrokerCredentialModeV1::Brokered
+                }
+            };
+            if brokered != broker.is_some() {
+                return Err("Review transport differs from its runtime Broker capability".into());
+            }
             let context: TaskReviewContextV1 = serde_json::from_value(
                 cas.get_artifact(attempt.context_id())
                     .map_err(|e| e.to_string())?
@@ -329,11 +334,10 @@ impl LegacyReviewTaskHost<'_, '_> {
                     bytes,
                     timeout,
                 ),
-                WorkerExecutionV1::Model { .. } => {
-                    self.model(&node.id)?
-                        .adapter
-                        .invoke(cas, sandbox.root(), bytes, timeout, true)
-                }
+                WorkerExecutionV1::Model { .. } => self
+                    .model(&node.id)?
+                    .adapter
+                    .invoke_with_broker(cas, sandbox.root(), bytes, timeout, true, broker),
             };
             result.usage = returned.usage;
             result.charged_tokens = result

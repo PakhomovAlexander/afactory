@@ -6,8 +6,12 @@ use review_pipeline::task::legacy_review::host::LegacyReviewTaskHost;
 use review_pipeline::task::legacy_review::plan::LegacyReviewPlanCompiler;
 use review_store::SharedEventStore;
 
+#[path = "host/broker.rs"]
+mod broker;
 #[path = "host/native.rs"]
 mod native;
+#[path = "host/probe_runtime.rs"]
+mod probe_runtime;
 
 fn command_pipeline() -> String {
     let result = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}"#;

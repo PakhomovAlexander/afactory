@@ -1,6 +1,7 @@
 //! Durable invocation/admission/settlement shared by every new Task kind. The scheduler and
 //! domain adapters call this boundary; no Worker output can bypass plan or lease admission.
 
+pub mod broker;
 mod encoding;
 pub use encoding::{DecodedTaskExecutionRecord, read_execution_record};
 
@@ -21,6 +22,7 @@ pub struct TaskExecutionProjection {
     pub outputs: BTreeMap<String, (String, TaskOutputV1)>,
     ledger: AttemptLedger,
     attempts: BTreeMap<String, RecordedAttempt>,
+    brokers: BTreeMap<String, broker::RecordedBroker>,
 }
 
 #[derive(Debug, Clone)]
@@ -381,6 +383,7 @@ impl TaskExecutionProjection {
                 BTreeMap::new(),
             ),
             attempts: BTreeMap::new(),
+            brokers: BTreeMap::new(),
         })
     }
 

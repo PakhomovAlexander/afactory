@@ -125,6 +125,18 @@ impl TaskEnvironment for EmptyTaskEnvironment {
 /// Domain operators retain their own receipt semantics. This interface cannot create an
 /// Attempt, execute a child graph, authorize a plan, or change the parent's allowance.
 pub trait TaskDomain: TaskOperatorHost {
+    /// Re-derive Broker authority from installed domain policy and exact captured inputs.
+    /// A serialized Worker binding alone does not install an external capability.
+    fn validate_broker_binding(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _binding: &review_core::task::broker::TaskBrokerBindingV1,
+    ) -> Result<(), String> {
+        Err("Task domain has no installed Broker authority".into())
+    }
+
     fn validate_retry(
         &self,
         _cas: &Cas,
@@ -243,6 +255,18 @@ impl<'a> CapturedTaskAuthority<'a> {
 }
 
 impl TaskAuthority for CapturedTaskAuthority<'_> {
+    fn validate_broker_binding(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        binding: &review_core::task::broker::TaskBrokerBindingV1,
+    ) -> Result<(), String> {
+        self.validate_plan(cas, task, plan)?;
+        self.domain
+            .validate_broker_binding(cas, task, plan, binding)
+    }
+
     fn validate_retry(
         &self,
         cas: &Cas,
@@ -475,6 +499,7 @@ impl<'a> CapturedTaskHost<'a> {
         input: &TaskInvocationV1,
         attempt: &PreparedTaskAttempt,
         worker: &CapturedWorker<'_>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
     ) -> TaskWorkOutput {
         use review_core::task::feedback::*;
         let mut raw_artifact_ids = Vec::new();
@@ -482,6 +507,15 @@ impl<'a> CapturedTaskHost<'a> {
         let mut token_usage = None;
         let mut feedback_code = None;
         let outputs = (|| {
+            let brokered = match &worker.transport {
+                WorkerTransport::Command(_) => false,
+                WorkerTransport::Model(adapter) => {
+                    adapter.credential_mode() == review_core::BrokerCredentialModeV1::Brokered
+                }
+            };
+            if brokered != broker.is_some() {
+                return Err("Worker transport differs from its runtime Broker capability".into());
+            }
             let (context, _) = worker.contract.read_context(cas, attempt.context_id())?;
             if context.invocation != *input {
                 return Err("Worker context belongs to another invocation".into());
@@ -541,7 +575,7 @@ impl<'a> CapturedTaskHost<'a> {
                         Duration::from_millis(remaining),
                     )
                 }
-                WorkerTransport::Model(adapter) => review_runner::task::invoke_model(
+                WorkerTransport::Model(adapter) => review_runner::task::invoke_model_with_broker(
                     cas,
                     sandbox.root(),
                     *adapter,
@@ -549,6 +583,7 @@ impl<'a> CapturedTaskHost<'a> {
                     attempt.context_id(),
                     Duration::from_millis(remaining),
                     worker.signature.effects.contains("write-source"),
+                    broker,
                 ),
             };
             raw_artifact_ids = result.raw_artifact_ids;
@@ -659,6 +694,21 @@ impl<'a> CapturedTaskHost<'a> {
 }
 
 impl TaskOperatorHost for CapturedTaskHost<'_> {
+    fn broker_operations(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+    ) -> Result<Option<Vec<review_core::BrokerOperationPolicyV1>>, String> {
+        if self
+            .workers
+            .get(&input.node)
+            .is_some_and(|worker| matches!(worker.transport, WorkerTransport::Command(_)))
+        {
+            return Ok(None);
+        }
+        self.domain.broker_operations(cas, input)
+    }
+
     fn commit_domain_invocation(
         &self,
         cas: &Cas,
@@ -709,8 +759,20 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput {
+        self.execute_with_broker(cas, input, attempt, None)
+    }
+
+    fn execute_with_broker(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
+    ) -> TaskWorkOutput {
         match (self.workers.get(&input.node), attempt) {
-            (Some(worker), Some(attempt)) => self.worker_execute(cas, input, attempt, worker),
+            (Some(worker), Some(attempt)) => {
+                self.worker_execute(cas, input, attempt, worker, broker)
+            }
             (Some(_), None) => TaskWorkOutput {
                 usage: None,
                 outputs: Err("Worker has no durably started Attempt".into()),
@@ -719,12 +781,30 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
                 usage_id: None,
                 feedback_id: None,
             },
-            (None, _) => self.domain.execute(cas, input, attempt),
+            (None, _) => self.domain.execute_with_broker(cas, input, attempt, broker),
         }
     }
 }
 
 impl TaskDomain for CapturedTaskHost<'_> {
+    fn validate_broker_binding(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        binding: &review_core::task::broker::TaskBrokerBindingV1,
+    ) -> Result<(), String> {
+        if self
+            .workers
+            .get(&binding.node)
+            .is_some_and(|worker| matches!(worker.transport, WorkerTransport::Command(_)))
+        {
+            return Err("Command Workers have no installed Broker transport".into());
+        }
+        self.domain
+            .validate_broker_binding(cas, task, plan, binding)
+    }
+
     fn validate_retry(
         &self,
         cas: &Cas,

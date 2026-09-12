@@ -81,7 +81,7 @@ fn issue_input(cas: &Cas, version: &str) -> (String, NormalizedRequirementsV1) {
         .0;
     (input, normalized)
 }
-fn fixture(generated: bool) -> Fixture {
+pub(super) fn fixture(generated: bool) -> Fixture {
     let mut f = Fixture::new(generated);
     let (id, requirements) = issue_input(&f.cas, "v1");
     f.revision.goal = format!("Implement the ticket\n\n{}", requirements.text);
@@ -96,7 +96,7 @@ fn fixture(generated: bool) -> Fixture {
     f.plan.inputs = f.revision.inputs.clone();
     f.with_execution_graph()
 }
-fn next(f: &Fixture) -> TaskRevisionV1 {
+pub(super) fn next(f: &Fixture) -> TaskRevisionV1 {
     let (id, requirements) = issue_input(&f.cas, "v2");
     let mut next = f.revision.clone();
     next.revision += 1;
@@ -106,7 +106,7 @@ fn next(f: &Fixture) -> TaskRevisionV1 {
     next.provenance.input_artifact_ids = vec![id];
     next
 }
-fn plan_for(f: &Fixture, revision: &TaskRevisionV1) -> (String, String) {
+pub(super) fn plan_for(f: &Fixture, revision: &TaskRevisionV1) -> (String, String) {
     let revision_id = put(&f.cas, task::TASK_REVISION_V1, revision);
     let mut graph: review_graph::task::CompiledTask =
         payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();

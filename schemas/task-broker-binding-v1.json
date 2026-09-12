@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-broker-binding:1",
+  "title": "TaskBrokerBinding@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "task_revision_id",
+    "plan_id",
+    "invocation_id",
+    "context_id",
+    "attempt_id",
+    "reservation_id",
+    "writer",
+    "writer_epoch",
+    "node",
+    "lease",
+    "handle_id",
+    "operations",
+    "target"
+  ],
+  "properties": {
+    "task_id": {
+      "$ref": "#/$defs/name"
+    },
+    "task_revision_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "plan_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "invocation_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "context_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "attempt_id": {
+      "$ref": "#/$defs/opaqueId"
+    },
+    "reservation_id": {
+      "type": "string",
+      "pattern": "^reservation:[0-9]{1,20}$",
+      "maxLength": 32,
+      "not": {
+        "pattern": "[^a-z0-9:]"
+      }
+    },
+    "writer": {
+      "$ref": "#/$defs/name"
+    },
+    "writer_epoch": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "node": {
+      "$ref": "#/$defs/qualified"
+    },
+    "lease": {
+      "$ref": "#/$defs/lease"
+    },
+    "handle_id": {
+      "$ref": "#/$defs/opaqueId"
+    },
+    "operations": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/operationPolicy"
+      }
+    },
+    "target": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "slot",
+            "invocation_policy_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "worker"
+            },
+            "slot": {
+              "$ref": "#/$defs/qualified"
+            },
+            "invocation_policy_id": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "probe_policy_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "provider_admission"
+            },
+            "probe_policy_id": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "description": "Captured authority for an existing Task Attempt. Store checks exact plan, reservation, binding, Review Round, and live authority; this artifact grants none independently.",
+  "$defs": {
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]*$",
+      "maxLength": 128,
+      "not": {
+        "pattern": "[^A-Za-z0-9_-]"
+      }
+    },
+    "qualified": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$",
+      "not": {
+        "pattern": "[^A-Za-z0-9_.-]"
+      }
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    },
+    "opaqueId": {
+      "type": "string",
+      "pattern": "^[0-9a-z]{26}$",
+      "minLength": 26,
+      "maxLength": 26
+    },
+    "symbolicName": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]*$",
+      "maxLength": 128,
+      "not": {
+        "pattern": "[^a-z0-9._-]"
+      }
+    },
+    "lease": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "campaign_id",
+        "round_event_id",
+        "node_id",
+        "attempt_id",
+        "lease_epoch"
+      ],
+      "properties": {
+        "campaign_id": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "round_event_id": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "node_id": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/opaqueId"
+        },
+        "lease_epoch": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "operationPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "destination",
+        "method",
+        "max_request_bytes",
+        "max_response_bytes",
+        "max_calls",
+        "max_usage"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/symbolicName"
+        },
+        "destination": {
+          "$ref": "#/$defs/symbolicName"
+        },
+        "method": {
+          "$ref": "#/$defs/symbolicName"
+        },
+        "max_request_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "max_response_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "max_calls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "max_usage": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740990
+        }
+      }
+    }
+  }
+}

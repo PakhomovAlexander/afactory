@@ -3,6 +3,8 @@ use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_core::task::{TaskResultV1, TaskRevisionV1};
 use review_graph::task::OperatorAttemptCost;
+#[path = "plan/provider_probe.rs"]
+mod provider_probe;
 use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
 use review_pipeline::task::legacy_review::plan::{LegacyReviewPlanCompiler, ReviewPlanSettings};
 use review_pipeline::task::{TaskOperatorHost, TaskWorkOutput};
@@ -315,6 +317,15 @@ fn assert_plan_schemas(cas: &Cas, compiler: &LegacyReviewPlanCompiler, plan: &Ex
                 "legacy-review-task-policy-v1.json",
             ),
             (
+                "af/LegacyReviewTaskPolicy@2",
+                "legacy-review-task-policy-v2.json",
+            ),
+            (
+                "af/TaskProviderProbePolicy@1",
+                "task-provider-probe-policy-v1.json",
+            ),
+            ("af/CompiledTask@1", "compiled-task-v1.json"),
+            (
                 "af/LegacyReviewDependency@1",
                 "legacy-review-dependency-v1.json",
             ),
@@ -333,11 +344,25 @@ fn assert_plan_schemas(cas: &Cas, compiler: &LegacyReviewPlanCompiler, plan: &Ex
                 common["$id"].as_str().unwrap().to_owned(),
                 jsonschema::Resource::from_contents(common.clone()).unwrap(),
             );
+            for file in [
+                "legacy-review-task-policy-v1.json",
+                "task-broker-binding-v1.json",
+            ] {
+                let value: serde_json::Value = serde_json::from_slice(
+                    &std::fs::read(root.join("schemas").join(file)).unwrap(),
+                )
+                .unwrap();
+                options.with_resource(
+                    value["$id"].as_str().unwrap().to_owned(),
+                    jsonschema::Resource::from_contents(value).unwrap(),
+                );
+            }
             (ty, options.build(&schema).unwrap())
         })
         .collect()
     });
     let ids = std::iter::once(compiler.policy_id())
+        .chain(std::iter::once(plan.compiled_graph_id.as_str()))
         .chain(plan.dependencies.values().map(|d| d.artifact_id.as_str()))
         .chain(
             plan.bindings

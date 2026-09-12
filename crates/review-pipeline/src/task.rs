@@ -1,6 +1,7 @@
 //! One Task dispatcher over the existing graph scheduler and common Store. Domain handlers
 //! supply typed operations; they do not schedule children or create their own Attempt budgets.
 
+pub mod broker;
 pub mod code;
 pub mod document;
 pub mod host;
@@ -37,6 +38,16 @@ pub struct TaskWorkOutput {
 }
 
 pub trait TaskOperatorHost: Sync {
+    /// Pure lookup of the exact captured operations for this invocation. None grants no
+    /// Broker authority; this hook cannot create an Attempt or enlarge its reservation.
+    fn broker_operations(
+        &self,
+        _cas: &Cas,
+        _input: &TaskInvocationV1,
+    ) -> Result<Option<Vec<review_core::BrokerOperationPolicyV1>>, String> {
+        Ok(None)
+    }
+
     /// Publish domain input identity after the common invocation is durable, before context
     /// capture or Attempt reservation. Replays call this again; publication must be idempotent
     /// and must not invoke Workers, checks or Providers. Pure context capture can then reference
@@ -90,6 +101,28 @@ pub trait TaskOperatorHost: Sync {
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput;
+
+    /// The runtime supplies an opaque client only after binding the already-started Attempt.
+    /// Existing hosts refuse a capability they do not consume before performing any work.
+    fn execute_with_broker(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
+    ) -> TaskWorkOutput {
+        if broker.is_some() {
+            return TaskWorkOutput {
+                usage: None,
+                outputs: Err("Task operator does not consume Broker Handles".into()),
+                charged_tokens: Some(0),
+                raw_artifact_ids: vec![],
+                usage_id: None,
+                feedback_id: None,
+            };
+        }
+        self.execute(cas, input, attempt)
+    }
 }
 
 pub struct TaskRuntime<'store, 'host> {
@@ -100,6 +133,8 @@ pub struct TaskRuntime<'store, 'host> {
     graph: CompiledTask,
     authority: &'host dyn TaskAuthority,
     host: &'host dyn TaskOperatorHost,
+    broker_providers: BTreeMap<String, &'host broker::TaskBrokerProvider>,
+    broker_probes: BTreeMap<String, &'host broker::TaskBrokerProvider>,
     prepared: Mutex<BTreeMap<String, PreparedTaskAttempt>>,
     pending_outputs: Mutex<BTreeMap<String, (String, Option<String>)>>,
     failures: Mutex<BTreeMap<String, NodeFailureClass>>,
@@ -165,6 +200,8 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             graph,
             authority,
             host,
+            broker_providers: BTreeMap::new(),
+            broker_probes: BTreeMap::new(),
             prepared: Mutex::new(BTreeMap::new()),
             pending_outputs: Mutex::new(BTreeMap::new()),
             failures: Mutex::new(BTreeMap::new()),
@@ -557,7 +594,7 @@ impl Dispatch for TaskRuntime<'_, '_> {
             let started = SystemTime::now();
             let timer = Instant::now();
             let mut result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                self.host.execute(self.cas, input, attempt.as_ref())
+                self.execute_host(input, attempt.as_ref())
             }))
             .unwrap_or_else(|_| TaskWorkOutput {
                 usage: None,

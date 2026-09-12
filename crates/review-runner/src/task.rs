@@ -5,15 +5,17 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
+use review_broker::ExactBrokerClient;
 use review_core::task::execution::TaskInvocationV1;
 use review_core::task::feedback::TaskFeedbackCodeV1;
-use review_core::{ArtifactEnvelope, Command, Producer};
+use review_core::{ArtifactEnvelope, BrokerCredentialModeV1, Command, Producer};
 use review_store::{Cas, validate_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{ContextManifest, ModelRunner, RunnerError, TokenUsage};
 pub mod legacy;
+pub mod provider;
 pub mod usage;
 use legacy::LegacyTaskProtocol;
 
@@ -376,6 +378,12 @@ pub struct ModelWorkerReturn {
 }
 
 pub trait WorkerModelAdapter: Send + Sync {
+    /// Credential boundary this adapter actually provides. Existing model transports retain
+    /// trusted execution; accepting an optional capability does not itself establish Brokered.
+    fn credential_mode(&self) -> BrokerCredentialModeV1 {
+        BrokerCredentialModeV1::TrustedUnsafe
+    }
+
     fn provider_kind(&self) -> &'static str;
     /// Exact model and effort encoded by the adapter's command builder. None cannot satisfy
     /// a plan binding; provider defaults or aliases must be resolved during host admission.
@@ -390,6 +398,29 @@ pub trait WorkerModelAdapter: Send + Sync {
         timeout: Duration,
         writable: bool,
     ) -> ModelWorkerReturn;
+
+    /// The execution owner binds this capability to the already-started common Attempt and
+    /// retains its exact charge independently of the adapter's native usage or final message.
+    /// A Brokered adapter must override this method and consume only the opaque client.
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_with_broker(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+        broker: Option<&dyn ExactBrokerClient>,
+    ) -> ModelWorkerReturn {
+        if broker.is_some() {
+            return ModelWorkerReturn {
+                message: Err("Worker model adapter does not consume Broker Handles".into()),
+                usage: Some(TokenUsage::charge_only(0)),
+                raw_artifact_ids: vec![],
+            };
+        }
+        self.invoke(cas, workdir, input, timeout, writable)
+    }
 }
 
 impl ModelWorkerReturn {
@@ -416,6 +447,24 @@ pub fn invoke_model(
     timeout: Duration,
     writable: bool,
 ) -> WorkerReturn {
+    invoke_model_with_broker(
+        cas, workdir, adapter, contract, context_id, timeout, writable, None,
+    )
+}
+
+/// Typed context and output admission are identical with and without a Broker capability.
+/// Only the execution owner may supply the client after binding the current Task Attempt.
+#[allow(clippy::too_many_arguments)]
+pub fn invoke_model_with_broker(
+    cas: &Cas,
+    workdir: &Path,
+    adapter: &dyn WorkerModelAdapter,
+    contract: &WorkerContract,
+    context_id: &str,
+    timeout: Duration,
+    writable: bool,
+    broker: Option<&dyn ExactBrokerClient>,
+) -> WorkerReturn {
     let bytes = match contract.read_context(cas, context_id) {
         Ok((_, bytes)) => bytes,
         Err(error) => {
@@ -427,7 +476,7 @@ pub fn invoke_model(
             };
         }
     };
-    let returned = adapter.invoke(cas, workdir, bytes, timeout, writable);
+    let returned = adapter.invoke_with_broker(cas, workdir, bytes, timeout, writable, broker);
     let (reply, feedback_code) = match returned.message {
         Ok(bytes) => {
             let reply = contract.validate_reply(&bytes);

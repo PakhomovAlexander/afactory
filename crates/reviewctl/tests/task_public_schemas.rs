@@ -11,6 +11,8 @@ use review_core::task::execution::{
 use review_graph::task::CompiledTask;
 use serde_json::{Value, json};
 
+#[path = "task_public_schemas/broker.rs"]
+mod broker;
 #[path = "support/task_cli.rs"]
 mod task_cli;
 

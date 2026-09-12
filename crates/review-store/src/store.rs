@@ -367,10 +367,12 @@ impl EventStore {
                 "Task Review selection requires the trusted Task publication entry point".into(),
             ));
         }
-        if events
-            .iter()
-            .any(|e| e.event_type == EventType::TaskTransitionV1)
-            && task_permit.is_none()
+        if events.iter().any(|e| {
+            matches!(
+                e.event_type,
+                EventType::TaskTransitionV1 | EventType::TaskBrokerTransitionV1
+            )
+        }) && task_permit.is_none()
         {
             return Err(StoreError::Conflict(
                 "Task events require the trusted Task entry point".into(),
@@ -505,7 +507,11 @@ impl EventStore {
             )
             .map_err(|e| match e {
                 rusqlite::Error::SqliteFailure(err, _)
-                    if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+                    if matches!(
+                        err.extended_code,
+                        rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                            | rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                    ) =>
                 {
                     StoreError::Conflict(format!("sequence {next} already taken for run {run_id}"))
                 }

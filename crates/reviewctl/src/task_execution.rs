@@ -1438,8 +1438,21 @@ fn present(
         .map_err(|e| e.to_string())?;
     let mut history = Vec::new();
     let mut execution = Vec::new();
+    let mut broker_records = Vec::new();
     let mut decisions = Vec::new();
     for event in events {
+        if event.event_type == review_core::EventType::TaskBrokerTransitionV1 {
+            let transition: review_core::task::broker::TaskBrokerTransitionV1 =
+                serde_json::from_value(event.payload).map_err(|e| e.to_string())?;
+            let record = review_store::store::task::execution::broker::read_task_broker_record(
+                cas,
+                &transition.record_id,
+            )
+            .map_err(|e| e.to_string())?;
+            broker_records.push(json!({"artifact_id":record.artifact_id,"artifact_type":record.artifact_type,"record":record.payload}));
+            history.push(json!({"sequence":event.sequence,"broker_transition":transition}));
+            continue;
+        }
         let transition: review_core::task::event::TaskTransitionV1 =
             serde_json::from_value(event.payload).map_err(|e| e.to_string())?;
         if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
@@ -1475,6 +1488,10 @@ fn present(
     }
     value["history"] = json!(history);
     value["execution_records"] = json!(execution);
+    if !broker_records.is_empty() {
+        value["schema"] = json!("af/task-inspection@4");
+        value["broker_records"] = json!(broker_records);
+    }
     let mut reports = Vec::new();
     for id in &state.run_reports {
         use review_core::task::report::*;

@@ -1,0 +1,215 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "revision_id",
+    "phase",
+    "plan_id",
+    "chargeable_tokens",
+    "attempts",
+    "history",
+    "execution_records",
+    "run_reports",
+    "broker_records"
+  ],
+  "dependentRequired": {
+    "graph": [
+      "plan"
+    ],
+    "plan": [
+      "graph"
+    ],
+    "delivery": [
+      "result"
+    ],
+    "planning_diagnostic": [
+      "result"
+    ],
+    "repair_assessments": [
+      "result"
+    ],
+    "review_rounds": [
+      "result"
+    ]
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "properties": {
+              "kind": {
+                "const": "finished"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "result"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "result"
+          ]
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "graph"
+        ]
+      },
+      "then": {
+        "properties": {
+          "plan_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          }
+        }
+      }
+    }
+  ],
+  "$id": "urn:af:schema:task-inspection:4",
+  "title": "Task inspection af/task-inspection@4",
+  "$comment": "Broker-bearing Task inspection. All earlier fields retain the frozen v3 contract. Broker operations and their exact cumulative usage belong to the original Task Attempt; history preserves the shared sequence. This view grants no execution authority.",
+  "properties": {
+    "schema": {
+      "const": "af/task-inspection@4"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/task_id"
+    },
+    "revision_id": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/revision_id"
+    },
+    "phase": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/phase"
+    },
+    "plan_id": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/plan_id"
+    },
+    "chargeable_tokens": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/chargeable_tokens"
+    },
+    "attempts": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/attempts"
+    },
+    "selection": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/selection"
+    },
+    "planning": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/planning"
+    },
+    "plan_decisions": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/plan_decisions"
+    },
+    "history": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "urn:af:schema:task-inspection:3#/properties/history/items"
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "sequence",
+              "broker_transition"
+            ],
+            "properties": {
+              "sequence": {
+                "$ref": "urn:af:schema:task-inspection:3#/properties/history/items/properties/sequence"
+              },
+              "broker_transition": {
+                "$ref": "urn:af:schema:task-broker-transition:1"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "execution_records": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/execution_records"
+    },
+    "run_reports": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/run_reports"
+    },
+    "delivery": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/delivery"
+    },
+    "result": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/result"
+    },
+    "planning_diagnostic": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/planning_diagnostic"
+    },
+    "repair_assessments": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/repair_assessments"
+    },
+    "review_rounds": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/review_rounds"
+    },
+    "graph": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/graph"
+    },
+    "plan": {
+      "$ref": "urn:af:schema:task-inspection:3#/properties/plan"
+    },
+    "broker_records": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifact_id",
+              "artifact_type",
+              "record"
+            ],
+            "properties": {
+              "artifact_id": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              },
+              "artifact_type": {
+                "const": "af/TaskBrokerBinding@1"
+              },
+              "record": {
+                "$ref": "urn:af:schema:task-broker-binding:1"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifact_id",
+              "artifact_type",
+              "record"
+            ],
+            "properties": {
+              "artifact_id": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              },
+              "artifact_type": {
+                "const": "af/TaskBrokerOperation@1"
+              },
+              "record": {
+                "$ref": "urn:af:schema:task-broker-operation:1"
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

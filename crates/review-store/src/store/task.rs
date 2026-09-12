@@ -84,6 +84,17 @@ pub struct DeveloperGrant {
 /// package authority. Possession of actor strings or serialized PlanDecision does not implement
 /// this interface. Every execution adapter must use this same boundary on resume and dispatch.
 pub trait TaskAuthority: Sync {
+    /// Re-derive named Broker operations from the exact captured Worker policy. Serialized
+    /// handle/binding data alone cannot authorize connector access.
+    fn validate_broker_binding(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _binding: &review_core::task::broker::TaskBrokerBindingV1,
+    ) -> Result<(), String> {
+        Err("Task Broker authority admission is not configured".into())
+    }
     /// Validate the compiled graph, bindings and exact dependency closure, returning the
     /// generated origins derived from trusted package provenance, including nested Pipelines.
     fn validate_plan(
@@ -211,6 +222,8 @@ pub(super) struct WritePermit {
     run_id: String,
     first: u64,
     payloads: Vec<serde_json::Value>,
+    event_type: EventType,
+    valid_until: Option<u64>,
     review_round: Option<review_round::ReviewRoundFence>,
 }
 
@@ -228,7 +241,10 @@ impl WritePermit {
             || events
                 .iter()
                 .zip(&self.payloads)
-                .any(|(e, p)| e.event_type != EventType::TaskTransitionV1 || &e.payload != p)
+                .any(|(e, p)| e.event_type != self.event_type || &e.payload != p)
+            || self
+                .valid_until
+                .is_some_and(|until| now().map_or(true, |time| time >= until))
         {
             return Err(conflict("Task write lost its sequence/lease comparison"));
         }
@@ -911,6 +927,7 @@ impl EventStore {
         // Cached prefix is only a parse memo. Revalidate current revision/plan bytes on every
         // access; a removed or corrupted active artifact must never inherit cached authority.
         if let Some(state) = &state {
+            execution::broker::validate_cached(cas, state)?;
             if state.planning.is_some() {
                 state.planning_proof(cas)?;
             }
@@ -982,6 +999,13 @@ impl EventStore {
         let first = state.as_ref().map_or(0, |state| state.next_sequence);
         let mut verified = BTreeSet::new();
         for event in self.replay_from(&task_run_id(task_id)?, first)? {
+            if event.event_type == EventType::TaskBrokerTransitionV1 {
+                let state = state
+                    .as_mut()
+                    .ok_or_else(|| conflict("Task Broker evidence precedes genesis"))?;
+                execution::broker::apply_event(cas, state, &event)?;
+                continue;
+            }
             if event.event_type != EventType::TaskTransitionV1 {
                 return Err(conflict("Task log contains a foreign event"));
             }
@@ -1086,6 +1110,8 @@ impl EventStore {
             run_id: run_id.clone(),
             first,
             payloads: vec![value],
+            event_type: EventType::TaskTransitionV1,
+            valid_until: None,
             review_round,
         };
         self.append_batch_inner(&run_id, cas, &[event], Some(&permit), None)?

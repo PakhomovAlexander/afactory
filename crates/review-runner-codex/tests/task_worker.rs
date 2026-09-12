@@ -6,6 +6,15 @@ use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
 #[test]
+fn native_task_adapter_declares_trusted_unsafe_credentials() {
+    let adapter = CodexTaskAdapter::new(&Command::new("codex", vec![])).unwrap();
+    assert_eq!(
+        adapter.credential_mode(),
+        review_core::BrokerCredentialModeV1::TrustedUnsafe
+    );
+}
+
+#[test]
 fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_message() {
     for timed_out in [true, false] {
         let temp = tempfile::tempdir().unwrap();

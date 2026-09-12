@@ -1,11 +1,13 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
 **Active increment:** [Task execution](task-execution.md), P00–P14, authorized as three PRs.
-The exact Review accounting checkpoint `1cd3008` passes the complete local gate (**915 tests**,
-no failures, 15 ignored), including frozen reproduction; it is pushed and passes CI `34695645865`.
-The preceding operation host `eab8d29` passes CI `34693346220`. Current work preserves exact
-cumulative charge within one Attempt and adds the matching Broker transport and public schemas.
-Broker binding, Scatter, heavy continuation and legacy CLI ownership still need their adapters.
+Published exact per-Attempt checkpoint `1aa111e` passes the complete local gate (**939 tests**,
+no failures, 15 ignored), including frozen reproduction. CI `34698337013` is green,
+including container probes; prior `1cd3008` passes CI `34695645865`. The local Broker bridge retains
+late paid receipts and exact usage through panic/CAS failure in the same common Attempt;
+focused Store, Runner, Review and runtime checks pass. Its independently captured Provider
+probe authority passes compiler, Store, domain and real runtime connector checks. The slice
+awaits its full gate before publication; Scatter, heavy continuation and legacy CLI cutover remain.
 
 Common Task workflows, shared packages, embedding, repair, selection/generation, exact-plan
 approval, export, starters and issue/document Tasks are implemented on the PR branches.

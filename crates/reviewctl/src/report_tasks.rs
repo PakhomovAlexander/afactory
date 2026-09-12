@@ -267,7 +267,8 @@ pub(super) fn read(
 
 fn classify(operator: &CompiledOperator) -> (Category, Option<String>, Vec<String>) {
     match operator {
-        CompiledOperator::ProviderAdmission { bindings } => {
+        CompiledOperator::ProviderAdmission { bindings }
+        | CompiledOperator::ProviderAdmissionBrokered { bindings, .. } => {
             (Category::Provider, None, bindings.iter().cloned().collect())
         }
         CompiledOperator::ReviewDomain {

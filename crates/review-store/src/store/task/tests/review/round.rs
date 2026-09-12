@@ -1,7 +1,7 @@
 use super::*;
 use crate::store::task::review_round::ReviewRoundFence;
 
-fn round_fixture() -> (Fixture, LegacyReviewRoundV1) {
+pub(in crate::store::task::tests) fn round_fixture() -> (Fixture, LegacyReviewRoundV1) {
     let mut f = Fixture::new(false).with_execution_graph();
     let context = canonical_context(
         &mut f,
@@ -101,7 +101,7 @@ fn round_fixture() -> (Fixture, LegacyReviewRoundV1) {
     (f, round)
 }
 
-fn supersede(f: &Fixture, round: &LegacyReviewRoundV1) {
+pub(in crate::store::task::tests) fn supersede(f: &Fixture, round: &LegacyReviewRoundV1) {
     let mut other = EventStore::open(&f.path).unwrap();
     let old = other
         .latest_round_started(&round.campaign_id)
@@ -335,6 +335,8 @@ fn review_round_write_fence_compares_other_campaign_changes_inside_transaction()
         run_id: run.clone(),
         first: state.next_sequence,
         payloads: vec![value],
+        event_type: EventType::TaskTransitionV1,
+        valid_until: None,
         review_round: ReviewRoundFence::capture(&f.cas, &state.revision).unwrap(),
     };
     permit

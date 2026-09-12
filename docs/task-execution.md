@@ -19,14 +19,16 @@ supplement it. Claude calls use only `claude-personal`.
 
 ## Progress
 
-The exact Review accounting/inspection checkpoint `1cd3008` passes the full local gate
-(**915 tests**, zero failures, 15 ignored), including byte-identical frozen reproduction.
-It is pushed to PR 2 and passes CI `34695645865`. The preceding operation-host checkpoint `eab8d29`
-passes CI `34693346220`. The current slice retains cumulative charge above u64 within one
-Attempt, adds exact Broker transport and fills public schema gaps. See
+Published exact per-Attempt checkpoint `1aa111e` passes the full local gate (**939 tests**,
+zero failures, 15 ignored), byte-identical frozen reproduction and CI `34698337013`.
+The next local slice binds exact Broker operations to original Task Attempts and retains
+late paid receipts, panic/CAS-outage usage and typed inspection. Separate captured Provider
+probe authority now passes compiler, Store, domain and end-to-end runtime checks: readiness
+and business work use distinct policies and Attempts, and failed readiness blocks work.
+The current full gate is still required before publishing this slice. See
 [Review compatibility](task-execution/review-compatibility.md),
-[ADR-0078](adr/0078-bind-review-conclusions-to-exact-task-accounting.md) and
-[ADR-0079](adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md).
+[ADR-0079](adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md) and
+[ADR-0080](adr/0080-bind-broker-evidence-to-the-original-task-attempt.md).
 
 The earlier shared Review operations and Round-fencing checkpoint passes the full gate at `5b1461e`
 (internal `9a81fbe`): 839 tests, zero failures, 15 ignored, plus documentation tests and frozen

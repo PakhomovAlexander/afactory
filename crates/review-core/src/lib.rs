@@ -34,6 +34,11 @@ pub mod snapshot;
 pub mod subject;
 pub mod task;
 
+pub use task::broker::{
+    TASK_BROKER_BINDING_V1, TASK_BROKER_OPERATION_V1, TaskBrokerBindingV1, TaskBrokerOperationV1,
+    TaskBrokerTargetV1, TaskBrokerTransitionV1,
+};
+
 pub use broker::{
     BrokerCredentialModeV1, BrokerFailureReasonV1, BrokerLeaseV1, BrokerOperationOutcomeV1,
     BrokerOperationPolicyV1, BrokerOperationReceiptV1, BrokerOperationReceiptV2,
