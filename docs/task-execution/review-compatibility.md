@@ -108,3 +108,16 @@ would not complete this migration.
 Historical Campaign readers and resumes retain their original event types and identities.
 Frozen fixtures remain byte-identical. New compatibility contracts and adapters are unreleased
 until the entry-point, interruption, broker, Proposal, Scatter and heavy-continuation gates pass.
+
+The captured Round can now compile directly from its recorded Campaign Manifest, authority
+Snapshot and packages. The installed resource translator derives Worker timeouts, two-Attempt
+retry capacity, four-way parallelism and one wall bound for the complete Gate check sequence.
+An originally uncapped Campaign requires an explicit bounded fallback in the new Task policy;
+its old manifest remains uncapped. Static Node caps retain aggregate retry charges, while
+Scatter descendants share the captured FanOut cap without inheriting the static parent cap.
+Round scopes include common Provider admission and use the numeric Round rather than its epoch.
+
+This captured compilation remains preparation data. Effective Worker invocation/Provider
+bindings, exact policy and dependency capture, acceptance coverage and TaskAuthority admission
+must be attached before it becomes an executable plan. The operation host, canonical replay,
+common-owned Scatter and heavy-Round handoff remain part of the entry-point cutover above.

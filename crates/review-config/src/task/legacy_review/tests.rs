@@ -336,3 +336,227 @@ fn dynamic_review_retains_enveloped_history_and_shared_provider_guards() {
         );
     }
 }
+
+fn resource_manifest(loaded: &Loaded) -> review_core::CampaignManifestV1 {
+    let id = content_id(&json!({"resource_fixture": true})).unwrap();
+    serde_json::from_value(json!({
+        "authority_snapshot_id": id, "subject_kind": "whole-tree",
+        "pipeline": {"path": ".af/pipelines/review.toml", "artifact_id": id},
+        "reviewer_lock": {"path": ".af/af.lock", "artifact_id": id},
+        "reviewers": [], "execution_policy_ids": [id], "project_policy_ids": [],
+        "convergence": {"clean_rounds": 1, "max_rounds": 1, "gate": "major"},
+        "reviewer_timeout_seconds": 9,
+        "check_timeout_seconds": loaded.check_timeout_seconds(),
+        "budgets": loaded.budgets().map(|caps| review_core::CampaignBudgetV1 {
+            attempt_tokens: caps.attempt, run_tokens: caps.run,
+        }),
+        "finding_identity_policy": review_core::CANONICAL_FINDING_IDENTITY_POLICY,
+        "finding_genesis_id": id, "demand_genesis_id": id,
+    }))
+    .unwrap()
+}
+
+#[test]
+fn captured_review_resources_preserve_node_retry_and_round_caps_on_the_task_ledger() {
+    use super::resources::{ReviewResourcePolicy, review_token_scopes};
+    let definition = PIPELINE.replace(
+        "id = \"first/reviewer\"",
+        "id = \"first/reviewer\"\nbudget = { attempt = 30 }",
+    ) + "\n[budgets]\nunit = \"tokens\"\nattempt = 100\nrun = 250\n";
+    let loaded = crate::Definition::from_toml(&definition)
+        .unwrap()
+        .load()
+        .unwrap();
+    let mut context = context(&loaded);
+    context.limits.verification = VerificationReserveV1 {
+        tokens: 0,
+        attempts: 0,
+        wall_ms: 0,
+    };
+    let limits = context.limits.clone();
+    ReviewResourcePolicy {
+        uncapped_attempt_tokens: 999,
+    }
+    .apply(&loaded, &resource_manifest(&loaded), &mut context)
+    .unwrap();
+    assert_eq!(
+        context.limits, limits,
+        "the original Task allowance is retained"
+    );
+    assert_eq!(context.max_parallel, 4);
+    assert_eq!(
+        context.workers["first/reviewer"]
+            .allowance
+            .tokens_per_attempt,
+        30
+    );
+    assert_eq!(context.workers["second"].allowance.tokens_per_attempt, 100);
+    assert!(
+        context
+            .workers
+            .values()
+            .all(|worker| worker.allowance.max_attempts == 2
+                && worker.allowance.wall_ms_per_attempt == 9000)
+    );
+    let mut compilation = compile_legacy_review(&loaded, context).unwrap();
+    let scopes = review_token_scopes(&loaded, &compilation, 2).unwrap();
+    assert_eq!(scopes.len(), 2);
+    assert_eq!(scopes["review.round2"].tokens, 250);
+    assert!(scopes["review.round2"].contains("root.providers.admit0"));
+    assert_eq!(
+        scopes,
+        review_token_scopes(&loaded, &compilation, 2).unwrap()
+    );
+    assert!(
+        !review_token_scopes(&loaded, &compilation, 3)
+            .unwrap()
+            .contains_key("review.round2")
+    );
+    compilation.graph.token_scopes = scopes;
+    let first = &compilation.nodes["first/reviewer"].task_node;
+    let second = &compilation.nodes["second"].task_node;
+    let mut budget = compilation.graph.budget(limits).unwrap();
+    let attempt = budget.prepare(first, 1).unwrap();
+    budget.begin(&attempt.id, 1).unwrap();
+    budget.settle(&attempt.id, 5).unwrap();
+    assert!(
+        budget.prepare(first, 2).unwrap_err().contains("scope"),
+        "an explicit Node cap bounds the aggregate of retries"
+    );
+    for time in [2, 3] {
+        let attempt = budget.prepare(second, time).unwrap();
+        budget.begin(&attempt.id, time).unwrap();
+        budget.settle(&attempt.id, 100).unwrap();
+    }
+    assert_eq!(budget.committed_tokens(), 205);
+    assert_eq!(budget.scope_committed_tokens("review.round2"), Some(205));
+    assert_eq!(budget.reserved_tokens(), 0);
+}
+
+#[test]
+fn uncapped_review_requires_new_bounded_policy_and_never_invents_a_legacy_cap() {
+    use super::resources::{ReviewResourcePolicy, review_token_scopes};
+    let loaded = crate::Definition::from_toml(PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
+    let manifest = resource_manifest(&loaded);
+    assert!(manifest.budgets.is_none());
+    let mut context = context(&loaded);
+    let policy = ReviewResourcePolicy {
+        uncapped_attempt_tokens: 17,
+    };
+    policy.apply(&loaded, &manifest, &mut context).unwrap();
+    assert!(
+        context
+            .workers
+            .values()
+            .all(|worker| worker.allowance.tokens_per_attempt == 17)
+    );
+    let compilation = compile_legacy_review(&loaded, context).unwrap();
+    assert!(
+        review_token_scopes(&loaded, &compilation, 1)
+            .unwrap()
+            .is_empty()
+    );
+    assert!(review_token_scopes(&loaded, &compilation, 0).is_err());
+    assert!(manifest.budgets.is_none());
+}
+
+#[test]
+fn review_resource_translation_checks_all_bounds_before_changing_the_context() {
+    use super::resources::ReviewResourcePolicy;
+    let loaded = crate::Definition::from_toml(PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
+    let manifest = resource_manifest(&loaded);
+    let mut context = context(&loaded);
+    let before = context
+        .workers
+        .iter()
+        .map(|(name, worker)| (name.clone(), worker.allowance.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let policy = ReviewResourcePolicy {
+        uncapped_attempt_tokens: 1001,
+    };
+    assert!(policy.apply(&loaded, &manifest, &mut context).is_err());
+    assert_eq!(context.max_parallel, 2);
+    assert_eq!(context.gate_wall_ms, 2000);
+    assert_eq!(
+        before,
+        context
+            .workers
+            .iter()
+            .map(|(name, worker)| (name.clone(), worker.allowance.clone()))
+            .collect()
+    );
+    let mut manifest = manifest;
+    manifest.reviewer_timeout_seconds = review_core::json::SAFE_INTEGER_MAX as u64;
+    assert!(
+        ReviewResourcePolicy {
+            uncapped_attempt_tokens: 17
+        }
+        .apply(&loaded, &manifest, &mut context)
+        .unwrap_err()
+        .contains("timeout")
+    );
+    assert_eq!(context.max_parallel, 2);
+}
+
+#[test]
+fn review_gate_bound_covers_the_complete_captured_check_sequence() {
+    let definition = PIPELINE.replace("version = 2", "version = 2\ncheck_timeout_seconds = 2")
+        + "\n[[checks]]\nname = \"first\"\nprogram = \"/bin/true\"\n\n[[checks]]\nname = \"second\"\nprogram = \"/bin/true\"\n\n[[checks]]\nname = \"third\"\nprogram = \"/bin/true\"\n";
+    let loaded = crate::Definition::from_toml(&definition)
+        .unwrap()
+        .load()
+        .unwrap();
+    let mut context = context(&loaded);
+    resources::ReviewResourcePolicy {
+        uncapped_attempt_tokens: 10,
+    }
+    .apply(&loaded, &resource_manifest(&loaded), &mut context)
+    .unwrap();
+    assert_eq!(context.gate_wall_ms, 6000);
+    let compilation = compile_legacy_review(&loaded, context).unwrap();
+    let gate = &compilation.nodes["gate"].task_node;
+    assert_eq!(compilation.graph.allowances[gate].wall_ms_per_attempt, 6000);
+    assert_eq!(compilation.graph.allowances[gate].max_attempts, 1);
+    assert_eq!(compilation.graph.allowances[gate].tokens_per_attempt, 0);
+}
+
+#[test]
+fn review_shards_share_fanout_without_acquiring_the_static_parent_node_cap() {
+    let definition = include_str!("../../../tests/fixtures/dynamic-v5.toml").replace(
+        "id = \"scatter\"",
+        "id = \"scatter\"\nbudget = { attempt = 30 }",
+    );
+    let loaded = crate::Definition::from_toml(&definition)
+        .unwrap()
+        .load()
+        .unwrap();
+    let mut context = context(&loaded);
+    context.limits.verification = VerificationReserveV1 {
+        tokens: 0,
+        attempts: 0,
+        wall_ms: 0,
+    };
+    resources::ReviewResourcePolicy {
+        uncapped_attempt_tokens: 1,
+    }
+    .apply(&loaded, &resource_manifest(&loaded), &mut context)
+    .unwrap();
+    assert_eq!(context.workers["scatter"].allowance.tokens_per_attempt, 30);
+    let compilation = compile_legacy_review(&loaded, context).unwrap();
+    let scopes = resources::review_token_scopes(&loaded, &compilation, 1).unwrap();
+    let scatter = &compilation.nodes["scatter"].task_node;
+    assert_eq!(scopes.len(), 2);
+    assert!(!scopes.contains_key(&format!("review.round1.node.{scatter}")));
+    let fanout = &scopes[&format!("review.round1.fanout.{scatter}")];
+    assert_eq!(fanout.tokens, 200);
+    assert!(fanout.contains(&format!("{scatter}.shard0")));
+    assert!(fanout.contains(&format!("{scatter}.shard1")));
+    assert!(!fanout.contains(&compilation.nodes["closeout"].task_node));
+    assert!(!fanout.contains(&format!("{scatter}suffix.shard0")));
+}

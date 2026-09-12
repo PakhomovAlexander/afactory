@@ -2,6 +2,7 @@
 //! authority; deserializing a mapping never authorizes a Task or replaces recompilation.
 
 pub mod artifact;
+pub mod resources;
 
 use std::collections::{BTreeMap, BTreeSet};
 

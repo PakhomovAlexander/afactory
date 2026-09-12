@@ -1,3 +1,5 @@
+#[path = "task_legacy_review/capture.rs"]
+mod capture;
 mod support;
 
 use std::collections::BTreeMap;

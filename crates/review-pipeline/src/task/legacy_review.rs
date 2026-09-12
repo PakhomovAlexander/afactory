@@ -4,9 +4,12 @@
 
 use std::collections::BTreeMap;
 
-use review_config::task::legacy_review::{ReviewNodeMapping, artifact::ReviewArtifactCodec};
-use review_core::task::ArtifactInputV1;
+use review_config::task::legacy_review::{
+    LegacyReviewCompilation, ReviewCompileContext, ReviewNodeMapping, ReviewWorker,
+    artifact::ReviewArtifactCodec, resources::ReviewResourcePolicy,
+};
 use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
+use review_core::task::{ArtifactInputV1, TaskLimitsV1};
 use review_core::{ArtifactEnvelope, PortCardinality, Producer, contract};
 use review_graph::{Node, NodeKind};
 use review_store::{Cas, EventStore, validate_envelope};
@@ -15,6 +18,13 @@ use crate::RoundAuthority;
 
 pub struct CapturedLegacyReviewRound {
     authority: RoundAuthority,
+}
+
+/// Captured Review data and the common graph before effective Provider admission and Task
+/// acceptance are attached. This value alone is not an executable-plan capability.
+pub struct CapturedReviewCompilation {
+    pub loaded: review_config::Loaded,
+    pub compilation: LegacyReviewCompilation,
 }
 
 impl CapturedLegacyReviewRound {
@@ -56,6 +66,73 @@ impl CapturedLegacyReviewRound {
             return Err("Captured Review Round authority changed".into());
         }
         Ok(())
+    }
+
+    /// Compile the actual captured Round without consulting a live authority directory.
+    /// The trusted host supplies the new original Task allowance and public output mapping;
+    /// captured Review authority determines every Worker/Gate bound and aggregate scope.
+    pub fn compile(
+        &self,
+        cas: &Cas,
+        mode: review_config::captured_review::ReviewMode,
+        resources: &ReviewResourcePolicy,
+        limits: TaskLimitsV1,
+        outputs: BTreeMap<String, review_graph::task::Address>,
+    ) -> Result<CapturedReviewCompilation, String> {
+        let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
+            cas.get_json(&self.authority.campaign_manifest_id)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        let loaded = review_config::captured_review::load_captured_review(cas, &manifest, mode)?;
+        let mut context = ReviewCompileContext {
+            inputs: self.capture_inputs(cas)?,
+            head_input: "head".into(),
+            round_input: "round".into(),
+            workers: loaded
+                .planned()
+                .nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, (_, node))| {
+                    matches!(node.kind, NodeKind::Reviewer | NodeKind::Scatter)
+                })
+                .map(|(index, (name, _))| {
+                    (
+                        name.clone(),
+                        ReviewWorker {
+                            // A deterministic slot handle, not a substitute for the original
+                            // package bytes and exact invocation policy in plan admission.
+                            package: format!("af/legacy-review-worker-{index}"),
+                            allowance: review_attempt::task_budget::NodeAllowance {
+                                tokens_per_attempt: 0,
+                                wall_ms_per_attempt: 1,
+                                max_attempts: 1,
+                                verification_attempts: 0,
+                            },
+                        },
+                    )
+                })
+                .collect(),
+            outputs,
+            limits: limits.clone(),
+            max_parallel: 4,
+            gate_wall_ms: 1,
+        };
+        resources.apply(&loaded, &manifest, &mut context)?;
+        let mut compilation =
+            review_config::task::legacy_review::compile_legacy_review(&loaded, context)?;
+        compilation.graph.token_scopes =
+            review_config::task::legacy_review::resources::review_token_scopes(
+                &loaded,
+                &compilation,
+                self.authority.round,
+            )?;
+        compilation.graph.budget(limits)?;
+        Ok(CapturedReviewCompilation {
+            loaded,
+            compilation,
+        })
     }
 
     fn producer(&self, node: Option<String>, operation: &str) -> Producer {

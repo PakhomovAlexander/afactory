@@ -348,3 +348,34 @@ The new fake-native failure proves exact wide usage in run, show and JSON/text l
 with one Provider call and an incomplete result. Workspace Clippy passes. This checkpoint's
 full gate follows; no external PR specialist has run. ADR-0074 separately records process
 creation isolation, and ADR-0075 records the exact usage representation and recovery boundary.
+
+The exact-usage checkpoint at product `6db8633` (identical frozen tree `6d88f4b`) passes the
+complete local gate: **876 tests, zero failures, 15 ignored**, across 119 suites, plus formatting,
+Clippy, documentation tests and byte-identical reproduction. The earlier `d7a65ac` Linux CI run
+`34684161093` passed container probes but failed the repair interruption fixture: recovery
+completed fix verification, then the original Task deadline expired before goal evaluation.
+That failure remains recorded rather than being replaced with the local result.
+
+A sampled local run exposed repeated typed-envelope decoding and identity checks in Task
+projection. The typed CAS reader now returns one fully verified envelope per read, preserving
+fresh integrity, exact type/version and domain checks (ADR-0076). Store and configuration
+regressions pass **264 tests, zero failures, two ignored** across 20 suites; all five repair CLI
+tests pass with the original deadline and recovery assertions. The full gate for this change
+and the captured resource compiler remains required; no external PR specialist has run.
+
+The captured resource compiler now loads a real persisted Review Round and rederives Worker
+reservations/timeouts, bounded retry capacity, parallelism, complete Gate-sequence time and
+original numeric-Round/Node/FanOut caps on the common Task ledger. Reopen produces the same
+graph; smaller Task limits, mode changes and damaged captured authority are refused. The
+resource regressions cover retry charges, absent legacy caps, atomic refusal, multi-check wall
+bounds and shard scope membership. Exact executable-policy/plan admission and operation-host
+wiring remain outstanding; this compiler output alone cannot authorize execution.
+
+The canonical serializer also copies unchanged UTF-8 spans and compares ASCII keys directly,
+retaining the same bytes and UTF-16 ordering for other keys. Every Unicode scalar and mixed
+escaped text agree with the independent JSON string encoder. The combined Store/configuration
+regressions pass **267 tests, zero failures, two ignored** across 20 suites, the two captured
+Review integration tests pass, and workspace Clippy passes. The unchanged interruption fixture
+passes in 42.30 seconds locally; a prior sampled run was 46.48 seconds and the typed-read-only
+run was 44.39 seconds. These single local measurements do not establish Linux CI or pilot
+performance; the complete gate and exact-head CI must still be recorded.
