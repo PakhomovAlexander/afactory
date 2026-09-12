@@ -217,5 +217,6 @@ and sealed canonical result/provenance capture from legacy scheduling and accoun
 A common Store currentness check refuses unstarted, revoked and settled work. Metadata schema
 parity, all three reservation/currentness tests, and all 71 pipeline tests pass (one opt-in probe
 ignored), including Proposal, broker, Scatter and replay coverage. The complete workspace gate
-for this extraction is pending. The [compatibility map](review-compatibility.md) records the
+at `d63d8b2` passes **816 tests, zero failures, 15 ignored**, across 113 suites, including
+documentation tests and byte-identical frozen reproduction. Formatting, Clippy and Markdown pass. The [compatibility map](review-compatibility.md) records the
 remaining selected-evidence, bounded Scatter and Round-continuation wiring.
