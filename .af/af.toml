@@ -5,7 +5,7 @@ name = "afactory"
 min_af = "0.2"
 
 [defaults]
-pipeline = "review"
+pipeline = "review-pr2-whole-tree"
 task_pipeline = "implement"
 
 [worker.correctness]
