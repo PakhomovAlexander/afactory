@@ -298,3 +298,21 @@ concurrent pending Attempts and recovers a previously selected output without pa
 The captured Worker, Provider and planning wrappers forward the domain decision. The actual
 captured Review failure-class policy remains part of its executable adapter
 ([ADR-0073](../adr/0073-check-task-retry-eligibility-before-reservation.md)).
+
+The final code sweep found a held-pipe drain race in that checkpoint: a reader could append
+its last chunk after the collector had already taken the buffer. The follow-up retains the
+drain through bounded post-kill completion, sharing one cleanup deadline between streams and
+preserving the original failure status. A delayed-prefix regression covers stdout and stderr.
+
+The full gate at `aa6ca7a` was explicitly stopped after the code sweep found that race, before
+all CLI tests, documentation tests and reproduction completed. It is not a passing full gate.
+The shared Review domain now also owns canonical RunReport publication with execution-owner
+spend supplied explicitly, including the legacy uncapped `None` value. Its report algorithm is
+unchanged; the legacy wrapper retains post-report automatic Integration. Verification of this
+extraction and the drain fix is recorded separately from the interrupted run.
+
+The corrected drain/report checkpoint passes 155 process, native-adapter and pipeline tests
+with two ignored, all 19 Campaign lifecycle tests, workspace Clippy and Markdown checks. The
+complete gate is being restarted; the last completed full gate remains the recorded 839-test
+checkpoint. Lossless persistence of usage beyond safe JSON/SQLite integers remains a separate
+common Task conformance correction; native adapter retention alone does not complete it.

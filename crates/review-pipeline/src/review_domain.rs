@@ -4,7 +4,11 @@
 
 use super::*;
 
+mod report;
+
 pub(super) struct ReviewDomainState<'a> {
+    /// One kernel generation has exactly one durable conclusion.
+    report_published: Mutex<bool>,
     pub(super) cas: &'a Cas,
     pub(super) store: review_store::SharedEventStore<'a>,
     pub(super) run_id: String,
@@ -187,6 +191,7 @@ impl<'a> ReviewDomainState<'a> {
             return Err("pipeline Subject kind disagrees with Round authority".into());
         }
         Ok(Self {
+            report_published: Mutex::new(false),
             prior_findings: Some(authority.prior_finding_set_id.clone()),
             cas,
             store,

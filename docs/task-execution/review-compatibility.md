@@ -82,6 +82,12 @@ dispatch and publication compare the captured Round under the same SQLite writer
 Superseded/closed Rounds stop further effects while late usage, settlement and release remain
 recordable ([ADR-0070](../adr/0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md)).
 
+Canonical RunReport publication is also shared with the domain operations. Its execution owner
+supplies the recorded spend, retaining the historical optional value for uncapped runs. The
+legacy wrapper invokes automatic Integration after publication. Existing report versions,
+verdict ordering, cache evidence and the one-conclusion guard retain their original behavior;
+this extraction adds neither an execution ledger nor a new public verdict policy.
+
 The trusted context adapter and legacy CLI still require this connection to be wired into common
 execution. Canonical replay, inspection and broker currentness also need their adapter paths;
 synthetic legacy Attempt lifecycle events cannot substitute for them.

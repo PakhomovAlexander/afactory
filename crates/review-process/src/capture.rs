@@ -1,4 +1,4 @@
-use crate::drain::{Drain, Drained, collect, collect_after_kill, drain_async};
+use crate::drain::{Drain, Drained, collect, collect_after_kill_until, drain_async};
 use crate::{
     ExitPolicy, SupervisedError, SupervisedOutput, SupervisedStreamError, kill_process_group,
     stdin_writer_wait, wait_exact,
@@ -109,11 +109,12 @@ fn failed<E>(
     pid: u32,
 ) -> StreamCapture<E> {
     // Close the entire owned group before waiting for either drain or the scoped writer.
+    let deadline = Instant::now() + crate::OUTPUT_DRAIN_GRACE;
     kill_process_group(pid);
     StreamCapture {
         status: Err(error),
-        stdout: collect_after_kill(stdout),
-        stderr: collect_after_kill(stderr),
+        stdout: collect_after_kill_until(stdout, deadline),
+        stderr: collect_after_kill_until(stderr, deadline),
         stderr_held: false,
     }
 }
@@ -206,11 +207,13 @@ where
                 return failed(error, stdout, stderr, pid);
             }
         }
-        let stdout = collect(stdout, "stdout", pid);
+        let mut cleanup = None;
+        let stdout = collect(stdout, "stdout", pid, &mut cleanup);
         if stdout.status.is_err() {
+            cleanup.get_or_insert_with(|| Instant::now() + crate::OUTPUT_DRAIN_GRACE);
             kill_process_group(pid);
         }
-        let stderr = collect(stderr, "stderr", pid);
+        let stderr = collect(stderr, "stderr", pid, &mut cleanup);
         if stderr.status.is_err() {
             kill_process_group(pid);
         }
