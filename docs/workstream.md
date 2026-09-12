@@ -3,11 +3,11 @@
 **Active increment:** [Task execution](task-execution.md), P00–P14, authorized as three PRs.
 Common Task workflows, shared packages, embedding, repair, selection/generation, exact-plan
 approval, export, starters and issue/document Tasks are implemented on the PR branches.
-The captured Review frontend checkpoint passes the complete local gate: **834 tests, zero
-failures, 15 ignored**, documentation tests and byte-identical frozen reproduction at
-`7013f8d` (stacked as `eb9d808`). It adds explicit contracts, typed fan-in, original artifact
-identity and current Round capture. The preceding in-flight usage checkpoint passes CI at
-`166bc45`. The legacy CLI execution cutover, external PR reviews, remaining conformance and
+The shared Review operations and Round-fencing checkpoint passes the complete local gate:
+**839 tests, zero failures, 15 ignored**, documentation tests and byte-identical frozen
+reproduction at `9a81fbe` (stacked as `5b1461e`). It shares canonical operations and recovers
+input publication before context capture. The preceding captured frontend passes CI at
+`50e9e29`. The legacy CLI execution cutover, external PR reviews, remaining conformance and
 P14 pilot/release evidence are still required. The [three-PR checkpoint record](task-execution/pr-sequence.md)
 retains implementation and verification details; [Review compatibility](task-execution/review-compatibility.md)
 records the outstanding domain/runtime connections. The completed M0–M9 record below remains

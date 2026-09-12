@@ -260,5 +260,11 @@ fenced by the exact current Review Round, including inside the SQLite write comp
 late usage and settlement remain durable. A common invocation-publication hook recovers before
 any Attempt/context capture. The first Store/pipeline compatibility run passes 222 tests with
 zero failures and three ignored across 26 suites; four targeted Round-boundary tests and three
-publication/context tests pass after the final additions. Full-workspace validation follows.
+publication/context tests pass after the final additions. The complete gate at `9a81fbe`
+(stacked operations at `a9193a8` and interpreter correction at `5b1461e`) passes **839 tests,
+zero failures, 15 ignored**, across 114 suites, plus formatting, Clippy, documentation tests
+and byte-identical frozen reproduction. The first full run failed because Apple's test Python
+shim added SDK environment variables; resolving the actual interpreter before isolation keeps
+all original transport assertions and fixes the fixture. The captured frontend at `50e9e29`
+also passes CI run `34676584751`: Check, CLI smoke and container probes.
 Captured plan admission, actual host/CLI wiring and the previously listed cutover gates remain.
