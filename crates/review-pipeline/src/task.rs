@@ -7,6 +7,7 @@ pub mod host;
 pub mod lease;
 pub mod planning;
 pub mod provider;
+mod report;
 pub mod review;
 pub mod source;
 
@@ -33,6 +34,19 @@ pub struct TaskWorkOutput {
 }
 
 pub trait TaskOperatorHost: Sync {
+    /// Called after the common output is durably published, before downstream dispatch, and
+    /// again on replay. Domain publication must be idempotent. This host hook cannot run paid
+    /// work: the Attempt is already settled. Its failure preserves the output for recovery.
+    fn commit_domain_output(
+        &self,
+        _cas: &Cas,
+        _input: &TaskInvocationV1,
+        _output_id: &str,
+        _output: &TaskOutputV1,
+    ) -> Result<(), String> {
+        Ok(())
+    }
+
     /// Pure rendering/capture only: no Provider operation or subprocess may start here.
     fn prepare_context(
         &self,
@@ -62,6 +76,7 @@ pub struct TaskRuntime<'a> {
     prepared: Mutex<BTreeMap<String, PreparedTaskAttempt>>,
     pending_outputs: Mutex<BTreeMap<String, (String, Option<String>)>>,
     failures: Mutex<BTreeMap<String, NodeFailureClass>>,
+    publication_failures: Mutex<BTreeSet<String>>,
 }
 
 fn envelope(cas: &Cas, id: &str) -> Result<ArtifactEnvelope, String> {
@@ -133,11 +148,31 @@ impl<'a> TaskRuntime<'a> {
             prepared: Mutex::new(BTreeMap::new()),
             pending_outputs: Mutex::new(BTreeMap::new()),
             failures: Mutex::new(BTreeMap::new()),
+            publication_failures: Mutex::new(BTreeSet::new()),
         })
     }
 
     pub fn execute(&self) -> Result<RunReport, String> {
-        lease::with_heartbeat(&self.store, self.cas, &self.lease, || self.graph.run(self))
+        let report =
+            lease::with_heartbeat(&self.store, self.cas, &self.lease, || self.graph.run(self))?;
+        self.record_run_report(&report)?;
+        if !self
+            .publication_failures
+            .lock()
+            .expect("Task publication failures")
+            .is_empty()
+        {
+            self.store
+                .lock()
+                .expect("Task Store")
+                .wait_task(
+                    self.cas,
+                    &self.lease,
+                    review_core::task::TaskWaitingReasonV1::NeedsHuman,
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(report)
     }
 
     pub fn projection(&self) -> Result<TaskProjection, String> {
@@ -160,6 +195,29 @@ impl<'a> TaskRuntime<'a> {
             .finish_task(self.cas, &self.lease, result_id, self.authority)
             .map_err(|e| e.to_string())?;
         Ok(())
+    }
+
+    fn commit_domain_output(&self, id: &str) -> Result<(), String> {
+        let output: TaskOutputV1 =
+            serde_json::from_value(envelope(self.cas, id)?.payload).map_err(|e| e.to_string())?;
+        let input: TaskInvocationV1 =
+            serde_json::from_value(envelope(self.cas, &output.invocation_id)?.payload)
+                .map_err(|e| e.to_string())?;
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.host
+                .commit_domain_output(self.cas, &input, id, &output)
+        }))
+        .unwrap_or_else(|_| Err("Task domain publication panicked".into()));
+        let mut failures = self
+            .publication_failures
+            .lock()
+            .expect("Task publication failures");
+        if result.is_err() {
+            failures.insert(input.node);
+        } else {
+            failures.remove(&input.node);
+        }
+        result
     }
 
     fn typed_inputs(
@@ -536,14 +594,14 @@ impl Dispatch for TaskRuntime<'_> {
     }
 
     fn record_outputs(&self, node: &Node, outputs: &ArtifactMap) -> Result<(), String> {
-        if let Some((_, recorded)) = self
+        if let Some((id, recorded)) = self
             .projection()?
             .execution
             .as_ref()
             .and_then(|e| e.outputs.get(&node.id))
         {
             return if artifact_map(&recorded.outputs) == *outputs {
-                Ok(())
+                self.commit_domain_output(id)
             } else {
                 Err("Replayed Task outputs changed".into())
             };
@@ -564,6 +622,7 @@ impl Dispatch for TaskRuntime<'_> {
                 attempt.as_deref(),
                 self.authority,
             )
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        self.commit_domain_output(&id)
     }
 }

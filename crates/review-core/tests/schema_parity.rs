@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 93] = [
+const SCHEMAS: [&str; 95] = [
     "normalized-task-requirements-v1.json",
     "task-source-capture-v1.json",
     "issue-input-v1.json",
@@ -75,6 +75,8 @@ const SCHEMAS: [&str; 93] = [
     "task-delivery-record-v1.json",
     "task-invocation-v1.json",
     "task-output-v1.json",
+    "task-run-report-v1.json",
+    "task-diagnostic-v1.json",
     "task-execution-record-v1.json",
     "task-revision-v1.json",
     "task-result-v1.json",
@@ -2101,6 +2103,8 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
 
 #[path = "schema_parity/task_contracts.rs"]
 mod task_contracts;
+#[path = "schema_parity/task_reports.rs"]
+mod task_reports;
 
 #[test]
 fn task_lifecycle_events_have_closed_versioned_payloads() {

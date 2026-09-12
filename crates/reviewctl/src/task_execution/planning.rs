@@ -173,6 +173,14 @@ pub(super) fn resume(
         store
             .recover_task_attempts(&cas, &lease)
             .map_err(|e| e.to_string())?;
+        if state
+            .waiting_for_domain_publication(&cas)
+            .map_err(|e| e.to_string())?
+        {
+            store
+                .resume_task(&cas, &lease, &trusted)
+                .map_err(|e| e.to_string())?;
+        }
         if !state.admitted {
             store
                 .admit_task_plan(&cas, &lease, &trusted)
@@ -307,6 +315,9 @@ fn run_planner(
         let runtime = TaskRuntime::new(store, cas, lease.clone(), &trusted, &host)?;
         let _report = runtime.execute()?;
         let state = runtime.projection()?;
+        if matches!(state.phase, TaskPhaseV1::Waiting { .. }) {
+            return Ok(());
+        }
         if state.planning_proof(cas).is_err() {
             finish_incomplete(cas, &runtime, &state, "planning_incomplete", None)?;
             return Ok(());

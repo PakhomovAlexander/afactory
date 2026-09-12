@@ -1220,7 +1220,11 @@ fn execute(
 ) -> Result<(), String> {
     let runtime = TaskRuntime::new(store, cas, lease.clone(), authority, host)?;
     let report = runtime.execute()?;
-    let result = domain.assemble_result(cas, &runtime.projection()?, &report)?;
+    let projection = runtime.projection()?;
+    if matches!(projection.phase, TaskPhaseV1::Waiting { .. }) {
+        return Ok(());
+    }
+    let result = domain.assemble_result(cas, &projection, &report)?;
     let result_id = cas
         .put_artifact(
             TASK_RESULT_V1,
@@ -1334,6 +1338,14 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
         store
             .recover_task_attempts(&cas, &lease)
             .map_err(|e| e.to_string())?;
+        if projection
+            .waiting_for_domain_publication(&cas)
+            .map_err(|e| e.to_string())?
+        {
+            store
+                .resume_task(&cas, &lease, &trusted)
+                .map_err(|e| e.to_string())?;
+        }
         if !projection.admitted {
             store
                 .admit_task_plan(&cas, &lease, &trusted)
@@ -1464,6 +1476,23 @@ fn present(
     }
     value["history"] = json!(history);
     value["execution_records"] = json!(execution);
+    let mut reports = Vec::new();
+    for id in &state.run_reports {
+        use review_core::task::report::*;
+        let report: TaskRunReportV1 = artifact(cas, id, TASK_RUN_REPORT_V1)?;
+        report.validate()?;
+        let mut diagnostics = BTreeMap::new();
+        for node in &report.nodes {
+            if let TaskNodeOutcomeV1::Failed { diagnostic_id, .. } = &node.outcome {
+                let diagnostic: TaskDiagnosticV1 =
+                    artifact(cas, diagnostic_id, TASK_DIAGNOSTIC_V1)?;
+                diagnostic.validate()?;
+                diagnostics.insert(node.node.clone(), diagnostic);
+            }
+        }
+        reports.push(json!({"artifact_id":id,"report":report,"diagnostics":diagnostics}));
+    }
+    value["run_reports"] = json!(reports);
     if let Some(delivery) = delivery_view(cas, &state)? {
         value["delivery"] = delivery;
     }
@@ -1547,6 +1576,13 @@ fn present(
         if let Some(id) = state.plan_id {
             println!("Plan {id}");
         }
+        if let Some(last) = reports.last().and_then(|r| r["diagnostics"].as_object()) {
+            for (node, diagnostic) in last {
+                if let Some(message) = diagnostic["message"].as_str() {
+                    println!("{node}: {message}");
+                }
+            }
+        }
         if explain {
             println!(
                 "{}",
@@ -1566,7 +1602,15 @@ fn present(
             _ => 4,
         }));
     }
-    Ok(result.map_or(0, |r| match r.acceptance {
+    let pending = if state.phase
+        == (TaskPhaseV1::Waiting {
+            reason: TaskWaitingReasonV1::NeedsHuman,
+        }) {
+        4
+    } else {
+        0
+    };
+    Ok(result.map_or(pending, |r| match r.acceptance {
         TaskAcceptanceV1::Satisfied => 0,
         TaskAcceptanceV1::Unsatisfied => 3,
         TaskAcceptanceV1::Inconclusive => 4,

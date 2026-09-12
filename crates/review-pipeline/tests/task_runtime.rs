@@ -14,6 +14,9 @@ use review_store::store::task::execution::PreparedTaskAttempt;
 use review_store::{Cas, EventStore};
 use serde_json::json;
 
+#[path = "task_runtime/publication.rs"]
+mod publication;
+
 struct Fixture {
     _directory: tempfile::TempDir,
     cas: Cas,

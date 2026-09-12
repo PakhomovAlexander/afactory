@@ -24,6 +24,7 @@ mod tests;
 mod delivery;
 pub mod execution;
 pub mod planning;
+mod report;
 mod source;
 
 fn conflict(message: impl Into<String>) -> StoreError {
@@ -168,6 +169,7 @@ pub struct TaskProjection {
     pub execution: Option<execution::TaskExecutionProjection>,
     pub planning: Option<planning::TaskPlanningProof>,
     pub deliveries: Vec<(String, task::delivery::TaskDeliveryRecordV1)>,
+    pub run_reports: Vec<String>,
 }
 
 /// Created after replay/transition validation; the shared transaction then compares sequence
@@ -347,6 +349,9 @@ fn references(
         TaskChangeV1::ExecutionRecorded { record_id } => {
             refs.extend(execution::references(cas, record_id)?);
         }
+        TaskChangeV1::RunReported { report_id } => {
+            refs.extend(report::references(cas, report_id)?);
+        }
         TaskChangeV1::Opened { revision_id, .. }
         | TaskChangeV1::RevisionRecorded { revision_id } => {
             let value = revision(cas, revision_id)?;
@@ -514,6 +519,9 @@ impl TaskProjection {
                 }
                 TaskChangeV1::ExecutionRecorded { record_id } => {
                     self.apply_execution(cas, record_id, transition.now_unix_ms)?;
+                }
+                TaskChangeV1::RunReported { report_id } => {
+                    self.apply_run_report(cas, report_id)?;
                 }
                 TaskChangeV1::Opened { .. } | TaskChangeV1::LeaseTaken { .. } => {
                     return Err(conflict("Task already exists"));
@@ -707,6 +715,11 @@ impl TaskProjection {
                     }
                     let result: TaskResultV1 = payload(cas, result_id, task::TASK_RESULT_V1)?;
                     result.validate().map_err(conflict)?;
+                    if result.acceptance == TaskAcceptanceV1::Satisfied
+                        && matches!(self.phase, TaskPhaseV1::Waiting { .. })
+                    {
+                        return Err(conflict("A waiting Task cannot claim satisfied acceptance"));
+                    }
                     if let Some(execution) = &self.execution {
                         let expected_outputs: BTreeMap<_, _> = execution
                             .graph
@@ -971,6 +984,7 @@ impl EventStore {
                     execution: None,
                     planning: None,
                     deliveries: Vec::new(),
+                    run_reports: Vec::new(),
                 });
             } else {
                 return Err(conflict("Task transition precedes genesis"));

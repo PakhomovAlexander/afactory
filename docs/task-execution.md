@@ -41,6 +41,8 @@ supplement it. Claude calls use only `claude-personal`.
 - [ ] P14: compatibility, benchmark and consumer release.
 
 The owner authorized the complete plan in [three PRs](task-execution/pr-sequence.md).
+The [run diagnostics and recovery boundary](task-execution/run-reports.md) preserve failures
+before Attempt preparation and retry domain publication without invoking the Worker again.
 PR 2's current composition checkpoint is described in [local bindings](task-execution/local-bindings.md)
 and [embedded Review](task-execution/embedded-review.md).
 The [shared catalog walkthrough](task-execution/shared-catalogs.md) describes explicit Git sync

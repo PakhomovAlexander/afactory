@@ -187,3 +187,13 @@ the earlier compiled dependencies. Restoring the exact committed source and reru
 tests plus frozen reproduction passes. Combined gate coverage is 113 suites. No limits or
 assertions were relaxed. The same local heavy positive command fixture decreased from 35.14s
 to 25.89s; this is not a live-model benchmark and Linux CI confirmation remains pending.
+
+The next P06 boundary persists a typed report for every common scheduler run, including
+pre-Attempt context failures. A trusted idempotent domain-publication hook runs after Task
+settlement/publication and before downstream dispatch. Lost acknowledgement leaves durable
+diagnostics and a recoverable waiting Task; reopening reuses the same output and paid Attempt
+([ADR-0065](../adr/0065-persist-task-run-diagnostics-and-recover-domain-publication.md)).
+Schema parity, all 21 Task Store tests, all 70 pipeline tests (one opt-in probe ignored),
+17 representative CLI tests, formatting, Clippy and Markdown pass. The full gate is next.
+Legacy Review still requires the actual reservation/context and domain-selected-evidence
+adapters; these recovery primitives alone do not complete its cutover.

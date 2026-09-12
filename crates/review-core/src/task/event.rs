@@ -77,6 +77,9 @@ pub enum TaskChangeV1 {
     ExecutionRecorded {
         record_id: String,
     },
+    RunReported {
+        report_id: String,
+    },
     DeliveryRecorded {
         record_id: String,
     },
@@ -171,6 +174,7 @@ impl TaskTransitionV1 {
                 .chain(revocation_id.as_deref())
                 .collect(),
             TaskChangeV1::Finished { result_id } => vec![result_id],
+            TaskChangeV1::RunReported { report_id } => vec![report_id],
             TaskChangeV1::ExecutionRecorded { record_id }
             | TaskChangeV1::DeliveryRecorded { record_id } => vec![record_id],
             _ => Vec::new(),

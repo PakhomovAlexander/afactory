@@ -354,6 +354,23 @@
               }
             }
           ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "report_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "run_reported"
+            },
+            "report_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
         }
       ]
     }
