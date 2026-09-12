@@ -52,6 +52,18 @@ Before a planned Task resumes, the adapter checks the current account and recomp
 the recorded binding. Account, model, package or policy changes cannot silently alter an
 admitted plan. Finished Tasks remain inspectable without Provider calls.
 
+Native Task usage retains exact cumulative components and charge across multiple turns, even
+when their totals exceed u64. Output decoding, timeout, unavailable CAS or a refused final-message
+file cannot erase observed usage. The original Task budget still applies; an overrun never
+authorizes another call. Wider values use additive usage/provenance and Review presentation
+contracts, while representable values retain their previous encoding. See
+[ADR-0085](../adr/0085-retain-exact-native-task-usage-across-multiple-turns.md).
+
+Codex final-message capture reads a bounded regular file through the held private output
+directory. Symlinks, FIFOs and other nonregular files refuse without blocking or falling back
+to a different message; an absent or empty regular file retains the existing event-message
+fallback. These checks preserve observed usage on refusal.
+
 Deterministic native-CLI fixtures prove token-free planning, shared admission, account-change
 refusal, typed output and replay. One fixture reports 36 synthetic usage tokens across a probe
 and two reviewer calls in one Task; this is stub evidence, not a live-model measurement. Live

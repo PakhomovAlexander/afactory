@@ -35,6 +35,20 @@ downstream execution. The durable report retains the failure reason and the Task
 recovery. Resuming still checks the captured plan, developer approval, lease and remaining
 resources.
 
+For captured Review, an expired publication pause has a separate recording-only recovery route.
+It requires the same current authority and pins the outputs already published at the failed
+report's exact prefix. It can retain the missing canonical Reviewer fact, but the original
+deadline still prevents any new invocation, including pure work. An output published after the
+report cannot join that recovery scope. This route cannot mark the Task Satisfied; missing
+pipeline work remains Inconclusive. Pending Attempts, active Integration, a changed Round or
+expired/revoked plan approval refuse. A selected settlement that never reached Task output
+publication is outside this route.
+
+Inspection uses `af/task-inspection@8` when history contains this additive recording transition.
+Show and explain preserve the recorded events and remain read-only; explain retains the
+Inconclusive exit status. See
+[ADR-0086](../adr/0086-record-expired-review-publication-without-restarting-work.md).
+
 The report lists all nodes in compiled order. A completed entry must name its actual published
 Task output. A diagnostic retains at most 65,536 Unicode characters and marks truncation.
 Historical Tasks without reports remain readable; no reports are invented during inspection.

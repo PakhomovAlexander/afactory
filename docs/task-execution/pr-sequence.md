@@ -783,3 +783,46 @@ lease-safe output, one typed document from failed doctor and no free legacy fall
 state is lost. The release remains gated by requested specialist review, native multi-field and
 multi-turn exact usage, expired-Waiting factual recovery, remaining conformance and P14. The
 new conformance edits were excluded from this frozen tree and need their own validation.
+
+## Exact native usage and expired publication recovery: full gate
+
+Code `582ad8e970304ab07a6435fa8c48e2102c4a2692` matches frozen tree `d5943472f09e796e3843163c3a5aa3f1a56a3684` and verification commit
+`502afcea4d5ec8b01b2ab5ad62c9c5281c462375`. The full `make check` passed: **1,093 tests, zero failures, 15 ignored**
+across 129 suites, plus formatting, all-target Clippy, documentation tests and byte-identical
+synthetic fixture reproduction. No live models ran.
+
+Task-only native usage, sidecars and selected evidence retain exact u128 components and charge;
+narrow encodings and legacy adapters remain compatible. Actual native controls preserve usage
+through timeouts, unavailable CAS and bounded final-message refusal. Recording recovery binds
+current authority and the exact RunReported output prefix, retains already published Reviewer
+facts, performs no new paid or pure operation and remains Inconclusive when work is missing.
+Inspection@8 is additive and leaves Store bytes and both histories unchanged.
+
+The previous published head `b2ce782` failed Check in CI `34715552351` on Linux ETXTBSY during
+a fake container runtime's initial probe; container-probes passed. A bounded, reaped fixture
+writer removes writable executable descriptors from the multithreaded parent. This changes only
+test setup, keeping production behavior, original scripts, timeout assertions and cleanup rules.
+Local sandbox controls pass; the next Linux CI supplies platform confirmation.
+
+Native cancellation and malformed-usage protocol conformance are subsequent work, outside this
+frozen source. Specialist reviews, live Provider evidence, the full pilot and supported release
+migration remain pending. None is implied by this deterministic checkpoint.
+
+### Prior live native-conformance status, preserved
+
+The installed Review CLI checkpoint `fdffb1c` exactly matches frozen tree `910d188d` and passes
+**1,078 tests, zero failures, 15 ignored** across 127 suites, plus formatting, Clippy,
+documentation tests and byte-identical fixture reproduction. New Review and Provider doctor
+now use one common Task and its original resources. Real CLI tests preserve canonical outcomes,
+probe charges and reuse, two-Round accounting, source epochs, SIGKILL recovery, missing-state
+refusal and single-document failed doctor output. Output is prepared under lease renewal and
+emitted after successful release. Task-file and local Jira binding reads refuse blocking FIFOs.
+Published head `b2ce782` failed Check in CI `34715552351` when Linux refused a freshly
+written fake container executable with ETXTBSY; container-probes passed. A fixture-only setup
+correction is being verified without changing production deadlines. The next combined slice
+retains exact native multi-field/multi-turn usage, refuses nonregular Codex final-message files
+and recovers already published selected outputs from expired Waiting without new work. Focused
+checks pass; the full combined gate and fresh Linux CI remain pending. See
+[ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md),
+[exact native usage](adr/0085-retain-exact-native-task-usage-across-multiple-turns.md) and
+[recording recovery](adr/0086-record-expired-review-publication-without-restarting-work.md).

@@ -19,22 +19,25 @@ supplement it. Claude calls use only `claude-personal`.
 
 ## Progress
 
-The installed Review CLI checkpoint `fdffb1c` exactly matches frozen tree `910d188d` and passes
-**1,078 tests, zero failures, 15 ignored** across 127 suites, plus formatting, Clippy,
-documentation tests and byte-identical fixture reproduction. New Review and Provider doctor
-now use one common Task and its original resources. Real CLI tests preserve canonical outcomes,
-probe charges and reuse, two-Round accounting, source epochs, SIGKILL recovery, missing-state
-refusal and single-document failed doctor output. Output is prepared under lease renewal and
-emitted after successful release. Task-file and local Jira binding reads refuse blocking FIFOs.
-Published head `b2ce782` failed Check in CI `34715552351` when Linux refused a freshly
-written fake container executable with ETXTBSY; container-probes passed. A fixture-only setup
-correction is being verified without changing production deadlines. The next combined slice
-retains exact native multi-field/multi-turn usage, refuses nonregular Codex final-message files
-and recovers already published selected outputs from expired Waiting without new work. Focused
-checks pass; the full combined gate and fresh Linux CI remain pending. See
-[ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md),
-[exact native usage](adr/0085-retain-exact-native-task-usage-across-multiple-turns.md) and
+Native conformance checkpoint `582ad8e` exactly matches frozen tree `d5943472` and passes
+**1,093 tests, zero failures, 15 ignored** across 129 suites, plus formatting, Clippy,
+documentation tests and byte-identical fixture reproduction. Native multi-turn usage retains
+exact components and charges through failed output, CAS outage, timeout and reopened inspection.
+Codex final-message reads are bounded and refuse symlinks and nonregular files. Expired Review
+publication recovery pins the exact failed-report output prefix, executes no new work and cannot
+mark the Task Satisfied. Fresh inspection@8 preserves raw history and unchanged Store bytes.
+The fixture-only ETXTBSY correction also passes; Linux CI remains required for this checkpoint.
+See [exact native usage](adr/0085-retain-exact-native-task-usage-across-multiple-turns.md) and
 [recording recovery](adr/0086-record-expired-review-publication-without-restarting-work.md).
+
+The installed Review CLI checkpoint `fdffb1c` passed its full 1,078-test local gate. New Review
+and Provider doctor use one common Task, original resources and canonical outcomes; actual CLI
+checks cover shared probes, Round continuation, SIGKILL recovery and missing-state refusal.
+Published `b2ce782` failed CI Check during a fake-runtime executable setup; container-probes
+passed. The new checkpoint contains the fixture-only correction without changing deadlines.
+Native cancellation controls and malformed/missing usage conformance remain under implementation
+or audit, alongside live Provider and P14 evidence. See
+[ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md).
 
 The common Task Broker checkpoint `1a9ab83` matches frozen tree `34fc57e` and passes the
 full local gate: **978 tests, zero failures, 15 ignored**, formatting, Clippy, documentation
