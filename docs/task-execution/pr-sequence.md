@@ -577,7 +577,7 @@ Focused evidence: 13 Store Broker tests pass, including four new Provider author
 passes after correcting a test's mistaken 22-byte count to the actual 23-byte request. The
 new real connector test adds success, readiness refusal, missing local probe configuration
 and paid overrun cases. It retains exact Provider/Worker policies, credentials, deadlines,
-contexts, original reservations and late usage on reopen, with no repeat connector calls.
+contexts, original reservations and exact usage on reopen, with no repeat connector calls.
 A lower native usage value cannot refund the Broker charge. The initial fixture Gate correctly
 blocked because `/bin/true` is absent on macOS; it now uses the established `/bin/sh -c 'exit 0'`
 fixture, with the same required Gate and no product change. Compile/setup failure logs remain
@@ -595,3 +595,42 @@ captured probe policy and is being completed before legacy CLI cutover. See
 [Review compatibility](task-execution/review-compatibility.md),
 [ADR-0079](adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md) and
 [ADR-0080](adr/0080-bind-broker-evidence-to-the-original-task-attempt.md).
+
+## Common Task Broker checkpoint verification
+
+`1a9ab83fd4e76382e0eb637ad074ab101f78ed30` has the same tree
+`83b89387d7da963e70ce2d8c2356ca3543c6b55c` as isolated verification commit
+`34fc57e72483cb75a65139dac78e28e96762a690`. The complete `make check` passes 978 tests,
+zero failures, 15 ignored across 123 suites, formatting, all-target Clippy, documentation tests
+and byte-identical fixture reproduction. The final real-process CLI schema target passes four
+cases, including reopened Broker-bearing show/explain/list and unchanged ordinary inspection.
+Subsequent edits in this documentation checkpoint only record that result; no product code
+changed after its full gate. Exact-head CI follows the single batched push.
+
+Owned-child Scatter work now builds on this checkpoint. It keeps the captured parent graph
+fixed, registers all child inputs before reservation, uses the same concurrency and resource
+accounts, and records failure/Missing evidence without permitting new work after exhaustion.
+No requested external PR review, live-model pilot or release has run.
+
+### Prior live progress, preserved
+
+Published exact per-Attempt checkpoint `1aa111e` passes the full local gate (**939 tests**,
+zero failures, 15 ignored), byte-identical frozen reproduction and CI `34698337013`.
+The next local slice binds exact Broker operations to original Task Attempts and retains
+late paid receipts, panic/CAS-outage usage and typed inspection. Separate captured Provider
+probe authority now passes compiler, Store, domain and end-to-end runtime checks: readiness
+and business work use distinct policies and Attempts, and failed readiness blocks work.
+The current full gate is still required before publishing this slice. See
+[Review compatibility](task-execution/review-compatibility.md),
+[ADR-0079](adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md) and
+[ADR-0080](adr/0080-bind-broker-evidence-to-the-original-task-attempt.md).
+
+### Prior live workstream, preserved
+
+Published exact per-Attempt checkpoint `1aa111e` passes the complete local gate (**939 tests**,
+no failures, 15 ignored), including frozen reproduction. CI `34698337013` is green,
+including container probes; prior `1cd3008` passes CI `34695645865`. The local Broker bridge retains
+late paid receipts and exact usage through panic/CAS failure in the same common Attempt;
+focused Store, Runner, Review and runtime checks pass. Its independently captured Provider
+probe authority passes compiler, Store, domain and real runtime connector checks. The slice
+awaits its full gate before publication; Scatter, heavy continuation and legacy CLI cutover remain.

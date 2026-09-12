@@ -19,15 +19,15 @@ supplement it. Claude calls use only `claude-personal`.
 
 ## Progress
 
-Published exact per-Attempt checkpoint `1aa111e` passes the full local gate (**939 tests**,
-zero failures, 15 ignored), byte-identical frozen reproduction and CI `34698337013`.
-The next local slice binds exact Broker operations to original Task Attempts and retains
-late paid receipts, panic/CAS-outage usage and typed inspection. Separate captured Provider
-probe authority now passes compiler, Store, domain and end-to-end runtime checks: readiness
-and business work use distinct policies and Attempts, and failed readiness blocks work.
-The current full gate is still required before publishing this slice. See
-[Review compatibility](task-execution/review-compatibility.md),
-[ADR-0079](adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md) and
+The common Task Broker checkpoint `1a9ab83` matches frozen tree `34fc57e` and passes the
+full local gate: **978 tests, zero failures, 15 ignored**, formatting, Clippy, documentation
+tests and byte-identical fixture reproduction. Provider readiness and business work use
+separate captured policies, credentials and original Attempts. Failed readiness blocks work;
+late receipts, panic and CAS failure preserve exact paid usage in the same Task ledger.
+CLI show/explain/list verify typed Broker evidence and cumulative charges after reopen.
+The next slice adds owned Scatter children under the same scheduler and ledger; heavy
+continuation and legacy CLI cutover remain. See
+[Review compatibility](task-execution/review-compatibility.md) and
 [ADR-0080](adr/0080-bind-broker-evidence-to-the-original-task-attempt.md).
 
 The earlier shared Review operations and Round-fencing checkpoint passes the full gate at `5b1461e`
