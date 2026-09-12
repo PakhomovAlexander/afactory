@@ -82,6 +82,7 @@ fn context(loaded: &Loaded) -> ReviewCompileContext {
         })
         .collect();
     ReviewCompileContext {
+        finding_identity_policy: review_core::LEGACY_FINDING_IDENTITY_POLICY.into(),
         inputs: BTreeMap::from([
             ("head".into(), input(contract::SOURCE_SNAPSHOT_V1)),
             ("round".into(), input(REVIEW_ROUND_V1)),
@@ -230,6 +231,32 @@ fn v1_opaque_generation_is_explicitly_adapted_but_v2_stays_strict() {
         .replace("inputs = [{ name = \"prior_findings\", type = \"review.kernel/PriorFindings@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }]", "inputs = [\"prior_findings\"]");
     let loaded = crate::Definition::from_toml(&v1).unwrap().load().unwrap();
     let compilation = compile_legacy_review(&loaded, context(&loaded)).unwrap();
+    assert_eq!(
+        compilation.nodes["ledger"].outputs["o0"].codec,
+        ReviewArtifactCodec::Flat {
+            artifact_type: contract::OPAQUE_V1.into()
+        }
+    );
+    let mut canonical = context(&loaded);
+    canonical.finding_identity_policy = review_core::CANONICAL_FINDING_IDENTITY_POLICY.into();
+    let canonical = compile_legacy_review(&loaded, canonical).unwrap();
+    assert_eq!(
+        canonical.nodes["ledger"].outputs["o0"].codec,
+        ReviewArtifactCodec::Envelope {
+            artifact_type: contract::FINDING_SET_V1.into()
+        }
+    );
+    assert_eq!(
+        canonical.contract.outputs["findings"].artifact_type,
+        contract::FINDING_SET_V1
+    );
+    assert_eq!(
+        canonical.nodes["generation"],
+        compilation.nodes["generation"]
+    );
+    let mut unknown = context(&loaded);
+    unknown.finding_identity_policy = "inferred-from-result".into();
+    assert!(compile_legacy_review(&loaded, unknown).is_err());
     assert_eq!(
         compilation.nodes["generation"].outputs["o0"].codec,
         ReviewArtifactCodec::Flat {
@@ -559,4 +586,33 @@ fn review_shards_share_fanout_without_acquiring_the_static_parent_node_cap() {
     assert!(fanout.contains(&format!("{scatter}.shard1")));
     assert!(!fanout.contains(&compilation.nodes["closeout"].task_node));
     assert!(!fanout.contains(&format!("{scatter}suffix.shard0")));
+}
+
+#[test]
+fn scatter_result_contract_tracks_inherited_history_contract() {
+    let fixture = include_str!("../../../tests/fixtures/dynamic-v5.toml");
+    let history = "  { name = \"prior_findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = true, snapshot_affinity = \"any\" },\n";
+    let edge = "[[edges]]\nfrom = { node = \"generation\", port = \"findings\" }\nto = { node = \"scatter\", port = \"prior_findings\" }\n";
+    for (definition, expected) in [
+        (fixture.to_owned(), contract::REVIEWER_RESULT_V2),
+        (
+            fixture.replacen(history, "", 1).replace(edge, ""),
+            contract::REVIEWER_RESULT_V1,
+        ),
+    ] {
+        let loaded = crate::Definition::from_toml(&definition)
+            .unwrap()
+            .load()
+            .unwrap();
+        let compilation = compile_legacy_review(&loaded, context(&loaded)).unwrap();
+        let node = &compilation.graph.nodes[&compilation.nodes["scatter"].task_node];
+        let CompiledOperator::ReviewDomain {
+            operation: ReviewOperation::Scatter { slot },
+            ..
+        } = &node.operator
+        else {
+            panic!("expected Scatter")
+        };
+        assert_eq!(compilation.graph.slots[slot].output_type, expected);
+    }
 }

@@ -20,6 +20,8 @@ mod publication;
 mod reservation;
 #[path = "task_runtime/retry.rs"]
 mod retry;
+#[path = "task_runtime/usage_recovery.rs"]
+mod usage_recovery;
 #[path = "task_runtime/wide_usage.rs"]
 mod wide_usage;
 

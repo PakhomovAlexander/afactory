@@ -27,6 +27,14 @@ pub struct CapturedReviewCompilation {
     pub compilation: LegacyReviewCompilation,
 }
 
+/// A recorded Task's root inputs and the host-selected public contract. These declarations
+/// are checked against the actual captured Round before compiling the graph.
+pub struct ReviewCompilationRequest {
+    pub limits: TaskLimitsV1,
+    pub inputs: BTreeMap<String, ArtifactInputV1>,
+    pub outputs: BTreeMap<String, review_graph::task::Address>,
+}
+
 impl CapturedLegacyReviewRound {
     pub fn load(
         cas: &Cas,
@@ -41,6 +49,18 @@ impl CapturedLegacyReviewRound {
 
     pub fn authority(&self) -> &RoundAuthority {
         &self.authority
+    }
+
+    /// Historical reconstruction only; execution still checks the current Store Round fence.
+    pub fn load_recorded(
+        cas: &Cas,
+        store: &EventStore,
+        campaign: &str,
+        round_event: &str,
+    ) -> Result<Self, String> {
+        Ok(Self {
+            authority: RoundAuthority::load_recorded(store, cas, campaign, round_event)?,
+        })
     }
 
     pub fn binding(&self) -> LegacyReviewRoundV1 {
@@ -79,6 +99,28 @@ impl CapturedLegacyReviewRound {
         limits: TaskLimitsV1,
         outputs: BTreeMap<String, review_graph::task::Address>,
     ) -> Result<CapturedReviewCompilation, String> {
+        self.compile_existing(
+            cas,
+            mode,
+            resources,
+            ReviewCompilationRequest {
+                limits,
+                inputs: self.capture_inputs(cas)?,
+                outputs,
+            },
+        )
+    }
+
+    /// Read-only recompilation for plan admission and resume. In particular, missing recorded
+    /// wrappers must be refused before capture could recreate their content-addressed bytes.
+    pub fn compile_existing(
+        &self,
+        cas: &Cas,
+        mode: review_config::captured_review::ReviewMode,
+        resources: &ReviewResourcePolicy,
+        request: ReviewCompilationRequest,
+    ) -> Result<CapturedReviewCompilation, String> {
+        self.validate_inputs(cas, &request.inputs)?;
         let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
             cas.get_json(&self.authority.campaign_manifest_id)
                 .map_err(|error| error.to_string())?,
@@ -86,7 +128,8 @@ impl CapturedLegacyReviewRound {
         .map_err(|error| error.to_string())?;
         let loaded = review_config::captured_review::load_captured_review(cas, &manifest, mode)?;
         let mut context = ReviewCompileContext {
-            inputs: self.capture_inputs(cas)?,
+            finding_identity_policy: manifest.finding_identity_policy.clone(),
+            inputs: request.inputs,
             head_input: "head".into(),
             round_input: "round".into(),
             workers: loaded
@@ -114,8 +157,8 @@ impl CapturedLegacyReviewRound {
                     )
                 })
                 .collect(),
-            outputs,
-            limits: limits.clone(),
+            outputs: request.outputs,
+            limits: request.limits.clone(),
             max_parallel: 4,
             gate_wall_ms: 1,
         };
@@ -128,11 +171,62 @@ impl CapturedLegacyReviewRound {
                 &compilation,
                 self.authority.round,
             )?;
-        compilation.graph.budget(limits)?;
+        compilation.graph.budget(request.limits)?;
         Ok(CapturedReviewCompilation {
             loaded,
             compilation,
         })
+    }
+
+    fn validate_inputs(
+        &self,
+        cas: &Cas,
+        inputs: &BTreeMap<String, ArtifactInputV1>,
+    ) -> Result<(), String> {
+        if inputs.len() != 2 || !inputs.contains_key("head") || !inputs.contains_key("round") {
+            return Err("Captured Review requires exactly its head and Round inputs".into());
+        }
+        let binding = self.binding();
+        for (name, ty) in [
+            ("head", contract::SOURCE_SNAPSHOT_V1),
+            ("round", LEGACY_REVIEW_ROUND_V1),
+        ] {
+            let input = &inputs[name];
+            input.validate()?;
+            if input.artifact_type != ty
+                || input.cardinality != PortCardinality::One
+                || input.artifact_ids.len() != 1
+                || input.snapshot_id.as_deref() != Some(&binding.head_snapshot_id)
+            {
+                return Err("Captured Review input differs from its exact Round contract".into());
+            }
+            let wrapper = cas
+                .get_artifact(&input.artifact_ids[0])
+                .map_err(|error| error.to_string())?;
+            if wrapper.artifact_type != ty
+                || wrapper.producer != self.producer(None, name)
+                || wrapper.subject_snapshot_id != input.snapshot_id
+            {
+                return Err(
+                    "Captured Review input has different type, producer or Snapshot".into(),
+                );
+            }
+            if name == "head" {
+                let raw = ReviewArtifactCodec::Flat {
+                    artifact_type: ty.into(),
+                }
+                .restore(cas, &wrapper.artifact_id)?;
+                if raw != binding.head_snapshot_id {
+                    return Err("Captured Review input names another head".into());
+                }
+            } else if wrapper.payload
+                != serde_json::to_value(&binding).map_err(|error| error.to_string())?
+                || wrapper.input_artifacts != binding.artifact_refs()
+            {
+                return Err("Captured Review input names another Round authority".into());
+            }
+        }
+        Ok(())
     }
 
     fn producer(&self, node: Option<String>, operation: &str) -> Producer {

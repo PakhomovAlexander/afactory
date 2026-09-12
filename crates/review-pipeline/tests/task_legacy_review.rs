@@ -81,6 +81,7 @@ fn actual_round_capture_and_generation_reopen_without_a_second_execution_log() {
     let compilation = compile_legacy_review(
         &loaded,
         ReviewCompileContext {
+            finding_identity_policy: captured.authority().finding_identity_policy().into(),
             inputs: inputs.clone(),
             head_input: "head".into(),
             round_input: "round".into(),

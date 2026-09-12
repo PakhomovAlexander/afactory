@@ -121,3 +121,10 @@ This captured compilation remains preparation data. Effective Worker invocation/
 bindings, exact policy and dependency capture, acceptance coverage and TaskAuthority admission
 must be attached before it becomes an executable plan. The operation host, canonical replay,
 common-owned Scatter and heavy-Round handoff remain part of the entry-point cutover above.
+
+Recorded-plan recompilation reads existing root wrappers and refuses their absence, different
+producer, changed Round or changed head; it does not recreate missing CAS objects. Historical
+Round reconstruction is separate from the active-epoch check used for dispatch. Opaque v1 Ledger
+ports use the captured finding identity policy to select either the canonical Finding Set
+envelope or the frozen legacy flat encoding. Scatter result version follows its inherited
+Finding Set input contract, matching the original executor.

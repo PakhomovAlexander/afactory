@@ -343,12 +343,6 @@ impl RoundAuthority {
         run_id: &str,
         round_event_id: &str,
     ) -> Result<Self, String> {
-        let opened = store
-            .campaign_opened(run_id)
-            .map_err(|error| error.to_string())?
-            .ok_or("Round authority has no CampaignOpened@1")?;
-        let opened: CampaignOpenedPayloadV1 =
-            serde_json::from_value(opened.payload).map_err(|error| error.to_string())?;
         let round = store
             .latest_round_started(run_id)
             .map_err(|error| error.to_string())?
@@ -356,6 +350,41 @@ impl RoundAuthority {
         if round.event_id != round_event_id {
             return Err("requested Round is not the active Round epoch".into());
         }
+        Self::from_recorded(store, cas, run_id, round)
+    }
+
+    /// Reconstruct an exact historical Round for read-only plan validation and inspection.
+    /// This does not grant dispatch authority: active effects still require the Store's
+    /// current Round fence, and `load` retains its latest-epoch check.
+    pub fn load_recorded(
+        store: &EventStore,
+        cas: &Cas,
+        run_id: &str,
+        round_event_id: &str,
+    ) -> Result<Self, String> {
+        let round = store
+            .replay(run_id)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|event| {
+                event.event_id == round_event_id && event.event_type == EventType::RoundStartedV1
+            })
+            .ok_or("Recorded Review Round does not exist in this Campaign")?;
+        Self::from_recorded(store, cas, run_id, round)
+    }
+
+    fn from_recorded(
+        store: &EventStore,
+        cas: &Cas,
+        run_id: &str,
+        round: review_core::RunEvent,
+    ) -> Result<Self, String> {
+        let opened = store
+            .campaign_opened(run_id)
+            .map_err(|error| error.to_string())?
+            .ok_or("Round authority has no CampaignOpened@1")?;
+        let opened: CampaignOpenedPayloadV1 =
+            serde_json::from_value(opened.payload).map_err(|error| error.to_string())?;
         let payload: RoundStartedPayloadV1 =
             serde_json::from_value(round.payload.clone()).map_err(|error| error.to_string())?;
         if payload.campaign_manifest_id != opened.campaign_manifest_id {

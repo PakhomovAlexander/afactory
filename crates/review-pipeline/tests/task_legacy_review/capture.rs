@@ -200,3 +200,156 @@ fn real_captured_round_compiles_bound_resources_and_reopens_without_execution() 
     );
     assert_eq!(store.len("review").unwrap(), 2);
 }
+
+#[test]
+fn recorded_input_recompilation_is_read_only_and_refuses_missing_or_forged_wrappers() {
+    use review_pipeline::task::legacy_review::ReviewCompilationRequest;
+    let directory = tempfile::tempdir().unwrap();
+    let cas_root = directory.path().join("cas");
+    let cas = Cas::open(&cas_root).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let round_event = open_round(&cas, &mut store);
+    let round = CapturedLegacyReviewRound::load(&cas, &store, "review", &round_event).unwrap();
+    let resources = ReviewResourcePolicy {
+        uncapped_attempt_tokens: 1,
+    };
+    let captured = round
+        .compile(&cas, ReviewMode::Light, &resources, limits(), outputs())
+        .unwrap();
+    let inputs = captured.compilation.graph.inputs.clone();
+    let compile = |inputs| {
+        round.compile_existing(
+            &cas,
+            ReviewMode::Light,
+            &resources,
+            ReviewCompilationRequest {
+                limits: limits(),
+                inputs,
+                outputs: outputs(),
+            },
+        )
+    };
+    assert_eq!(
+        compile(inputs.clone()).unwrap().compilation,
+        captured.compilation
+    );
+    let mut changed = inputs.clone();
+    changed.insert("extra".into(), inputs["head"].clone());
+    assert!(compile(changed).is_err());
+    let original = cas.get_artifact(&inputs["round"].artifact_ids[0]).unwrap();
+    for forged_payload in [false, true] {
+        let mut wrapper = original.clone();
+        if forged_payload {
+            wrapper.payload["epoch"] = 2.into();
+        } else {
+            wrapper.producer = review_core::Producer::KernelOperation {
+                run_id: "another-campaign".into(),
+                node_id: None,
+                operation_id: "capture@1".into(),
+            };
+        }
+        let id = cas
+            .put_artifact(
+                wrapper.artifact_type,
+                wrapper.producer,
+                wrapper.input_artifacts,
+                wrapper.subject_snapshot_id,
+                wrapper.payload,
+            )
+            .unwrap()
+            .0;
+        let mut changed = inputs.clone();
+        changed.get_mut("round").unwrap().artifact_ids = vec![id];
+        assert!(compile(changed).is_err());
+    }
+    for name in ["head", "round"] {
+        let id = &inputs[name].artifact_ids[0];
+        let bytes = cas.get(id).unwrap();
+        let hex = id.strip_prefix("sha256:").unwrap();
+        let path = cas_root.join("objects").join(&hex[..2]).join(&hex[2..]);
+        std::fs::remove_file(&path).unwrap();
+        assert!(compile(inputs.clone()).is_err());
+        assert!(
+            !path.exists(),
+            "recompilation cannot heal missing recorded input bytes"
+        );
+        std::fs::write(path, bytes).unwrap();
+    }
+    assert_eq!(compile(inputs).unwrap().compilation, captured.compilation);
+    assert_eq!(store.len("review").unwrap(), 2);
+}
+
+#[test]
+fn historical_round_recompilation_does_not_grant_current_epoch_authority() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let first = open_round(&cas, &mut store);
+    let round = CapturedLegacyReviewRound::load(&cas, &store, "review", &first).unwrap();
+    let resources = ReviewResourcePolicy {
+        uncapped_attempt_tokens: 1,
+    };
+    let compiled = round
+        .compile(&cas, ReviewMode::Light, &resources, limits(), outputs())
+        .unwrap();
+    let old = store.latest_round_started("review").unwrap().unwrap();
+    let mut next_payload = old.payload.clone();
+    next_payload["epoch"] = json!(2);
+    let binding = round.binding();
+    let next = store
+        .append_batch(
+            "review",
+            &cas,
+            &[
+                NewEvent::new(
+                    EventType::RoundInputSupersededV1,
+                    serde_json::to_value(review_core::RoundInputSupersededPayloadV1 {
+                        round: binding.round,
+                        old_epoch: binding.epoch,
+                        new_epoch: binding.epoch + 1,
+                        campaign_manifest_id: binding.campaign_manifest_id,
+                        old_subject_id: binding.subject_id.clone(),
+                        replacement_subject_id: binding.subject_id,
+                    })
+                    .unwrap(),
+                )
+                .caused_by(first.clone()),
+                NewEvent::new(EventType::RoundStartedV1, next_payload)
+                    .caused_by(first.clone())
+                    .referencing(old.artifact_refs),
+            ],
+        )
+        .unwrap()
+        .pop()
+        .unwrap();
+    let before = store.len("review").unwrap();
+    assert!(CapturedLegacyReviewRound::load(&cas, &store, "review", &first).is_err());
+    assert!(round.check_current(&cas, &store).is_err());
+    let historical =
+        CapturedLegacyReviewRound::load_recorded(&cas, &store, "review", &first).unwrap();
+    assert_eq!(historical.binding(), round.binding());
+    assert_eq!(
+        historical
+            .compile_existing(
+                &cas,
+                ReviewMode::Light,
+                &resources,
+                review_pipeline::task::legacy_review::ReviewCompilationRequest {
+                    limits: limits(),
+                    inputs: compiled.compilation.graph.inputs.clone(),
+                    outputs: outputs(),
+                }
+            )
+            .unwrap()
+            .compilation,
+        compiled.compilation
+    );
+    assert!(historical.check_current(&cas, &store).is_err());
+    assert!(CapturedLegacyReviewRound::load(&cas, &store, "review", &next.event_id).is_ok());
+    assert!(CapturedLegacyReviewRound::load_recorded(&cas, &store, "different", &first).is_err());
+    let opened = store.campaign_opened("review").unwrap().unwrap();
+    assert!(
+        CapturedLegacyReviewRound::load_recorded(&cas, &store, "review", &opened.event_id).is_err()
+    );
+    assert_eq!(store.len("review").unwrap(), before);
+}

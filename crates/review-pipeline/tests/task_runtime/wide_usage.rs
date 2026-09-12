@@ -1,5 +1,43 @@
 use super::*;
 
+pub(super) fn configured_fixture() -> Fixture {
+    let mut f = Fixture::with_model("unused", true);
+    f.task.limits.verification.tokens = 1100;
+    f.task.limits.verification.attempts = 2;
+    f.task.limits.verification.wall_ms = 6000;
+    f.revision_id = f
+        .cas
+        .put_artifact(
+            TASK_REVISION_V1,
+            producer(),
+            vec![],
+            None,
+            serde_json::to_value(&f.task).unwrap(),
+        )
+        .unwrap()
+        .0;
+    f.compiler = f.compiler.with_provider_admission(OperatorAttemptCost {
+        tokens: 100,
+        wall_ms: 1000,
+    });
+    (f.plan, f.graph) = f
+        .compiler
+        .compile(&f.cas, &f.revision_id, "builtin/document")
+        .unwrap();
+    f.plan_id = f
+        .cas
+        .put_artifact(
+            EXECUTION_PLAN_V1,
+            producer(),
+            vec![],
+            None,
+            serde_json::to_value(&f.plan).unwrap(),
+        )
+        .unwrap()
+        .0;
+    f
+}
+
 #[test]
 fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime() {
     use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
@@ -55,40 +93,7 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
             calls: AtomicUsize::new(0),
             overrun_at,
         };
-        let mut f = Fixture::with_model("unused", true);
-        f.task.limits.verification.tokens = 1100;
-        f.task.limits.verification.attempts = 2;
-        f.task.limits.verification.wall_ms = 6000;
-        f.revision_id = f
-            .cas
-            .put_artifact(
-                TASK_REVISION_V1,
-                producer(),
-                vec![],
-                None,
-                serde_json::to_value(&f.task).unwrap(),
-            )
-            .unwrap()
-            .0;
-        f.compiler = f.compiler.with_provider_admission(OperatorAttemptCost {
-            tokens: 100,
-            wall_ms: 1000,
-        });
-        (f.plan, f.graph) = f
-            .compiler
-            .compile(&f.cas, &f.revision_id, "builtin/document")
-            .unwrap();
-        f.plan_id = f
-            .cas
-            .put_artifact(
-                EXECUTION_PLAN_V1,
-                producer(),
-                vec![],
-                None,
-                serde_json::to_value(&f.plan).unwrap(),
-            )
-            .unwrap()
-            .0;
+        let mut f = configured_fixture();
         assert_eq!(
             f.graph.allowances["root.providers.admit0"].verification_attempts,
             1

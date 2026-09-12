@@ -38,6 +38,8 @@ pub struct ReviewWorker {
 }
 
 pub struct ReviewCompileContext {
+    /// Captured Campaign policy, independent of the Pipeline Definition version.
+    pub finding_identity_policy: String,
     pub inputs: BTreeMap<String, ArtifactInputV1>,
     pub head_input: String,
     pub round_input: String,
@@ -130,6 +132,7 @@ fn port(artifact_type: &str, cardinality: PortCardinality, optional: bool) -> Pi
 
 fn output_codec(
     version: u32,
+    canonical_identity: bool,
     kind: NodeKind,
     output: &PortContract,
 ) -> Result<ReviewArtifactCodec, String> {
@@ -169,6 +172,9 @@ fn output_codec(
         NodeKind::Gather if opaque || ty == contract::REPORT_SET_V1 => {
             Ok(flat(contract::REPORT_SET_V1))
         }
+        NodeKind::Ledger if opaque && canonical_identity => Ok(Envelope {
+            artifact_type: contract::FINDING_SET_V1.into(),
+        }),
         NodeKind::Ledger if opaque => Ok(flat(contract::OPAQUE_V1)),
         NodeKind::Ledger if matches!(ty, contract::FINDING_SET_V1 | contract::DEMAND_SET_V1) => {
             Ok(enveloped())
@@ -190,6 +196,11 @@ pub fn compile_legacy_review(
     context: ReviewCompileContext,
 ) -> Result<LegacyReviewCompilation, String> {
     context.limits.validate()?;
+    let canonical_identity = match context.finding_identity_policy.as_str() {
+        review_core::CANONICAL_FINDING_IDENTITY_POLICY => true,
+        review_core::LEGACY_FINDING_IDENTITY_POLICY => false,
+        _ => return Err("Unsupported captured Review finding identity policy".into()),
+    };
     if context.max_parallel == 0 || context.gate_wall_ms == 0 {
         return Err("Review requires nonzero concurrency and Gate wall bounds".into());
     }
@@ -284,7 +295,7 @@ pub fn compile_legacy_review(
         let mut outputs = BTreeMap::new();
         for (index, original) in node.outputs.iter().enumerate() {
             let output_name = format!("o{index}");
-            let codec = output_codec(loaded.version(), node.kind, original)?;
+            let codec = output_codec(loaded.version(), canonical_identity, node.kind, original)?;
             let mut contract = port(
                 codec.artifact_type(),
                 original.cardinality,
@@ -330,8 +341,14 @@ pub fn compile_legacy_review(
                 // not grant a second scheduler or an independent allowance to the host.
                 let output_type = if node.kind == NodeKind::Reviewer {
                     outputs["o0"].artifact_type.clone()
-                } else {
+                } else if node
+                    .inputs
+                    .iter()
+                    .any(|port| port.artifact_type == contract::FINDING_SET_V1)
+                {
                     contract::REVIEWER_RESULT_V2.into()
+                } else {
+                    contract::REVIEWER_RESULT_V1.into()
                 };
                 let spec = WorkerSlotV1 {
                     worker: worker.package.clone(),

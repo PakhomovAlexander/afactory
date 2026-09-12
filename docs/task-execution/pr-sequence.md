@@ -379,3 +379,21 @@ Review integration tests pass, and workspace Clippy passes. The unchanged interr
 passes in 42.30 seconds locally; a prior sampled run was 46.48 seconds and the typed-read-only
 run was 44.39 seconds. These single local measurements do not establish Linux CI or pilot
 performance; the complete gate and exact-head CI must still be recorded.
+
+The captured-resource and typed-read checkpoint `7c36468` (identical frozen tree `de86bdf`)
+passes the full local gate: **885 tests, zero failures, 15 ignored** across 119 suites,
+formatting, Clippy, documentation tests and byte-identical fixture reproduction. Exact-head
+CI run `34687039677` is in progress; the preceding Linux deadline failure remains recorded.
+
+Read-only captured-input recompilation now refuses missing or forged wrappers without repairing
+CAS. Historical reconstruction checks the exact recorded Round while current dispatch still
+requires the active epoch. The compiler derives opaque Ledger encoding from captured finding
+identity and Scatter result version from inherited Finding Set contracts. Thirteen configuration
+regressions and four real captured-Round integration tests pass; workspace Clippy passes.
+
+A real fixture CAS outage at either Provider or Worker return preserves full reported usage in
+SQLite before canonical publication. After real lease expiry, reopening settles the exact
+charge once (including `u64::MAX + 7` aggregate usage), preserves the original Task allowance,
+and permits no further model invocation or successful Worker output. All twelve common-runtime
+tests pass. This does not claim recovery of raw output bytes that never reached CAS. No PR
+specialist has run; isolated Claude subscription authentication remains unresolved.
