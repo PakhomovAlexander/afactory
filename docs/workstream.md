@@ -7,7 +7,9 @@ formatting, Clippy, documentation tests and frozen reproduction. Multiple Review
 one Task, its original budget, late paid usage and exact handoff history. Fresh CLI inspection
 can explain an earlier recorded plan without changing either log. Owned slices and separately
 captured Provider probes already use the common scheduler and ledger. Automatic Integration
-and legacy CLI cutover remain in progress.
+passes the full local gate at `6fe82f0` (frozen `d2df0ec`, tree `a53e534f`): **1,044 tests,
+zero failures, 15 ignored**, formatting, Clippy, documentation and byte-identical fixtures.
+Its CI and legacy CLI cutover remain in progress.
 The debug-profile correction `97bb1c7` passes the same full gate. It addresses the earlier
 CI recovery deadline failure without changing Task limits; published `2cae97c` passes both
 checks in CI `34708574515`.

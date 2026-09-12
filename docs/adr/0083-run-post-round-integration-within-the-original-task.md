@@ -76,3 +76,8 @@ verified acceptance. Integration never creates or updates a developer branch or 
 
 Implementation verification is in progress. This decision does not itself claim completion of
 the legacy CLI cutover, requested specialist reviews, live pilot or release.
+
+Frozen implementation tree `a53e534fe1c7d3082a259606639a35240007aa9d` passes the full local gate
+at `d2df0ec`: 1,044 tests, zero failures, 15 ignored, formatting, Clippy, documentation tests
+and byte-identical fixtures. Product commit `6fe82f0` has that exact tree. The legacy CLI and
+specialist review remain separate unfinished work.

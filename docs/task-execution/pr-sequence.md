@@ -720,3 +720,23 @@ can inspect all candidate files, with retrieval and output charged to original b
 final candidate requires regenerated exact focus and pinned input renders. Configured Provider
 readiness from token-free planning is not authentication or capability evidence; the requested
 specialist Round remains pending a usable personal login.
+
+The post-Round Integration checkpoint `6fe82f09bd3483d1d535cdbb4138a2ea8c2aeef4` matches
+frozen verification `d2df0ecfc6c876d986ae5a0eef0000b75a8da5fa`, tree
+`a53e534fe1c7d3082a259606639a35240007aa9d`. The full gate passes **1,044 tests, zero
+failures, 15 ignored**, across 125 suites, including formatting, Clippy, documentation tests
+and byte-identical fixture reproduction. A real selected Proposal set runs the full captured
+check sequence in one writable clone and one original common Task Attempt, commits atomically,
+and completes the next full Review of the derived head under Handoff@2 and unchanged limits.
+Empty and Conflict selections consume no Attempt. Tests retain original reports and raw checks,
+refuse forged attestations/old writers, prove two-log rollback with a real SQL ABORT trigger,
+and prevent promotion after late usage beyond u64. A check that never starts remains incomplete
+execution. Generation one admits at most 63 checks, preserving every raw CheckResult plus the
+sequence summary within the existing 64-artifact settlement limit; older compiler behavior is
+unchanged. Fresh CLI inspection@7 preserves both actual phases and the exact handoff/report
+wire generations without modifying either history; the seven public-schema CLI tests pass.
+
+The same tree includes the previously token-free validated WholeTree review policy and project
+selector. CI remains required for this checkpoint. The next CLI capture/resume/publication and
+presentation changes are excluded from this frozen tree. No requested specialist reviewer or
+live-model pilot has run, and consumer release migration remains pending.

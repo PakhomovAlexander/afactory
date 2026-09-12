@@ -35,7 +35,9 @@ The continuation checkpoint `faeb933` matches frozen tree `cff20f3` and passes t
 documentation tests and byte-identical fixture reproduction. Numeric Rounds and input epochs
 retain one Task, its original limits and cumulative paid usage; every successor plan requires
 its own admission. Fresh CLI inspection preserves handoff history and historical plans.
-Post-Round Integration is implemented and its full gate is pending. Prepared proposals use
+Post-Round Integration checkpoint `6fe82f0` matches frozen tree `a53e534f` and passes the full
+gate: **1,044 tests, zero failures, 15 ignored** across 125 suites, formatting, Clippy,
+documentation tests and byte-identical fixtures. CI remains pending. Prepared proposals use
 one original Task Attempt for the shared check sequence; Empty/Conflict selections require no
 Attempt. A successful commit requires a complete Review of the derived Snapshot within the
 same Task. Focused tests cover writer fencing, atomic two-log rollback and late charge after
