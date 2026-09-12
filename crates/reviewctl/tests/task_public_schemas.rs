@@ -13,6 +13,8 @@ use serde_json::{Value, json};
 
 #[path = "task_public_schemas/broker.rs"]
 mod broker;
+#[path = "task_public_schemas/owned.rs"]
+mod owned;
 #[path = "support/task_cli.rs"]
 mod task_cli;
 

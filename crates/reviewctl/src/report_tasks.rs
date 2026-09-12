@@ -196,13 +196,17 @@ pub(super) fn read(
         let mut views = Vec::new();
         for attempt in attempts {
             let plan = &plans[&attempt.plan_id];
-            let operator = &plan
-                .graph
-                .nodes
-                .get(&attempt.reservation.node)
-                .ok_or("Task Attempt is missing from its original compiled plan")?
-                .operator;
-            let (category, review_node, binding_slots) = classify(operator);
+            let resolved = task
+                .execution
+                .as_ref()
+                .ok_or("Task execution is missing")?
+                .resolve_attempt_node(&attempt, &plan.graph)
+                .map_err(|e| e.to_string())?;
+            let (category, mut review_node, binding_slots) =
+                classify(&resolved.definition.operator);
+            if let Some(address) = resolved.owned {
+                review_node = address.review_node;
+            }
             if attempt.started {
                 counts[match category {
                     Category::Provider => 0,

@@ -132,7 +132,7 @@ pub fn review_token_scopes(
     };
     let scope_root = format!("review.round{round}");
     let mut scopes = BTreeMap::new();
-    if !compilation.graph.allowances.is_empty() {
+    if !compilation.graph.allowances.is_empty() || !compilation.graph.owned_children.is_empty() {
         scopes.insert(
             scope_root.clone(),
             TaskTokenScope {

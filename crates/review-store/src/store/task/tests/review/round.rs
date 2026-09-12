@@ -338,6 +338,7 @@ fn review_round_write_fence_compares_other_campaign_changes_inside_transaction()
         event_type: EventType::TaskTransitionV1,
         valid_until: None,
         review_round: ReviewRoundFence::capture(&f.cas, &state.revision).unwrap(),
+        review_prefix: None,
     };
     permit
         .validate(

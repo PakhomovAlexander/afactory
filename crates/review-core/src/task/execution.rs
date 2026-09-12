@@ -7,10 +7,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 mod accounting;
+mod owned;
 pub use accounting::{
     TASK_EXECUTION_RECORD_V2, TASK_EXECUTION_RECORD_V3, TaskExecutionRecordV2,
     TaskExecutionRecordV3,
 };
+pub use owned::{TASK_EXECUTION_RECORD_V4, TaskExecutionRecordV4};
 
 pub const TASK_INVOCATION_V1: &str = "af/TaskInvocation@1";
 pub const TASK_OUTPUT_V1: &str = "af/TaskOutput@1";
@@ -147,6 +149,22 @@ pub enum TaskExecutionRecordV1 {
         usage_id: String,
         raw_artifact_ids: Vec<String>,
     },
+    /// Normalized lifecycle only: owned records have an explicit v4 wire encoding.
+    #[serde(skip)]
+    OwnedChildrenRegistered {
+        child_set_id: String,
+    },
+    #[serde(skip)]
+    OwnedChildPublished {
+        child_set_id: String,
+        output_id: String,
+        attempt_id: String,
+    },
+    #[serde(skip)]
+    OwnedChildrenCompleted {
+        child_set_id: String,
+        output_id: String,
+    },
 }
 
 // This enum is also the normalized lifecycle representation. Its v1 wire reader retains
@@ -199,6 +217,18 @@ impl TaskExecutionRecordV1 {
                 }
             }
             Self::Published { output_id, .. } => refs.push(output_id),
+            Self::OwnedChildrenRegistered { child_set_id } => refs.push(child_set_id),
+            Self::OwnedChildPublished {
+                child_set_id,
+                output_id,
+                ..
+            }
+            | Self::OwnedChildrenCompleted {
+                child_set_id,
+                output_id,
+            } => {
+                refs.extend([child_set_id.as_str(), output_id.as_str()]);
+            }
             Self::UsageObserved {
                 usage_id,
                 raw_artifact_ids,
@@ -213,6 +243,15 @@ impl TaskExecutionRecordV1 {
     }
 
     pub fn validate(&self) -> Result<(), String> {
+        require(
+            !matches!(
+                self,
+                Self::OwnedChildrenRegistered { .. }
+                    | Self::OwnedChildPublished { .. }
+                    | Self::OwnedChildrenCompleted { .. }
+            ),
+            "Owned Task execution records require the v4 encoding",
+        )?;
         if let Self::Settled { charged_tokens, .. } | Self::UsageObserved { charged_tokens, .. } =
             self
         {
@@ -230,7 +269,9 @@ impl TaskExecutionRecordV1 {
             "Invalid Task execution artifact reference",
         )?;
         let attempt = match self {
-            Self::Invocation { .. } => None,
+            Self::Invocation { .. }
+            | Self::OwnedChildrenRegistered { .. }
+            | Self::OwnedChildrenCompleted { .. } => None,
             Self::Prepared {
                 attempt_id,
                 reservation_id,
@@ -303,6 +344,7 @@ impl TaskExecutionRecordV1 {
                 Some(attempt_id)
             }
             Self::Published { attempt_id, .. } => attempt_id.as_ref(),
+            Self::OwnedChildPublished { attempt_id, .. } => Some(attempt_id),
         };
         if let Some(attempt) = attempt {
             require(

@@ -67,7 +67,11 @@ fn fixture() -> Fixture {
     f.with_execution_graph_outputs(BTreeMap::from([("metadata".into(), side)]))
 }
 
-fn canonical_context(f: &mut Fixture, invocation: &str, attempt: &str) -> TaskReviewContextV1 {
+pub(super) fn canonical_context(
+    f: &mut Fixture,
+    invocation: &str,
+    attempt: &str,
+) -> TaskReviewContextV1 {
     canonical_context_for_contract(
         f,
         invocation,
@@ -199,7 +203,7 @@ runner = { program = "/bin/true" }
     }
 }
 
-fn review_output(
+pub(super) fn review_output(
     f: &Fixture,
     invocation: &str,
     attempt: &str,
@@ -244,7 +248,9 @@ fn review_output_with_provenance(
 ) -> String {
     let author = Producer::Attempt {
         run_id: task_run_id("task-1").unwrap(),
-        node_id: "root.nodes.write".into(),
+        node_id: payload::<TaskInvocationV1>(&f.cas, invocation, TASK_INVOCATION_V1)
+            .unwrap()
+            .node,
         attempt_id: attempt.into(),
     };
     let result = json!({"verdict":"approve","summary":"checked","reports":[],"benchmark_demands":[],"disputes":[]});

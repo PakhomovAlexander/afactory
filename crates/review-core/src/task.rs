@@ -9,6 +9,7 @@ pub mod document;
 pub mod event;
 pub mod execution;
 pub mod feedback;
+pub mod owned_children;
 pub mod pipeline;
 pub mod plan;
 pub mod planning;

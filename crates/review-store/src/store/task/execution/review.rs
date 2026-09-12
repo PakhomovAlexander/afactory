@@ -15,6 +15,25 @@ pub(in crate::store) struct WritePermit {
 }
 
 impl WritePermit {
+    pub(in crate::store::task) fn for_checked_recording(
+        state: &TaskProjection,
+        plan: &ExecutionPlanV1,
+        review_run_id: &str,
+        review_sequence: u64,
+        event: NewEvent,
+    ) -> Result<Self, StoreError> {
+        let mut permit =
+            Self::for_checked_selection(state, plan, review_run_id, review_sequence, event)?;
+        permit.valid_until = state.lease_until.min(
+            state
+                .plan_id
+                .as_ref()
+                .and_then(|id| state.decisions.get(id))
+                .map_or(u64::MAX, |decision| decision.valid_until),
+        );
+        Ok(permit)
+    }
+
     pub(in crate::store::task) fn for_checked_selection(
         state: &TaskProjection,
         plan: &ExecutionPlanV1,
@@ -241,171 +260,44 @@ impl EventStore {
         output_id: &str,
         authority: &dyn TaskAuthority,
     ) -> Result<(), StoreError> {
-        let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
-        let wrapper = envelope(cas, output_id, TASK_OUTPUT_V1)?;
-        let review_core::Producer::Attempt {
-            run_id,
-            node_id,
-            attempt_id,
-        } = &wrapper.producer
-        else {
-            return Err(conflict(
-                "Review selection needs a paid common Task Attempt",
-            ));
-        };
-        if run_id != &task_run_id(lease.task_id())? {
-            return Err(conflict("Review selection belongs to another Task"));
-        }
-        let execution = state
-            .execution
-            .as_ref()
-            .ok_or_else(|| conflict("Task has no execution"))?;
-        let recorded = execution
-            .attempts
-            .get(attempt_id)
-            .ok_or_else(|| conflict("Unknown Task Review Attempt"))?;
-        let (published_id, _) = execution
-            .outputs
-            .get(node_id)
-            .ok_or_else(|| conflict("Task Review output is not published"))?;
-        let selected = execution.ledger.attempt(&AttemptId(attempt_id.clone()));
-        if published_id != output_id
-            || selected.is_none_or(|a| {
-                a.node != *node_id || a.state != review_attempt::AttemptState::Selected
-            })
-            || !matches!(&recorded.settlement, Some(TaskExecutionRecordV1::Settled {
-                result: TaskAttemptResultV1::Succeeded { output_id: selected }, ..
-            }) if selected == output_id)
-        {
-            return Err(conflict(
-                "Review selection differs from the common Task's selected output",
-            ));
-        }
-        let (out, input) =
-            Self::validate_task_output(cas, &state, &plan, output_id, Some(attempt_id), authority)?;
-        let context_id = recorded
-            .context_id
-            .as_ref()
-            .ok_or_else(|| conflict("Task Review Attempt has no context"))?;
-        let context: TaskReviewContextV1 = payload(cas, context_id, TASK_REVIEW_CONTEXT_V1)?;
-        context.validate().map_err(conflict)?;
-        if context.attempt_id != *attempt_id
-            || context.task_invocation_id != out.invocation_id
-            || recorded.invocation_id != out.invocation_id
-            || recorded.plan_id != input.plan_id
-        {
-            return Err(conflict(
-                "Review context belongs to another common invocation or Attempt",
-            ));
-        }
-        // These two host-declared ports are the flat business result and its side metadata.
-        // They cannot be selected from a larger, ambiguous set of Worker outputs.
-        let mut result = None;
-        let mut metadata = None;
-        for port in out.outputs.values() {
-            let [id] = port.artifact_ids.as_slice() else {
-                return Err(conflict(
-                    "Task Review output must have singular typed ports",
-                ));
-            };
-            if port.cardinality != review_core::PortCardinality::One {
-                return Err(conflict(
-                    "Task Review output needs one result and one metadata port",
-                ));
+        self.publish_task_review_result_inner(cas, lease, output_id, None, authority)
+    }
+
+    pub fn publish_task_owned_review_result(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        children: &owned::RegisteredTaskChildren,
+        output_id: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(), StoreError> {
+        self.publish_task_review_result_inner(cas, lease, output_id, Some(children), authority)
+    }
+
+    fn publish_task_review_result_inner(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        output_id: &str,
+        children: Option<&owned::RegisteredTaskChildren>,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(), StoreError> {
+        let (state, plan) = self.checked_task_current(cas, lease, authority, children.is_none())?;
+        if let Some(children) = children {
+            if children.task_id() != lease.task_id() {
+                return Err(conflict("Owned Review capability belongs to another Task"));
             }
-            if port.artifact_type == TASK_REVIEW_RESULT_METADATA_V1 {
-                if metadata.replace(id).is_some() {
-                    return Err(conflict("Duplicate Review metadata port"));
-                }
-            } else if review_core::ReviewerResultContract::parse_artifact_type(&port.artifact_type)
-                .is_some()
-            {
-                if result.replace((id, &port.artifact_type)).is_some() {
-                    return Err(conflict("Duplicate Review result port"));
-                }
-            } else {
-                return Err(conflict("Undeclared compatibility Review output type"));
-            }
+            state
+                .execution
+                .as_ref()
+                .expect("checked execution")
+                .check_owned_publication(children, output_id)?;
         }
-        let (result_envelope_id, result_type) =
-            result.ok_or_else(|| conflict("Missing typed Review result"))?;
-        let metadata_envelope_id =
-            metadata.ok_or_else(|| conflict("Missing typed Review metadata"))?;
-        let metadata: TaskReviewResultMetadataV1 =
-            payload(cas, metadata_envelope_id, TASK_REVIEW_RESULT_METADATA_V1)?;
-        metadata.validate().map_err(conflict)?;
-        validate_attempt_provenance(
-            cas,
-            &metadata,
-            &context,
-            context_id,
-            &review_core::Producer::Attempt {
-                run_id: run_id.clone(),
-                node_id: node_id.clone(),
-                attempt_id: attempt_id.clone(),
-            },
-            recorded.reservation.tokens,
-            selected.expect("selected Attempt checked above").charged,
-        )?;
-        let result = envelope(cas, result_envelope_id, result_type)?;
-        if result_type != metadata.result_contract.artifact_type()
-            || content_id(&result.payload).map_err(|e| conflict(e.to_string()))?
-                != metadata.result_artifact_id
-            || cas
-                .get_json(&metadata.result_artifact_id)
-                .map_err(|e| conflict(e.to_string()))?
-                != result.payload
-        {
-            return Err(conflict(
-                "Review side metadata contradicts the exact flat result",
-            ));
-        }
-        match metadata.result_contract {
-            review_core::ReviewerResultContract::V1 => {
-                review_core::validate_reviewer_result(&result.payload)
-            }
-            review_core::ReviewerResultContract::V2 => {
-                review_core::validate_reviewer_result_v2(&result.payload)
-            }
-        }
-        .map_err(conflict)?;
-        let selection = TaskReviewResultSelectedV1 {
-            task_id: lease.task_id().into(),
-            task_revision_id: state.revision_id.clone(),
-            plan_id: input.plan_id,
-            task_node: input.node,
-            invocation_id: out.invocation_id,
-            output_id: output_id.into(),
-            context_id: context_id.clone(),
-            result_envelope_id: result_envelope_id.clone(),
-            metadata_envelope_id: metadata_envelope_id.clone(),
-            result_artifact_id: metadata.result_artifact_id.clone(),
-            provenance_artifact_id: metadata.provenance_artifact_id.clone(),
-        };
-        selection.validate().map_err(conflict)?;
-        let refs: BTreeSet<_> = selection
-            .artifact_refs()
-            .into_iter()
-            .chain(context.artifact_refs())
-            .chain(metadata.artifact_refs())
-            .map(str::to_owned)
-            .collect();
-        // Exact replay also re-establishes side-input integrity; it does not reach the new
-        // event publication barrier below, which would otherwise perform these checks.
-        for id in &refs {
-            cas.verify(id)
-                .map_err(|e| StoreError::Artifact(e.to_string()))?;
-        }
-        let event = NewEvent::new(
-            EventType::TaskReviewResultSelectedV1,
-            serde_json::to_value(selection)?,
-        )
-        .node(&context.review_node)
-        .attempt(attempt_id)
-        .caused_by(&context.round_event_id)
-        .referencing(refs.into_iter().collect());
+        let (context, event) = selected_review_event(cas, &state, output_id)?;
+        let attempt_id = event.attempt_id.as_deref().expect("derived Attempt");
+        Self::validate_task_output(cas, &state, &plan, output_id, Some(attempt_id), authority)?;
         // Recheck after domain validation, including approval revocation and CAS integrity.
-        let (fresh, _) = self.checked_task_dispatch(cas, lease, authority)?;
+        let (fresh, _) = self.checked_task_current(cas, lease, authority, children.is_none())?;
         if fresh.next_sequence != state.next_sequence {
             return Err(conflict(
                 "Task changed during Review publication validation",
@@ -432,13 +324,40 @@ impl EventStore {
                 Err(conflict("Conflicting Task Review selection replay"))
             };
         }
-        let permit = WritePermit::for_checked_selection(
+        if children.is_some() {
+            fresh
+                .execution
+                .as_ref()
+                .expect("checked execution")
+                .check_owned_open(
+                    event
+                        .node_id
+                        .as_deref()
+                        .and_then(|_| {
+                            event
+                                .payload
+                                .get("task_node")
+                                .and_then(serde_json::Value::as_str)
+                        })
+                        .ok_or_else(|| conflict("Owned selection lacks its Task node"))?,
+                )?;
+        }
+        let mut permit = WritePermit::for_checked_selection(
             &fresh,
             &plan,
             &context.campaign_id,
             self.len(&context.campaign_id)?,
             event.clone(),
         )?;
+        if children.is_some() {
+            permit.valid_until = fresh.lease_until.min(
+                fresh
+                    .plan_id
+                    .as_ref()
+                    .and_then(|id| fresh.decisions.get(id))
+                    .map_or(u64::MAX, |decision| decision.valid_until),
+            );
+        }
         self.append_batch_inner(&context.campaign_id, cas, &[event], None, Some(&permit))?;
         Ok(())
     }
@@ -697,10 +616,11 @@ fn validate_report_gate_failures(
         .ok_or_else(|| conflict("Review Task has no execution"))?;
     let mut plans = BTreeMap::<String, (LegacyReviewRoundV1, CompiledTask)>::new();
     let mut failures = BTreeMap::new();
-    for (attempt_id, attempt) in &execution.attempts {
+    for attempt in execution.attempt_accounting() {
+        let attempt_id = &attempt.attempt_id;
         let Some(TaskExecutionRecordV1::Settled {
             raw_artifact_ids, ..
-        }) = &attempt.settlement
+        }) = &execution.attempts[attempt_id].settlement
         else {
             continue;
         };
@@ -724,14 +644,11 @@ fn validate_report_gate_failures(
         if captured.round_event_id != round.round_event_id {
             continue;
         }
-        let node = graph
-            .nodes
-            .get(&attempt.reservation.node)
-            .ok_or_else(|| conflict("Review Attempt has no original plan node"))?;
+        let node = execution.resolve_attempt_node(&attempt, graph)?;
         let CompiledOperator::ReviewDomain {
             review_node,
             operation: review_graph::task::ReviewOperation::Gate,
-        } = &node.operator
+        } = &node.definition.operator
         else {
             continue;
         };
@@ -739,7 +656,7 @@ fn validate_report_gate_failures(
             let frame = envelope(cas, id, TASK_REVIEW_GATE_FACTS_V1)?;
             let facts: TaskReviewGateFactsV1 = serde_json::from_value(frame.payload)?;
             facts.validate().map_err(conflict)?;
-            let context_id = attempt
+            let context_id = execution.attempts[attempt_id]
                 .context_id
                 .as_ref()
                 .ok_or_else(|| conflict("Review Gate has no admitted context"))?;
@@ -787,4 +704,181 @@ fn validate_report_gate_failures(
         ));
     }
     Ok(())
+}
+
+/// Derive exact canonical identity from admitted common facts without re-entering a host.
+pub(super) fn selected_review_event(
+    cas: &Cas,
+    state: &TaskProjection,
+    output_id: &str,
+) -> Result<(TaskReviewContextV1, NewEvent), StoreError> {
+    let wrapper = envelope(cas, output_id, TASK_OUTPUT_V1)?;
+    let review_core::Producer::Attempt {
+        run_id,
+        node_id,
+        attempt_id,
+    } = &wrapper.producer
+    else {
+        return Err(conflict(
+            "Review selection needs a paid common Task Attempt",
+        ));
+    };
+    if run_id != &task_run_id(state.task_id.as_str())? {
+        return Err(conflict("Review selection belongs to another Task"));
+    }
+    let execution = state
+        .execution
+        .as_ref()
+        .ok_or_else(|| conflict("Task has no execution"))?;
+    let recorded = execution
+        .attempts
+        .get(attempt_id)
+        .ok_or_else(|| conflict("Unknown Task Review Attempt"))?;
+    let (published_id, _) = execution
+        .outputs
+        .get(node_id)
+        .ok_or_else(|| conflict("Task Review output is not published"))?;
+    let selected = execution.ledger.attempt(&AttemptId(attempt_id.clone()));
+    if published_id != output_id
+        || selected
+            .is_none_or(|a| a.node != *node_id || a.state != review_attempt::AttemptState::Selected)
+        || !matches!(&recorded.settlement, Some(TaskExecutionRecordV1::Settled {
+                result: TaskAttemptResultV1::Succeeded { output_id: selected }, ..
+            }) if selected == output_id)
+    {
+        return Err(conflict(
+            "Review selection differs from the common Task's selected output",
+        ));
+    }
+    let out = output(cas, output_id)?;
+    let input = execution.verify_output(cas, &out)?;
+    verify_attempt_producer(
+        cas,
+        &state.task_id,
+        &input.node,
+        attempt_id,
+        output_id,
+        &out,
+    )?;
+    let context_id = recorded
+        .context_id
+        .as_ref()
+        .ok_or_else(|| conflict("Task Review Attempt has no context"))?;
+    let context: TaskReviewContextV1 = payload(cas, context_id, TASK_REVIEW_CONTEXT_V1)?;
+    context.validate().map_err(conflict)?;
+    if context.attempt_id != *attempt_id
+        || context.task_invocation_id != out.invocation_id
+        || recorded.invocation_id != out.invocation_id
+        || recorded.plan_id != input.plan_id
+    {
+        return Err(conflict(
+            "Review context belongs to another common invocation or Attempt",
+        ));
+    }
+    // These two host-declared ports are the flat business result and its side metadata.
+    // They cannot be selected from a larger, ambiguous set of Worker outputs.
+    let mut result = None;
+    let mut metadata = None;
+    for port in out.outputs.values() {
+        let [id] = port.artifact_ids.as_slice() else {
+            return Err(conflict(
+                "Task Review output must have singular typed ports",
+            ));
+        };
+        if port.cardinality != review_core::PortCardinality::One {
+            return Err(conflict(
+                "Task Review output needs one result and one metadata port",
+            ));
+        }
+        if port.artifact_type == TASK_REVIEW_RESULT_METADATA_V1 {
+            if metadata.replace(id).is_some() {
+                return Err(conflict("Duplicate Review metadata port"));
+            }
+        } else if review_core::ReviewerResultContract::parse_artifact_type(&port.artifact_type)
+            .is_some()
+        {
+            if result.replace((id, &port.artifact_type)).is_some() {
+                return Err(conflict("Duplicate Review result port"));
+            }
+        } else {
+            return Err(conflict("Undeclared compatibility Review output type"));
+        }
+    }
+    let (result_envelope_id, result_type) =
+        result.ok_or_else(|| conflict("Missing typed Review result"))?;
+    let metadata_envelope_id = metadata.ok_or_else(|| conflict("Missing typed Review metadata"))?;
+    let metadata: TaskReviewResultMetadataV1 =
+        payload(cas, metadata_envelope_id, TASK_REVIEW_RESULT_METADATA_V1)?;
+    metadata.validate().map_err(conflict)?;
+    validate_attempt_provenance(
+        cas,
+        &metadata,
+        &context,
+        context_id,
+        &review_core::Producer::Attempt {
+            run_id: run_id.clone(),
+            node_id: node_id.clone(),
+            attempt_id: attempt_id.clone(),
+        },
+        recorded.reservation.tokens,
+        selected.expect("selected Attempt checked above").charged,
+    )?;
+    let result = envelope(cas, result_envelope_id, result_type)?;
+    if result_type != metadata.result_contract.artifact_type()
+        || content_id(&result.payload).map_err(|e| conflict(e.to_string()))?
+            != metadata.result_artifact_id
+        || cas
+            .get_json(&metadata.result_artifact_id)
+            .map_err(|e| conflict(e.to_string()))?
+            != result.payload
+    {
+        return Err(conflict(
+            "Review side metadata contradicts the exact flat result",
+        ));
+    }
+    match metadata.result_contract {
+        review_core::ReviewerResultContract::V1 => {
+            review_core::validate_reviewer_result(&result.payload)
+        }
+        review_core::ReviewerResultContract::V2 => {
+            review_core::validate_reviewer_result_v2(&result.payload)
+        }
+    }
+    .map_err(conflict)?;
+    let selection = TaskReviewResultSelectedV1 {
+        task_id: state.task_id.as_str().into(),
+        task_revision_id: state.revision_id.clone(),
+        plan_id: input.plan_id,
+        task_node: input.node,
+        invocation_id: out.invocation_id,
+        output_id: output_id.into(),
+        context_id: context_id.clone(),
+        result_envelope_id: result_envelope_id.clone(),
+        metadata_envelope_id: metadata_envelope_id.clone(),
+        result_artifact_id: metadata.result_artifact_id.clone(),
+        provenance_artifact_id: metadata.provenance_artifact_id.clone(),
+    };
+    selection.validate().map_err(conflict)?;
+    let refs: BTreeSet<_> = selection
+        .artifact_refs()
+        .into_iter()
+        .chain(context.artifact_refs())
+        .chain(metadata.artifact_refs())
+        .map(str::to_owned)
+        .collect();
+    // Exact replay also re-establishes side-input integrity; it does not reach the new
+    // event publication barrier below, which would otherwise perform these checks.
+    for id in &refs {
+        cas.verify(id)
+            .map_err(|e| StoreError::Artifact(e.to_string()))?;
+    }
+    let event = NewEvent::new(
+        EventType::TaskReviewResultSelectedV1,
+        serde_json::to_value(&selection)?,
+    )
+    .node(&context.review_node)
+    .attempt(attempt_id)
+    .caused_by(&context.round_event_id)
+    .referencing(refs.into_iter().collect());
+    Ok((context, event))
 }

@@ -99,7 +99,10 @@ pub(super) fn fence_for_transition(
                 | TaskExecutionRecordV1::Prepared { .. }
                 | TaskExecutionRecordV1::ContextBound { .. }
                 | TaskExecutionRecordV1::Started { .. }
-                | TaskExecutionRecordV1::Published { .. } => {}
+                | TaskExecutionRecordV1::Published { .. }
+                | TaskExecutionRecordV1::OwnedChildrenRegistered { .. }
+                | TaskExecutionRecordV1::OwnedChildPublished { .. }
+                | TaskExecutionRecordV1::OwnedChildrenCompleted { .. } => {}
                 // A stale Round stops new effects, not accounting for work already paid for.
                 TaskExecutionRecordV1::Released { .. }
                 | TaskExecutionRecordV1::Settled { .. }

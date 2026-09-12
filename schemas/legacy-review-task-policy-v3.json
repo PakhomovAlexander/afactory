@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:legacy-review-task-policy:3",
+  "title": "LegacyReviewTaskPolicy@3",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "engine_id",
+    "campaign_manifest_id",
+    "settings"
+  ],
+  "properties": {
+    "engine_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "campaign_manifest_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "review",
+        "provider_probes"
+      ],
+      "properties": {
+        "review": {
+          "$ref": "urn:af:schema:legacy-review-task-policy:1#/properties/settings"
+        },
+        "provider_probes": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "probe_protocol",
+              "operations"
+            ],
+            "properties": {
+              "probe_protocol": {
+                "const": "af.provider-ok/1"
+              },
+              "operations": {
+                "type": "array",
+                "minItems": 1,
+                "uniqueItems": true,
+                "items": {
+                  "$ref": "urn:af:schema:task-broker-binding:1#/$defs/operationPolicy"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$comment": "Generation three installs captured owned-child templates; the approved settings retain the generation-two shape."
+}

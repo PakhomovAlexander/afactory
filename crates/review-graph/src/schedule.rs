@@ -16,7 +16,39 @@ pub type ArtifactMap = BTreeMap<String, Vec<String>>;
 
 /// What the caller does when a node is dispatched. The scheduler owns *when* and *whether*, the
 /// caller owns *what* — so scheduling can be tested without models, checks, or a filesystem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedChildDispatch {
+    pub node: Node,
+    pub inputs: ArtifactMap,
+}
+
 pub trait Dispatch {
+    /// Captured owners coordinate registered children without occupying a Worker slot.
+    fn coordinates_owned_children(&self, _node: &Node) -> bool {
+        false
+    }
+
+    /// Called after the owner's exact invocation is durable. The implementation must persist
+    /// the complete bounded registration before returning any dispatchable child.
+    fn expand_owned_children(
+        &self,
+        _node: &Node,
+        _inputs: &ArtifactMap,
+    ) -> Result<Vec<OwnedChildDispatch>, String> {
+        Err("Owned-child expansion is not installed".into())
+    }
+
+    /// Every registered child is terminal, in registration order, including failures. The
+    /// callback seals the pure parent result; the scheduler applies ordinary output admission.
+    fn complete_owned_children(
+        &self,
+        _node: &Node,
+        _inputs: &ArtifactMap,
+        _children: &[(String, NodeOutcome)],
+    ) -> Result<ArtifactMap, String> {
+        Err("Owned-child completion is not installed".into())
+    }
+
     /// A failed predecessor is different from a successful optional empty output. The
     /// installed Review frontend retains its complete predecessor barrier through Task
     /// execution; ordinary Task operators may handle optional missing inputs themselves.
@@ -191,6 +223,11 @@ impl<'a> Scheduler<'a> {
         let mut unusable: BTreeSet<String> = BTreeSet::new();
         let mut in_flight: BTreeSet<String> = BTreeSet::new();
 
+        let mut nodes = self.plan.nodes.clone();
+        let mut order = self.plan.order.clone();
+        let mut child_inputs: BTreeMap<String, ArtifactMap> = BTreeMap::new();
+        let mut owners: BTreeMap<String, (ArtifactMap, Vec<String>)> = BTreeMap::new();
+
         std::thread::scope(|scope| {
             type Completion = (String, Result<ArtifactMap, String>);
             let (tx, rx) = std::sync::mpsc::channel::<Completion>();
@@ -199,15 +236,42 @@ impl<'a> Scheduler<'a> {
                 // Decide everything currently decidable, in plan order: suppress what a
                 // blocked gate or a missing upstream has doomed, dispatch what is ready.
                 let mut progressed = false;
-                for node_id in &self.plan.order {
+                let mut coordinated = BTreeMap::new();
+                // Newly registered children join the next scan, preserving deterministic order.
+                for node_id in &order.clone() {
                     if outcomes.contains_key(node_id) || in_flight.contains(node_id) {
                         continue;
                     }
-                    let node = &self.plan.nodes[node_id];
+                    let node = nodes[node_id].clone();
+                    let node = &node;
+                    if let Some((inputs, children)) = owners.get(node_id) {
+                        if children.iter().all(|id| outcomes.contains_key(id)) {
+                            let terminal: Vec<_> = children
+                                .iter()
+                                .map(|id| (id.clone(), outcomes[id].clone()))
+                                .collect();
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    dispatch.complete_owned_children(node, inputs, &terminal)
+                                }))
+                                .unwrap_or_else(|_| {
+                                    Err(format!("owned completion panicked for node {}", node.id))
+                                });
+                            coordinated.insert(node_id.clone(), result);
+                            progressed = true;
+                        }
+                        continue;
+                    }
+                    let is_child = child_inputs.contains_key(node_id);
+                    let coordinates = !is_child && dispatch.coordinates_owned_children(node);
 
                     // Gating first: a blocked gate suppresses this node before any input is
                     // resolved, so a suppressed node cannot even observe its would-be inputs.
-                    let gates = self.plan.gates_for(node_id);
+                    let gates = if is_child {
+                        BTreeSet::new()
+                    } else {
+                        self.plan.gates_for(node_id)
+                    };
                     if gates.iter().any(|gate| blocked_gates.contains(gate)) {
                         outcomes.insert(
                             node_id.clone(),
@@ -220,7 +284,11 @@ impl<'a> Scheduler<'a> {
                         continue;
                     }
 
-                    let dependencies = self.plan.dependencies_of(node_id);
+                    let dependencies = if is_child {
+                        Vec::new()
+                    } else {
+                        self.plan.dependencies_of(node_id)
+                    };
                     if dispatch.requires_successful_predecessors(node)
                         && dependencies
                             .iter()
@@ -245,17 +313,19 @@ impl<'a> Scheduler<'a> {
                     {
                         continue;
                     }
-                    if in_flight.len() >= self.max_parallel {
+                    if !coordinates && in_flight.len() >= self.max_parallel {
                         continue;
                     }
-                    if self.scope_limits.iter().any(|(scope, limit)| {
-                        let contains = |id: &str| {
-                            id.strip_prefix(scope)
-                                .is_some_and(|tail| tail.starts_with('.'))
-                        };
-                        contains(node_id)
-                            && in_flight.iter().filter(|id| contains(id)).count() >= *limit
-                    }) {
+                    if !coordinates
+                        && self.scope_limits.iter().any(|(scope, limit)| {
+                            let contains = |id: &str| {
+                                id.strip_prefix(scope)
+                                    .is_some_and(|tail| tail.starts_with('.'))
+                            };
+                            contains(node_id)
+                                && in_flight.iter().filter(|id| contains(id)).count() >= *limit
+                        })
+                    {
                         continue;
                     }
 
@@ -263,11 +333,13 @@ impl<'a> Scheduler<'a> {
                     // input port it arrived on — so a node reads its inputs by name (a reviewer
                     // takes `prior_findings`, not "whichever artifact happened to be first").
                     // Sorted, so the vector does not depend on edge declaration order.
-                    let mut inputs: ArtifactMap = node
-                        .inputs
-                        .iter()
-                        .map(|port| (port.name.clone(), Vec::new()))
-                        .collect();
+                    let mut inputs: ArtifactMap =
+                        child_inputs.get(node_id).cloned().unwrap_or_else(|| {
+                            node.inputs
+                                .iter()
+                                .map(|port| (port.name.clone(), Vec::new()))
+                                .collect()
+                        });
                     for edge in &dependencies {
                         if let Some(artifacts) =
                             outputs.get(&(edge.from.node.clone(), edge.from.name.clone()))
@@ -343,13 +415,48 @@ impl<'a> Scheduler<'a> {
                         continue;
                     }
 
+                    if coordinates {
+                        let expansion =
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                dispatch.expand_owned_children(node, &inputs)
+                            }))
+                            .unwrap_or_else(|_| {
+                                Err(format!("owned expansion panicked for node {}", node.id))
+                            });
+                        match expansion.and_then(|children| {
+                            validate_owned_expansion(node, &children, &nodes)?;
+                            Ok(children)
+                        }) {
+                            Ok(children) => {
+                                let ids: Vec<_> =
+                                    children.iter().map(|child| child.node.id.clone()).collect();
+                                let index = order
+                                    .iter()
+                                    .position(|id| id == node_id)
+                                    .expect("scheduled owner")
+                                    + 1;
+                                order.splice(index..index, ids.clone());
+                                for child in children {
+                                    child_inputs.insert(child.node.id.clone(), child.inputs);
+                                    nodes.insert(child.node.id.clone(), child.node);
+                                }
+                                owners.insert(node_id.clone(), (inputs, ids));
+                            }
+                            Err(error) => {
+                                coordinated.insert(node_id.clone(), Err(error));
+                            }
+                        }
+                        progressed = true;
+                        continue;
+                    }
                     in_flight.insert(node_id.clone());
                     let tx = tx.clone();
+                    let node = node.clone();
                     scope.spawn(move || {
                         // A panicking dispatcher is a failed node, not a hung run: without
                         // this, its completion never arrives and the loop waits forever.
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            dispatch.run(node, &inputs)
+                            dispatch.run(&node, &inputs)
                         }))
                         .unwrap_or_else(|_| Err(format!("dispatch panicked for node {}", node.id)));
                         let _ = tx.send((node.id.clone(), result));
@@ -357,7 +464,7 @@ impl<'a> Scheduler<'a> {
                     progressed = true;
                 }
 
-                if in_flight.is_empty() {
+                if in_flight.is_empty() && coordinated.is_empty() {
                     if progressed {
                         // Suppressions may cascade; scan again before concluding.
                         continue;
@@ -368,18 +475,19 @@ impl<'a> Scheduler<'a> {
                 // Complete a whole dispatch wave before admitting any result. Workers retain
                 // full concurrency, while publication and dependent dispatch are canonical in
                 // plan order rather than functions of thread completion timing.
-                let wave = in_flight.clone();
-                let mut completions = BTreeMap::new();
-                for _ in 0..wave.len() {
+                let mut wave = in_flight.clone();
+                wave.extend(coordinated.keys().cloned());
+                let mut completions = coordinated;
+                for _ in 0..in_flight.len() {
                     let (node_id, result) = rx.recv().expect("a running node reports its outcome");
                     in_flight.remove(&node_id);
                     completions.insert(node_id, result);
                 }
-                for node_id in self.plan.order.iter().filter(|id| wave.contains(*id)) {
+                for node_id in order.iter().filter(|id| wave.contains(*id)) {
                     let result = completions
                         .remove(node_id)
                         .expect("every wave member completed");
-                    let node = &self.plan.nodes[node_id];
+                    let node = &nodes[node_id];
                     match result {
                         Ok(produced) => {
                             if let Err(error) = validate_outputs(node, &produced) {
@@ -477,6 +585,48 @@ fn validate_outputs(node: &Node, produced: &ArtifactMap) -> Result<(), String> {
                 "node produced {count} artifacts for single-valued output port {}.{}",
                 node.id, port.name
             ));
+        }
+    }
+    Ok(())
+}
+
+// Store rederives the captured contract and complete set. Scheduler validation independently
+// prevents expansion from overwriting another owner/static node or introducing hidden edges.
+fn validate_owned_expansion(
+    parent: &Node,
+    children: &[OwnedChildDispatch],
+    nodes: &BTreeMap<String, Node>,
+) -> Result<(), String> {
+    let prefix = format!("{}.", parent.id);
+    let mut seen = BTreeSet::new();
+    for child in children {
+        let node = &child.node;
+        if node
+            .id
+            .strip_prefix(&prefix)
+            .is_none_or(|suffix| !review_core::task::is_name(suffix))
+            || nodes.contains_key(&node.id)
+            || !seen.insert(&node.id)
+            || node.gated_by.is_some()
+            || !matches!(node.kind, NodeKind::Task | NodeKind::Reviewer)
+            || child.inputs.len() != node.inputs.len()
+            || node.inputs.iter().any(|port| {
+                child.inputs.get(&port.name).is_none_or(|values| {
+                    (!port.optional && values.is_empty())
+                        || (port.cardinality == review_core::PortCardinality::One
+                            && values.len() > 1)
+                })
+            })
+            || [&node.inputs, &node.outputs].iter().any(|ports| {
+                let mut names = BTreeSet::new();
+                ports.iter().any(|port| {
+                    !review_core::task::is_name(&port.name)
+                        || !review_core::is_artifact_type(&port.artifact_type)
+                        || !names.insert(&port.name)
+                })
+            })
+        {
+            return Err(format!("Invalid owned-child dispatch for {}", parent.id));
         }
     }
     Ok(())

@@ -3,6 +3,7 @@
 
 pub mod broker;
 mod encoding;
+pub mod owned;
 pub use encoding::{DecodedTaskExecutionRecord, read_execution_record};
 
 use review_attempt::task_budget::{TaskBudget, TaskReservation};
@@ -23,6 +24,7 @@ pub struct TaskExecutionProjection {
     ledger: AttemptLedger,
     attempts: BTreeMap<String, RecordedAttempt>,
     brokers: BTreeMap<String, broker::RecordedBroker>,
+    pub(super) owned: BTreeMap<String, owned::RecordedChildren>,
 }
 
 #[derive(Debug, Clone)]
@@ -179,7 +181,17 @@ pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError>
         | TaskExecutionRecordV1::Reserved { invocation_id, .. } => {
             invocation_ids.push(invocation_id.clone())
         }
+        TaskExecutionRecordV1::OwnedChildrenRegistered { child_set_id } => {
+            refs.extend(
+                owned::read_task_owned_children(cas, child_set_id)?
+                    .artifact_refs()
+                    .into_iter()
+                    .map(str::to_owned),
+            );
+        }
         TaskExecutionRecordV1::Published { output_id, .. }
+        | TaskExecutionRecordV1::OwnedChildPublished { output_id, .. }
+        | TaskExecutionRecordV1::OwnedChildrenCompleted { output_id, .. }
         | TaskExecutionRecordV1::Settled {
             result: TaskAttemptResultV1::Succeeded { output_id },
             ..
@@ -191,6 +203,16 @@ pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError>
             }
         }
         _ => (),
+    }
+    if let TaskExecutionRecordV1::OwnedChildPublished { child_set_id, .. }
+    | TaskExecutionRecordV1::OwnedChildrenCompleted { child_set_id, .. } = &record
+    {
+        refs.extend(
+            owned::read_task_owned_children(cas, child_set_id)?
+                .artifact_refs()
+                .into_iter()
+                .map(str::to_owned),
+        );
     }
     for id in invocation_ids {
         let input = invocation(cas, &id)?;
@@ -246,7 +268,7 @@ impl TaskExecutionProjection {
             .budget(self.budget.remaining_limits())
             .map_err(conflict)?;
         self.budget
-            .install_graph_with_token_scopes(
+            .install_graph_with_owned_templates(
                 graph.allowances.clone(),
                 graph
                     .calls
@@ -254,6 +276,7 @@ impl TaskExecutionProjection {
                     .map(|(name, call)| (name.clone(), call.max_attempts))
                     .collect(),
                 graph.token_scopes.clone(),
+                owned::templates(&graph),
                 time,
                 false,
             )
@@ -384,6 +407,7 @@ impl TaskExecutionProjection {
             ),
             attempts: BTreeMap::new(),
             brokers: BTreeMap::new(),
+            owned: BTreeMap::new(),
         })
     }
 
@@ -438,11 +462,16 @@ impl TaskExecutionProjection {
     }
 
     fn verify_invocation(&self, cas: &Cas, input: &TaskInvocationV1) -> Result<(), StoreError> {
-        let node = self
-            .graph
-            .nodes
-            .get(&input.node)
-            .ok_or_else(|| conflict("Invocation names an unplanned node"))?;
+        self.check_owned_open(&input.node)?;
+        let resolved = self.resolve_node(&input.node)?;
+        if let Some(expected) = resolved.expected_inputs {
+            return if input.inputs == expected {
+                Ok(())
+            } else {
+                Err(conflict("Owned invocation changed its registered inputs"))
+            };
+        }
+        let node = &resolved.definition;
         let sources = node.inputs.clone();
         let mut expected = BTreeMap::new();
         for (name, source) in sources {
@@ -514,7 +543,8 @@ impl TaskExecutionProjection {
         if self.invocations.get(&input.node).map(|(id, _)| id) != Some(&receipt.invocation_id) {
             return Err(conflict("Output has no admitted invocation"));
         }
-        let node = &self.graph.nodes[&input.node];
+        let resolved = self.resolve_node(&input.node)?;
+        let node = &resolved.definition;
         if matches!(node.operator, CompiledOperator::RootInputs)
             && receipt.outputs != self.graph.inputs
         {
@@ -654,11 +684,24 @@ impl TaskProjection {
             }
             self.check_approval(cas, time)?;
         }
+        if owned::is_owned_record(&record) {
+            if !self.admitted || self.phase != (TaskPhaseV1::Running {}) {
+                return Err(conflict(
+                    "Owned Task recording requires admitted running execution",
+                ));
+            }
+            self.check_plan_decision(cas, time)?;
+        }
         if self.execution.is_none() {
             self.execution = Some(TaskExecutionProjection::new(cas, self)?);
         }
         let execution = self.execution.as_mut().expect("execution initialized");
         match &record {
+            TaskExecutionRecordV1::OwnedChildrenRegistered { .. }
+            | TaskExecutionRecordV1::OwnedChildPublished { .. }
+            | TaskExecutionRecordV1::OwnedChildrenCompleted { .. } => {
+                execution.apply_owned(cas, &self.task_id, &record)?;
+            }
             TaskExecutionRecordV1::UsageObserved {
                 attempt_id,
                 charged_tokens,
@@ -695,6 +738,7 @@ impl TaskProjection {
                     return Err(conflict("Task invocation is duplicated"));
                 }
                 execution.verify_invocation(cas, &input)?;
+                execution.verify_owned_invocation_id(&input.node, invocation_id)?;
                 execution
                     .invocations
                     .insert(input.node.clone(), (invocation_id.clone(), input));
@@ -717,6 +761,7 @@ impl TaskProjection {
                 feedback_ids,
             } => {
                 let input = invocation(cas, invocation_id)?;
+                execution.check_owned_open(&input.node)?;
                 if execution.invocations.get(&input.node).map(|(id, _)| id) != Some(invocation_id)
                     || execution.outputs.contains_key(&input.node)
                     || execution.reusable_output(&input.node).is_some()
@@ -791,6 +836,13 @@ impl TaskProjection {
                 attempt_id,
                 context_id,
             } => {
+                let node = &execution
+                    .attempts
+                    .get(attempt_id)
+                    .ok_or_else(|| conflict("Unknown Task Attempt"))?
+                    .reservation
+                    .node;
+                execution.check_owned_open(node)?;
                 let attempt = execution
                     .attempts
                     .get_mut(attempt_id)
@@ -807,6 +859,13 @@ impl TaskProjection {
                 attempt.context_id = Some(context_id.clone());
             }
             TaskExecutionRecordV1::Started { attempt_id } => {
+                let node = &execution
+                    .attempts
+                    .get(attempt_id)
+                    .ok_or_else(|| conflict("Unknown Task Attempt"))?
+                    .reservation
+                    .node;
+                execution.check_owned_open(node)?;
                 let attempt = execution
                     .attempts
                     .get_mut(attempt_id)
@@ -922,6 +981,13 @@ impl TaskProjection {
             } => {
                 let out = output(cas, output_id)?;
                 let input = execution.verify_output(cas, &out)?;
+                if execution.resolve_node(&input.node)?.owned.is_some()
+                    || execution.graph.owned_children.contains_key(&input.node)
+                {
+                    return Err(conflict(
+                        "Owned child publication requires its registered ownership record",
+                    ));
+                }
                 if execution.outputs.contains_key(&input.node) {
                     return Err(conflict("Task output has already been published"));
                 }
@@ -948,7 +1014,7 @@ impl TaskProjection {
                     {
                         return Err(conflict("Task output is stale or fenced"));
                     }
-                } else if execution.graph.allowances.contains_key(&input.node) {
+                } else if execution.resolve_node(&input.node)?.allowance.is_some() {
                     return Err(conflict(
                         "A paid Task node needs a settled selected Attempt",
                     ));
@@ -1082,6 +1148,28 @@ impl EventStore {
         record: TaskExecutionRecordV1,
         time: u64,
     ) -> Result<RunEvent, StoreError> {
+        self.task_execution_record_inner(cas, lease, record, time, None)
+    }
+
+    fn task_execution_record_with_owned_prefix(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        record: TaskExecutionRecordV1,
+        time: u64,
+        prefix: (u64, Option<(String, u64)>),
+    ) -> Result<RunEvent, StoreError> {
+        self.task_execution_record_inner(cas, lease, record, time, Some(prefix))
+    }
+
+    fn task_execution_record_inner(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        record: TaskExecutionRecordV1,
+        time: u64,
+        prefix: Option<(u64, Option<(String, u64)>)>,
+    ) -> Result<RunEvent, StoreError> {
         let (kind, payload) = encoding::encode_record(&record)?;
         let (id, _) = cas
             .put_artifact(
@@ -1100,11 +1188,16 @@ impl EventStore {
                 payload,
             )
             .map_err(|e| StoreError::Artifact(e.to_string()))?;
-        self.task_change(
+        self.append_task_transition_with_owned_prefix(
             cas,
-            lease,
-            TaskChangeV1::ExecutionRecorded { record_id: id },
-            time,
+            &lease.task_id,
+            TaskTransitionV1 {
+                writer: lease.writer.clone(),
+                epoch: lease.epoch,
+                now_unix_ms: time,
+                change: TaskChangeV1::ExecutionRecorded { record_id: id },
+            },
+            prefix,
         )
     }
 
@@ -1152,6 +1245,7 @@ impl EventStore {
         let mut execution = state
             .execution
             .ok_or_else(|| conflict("Task has no recorded invocation"))?;
+        execution.check_owned_open(node)?;
         execution.validate_retry(cas, &state.revision, &plan, node, authority)?;
         let (invocation_id, input) = execution
             .invocations
@@ -1201,6 +1295,7 @@ impl EventStore {
             .execution
             .as_ref()
             .ok_or_else(|| conflict("Task has no execution"))?;
+        execution.check_owned_open(&attempt.node)?;
         let recorded = execution.check_reservation(lease, attempt)?;
         if recorded.context_id.is_some() {
             return Err(conflict("Task reservation already has a bound context"));
@@ -1269,6 +1364,7 @@ impl EventStore {
         let mut execution = state
             .execution
             .ok_or_else(|| conflict("Task has no recorded invocation"))?;
+        execution.check_owned_open(node)?;
         execution.validate_retry(cas, &state.revision, &plan, node, authority)?;
         let (invocation_id, invocation) = execution
             .invocations
@@ -1360,6 +1456,11 @@ impl EventStore {
     ) -> Result<(), StoreError> {
         let (state, _) = self.checked_task_dispatch(cas, lease, authority)?;
         state.check_prepared_capability(lease, attempt)?;
+        state
+            .execution
+            .as_ref()
+            .expect("checked execution")
+            .check_owned_open(&attempt.node)?;
         if state
             .execution
             .as_ref()
@@ -1528,6 +1629,14 @@ impl EventStore {
         let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
         let (_, input) =
             Self::validate_task_output(cas, &state, &plan, output_id, attempt_id, authority)?;
+        if let Some(execution) = &state.execution
+            && (execution.resolve_node(&input.node)?.owned.is_some()
+                || execution.graph.owned_children.contains_key(&input.node))
+        {
+            return Err(conflict(
+                "Owned output requires its exact ownership publication API",
+            ));
+        }
         // New publication revalidates after the domain callback at append_task_transition.
         // Idempotent replay has no append, so retain that fresh read explicitly on this path.
         let state = if state
@@ -1550,7 +1659,7 @@ impl EventStore {
                             a.node == input.node
                                 && a.state == review_attempt::AttemptState::Selected
                         }),
-                    None => !execution.graph.allowances.contains_key(&input.node),
+                    None => execution.resolve_node(&input.node)?.allowance.is_none(),
                 };
                 return if old == output_id && same_attempt {
                     Ok(())

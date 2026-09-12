@@ -13,6 +13,8 @@ use crate::{Budget, BudgetLedger, Reservation, Scope};
 
 mod scopes;
 pub use scopes::TaskTokenScope;
+mod owned;
+pub use owned::OwnedNodeAllowance;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -61,6 +63,8 @@ pub struct TaskBudget {
     captured_token_scopes: BTreeMap<String, TaskTokenScope>,
     retired_attempts: u64,
     deferred_verification: bool,
+    owned_templates: BTreeMap<String, OwnedNodeAllowance>,
+    owned_children: BTreeMap<String, Vec<String>>,
 }
 
 fn add(a: u64, b: u64) -> Result<u64, String> {
@@ -139,6 +143,8 @@ impl TaskBudget {
             captured_token_scopes: BTreeMap::new(),
             retired_attempts: 0,
             deferred_verification: false,
+            owned_templates: BTreeMap::new(),
+            owned_children: BTreeMap::new(),
         })
     }
 
@@ -186,6 +192,8 @@ impl TaskBudget {
         self.nodes.clear();
         self.call_limits.clear();
         self.token_scopes.clear();
+        self.owned_templates.clear();
+        self.owned_children.clear();
         self.deferred_verification = true;
         self.last_time = now_unix_ms;
         Ok(())
@@ -229,6 +237,25 @@ impl TaskBudget {
         now_unix_ms: u64,
         preparation: bool,
     ) -> Result<(), String> {
+        self.install_graph_with_owned_templates(
+            allowances,
+            call_limits,
+            token_scopes,
+            BTreeMap::new(),
+            now_unix_ms,
+            preparation,
+        )
+    }
+
+    pub fn install_graph_with_owned_templates(
+        &mut self,
+        allowances: BTreeMap<String, NodeAllowance>,
+        call_limits: BTreeMap<String, u32>,
+        token_scopes: BTreeMap<String, TaskTokenScope>,
+        owned_templates: BTreeMap<String, OwnedNodeAllowance>,
+        now_unix_ms: u64,
+        preparation: bool,
+    ) -> Result<(), String> {
         if !self.deferred_verification
             || self.breached
             || now_unix_ms < self.last_time
@@ -250,7 +277,9 @@ impl TaskBudget {
         {
             return Err("Planning spent capacity still owed to business verification".into());
         }
-        let next = Self::new(remaining, allowances)?.with_call_limits(call_limits)?;
+        let next = Self::new(remaining, allowances)?
+            .with_call_limits(call_limits)?
+            .with_owned_templates(owned_templates)?;
         let next = if preparation {
             next.with_deferred_verification()?
         } else {
@@ -263,6 +292,8 @@ impl TaskBudget {
         candidate.nodes = next.nodes;
         candidate.call_limits = next.call_limits;
         candidate.deferred_verification = preparation;
+        candidate.owned_templates = next.owned_templates;
+        candidate.owned_children.clear();
         candidate.last_time = now_unix_ms;
         candidate.install_token_scopes(token_scopes)?;
         *self = candidate;

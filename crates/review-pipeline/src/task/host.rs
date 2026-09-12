@@ -125,6 +125,30 @@ impl TaskEnvironment for EmptyTaskEnvironment {
 /// Domain operators retain their own receipt semantics. This interface cannot create an
 /// Attempt, execute a child graph, authorize a plan, or change the parent's allowance.
 pub trait TaskDomain: TaskOperatorHost {
+    fn validate_owned_children(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _parent: &TaskInvocationV1,
+        _children: &review_core::task::owned_children::TaskOwnedChildSetV1,
+    ) -> Result<(), String> {
+        Err("Task domain has no installed child admission".into())
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn validate_owned_completion(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _parent: &TaskInvocationV1,
+        _children: &review_core::task::owned_children::TaskOwnedChildSetV1,
+        _facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
+        _output: &TaskOutputV1,
+    ) -> Result<(), String> {
+        Err("Task domain has no installed child completion".into())
+    }
+
     /// Re-derive Broker authority from installed domain policy and exact captured inputs.
     /// A serialized Worker binding alone does not install an external capability.
     fn validate_broker_binding(
@@ -255,6 +279,33 @@ impl<'a> CapturedTaskAuthority<'a> {
 }
 
 impl TaskAuthority for CapturedTaskAuthority<'_> {
+    fn validate_owned_children(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        parent: &TaskInvocationV1,
+        children: &review_core::task::owned_children::TaskOwnedChildSetV1,
+    ) -> Result<(), String> {
+        self.validate_plan(cas, task, plan)?;
+        self.domain
+            .validate_owned_children(cas, task, plan, parent, children)
+    }
+    fn validate_owned_completion(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        parent: &TaskInvocationV1,
+        children: &review_core::task::owned_children::TaskOwnedChildSetV1,
+        facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
+        output: &TaskOutputV1,
+    ) -> Result<(), String> {
+        self.validate_plan(cas, task, plan)?;
+        self.domain
+            .validate_owned_completion(cas, task, plan, parent, children, facts, output)
+    }
+
     fn validate_broker_binding(
         &self,
         cas: &Cas,
@@ -694,6 +745,24 @@ impl<'a> CapturedTaskHost<'a> {
 }
 
 impl TaskOperatorHost for CapturedTaskHost<'_> {
+    fn prepare_owned_children(
+        &self,
+        cas: &Cas,
+        parent: &TaskInvocationV1,
+    ) -> Result<super::TaskOwnedChildrenInputs, String> {
+        self.domain.prepare_owned_children(cas, parent)
+    }
+    fn complete_owned_children(
+        &self,
+        cas: &Cas,
+        parent: &TaskInvocationV1,
+        children: &review_core::task::owned_children::TaskOwnedChildSetV1,
+        facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
+    ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
+        self.domain
+            .complete_owned_children(cas, parent, children, facts)
+    }
+
     fn broker_operations(
         &self,
         cas: &Cas,
@@ -787,6 +856,31 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
 }
 
 impl TaskDomain for CapturedTaskHost<'_> {
+    fn validate_owned_children(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        parent: &TaskInvocationV1,
+        children: &review_core::task::owned_children::TaskOwnedChildSetV1,
+    ) -> Result<(), String> {
+        self.domain
+            .validate_owned_children(cas, task, plan, parent, children)
+    }
+    fn validate_owned_completion(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        parent: &TaskInvocationV1,
+        children: &review_core::task::owned_children::TaskOwnedChildSetV1,
+        facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
+        output: &TaskOutputV1,
+    ) -> Result<(), String> {
+        self.domain
+            .validate_owned_completion(cas, task, plan, parent, children, facts, output)
+    }
+
     fn validate_broker_binding(
         &self,
         cas: &Cas,

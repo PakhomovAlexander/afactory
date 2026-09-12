@@ -15,6 +15,41 @@ fn native_task_adapter_declares_trusted_unsafe_credentials() {
 }
 
 #[test]
+fn review_role_keeps_the_legacy_read_only_tool_grant() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let program = temp.path().join("fake-claude");
+    std::fs::write(&program, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$@\" >&2\nprintf '%s' '{\"is_error\":false,\"result\":\"OK\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}'\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = ClaudeTaskAdapter::new(&Command::new(program.to_str().unwrap(), vec![])).unwrap();
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"review".to_vec(),
+        Duration::from_secs(5),
+        false,
+    );
+    assert_eq!(returned.message.unwrap(), b"OK");
+    let flags = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
+    let flags: Vec<_> = flags.lines().collect();
+    for required in ["--safe-mode", "--restricted", "--strict-mcp-config"] {
+        assert!(flags.contains(&required), "{flags:?}");
+    }
+    for (flag, expected) in [
+        ("--permission-mode", "dontAsk"),
+        ("--tools", "Read,Glob,Grep"),
+        ("--allowedTools", "Read,Glob,Grep"),
+    ] {
+        let index = flags.iter().position(|value| *value == flag).unwrap();
+        assert_eq!(flags[index + 1], expected);
+    }
+    assert!(!flags.iter().any(|flag| {
+        flag.split(',')
+            .any(|tool| matches!(tool, "Edit" | "Write" | "Bash"))
+    }));
+}
+
+#[test]
 fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_message() {
     for timed_out in [true, false] {
         let temp = tempfile::tempdir().unwrap();

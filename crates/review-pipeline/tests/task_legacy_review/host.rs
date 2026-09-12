@@ -10,6 +10,8 @@ use review_store::SharedEventStore;
 mod broker;
 #[path = "host/native.rs"]
 mod native;
+#[path = "host/owned.rs"]
+mod owned;
 #[path = "host/probe_runtime.rs"]
 mod probe_runtime;
 

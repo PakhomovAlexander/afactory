@@ -23,6 +23,7 @@ use crate::task::{TaskOperatorHost, TaskWorkOutput};
 use crate::{DurableReceipt, artifact_ids, port_artifacts};
 
 mod gate_facts;
+mod owned;
 mod result;
 mod worker;
 
@@ -45,6 +46,7 @@ pub struct LegacyReviewTaskHost<'store, 'host> {
     // A CAS envelope and a claimed producer alone cannot manufacture domain authority.
     admitted_outputs: Mutex<BTreeMap<String, Vec<Ports>>>,
     result: Mutex<Option<(String, TaskResultV1)>>,
+    owned: Mutex<BTreeMap<String, owned::OwnedReviewChild>>,
 }
 
 impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
@@ -110,7 +112,7 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
                     .push(output.outputs.clone());
             }
             // A crash may occur after selection and before port publication.
-            for node in execution.graph.nodes.keys() {
+            for node in execution.invocations.keys() {
                 if let Some((id, _)) = execution.reusable_output(node) {
                     let output: TaskOutputV1 = serde_json::from_value(
                         cas.get_artifact(&id).map_err(|e| e.to_string())?.payload,
@@ -136,7 +138,9 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
             receipts: Mutex::new(BTreeMap::new()),
             admitted_outputs: Mutex::new(admitted_outputs),
             result: Mutex::new(None),
+            owned: Mutex::new(BTreeMap::new()),
         };
+        host.hydrate_owned()?;
         host.validate_transports()?;
         if let Some(execution) = &state.execution {
             host.restore_gate_facts(cas, execution)?;
@@ -200,12 +204,27 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
                 })
     }
 
-    fn operation<'a>(
-        &'a self,
+    fn operation(
+        &self,
         input: &TaskInvocationV1,
-    ) -> Result<Option<(&'a Node, &'a ReviewNodeMapping, &'a ReviewOperation)>, String> {
+    ) -> Result<Option<(Node, ReviewNodeMapping, ReviewOperation)>, String> {
         if input.plan_id != self.plan_id {
             return Err("Review invocation changed its plan".into());
+        }
+        if let Some(child) = self
+            .owned
+            .lock()
+            .expect("owned Review mappings")
+            .get(&input.node)
+        {
+            if child.invocation != *input {
+                return Err("Owned Review invocation changed registered inputs".into());
+            }
+            return Ok(Some((
+                child.node.clone(),
+                child.mapping.clone(),
+                child.operation.clone(),
+            )));
         }
         let node = self
             .captured
@@ -219,9 +238,9 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
                 review_node,
                 operation,
             } => Ok(Some((
-                &self.captured.loaded.planned().nodes[review_node],
-                &self.captured.compilation.nodes[review_node],
-                operation,
+                self.captured.loaded.planned().nodes[review_node].clone(),
+                self.captured.compilation.nodes[review_node].clone(),
+                operation.clone(),
             ))),
             _ => Ok(None),
         }
@@ -404,9 +423,7 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
                         )
                     })
                     .collect::<Result<Vec<_>, _>>()?;
-                let contract = &self.captured.compilation.graph.nodes[&input.node]
-                    .contract
-                    .outputs[name];
+                let contract = self.output_contract(input, name)?;
                 Ok((
                     name.clone(),
                     artifact_input(cas, &contract.artifact_type, ids, contract.cardinality)?,
@@ -436,10 +453,10 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
         attempt: Option<&PreparedTaskAttempt>,
     ) -> Result<Ports, String> {
         let (node, mapping, operation) = self.operation(input)?.ok_or("Not a Review operation")?;
-        let raw = self.raw_inputs(cas, input, mapping)?;
+        let raw = self.raw_inputs(cas, input, &mapping)?;
         let mut companions = BTreeMap::new();
         let raw_outputs = match operation {
-            ReviewOperation::Generation => self.domain.run_generation(node)?,
+            ReviewOperation::Generation => self.domain.run_generation(&node)?,
             ReviewOperation::Gate => {
                 let deadline =
                     self.current(attempt.ok_or("Review Gate has no started Attempt")?)?;
@@ -457,22 +474,22 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
             }
             ReviewOperation::Gather => BTreeMap::from([(
                 node.outputs[0].name.clone(),
-                self.domain.run_gather(node, &raw)?,
+                self.domain.run_gather(&node, &raw)?,
             )]),
             ReviewOperation::Ledger => {
-                let reduced = self.domain.reduce_ledger(node, &raw, true)?;
+                let reduced = self.domain.reduce_ledger(&node, &raw, true)?;
                 companions = reduced.canonical;
                 reduced.original
             }
             ReviewOperation::Slicer => {
-                BTreeMap::from([(node.outputs[0].name.clone(), self.domain.run_slicer(node)?)])
+                BTreeMap::from([(node.outputs[0].name.clone(), self.domain.run_slicer(&node)?)])
             }
             ReviewOperation::Reviewer { .. } | ReviewOperation::Scatter { .. } => {
                 return Err("Review Worker requires its started common Attempt".into());
             }
         };
         let producer = self.producer(input, attempt)?;
-        let mut outputs = self.lift(cas, input, mapping, &raw_outputs, &producer)?;
+        let mut outputs = self.lift(cas, input, &mapping, &raw_outputs, &producer)?;
         for (port, id) in companions {
             let contract = &self.captured.compilation.graph.nodes[&input.node]
                 .contract
@@ -483,7 +500,7 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
             );
         }
         if matches!(operation, ReviewOperation::Gate) {
-            self.gate_outcome(cas, node, &raw_outputs, &mut outputs, producer)?;
+            self.gate_outcome(cas, &node, &raw_outputs, &mut outputs, producer)?;
         }
         Ok(outputs)
     }
@@ -539,6 +556,24 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
 }
 
 impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
+    fn prepare_owned_children(
+        &self,
+        cas: &Cas,
+        parent: &TaskInvocationV1,
+    ) -> Result<crate::task::TaskOwnedChildrenInputs, String> {
+        self.prepare_owned_review(cas, parent)
+    }
+
+    fn complete_owned_children(
+        &self,
+        cas: &Cas,
+        parent: &TaskInvocationV1,
+        children: &review_core::task::owned_children::TaskOwnedChildSetV1,
+        facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
+    ) -> Result<Ports, String> {
+        self.complete_owned_review(cas, parent, children, facts)
+    }
+
     fn broker_operations(
         &self,
         cas: &Cas,
@@ -550,7 +585,8 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
         let Some((node, _, ReviewOperation::Reviewer { .. })) = self.operation(input)? else {
             return Ok(None);
         };
-        let Some(policy) = self.captured.loaded.reviewer_execution().get(&node.id) else {
+        let base = self.domain.reviewer_binding_node(&node.id);
+        let Some(policy) = self.captured.loaded.reviewer_execution().get(&base) else {
             return Ok(None);
         };
         if policy.credential_mode != review_core::BrokerCredentialModeV1::Brokered {
@@ -568,19 +604,26 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
         invocation_id: &str,
         input: &TaskInvocationV1,
     ) -> Result<(), String> {
+        self.hydrate_owned_invocation(cas, input)?;
         let Some((node, mapping, _)) = self.operation(input)? else {
             return Ok(());
         };
-        let raw = self.raw_inputs(cas, input, mapping)?;
+        let raw = self.raw_inputs(cas, input, &mapping)?;
         let payload = NodeInvocationPayloadV1 {
             node: node.id.clone(),
             inputs: port_artifacts(&node.inputs, &raw, &self.domain.authority.head_snapshot_id),
         };
         let payload = serde_json::to_value(payload).map_err(|e| e.to_string())?;
         let mut store = self.domain.store.lock().expect("Task Store");
-        store
-            .check_task_dispatch(cas, &self.lease, &self.authority())
-            .map_err(|e| e.to_string())?;
+        if !self.captured.compilation.graph.owned_children.is_empty() {
+            store
+                .check_current_task_plan_for_recording(cas, &self.lease, &self.authority())
+                .map_err(|e| e.to_string())?;
+        } else {
+            store
+                .check_task_dispatch(cas, &self.lease, &self.authority())
+                .map_err(|e| e.to_string())?;
+        }
         let state = store
             .task_projection(cas, &self.task.task_id)
             .map_err(|e| e.to_string())?
@@ -648,6 +691,15 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
         if matches!(operation, ReviewOperation::Reviewer { .. }) {
             self.publish_reviewer(cas, input, output_id, output)?;
         }
+        if self
+            .captured
+            .compilation
+            .graph
+            .owned_children
+            .contains_key(&input.node)
+        {
+            self.publish_owned_shards(cas, input, output_id)?;
+        }
         let raw = mapping
             .outputs
             .iter()
@@ -671,7 +723,8 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
             .expect("Review receipts")
             .get(&node.id)
             .cloned();
-        self.domain.publish_outputs(node, &raw, recorded.as_ref())?;
+        self.domain
+            .publish_outputs(&node, &raw, recorded.as_ref())?;
         // Hydrate the just-published receipt for acknowledgement loss in this process too.
         self.receipts.lock().expect("Review receipts").insert(
             node.id.clone(),
@@ -805,6 +858,36 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
 }
 
 impl TaskDomain for LegacyReviewTaskHost<'_, '_> {
+    fn validate_owned_children(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        parent: &TaskInvocationV1,
+        children: &review_core::task::owned_children::TaskOwnedChildSetV1,
+    ) -> Result<(), String> {
+        if task != &self.task || plan != &self.plan {
+            return Err("Owned Review changed captured Task authority".into());
+        }
+        self.check_owned_set(cas, parent, children)
+    }
+
+    fn validate_owned_completion(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        parent: &TaskInvocationV1,
+        children: &review_core::task::owned_children::TaskOwnedChildSetV1,
+        facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
+        output: &TaskOutputV1,
+    ) -> Result<(), String> {
+        if task != &self.task || plan != &self.plan {
+            return Err("Owned Review changed captured Task authority".into());
+        }
+        self.check_owned_completion(cas, parent, children, facts, output)
+    }
+
     fn validate_broker_binding(
         &self,
         cas: &Cas,
@@ -824,15 +907,34 @@ impl TaskDomain for LegacyReviewTaskHost<'_, '_> {
         {
             return Err("Review Broker binding changed its captured Task or plan".into());
         }
-        let node = self
-            .captured
-            .compilation
-            .graph
-            .nodes
+        let owned = self
+            .owned
+            .lock()
+            .expect("owned Review mappings")
             .get(&binding.node)
-            .ok_or("Review Broker binding has an unknown Task node")?;
+            .cloned();
+        let (operator, canonical_node) = if let Some(child) = owned {
+            (
+                self.captured.compilation.graph.owned_children[child.registered.parent_node()]
+                    .operator
+                    .clone(),
+                Some(child.node.id),
+            )
+        } else {
+            (
+                self.captured
+                    .compilation
+                    .graph
+                    .nodes
+                    .get(&binding.node)
+                    .ok_or("Review Broker binding has an unknown Task node")?
+                    .operator
+                    .clone(),
+                None,
+            )
+        };
         if matches!(
-            node.operator,
+            operator,
             CompiledOperator::ProviderAdmission { .. }
                 | CompiledOperator::ProviderAdmissionBrokered { .. }
         ) {
@@ -843,10 +945,11 @@ impl TaskDomain for LegacyReviewTaskHost<'_, '_> {
         let CompiledOperator::ReviewDomain {
             review_node,
             operation: ReviewOperation::Reviewer { slot },
-        } = &node.operator
+        } = &operator
         else {
             return Err("Review Broker binding requires an original Reviewer operation".into());
         };
+        let canonical_node = canonical_node.as_ref().unwrap_or(review_node);
         let worker = self
             .plan
             .bindings
@@ -865,7 +968,7 @@ impl TaskDomain for LegacyReviewTaskHost<'_, '_> {
             })
             || binding.lease.campaign_id != self.domain.authority.run_id
             || binding.lease.round_event_id != self.domain.authority.round_event_id
-            || binding.lease.node_id != *review_node
+            || binding.lease.node_id != *canonical_node
             || policy.credential_mode != review_core::BrokerCredentialModeV1::Brokered
             || policy.operations.is_empty()
             || binding.operations != policy.operations

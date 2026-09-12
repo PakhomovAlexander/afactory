@@ -7,6 +7,7 @@ pub mod document;
 pub mod host;
 pub mod lease;
 pub mod legacy_review;
+mod owned;
 pub mod planning;
 pub mod provider;
 mod report;
@@ -26,6 +27,13 @@ use review_store::store::task::execution::{PreparedTaskAttempt, ReservedTaskAtte
 use review_store::store::task::{TaskAuthority, TaskLease, TaskProjection, task_run_id};
 use review_store::{Cas, EventStore, SharedEventStore};
 
+/// Data expansion only. The captured template supplies every child contract, operator and
+/// allowance; the Store registers this complete source order before any child can reserve.
+pub struct TaskOwnedChildrenInputs {
+    pub source_artifact_id: String,
+    pub source_item_ids: Vec<String>,
+}
+
 pub struct TaskWorkOutput {
     /// Adapter-reported counters survive output/CAS failure until durable accounting.
     pub usage: Option<review_runner::TokenUsage>,
@@ -38,6 +46,25 @@ pub struct TaskWorkOutput {
 }
 
 pub trait TaskOperatorHost: Sync {
+    fn prepare_owned_children(
+        &self,
+        _cas: &Cas,
+        _parent: &TaskInvocationV1,
+    ) -> Result<TaskOwnedChildrenInputs, String> {
+        Err("Task operator has no installed child expansion".into())
+    }
+
+    /// Pure terminal fold of Store-proven facts. This cannot invoke Workers or report usage.
+    fn complete_owned_children(
+        &self,
+        _cas: &Cas,
+        _parent: &TaskInvocationV1,
+        _children: &review_core::task::owned_children::TaskOwnedChildSetV1,
+        _facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
+    ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
+        Err("Task operator has no installed child completion".into())
+    }
+
     /// Pure lookup of the exact captured operations for this invocation. None grants no
     /// Broker authority; this hook cannot create an Attempt or enlarge its reservation.
     fn broker_operations(
@@ -175,7 +202,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         let (plan, projection) = {
             let locked = store.lock().expect("Task Store");
             let plan = locked
-                .check_task_dispatch(cas, &lease, authority)
+                .check_current_task_plan_for_recording(cas, &lease, authority)
                 .map_err(|e| e.to_string())?;
             let projection = locked
                 .task_projection(cas, lease.task_id())
@@ -290,13 +317,10 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         node: &Node,
         inputs: &ArtifactMap,
     ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
+        let resolved = self.resolve_node(&node.id)?;
         let mut typed = BTreeMap::new();
         for port in &node.inputs {
-            if !self.graph.nodes[&node.id]
-                .contract
-                .inputs
-                .contains_key(&port.name)
-            {
+            if !resolved.definition.contract.inputs.contains_key(&port.name) {
                 continue; // Scheduler guards are control authority, not declared Worker data.
             }
             let values = inputs.get(&port.name).map(Vec::as_slice).unwrap_or(&[]);
@@ -418,44 +442,17 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
     }
 }
 
-impl Dispatch for TaskRuntime<'_, '_> {
-    fn requires_successful_predecessors(&self, node: &Node) -> bool {
-        self.graph.requires_successful_predecessors(&node.id)
-    }
-
-    fn task_node_selected(&self, node: &Node, inputs: &ArtifactMap) -> Result<bool, String> {
-        self.graph.node_selected(&node.id, inputs, |id| {
-            let value = envelope(self.cas, id)?;
-            serde_json::from_value(
-                value
-                    .payload
-                    .get("outcome")
-                    .cloned()
-                    .ok_or("Typed receipt has no outcome")?,
-            )
-            .map_err(|e| e.to_string())
-        })
-    }
-
-    fn failure_class(&self, node_id: &str) -> Option<NodeFailureClass> {
-        self.failures
-            .lock()
-            .expect("Task failures")
-            .get(node_id)
-            .copied()
-    }
-
-    fn record_invocation(&self, node: &Node, inputs: &ArtifactMap) -> Result<(), String> {
-        let input = TaskInvocationV1 {
-            plan_id: self.plan_id.clone(),
-            node: node.id.clone(),
-            inputs: self.typed_inputs(node, inputs)?,
-        };
+impl TaskRuntime<'_, '_> {
+    fn capture_invocation(&self, input: &TaskInvocationV1) -> Result<String, String> {
+        input.validate()?;
+        if input.plan_id != self.plan_id {
+            return Err("Task invocation changed its captured plan".into());
+        }
         let refs: BTreeSet<_> = input
             .inputs
             .values()
             .flat_map(|p| p.artifact_ids.iter().cloned())
-            .chain([self.plan_id.clone()])
+            .chain([input.plan_id.clone()])
             .collect();
         let (id, _) = self
             .cas
@@ -463,45 +460,18 @@ impl Dispatch for TaskRuntime<'_, '_> {
                 TASK_INVOCATION_V1,
                 Producer::KernelOperation {
                     run_id: task_run_id(self.lease.task_id()).map_err(|e| e.to_string())?,
-                    node_id: Some(node.id.clone()),
+                    node_id: Some(input.node.clone()),
                     operation_id: "task-node-invocation@1".into(),
                 },
                 refs.into_iter().collect(),
                 None,
-                serde_json::to_value(&input).map_err(|e| e.to_string())?,
+                serde_json::to_value(input).map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string())?;
-        self.store
-            .lock()
-            .expect("Task Store")
-            .record_task_invocation(self.cas, &self.lease, &id, self.authority)
-            .map_err(|e| e.to_string())?;
-        let published = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.host.commit_domain_invocation(self.cas, &id, &input)
-        }))
-        .unwrap_or_else(|_| Err("Task domain invocation publication panicked".into()));
-        self.record_domain_publication(&node.id, published)?;
-        // The callback runs without the Store lock. A concurrent authority change must stop
-        // this invocation even when it is an installed operation with no paid Attempt.
-        self.store
-            .lock()
-            .expect("Task Store")
-            .check_task_dispatch(self.cas, &self.lease, self.authority)
-            .map_err(|e| e.to_string())?;
-        let replayed = self.projection()?.execution.as_ref().is_some_and(|e| {
-            e.outputs.contains_key(&node.id) || e.reusable_output(&node.id).is_some()
-        });
-        if self.graph.allowances.contains_key(&node.id) && !replayed {
-            let attempt = self.prepare(&input)?;
-            self.prepared
-                .lock()
-                .expect("prepared Tasks")
-                .insert(node.id.clone(), attempt);
-        }
-        Ok(())
+        Ok(id)
     }
 
-    fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
+    fn execute_node(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
         let state = self
             .projection()?
             .execution
@@ -522,7 +492,15 @@ impl Dispatch for TaskRuntime<'_, '_> {
             .invocations
             .get(&node.id)
             .ok_or("Task invocation is not recorded")?;
-        let compiled = &self.graph.nodes[&node.id];
+        // Replaying an already selected result above is factual recovery. Every new operation,
+        // including a pure installed operation, still requires current dispatch authority.
+        self.store
+            .lock()
+            .expect("Task Store")
+            .check_task_dispatch(self.cas, &self.lease, self.authority)
+            .map_err(|e| e.to_string())?;
+        let resolved = state.resolve_node(&node.id).map_err(|e| e.to_string())?;
+        let compiled = &resolved.definition;
         if matches!(
             compiled.operator,
             CompiledOperator::RootInputs | CompiledOperator::Select
@@ -558,7 +536,7 @@ impl Dispatch for TaskRuntime<'_, '_> {
                 .insert(node.id.clone(), (out, None));
             return Ok(artifact_map(&values));
         }
-        let allowance = self.graph.allowances.get(&node.id);
+        let allowance = resolved.allowance.as_ref();
         let mut last_error = String::new();
         for index in 0..allowance.map_or(1, |a| a.max_attempts) {
             let attempt = if allowance.is_some() {
@@ -761,6 +739,118 @@ impl Dispatch for TaskRuntime<'_, '_> {
         }
         Err(last_error)
     }
+}
+
+impl Dispatch for TaskRuntime<'_, '_> {
+    fn coordinates_owned_children(&self, node: &Node) -> bool {
+        self.graph.owned_children.contains_key(&node.id)
+    }
+
+    fn expand_owned_children(
+        &self,
+        node: &Node,
+        _inputs: &ArtifactMap,
+    ) -> Result<Vec<review_graph::OwnedChildDispatch>, String> {
+        self.expand_children(node)
+    }
+
+    fn complete_owned_children(
+        &self,
+        node: &Node,
+        _inputs: &ArtifactMap,
+        children: &[(String, review_graph::NodeOutcome)],
+    ) -> Result<ArtifactMap, String> {
+        self.complete_children(node, children)
+    }
+
+    fn requires_successful_predecessors(&self, node: &Node) -> bool {
+        self.graph.requires_successful_predecessors(&node.id)
+    }
+
+    fn task_node_selected(&self, node: &Node, inputs: &ArtifactMap) -> Result<bool, String> {
+        if self.resolve_node(&node.id)?.owned.is_some() {
+            return Ok(true); // The captured Provider/condition barriers admit the owner.
+        }
+        self.graph.node_selected(&node.id, inputs, |id| {
+            let value = envelope(self.cas, id)?;
+            serde_json::from_value(
+                value
+                    .payload
+                    .get("outcome")
+                    .cloned()
+                    .ok_or("Typed receipt has no outcome")?,
+            )
+            .map_err(|e| e.to_string())
+        })
+    }
+
+    fn failure_class(&self, node_id: &str) -> Option<NodeFailureClass> {
+        self.failures
+            .lock()
+            .expect("Task failures")
+            .get(node_id)
+            .copied()
+    }
+
+    fn record_invocation(&self, node: &Node, inputs: &ArtifactMap) -> Result<(), String> {
+        let input = TaskInvocationV1 {
+            plan_id: self.plan_id.clone(),
+            node: node.id.clone(),
+            inputs: self.typed_inputs(node, inputs)?,
+        };
+        let id = self.capture_invocation(&input)?;
+        let state = self.projection()?.execution;
+        let existing = state
+            .as_ref()
+            .and_then(|state| state.invocations.get(&node.id));
+        if let Some((recorded, prior)) = existing {
+            if recorded != &id || prior != &input {
+                return Err("Invocation replay changed its exact inputs".into());
+            }
+            self.store
+                .lock()
+                .expect("Task Store")
+                .check_current_task_plan_for_recording(self.cas, &self.lease, self.authority)
+                .map_err(|e| e.to_string())?;
+        } else {
+            self.store
+                .lock()
+                .expect("Task Store")
+                .record_task_invocation(self.cas, &self.lease, &id, self.authority)
+                .map_err(|e| e.to_string())?;
+        }
+        let published = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            self.host.commit_domain_invocation(self.cas, &id, &input)
+        }))
+        .unwrap_or_else(|_| Err("Task domain invocation publication panicked".into()));
+        self.record_domain_publication(&node.id, published)?;
+        // The callback runs without the Store lock. A concurrent authority change must stop
+        // this invocation even when it is an installed operation with no paid Attempt.
+        let replayed = self.projection()?.execution.as_ref().is_some_and(|e| {
+            e.outputs.contains_key(&node.id) || e.reusable_output(&node.id).is_some()
+        });
+        {
+            let store = self.store.lock().expect("Task Store");
+            if replayed || self.graph.owned_children.contains_key(&node.id) {
+                store.check_current_task_plan_for_recording(self.cas, &self.lease, self.authority)
+            } else {
+                store.check_task_dispatch(self.cas, &self.lease, self.authority)
+            }
+            .map_err(|e| e.to_string())?;
+        }
+        if self.resolve_node(&node.id)?.allowance.is_some() && !replayed {
+            let attempt = self.prepare(&input)?;
+            self.prepared
+                .lock()
+                .expect("prepared Tasks")
+                .insert(node.id.clone(), attempt);
+        }
+        Ok(())
+    }
+
+    fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
+        self.execute_node(node, inputs)
+    }
 
     fn record_outputs(&self, node: &Node, outputs: &ArtifactMap) -> Result<(), String> {
         if let Some((id, recorded)) = self
@@ -781,6 +871,9 @@ impl Dispatch for TaskRuntime<'_, '_> {
             .expect("Task outputs")
             .remove(&node.id)
             .ok_or("Task output has no durable settlement")?;
+        if self.publish_owned_output(&node.id, &id, attempt.as_deref())? {
+            return self.commit_domain_output(&id);
+        }
         self.store
             .lock()
             .expect("Task Store")

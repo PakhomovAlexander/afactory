@@ -97,6 +97,16 @@
       "additionalProperties": {
         "$ref": "#/$defs/tokenScope"
       }
+    },
+    "owned_children": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/ownedChildTemplate"
+      }
     }
   },
   "$defs": {
@@ -616,6 +626,50 @@
             "$ref": "urn:af:schema:task-contracts:1#/$defs/outputPort"
           },
           "minProperties": 0
+        }
+      }
+    },
+    "ownedChildTemplate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "operator",
+        "contract",
+        "allowance",
+        "max_children",
+        "source_input",
+        "item_input",
+        "inherited_inputs"
+      ],
+      "properties": {
+        "operator": {
+          "$ref": "#/$defs/operator"
+        },
+        "contract": {
+          "$ref": "#/$defs/rootInputContract"
+        },
+        "allowance": {
+          "$ref": "#/$defs/allowance"
+        },
+        "max_children": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "source_input": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "item_input": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "inherited_inputs": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          }
         }
       }
     }

@@ -1439,6 +1439,7 @@ fn present(
     let mut history = Vec::new();
     let mut execution = Vec::new();
     let mut broker_records = Vec::new();
+    let mut owned_child_sets = Vec::new();
     let mut decisions = Vec::new();
     for event in events {
         if event.event_type == review_core::EventType::TaskBrokerTransitionV1 {
@@ -1463,6 +1464,17 @@ fn present(
                     .map_err(|error| error.to_string())?;
             let mut entry = json!({"artifact_id":record_id,"artifact_type":decoded.envelope.artifact_type,"record":decoded.envelope.payload});
             let record = decoded.record;
+            if let review_core::task::execution::TaskExecutionRecordV1::OwnedChildrenRegistered {
+                child_set_id,
+            } = &record
+            {
+                let set = review_store::store::task::execution::owned::read_task_owned_children(
+                    cas,
+                    child_set_id,
+                )
+                .map_err(|e| e.to_string())?;
+                owned_child_sets.push(json!({"artifact_id":child_set_id,"artifact_type":review_core::task::owned_children::TASK_OWNED_CHILD_SET_V1,"record":set}));
+            }
             if let review_core::task::execution::TaskExecutionRecordV1::Settled {
                 result:
                     review_core::task::execution::TaskAttemptResultV1::Failed { diagnostic_id, .. },
@@ -1491,6 +1503,10 @@ fn present(
     if !broker_records.is_empty() {
         value["schema"] = json!("af/task-inspection@4");
         value["broker_records"] = json!(broker_records);
+    }
+    if !owned_child_sets.is_empty() {
+        value["schema"] = json!("af/task-inspection@5");
+        value["owned_child_sets"] = json!(owned_child_sets);
     }
     let mut reports = Vec::new();
     for id in &state.run_reports {

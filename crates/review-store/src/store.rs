@@ -3625,6 +3625,9 @@ fn validate_campaign_transition(
                                 )));
                             }
                             if let Some(attempt) = event.attempt_id.as_deref() {
+                                task::execution::owned::check_canonical_child_receipt(
+                                    tx, cas, run_id, active_id, node, attempt,
+                                )?;
                                 let result = selected_attempt_result(
                                     tx,
                                     run_id,

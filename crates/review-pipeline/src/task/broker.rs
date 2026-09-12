@@ -195,7 +195,8 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
     ) -> Result<TaskWorkOutput, String> {
         use review_core::task::pipeline::TaskOperatorV1;
         use review_graph::task::ReviewOperation;
-        let provider = match &self.graph.nodes[&input.node].operator {
+        let resolved = self.resolve_node(&input.node)?;
+        let provider = match &resolved.definition.operator {
             CompiledOperator::ReviewDomain {
                 operation: ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot },
                 ..

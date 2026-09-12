@@ -1,3 +1,4 @@
+use super::super::capture::captured_fixture;
 use super::*;
 use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_pipeline::task::host::TaskModelBinding;
@@ -5,6 +6,7 @@ use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Model {
+    provider_kind: &'static str,
     calls: AtomicUsize,
     admitted: bool,
     retry: bool,
@@ -12,10 +14,10 @@ struct Model {
 }
 impl WorkerModelAdapter for Model {
     fn provider_kind(&self) -> &'static str {
-        "claude"
+        self.provider_kind
     }
     fn model_settings(&self) -> Option<(String, String)> {
-        Some(("claude-fixture".into(), "high".into()))
+        Some((format!("{}-fixture", self.provider_kind), "high".into()))
     }
     fn invoke(
         &self,
@@ -32,7 +34,7 @@ impl WorkerModelAdapter for Model {
             (if self.admitted { "OK" } else { "unavailable" }, 1)
         } else {
             assert!(self.admitted);
-            assert!(writable);
+            assert_eq!(writable, self.provider_kind == "codex");
             assert!(
                 n <= if self.retry { 2 } else { 1 },
                 "replay must reuse the selected Attempt"
@@ -71,20 +73,41 @@ fn admitted_plan(
     review_store::store::task::TaskLease,
     ExecutionPlanV1,
 ) {
+    admitted_plan_with_provider(cas, store, mode, "claude")
+}
+
+fn admitted_plan_with_provider(
+    cas: &Cas,
+    store: &mut EventStore,
+    mode: &str,
+    provider_kind: &str,
+) -> (
+    LegacyReviewPlanCompiler,
+    review_store::store::task::TaskLease,
+    ExecutionPlanV1,
+) {
     let definition = PIPELINE
         .replace("version = 2", "version = 4\n[gate]\nprovider=\"trusted_local\"\nrequired_isolation=\"none\"\nmode=\"ephemeral-write\"")
         .replace("runner = { program = \"/bin/true\" }", &format!("package=\"fixture\"\ngated_by=\"gate\"\nexecution={{credential_mode=\"{mode}\"}}"))
         + "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[\"decision\"]\n[[checks]]\nname=\"required\"\nprogram=\"/bin/sh\"\nargs=[{value=\"-c\"},{value=\"exit 0\"}]\n";
-    let round = capture::open_round_with_package(cas, store, &definition);
+    let round = if provider_kind == "claude" {
+        capture::open_round_with_package(cas, store, &definition)
+    } else {
+        assert_eq!(provider_kind, "codex");
+        captured_fixture::open_round_authority(cas, store, &definition, Some(BTreeMap::from([
+            ("reviewer.toml".into(), b"name=\"fixture\"\nversion=\"1.0.0\"\nsubjects=[\"whole-tree\"]\n[runner]\nprogram=\"codex\"\nargs=[{value=\"--model\"},{value=\"codex-fixture\"},{value=\"-c\"},{value=\"model_reasoning_effort=high\"}]\n".to_vec()),
+            ("reviewer.md".into(), b"Review the exact declared Subject. Captured instruction marker.".to_vec()),
+        ])))
+    };
     let mut settings = plan::settings();
     settings.provider_admission.tokens = 32;
     settings.executions.insert(
         "reviewer".into(),
         WorkerExecutionV1::Model {
-            provider: "claude-personal".into(),
-            provider_kind: "claude".into(),
+            provider: format!("{provider_kind}-personal"),
+            provider_kind: provider_kind.into(),
             principal_id: "fixture-personal-account".into(),
-            model: "claude-fixture".into(),
+            model: format!("{provider_kind}-fixture"),
             effort: "high".into(),
         },
     );
@@ -118,17 +141,20 @@ fn admitted_plan(
 
 #[test]
 fn packaged_review_uses_one_captured_provider_binding_for_admission_and_business_work() {
-    for (admitted, retry, wide) in [
-        (true, false, false),
-        (true, true, false),
-        (false, false, false),
-        (true, false, true),
+    for (provider_kind, admitted, retry, wide) in [
+        ("claude", true, false, false),
+        ("claude", true, true, false),
+        ("claude", false, false, false),
+        ("claude", true, false, true),
+        ("codex", true, false, false),
     ] {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
-        let (compiler, lease, plan) = admitted_plan(&cas, &mut store, "trusted_unsafe");
+        let (compiler, lease, plan) =
+            admitted_plan_with_provider(&cas, &mut store, "trusted_unsafe", provider_kind);
         let model = Model {
+            provider_kind,
             calls: AtomicUsize::new(0),
             admitted,
             retry,
@@ -226,6 +252,7 @@ fn captured_review_refuses_credential_mode_and_account_substitution_before_dispa
         let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
         let (compiler, lease, plan) = admitted_plan(&cas, &mut store, mode);
         let model = Model {
+            provider_kind: "claude",
             calls: AtomicUsize::new(0),
             admitted: true,
             retry: false,
@@ -286,6 +313,7 @@ fn review_report_binds_wide_task_charge_and_freezes_its_accounting_prefix() {
     let mut store = EventStore::open(&path).unwrap();
     let (compiler, lease, compiled) = admitted_plan(&cas, &mut store, "trusted_unsafe");
     let model = Model {
+        provider_kind: "claude",
         calls: AtomicUsize::new(0),
         admitted: true,
         retry: false,

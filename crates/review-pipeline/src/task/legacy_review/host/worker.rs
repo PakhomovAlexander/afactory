@@ -11,7 +11,8 @@ use review_runner::{ContextManifest, ReviewerInputs, TokenUsage};
 
 impl LegacyReviewTaskHost<'_, '_> {
     fn slot(&self, node: &str) -> Result<&str, String> {
-        let task_node = &self.captured.compilation.nodes[node].task_node;
+        let base = self.domain.reviewer_binding_node(node);
+        let task_node = &self.captured.compilation.nodes[&base].task_node;
         let CompiledOperator::ReviewDomain {
             operation: ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot },
             ..
@@ -37,15 +38,7 @@ impl LegacyReviewTaskHost<'_, '_> {
     }
 
     fn execution(&self, node: &str) -> Result<&WorkerExecutionV1, String> {
-        let mapping = &self.captured.compilation.nodes[node];
-        let CompiledOperator::ReviewDomain {
-            operation: ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot },
-            ..
-        } = &self.captured.compilation.graph.nodes[&mapping.task_node].operator
-        else {
-            return Err("Review node has no Worker binding".into());
-        };
-        Ok(&self.plan.bindings[slot].execution)
+        Ok(&self.plan.bindings[self.slot(node)?].execution)
     }
 
     pub(super) fn validate_transports(&self) -> Result<(), String> {
@@ -111,11 +104,12 @@ impl LegacyReviewTaskHost<'_, '_> {
     }
 
     fn instructions(&self, node: &str) -> Result<String, String> {
+        let base = self.domain.reviewer_binding_node(node);
         let package = self
             .captured
             .loaded
             .packages()
-            .get(node)
+            .get(&base)
             .ok_or("Native Review Worker requires captured package instructions")?;
         let bytes = package
             .file("reviewer.md")
@@ -141,8 +135,8 @@ impl LegacyReviewTaskHost<'_, '_> {
             cas,
             &self.domain.authority,
             self.domain.pipeline_version,
-            node,
-            &self.raw_inputs(cas, input, mapping)?,
+            &node,
+            &self.raw_inputs(cas, input, &mapping)?,
         )
     }
 
@@ -330,14 +324,23 @@ impl LegacyReviewTaskHost<'_, '_> {
                     cas,
                     sandbox.root(),
                     runtime.as_ref().expect("command runtime").path(),
-                    &self.captured.loaded.reviewers()[&node.id],
+                    &self.captured.loaded.reviewers()[&self.domain.reviewer_binding_node(&node.id)],
                     bytes,
                     timeout,
                 ),
-                WorkerExecutionV1::Model { .. } => self
-                    .model(&node.id)?
-                    .adapter
-                    .invoke_with_broker(cas, sandbox.root(), bytes, timeout, true, broker),
+                // Preserve the native Review capability profile: ADR-0042 keeps Claude
+                // read-only, while the legacy Codex adapter permits sandbox Proposals.
+                // A different installed backend has no implicit edit authority.
+                WorkerExecutionV1::Model { provider_kind, .. } => {
+                    self.model(&node.id)?.adapter.invoke_with_broker(
+                        cas,
+                        sandbox.root(),
+                        bytes,
+                        timeout,
+                        provider_kind == "codex",
+                        broker,
+                    )
+                }
             };
             result.usage = returned.usage;
             result.charged_tokens = result
@@ -398,7 +401,7 @@ impl LegacyReviewTaskHost<'_, '_> {
             let mut ports = self.lift(
                 cas,
                 input,
-                mapping,
+                &mapping,
                 &raw_outputs,
                 &self.producer(input, Some(attempt))?,
             )?;
@@ -471,12 +474,26 @@ impl LegacyReviewTaskHost<'_, '_> {
         let Producer::Attempt { attempt_id, .. } = wrapper.producer else {
             return Err("Review selection lacks its actual common Attempt".into());
         };
-        self.domain
-            .store
+        let registered = self
+            .owned
             .lock()
-            .expect("Task Store")
-            .publish_task_review_result(cas, &self.lease, output_id, &self.authority())
-            .map_err(|e| e.to_string())?;
+            .expect("owned Review mappings")
+            .get(&input.node)
+            .map(|child| child.registered.clone());
+        let mut store = self.domain.store.lock().expect("Task Store");
+        if let Some(registered) = registered {
+            store.publish_task_owned_review_result(
+                cas,
+                &self.lease,
+                &registered,
+                output_id,
+                &self.authority(),
+            )
+        } else {
+            store.publish_task_review_result(cas, &self.lease, output_id, &self.authority())
+        }
+        .map_err(|e| e.to_string())?;
+        drop(store);
         let metadata: TaskReviewResultMetadataV1 = serde_json::from_value(
             cas.get_artifact(&output.outputs["metadata"].artifact_ids[0])
                 .map_err(|e| e.to_string())?

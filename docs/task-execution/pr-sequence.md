@@ -634,3 +634,20 @@ late paid receipts and exact usage through panic/CAS failure in the same common 
 focused Store, Runner, Review and runtime checks pass. Its independently captured Provider
 probe authority passes compiler, Store, domain and real runtime connector checks. The slice
 awaits its full gate before publication; Scatter, heavy continuation and legacy CLI cutover remain.
+
+## Owned Review children: integration in progress
+
+[ADR-0081](../adr/0081-register-owned-review-children-in-the-common-task-runtime.md) records
+the captured child template, protected complete registration and common scheduler/Attempt
+execution. The current local implementation adds lossless factual completion, sealed-parent
+replay and historical child accounting; strict execution-record @4 and inspection @5 preserve
+earlier wire generations. Existing common runtime regressions pass 14/14. Store/Attempt package
+checks and focused Core/Graph/host tests pass; new full CLI and interrupted-recovery integration
+checks are still in progress. This slice has not passed its full frozen-tree gate or specialist
+review and is not included in published Broker checkpoint `c55f96e`.
+
+The published Broker checkpoint passes CI `34702550379`. Its full PR-2 diff against `c8015f1`
+is already 3,095,643 bytes before owned children: roughly 773,910 byte-estimated input tokens
+before role prompts, beyond the configured 400,000-token Attempt. Exact per-role planning and
+a concrete review capacity solution are required before external calls. No review caps have
+been changed, and a usable `claude-personal` login remains pending.

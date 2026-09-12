@@ -25,8 +25,12 @@ tests and byte-identical fixture reproduction. Provider readiness and business w
 separate captured policies, credentials and original Attempts. Failed readiness blocks work;
 late receipts, panic and CAS failure preserve exact paid usage in the same Task ledger.
 CLI show/explain/list verify typed Broker evidence and cumulative charges after reopen.
-The next slice adds owned Scatter children under the same scheduler and ledger; heavy
-continuation and legacy CLI cutover remain. See
+The published checkpoint also passes CI `34702550379` at documentation head `c55f96e`.
+Owned Scatter children now compile under the same scheduler and ledger, with focused Store,
+Graph and host tests passing; their full integration gate is pending. Heavy continuation and
+legacy CLI cutover remain. The proposed
+[owned-child decision](adr/0081-register-owned-review-children-in-the-common-task-runtime.md)
+records registration, factual recovery and immutable completion. See
 [Review compatibility](task-execution/review-compatibility.md) and
 [ADR-0080](adr/0080-bind-broker-evidence-to-the-original-task-attempt.md).
 

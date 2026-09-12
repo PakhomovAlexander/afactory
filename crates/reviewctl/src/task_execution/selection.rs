@@ -296,9 +296,14 @@ pub(super) fn recorded(
     cas: &Cas,
     revision: &TaskRevisionV1,
 ) -> Result<Option<serde_json::Value>, String> {
-    let value = cas
-        .get_json(&revision.provenance.adapter_id)
+    let bytes = cas
+        .get(&revision.provenance.adapter_id)
         .map_err(|e| e.to_string())?;
+    // Adapter provenance may be a verified opaque engine blob. Selection is optional
+    // metadata; only its declared JSON schema selects the strict adapter decoder below.
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        return Ok(None);
+    };
     if value["schema"] != "af.selected-task-adapter/1" {
         return Ok(None);
     }
@@ -310,4 +315,32 @@ pub(super) fn recorded(
     Ok(Some(
         json!({"artifact_id": adapter.selection_id, "request_revision_id":adapter.request_revision_id, "assessment": selection}),
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn optional_selection_preserves_opaque_provenance_and_rejects_invalid_selected_metadata() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let mut revision: TaskRevisionV1 = serde_json::from_str(include_str!(
+            "../../../../fixtures/task-contracts/v1/task-revision.json"
+        ))
+        .unwrap();
+        for bytes in [
+            b"engine identity\0\xff".as_slice(),
+            b"{\"schema\":\"another-adapter/1\"}",
+        ] {
+            revision.provenance.adapter_id = cas.put(bytes).unwrap();
+            assert!(recorded(&cas, &revision).unwrap().is_none());
+        }
+        revision.provenance.adapter_id = cas
+            .put_json(&json!({"schema":"af.selected-task-adapter/1"}))
+            .unwrap();
+        assert!(recorded(&cas, &revision).is_err());
+        revision.provenance.adapter_id = format!("sha256:{}", "0".repeat(64));
+        assert!(recorded(&cas, &revision).is_err());
+    }
 }

@@ -3,6 +3,8 @@ use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_core::task::{TaskResultV1, TaskRevisionV1};
 use review_graph::task::OperatorAttemptCost;
+#[path = "plan/owned.rs"]
+mod owned;
 #[path = "plan/provider_probe.rs"]
 mod provider_probe;
 use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
@@ -319,6 +321,10 @@ fn assert_plan_schemas(cas: &Cas, compiler: &LegacyReviewPlanCompiler, plan: &Ex
             (
                 "af/LegacyReviewTaskPolicy@2",
                 "legacy-review-task-policy-v2.json",
+            ),
+            (
+                "af/LegacyReviewTaskPolicy@3",
+                "legacy-review-task-policy-v3.json",
             ),
             (
                 "af/TaskProviderProbePolicy@1",

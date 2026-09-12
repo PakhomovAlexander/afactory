@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use review_attempt::task_budget::{NodeAllowance, TaskBudget};
+use review_attempt::task_budget::{NodeAllowance, OwnedNodeAllowance, TaskBudget};
 use review_core::task::pipeline::{
     PipelineContractV1, PipelineDefinitionV1, PipelinePortV1, PortAffinityV1, ReceiptOutcomeV1,
     TaskOperatorV1, ValueRefV1, WorkerSlotV1,
@@ -139,6 +139,21 @@ pub struct CompiledCall {
     pub max_parallel: u32,
 }
 
+/// Installed, captured authority for bounded data expansion. The owner coordinates without
+/// an Attempt; registered children inherit this one operator, contract and allowance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnedChildTemplateV1 {
+    pub operator: CompiledOperator,
+    pub contract: PipelineContractV1,
+    pub allowance: NodeAllowance,
+    pub max_children: u32,
+    pub source_input: String,
+    pub item_input: String,
+    /// Child port to the exact already admitted parent port.
+    pub inherited_inputs: BTreeMap<String, String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompiledTask {
@@ -155,6 +170,8 @@ pub struct CompiledTask {
     pub replaced_workers: BTreeMap<String, BTreeSet<String>>,
     pub max_parallel: u32,
     pub allowances: BTreeMap<String, NodeAllowance>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub owned_children: BTreeMap<String, OwnedChildTemplateV1>,
     /// Aggregate caps for exact nodes or bounded child groups, charged by the common ledger.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub token_scopes: BTreeMap<String, review_attempt::task_budget::TaskTokenScope>,
@@ -376,6 +393,7 @@ impl CompiledTask {
     }
 
     pub fn budget(&self, limits: review_core::task::TaskLimitsV1) -> Result<TaskBudget, String> {
+        let templates = self.owned_template_allowances()?;
         // Before dispatch, protect the declared verifier reserve and one Attempt for every
         // unconditional non-verifier. Provider admission guards cannot hide mandatory work.
         let mut minimum_tokens = limits.verification.tokens;
@@ -390,7 +408,13 @@ impl CompiledTask {
             .values()
             .map(|a| u64::from(a.verification_attempts))
             .sum::<u64>();
-        for (name, allowance) in &self.allowances {
+        // An unconditional owner protects one initial child, never a phantom parent or the
+        // maximum fanout. Each real child competes for the common reservation when admitted.
+        for (name, allowance) in self.allowances.iter().chain(
+            self.owned_children
+                .iter()
+                .map(|(name, template)| (name, &template.allowance)),
+        ) {
             let node = self
                 .nodes
                 .get(name)
@@ -457,7 +481,30 @@ impl CompiledTask {
                     .map(|(scope, call)| (scope.clone(), call.max_attempts))
                     .collect(),
             )?
+            .with_owned_templates(templates)?
             .with_token_scopes(self.token_scopes.clone())
+    }
+
+    pub fn owned_template_allowances(
+        &self,
+    ) -> Result<BTreeMap<String, OwnedNodeAllowance>, String> {
+        self.owned_children.iter().map(|(owner, template)| {
+            let parent = self.nodes.get(owner).ok_or("Owned template has no static owner")?;
+            if self.allowances.contains_key(owner) || template.max_children == 0
+                || template.allowance.verification_attempts != 0
+                || !parent.contract.inputs.contains_key(&template.source_input)
+                || !template.contract.inputs.contains_key(&template.item_input)
+                || template.inherited_inputs.contains_key(&template.item_input)
+                || template.contract.inputs.len() != template.inherited_inputs.len() + 1
+                || template.inherited_inputs.iter().any(|(child, parent_port)| {
+                    template.contract.inputs.get(child) != parent.contract.inputs.get(parent_port)
+                        || !parent.contract.inputs.contains_key(parent_port)
+                })
+            {
+                return Err("Owned template must inherit an exact bounded contract without a parent Attempt".into());
+            }
+            Ok((owner.clone(), OwnedNodeAllowance { allowance: template.allowance.clone(), max_children: template.max_children }))
+        }).collect()
     }
 
     pub fn run(&self, dispatch: &(dyn crate::Dispatch + Sync)) -> Result<crate::RunReport, String> {
@@ -715,6 +762,7 @@ fn compile_structure_mode(
             replaced_workers: BTreeMap::new(),
             max_parallel: definition.max_parallel,
             allowances: BTreeMap::new(),
+            owned_children: BTreeMap::new(),
             token_scopes: BTreeMap::new(),
         },
     };

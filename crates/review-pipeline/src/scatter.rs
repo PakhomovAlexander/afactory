@@ -85,6 +85,57 @@ impl StaticSlicePolicy {
     }
 }
 
+pub(crate) fn slice_producer(
+    run: &str,
+    scatter: &str,
+    slice: &ReviewSliceV1,
+) -> review_core::Producer {
+    review_core::Producer::KernelOperation {
+        run_id: run.into(),
+        node_id: Some(scatter.into()),
+        operation_id: format!("slice:{}", slice.slice_id),
+    }
+}
+
+/// The lossless canonical fold shared by legacy execution and common Task ownership.
+pub(crate) fn fold_shards(
+    slice_set: &SliceSetV1,
+    source: &str,
+    outcomes: &BTreeMap<String, ShardOutcomeV1>,
+) -> Result<ShardSetV1, String> {
+    let shards = ShardSetV1 {
+        subject_id: slice_set.subject_id.clone(),
+        slice_set_id: source.into(),
+        all_shards_required: slice_set.all_shards_required,
+        shards: slice_set
+            .slices
+            .iter()
+            .map(|slice| review_core::ShardReceiptV1 {
+                slice_id: slice.slice_id.clone(),
+                runtime_node_id: slice.runtime_node_id.clone(),
+                outcome: outcomes.get(&slice.slice_id).cloned().unwrap_or_else(|| {
+                    ShardOutcomeV1::Missing {
+                        reason: "dynamic shard produced no terminal outcome".into(),
+                    }
+                }),
+            })
+            .collect(),
+    };
+    shards.validate_against(slice_set)?;
+    Ok(shards)
+}
+
+pub(crate) fn shard_artifact_inputs(shards: &ShardSetV1) -> Vec<String> {
+    let mut inputs = vec![shards.slice_set_id.clone()];
+    inputs.extend(shards.shards.iter().flat_map(|shard| match &shard.outcome {
+        ShardOutcomeV1::Completed {
+            result_artifact_ids,
+        } => result_artifact_ids.clone(),
+        ShardOutcomeV1::Failed { .. } | ShardOutcomeV1::Missing { .. } => vec![],
+    }));
+    inputs
+}
+
 /// Prove actual semantic-output routing after scatter and reduction. The caller supplies every
 /// selected semantic artifact by kind; this function deliberately flattens kinds only after each
 /// ID has acquired a named authoritative sink.

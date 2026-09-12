@@ -266,6 +266,24 @@ impl ProviderTaskDomain<'_> {
     }
 }
 impl TaskOperatorHost for ProviderTaskDomain<'_> {
+    fn prepare_owned_children(
+        &self,
+        cas: &Cas,
+        parent: &TaskInvocationV1,
+    ) -> Result<super::TaskOwnedChildrenInputs, String> {
+        self.inner.prepare_owned_children(cas, parent)
+    }
+    fn complete_owned_children(
+        &self,
+        cas: &Cas,
+        parent: &TaskInvocationV1,
+        children: &review_core::task::owned_children::TaskOwnedChildSetV1,
+        facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
+    ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
+        self.inner
+            .complete_owned_children(cas, parent, children, facts)
+    }
+
     fn broker_operations(
         &self,
         cas: &Cas,
@@ -405,6 +423,31 @@ impl TaskOperatorHost for ProviderTaskDomain<'_> {
     }
 }
 impl TaskDomain for ProviderTaskDomain<'_> {
+    fn validate_owned_children(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        parent: &TaskInvocationV1,
+        children: &review_core::task::owned_children::TaskOwnedChildSetV1,
+    ) -> Result<(), String> {
+        self.inner
+            .validate_owned_children(cas, task, plan, parent, children)
+    }
+    fn validate_owned_completion(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        parent: &TaskInvocationV1,
+        children: &review_core::task::owned_children::TaskOwnedChildSetV1,
+        facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
+        output: &TaskOutputV1,
+    ) -> Result<(), String> {
+        self.inner
+            .validate_owned_completion(cas, task, plan, parent, children, facts, output)
+    }
+
     fn validate_broker_binding(
         &self,
         cas: &Cas,

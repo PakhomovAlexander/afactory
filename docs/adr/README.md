@@ -150,3 +150,4 @@ options you rejected and why — that is the part future-you needs.
 - [0078 — Bind Review conclusions to exact Task accounting](0078-bind-review-conclusions-to-exact-task-accounting.md)
 - [0079 — Retain exact cumulative charge within one Task Attempt](0079-retain-exact-cumulative-charge-within-one-task-attempt.md)
 - [0080 — Bind Broker evidence to the original Task Attempt](0080-bind-broker-evidence-to-the-original-task-attempt.md)
+- [0081 — Register owned Review children in the common Task runtime](0081-register-owned-review-children-in-the-common-task-runtime.md)

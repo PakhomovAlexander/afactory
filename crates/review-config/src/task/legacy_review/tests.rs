@@ -618,6 +618,86 @@ fn scatter_result_contract_tracks_inherited_history_contract() {
 }
 
 #[test]
+fn owned_review_capture_preserves_static_plan_and_inherits_only_captured_child_authority() {
+    let loaded =
+        crate::Definition::from_toml(include_str!("../../../tests/fixtures/dynamic-v5.toml"))
+            .unwrap()
+            .load()
+            .unwrap();
+    let mut context = context(&loaded);
+    context.limits.verification = VerificationReserveV1 {
+        tokens: 0,
+        attempts: 0,
+        wall_ms: 0,
+    };
+    resources::ReviewResourcePolicy {
+        uncapped_attempt_tokens: 1,
+    }
+    .apply(&loaded, &resource_manifest(&loaded), &mut context)
+    .unwrap();
+    let limits = context.limits.clone();
+    let frozen = compile_legacy_review(&loaded, context).unwrap();
+    assert!(
+        serde_json::to_value(&frozen.graph)
+            .unwrap()
+            .get("owned_children")
+            .is_none()
+    );
+    let mut owned = frozen.clone();
+    owned::install_owned_review_children(&loaded, &mut owned).unwrap();
+    let owner = &owned.nodes["scatter"].task_node;
+    let template = &owned.graph.owned_children[owner];
+    assert_eq!(owned.graph.nodes, frozen.graph.nodes);
+    assert_eq!(owned.graph.order, frozen.graph.order);
+    assert_eq!(owned.nodes, frozen.nodes);
+    assert_eq!(template.allowance, frozen.graph.allowances[owner]);
+    assert!(!owned.graph.allowances.contains_key(owner));
+    assert_eq!(template.max_children, 2);
+    assert_eq!(
+        template.contract.inputs[&template.item_input].artifact_type,
+        contract::REVIEW_SLICE_V1
+    );
+    assert_eq!(
+        owned.graph.nodes[owner].contract.inputs[&template.source_input].artifact_type,
+        contract::SLICE_SET_V1
+    );
+    assert_eq!(
+        template.contract.outputs["o0"].artifact_type,
+        contract::REVIEWER_RESULT_V2
+    );
+    assert_eq!(
+        template.contract.outputs["metadata"].artifact_type,
+        TASK_REVIEW_RESULT_METADATA_V1
+    );
+    assert!(
+        !template
+            .inherited_inputs
+            .values()
+            .any(|port| port == &template.source_input)
+    );
+    for (child, parent) in &template.inherited_inputs {
+        assert_eq!(
+            template.contract.inputs[child],
+            frozen.graph.nodes[owner].contract.inputs[parent]
+        );
+    }
+    owned.graph.token_scopes = resources::review_token_scopes(&loaded, &owned, 1).unwrap();
+    let mut budget = owned.graph.budget(limits).unwrap();
+    budget
+        .register_owned_children(
+            owner,
+            &[format!("{owner}.slice0"), format!("{owner}.slice1")],
+        )
+        .unwrap();
+    assert!(
+        budget
+            .register_owned_children(owner, &[format!("{owner}.slice0")])
+            .is_err()
+    );
+    assert!(owned::install_owned_review_children(&loaded, &mut owned).is_err());
+}
+
+#[test]
 fn uncapped_broker_authority_must_fit_the_captured_fallback_reservation() {
     use super::resources::ReviewResourcePolicy;
     let mut definition = crate::Definition::from_toml(PIPELINE).unwrap();

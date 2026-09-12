@@ -57,7 +57,10 @@ impl WorkerModelAdapter for Model {
             broker.call("capability", &input, 7)
         } else {
             assert_eq!(n, 1, "selected work must not be repeated");
-            assert!(writable);
+            assert!(
+                !writable,
+                "Broker admission does not widen Claude's Review tool role"
+            );
             assert!(
                 String::from_utf8(input)
                     .unwrap()

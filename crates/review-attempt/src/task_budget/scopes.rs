@@ -52,6 +52,7 @@ impl TaskBudget {
                         || !self
                             .nodes
                             .keys()
+                            .chain(self.owned_templates.keys())
                             .any(|node| node == member || within(node, member))
                 })
             {

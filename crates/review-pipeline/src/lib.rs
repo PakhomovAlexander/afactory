@@ -59,8 +59,8 @@ use review_core::{
     RunCacheMaterializationV5, RunCacheSnapshotV5, RunExecutionBindingV4, RunExecutionProviderV4,
     RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3,
     RunReportPayloadV4, RunReportPayloadV5, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV3,
-    ShardOutcomeV1, ShardReceiptV1, ShardSetV1, SliceSetAcceptedPayloadV1, SliceSetV1,
-    SnapshotAffinity, SourceSnapshot, SubjectV1, run_report_closes_round,
+    ShardOutcomeV1, ShardSetV1, SliceSetAcceptedPayloadV1, SliceSetV1, SnapshotAffinity,
+    SourceSnapshot, SubjectV1, run_report_closes_round,
 };
 use review_graph::{
     ArtifactMap, Dispatch, Node, NodeFailureClass, NodeKind, NodeOutcome, PortContract, RunReport,
@@ -3270,11 +3270,7 @@ impl<'a> Kernel<'a> {
                 .cas
                 .put_artifact(
                     review_core::contract::REVIEW_SLICE_V1,
-                    Producer::KernelOperation {
-                        run_id: self.domain.run_id.clone(),
-                        node_id: Some(node.id.clone()),
-                        operation_id: format!("slice:{}", slice.slice_id),
-                    },
+                    scatter::slice_producer(&self.domain.run_id, &node.id, slice),
                     vec![slice_set_record.clone()],
                     Some(self.domain.authority.head_snapshot_id.clone()),
                     serde_json::to_value(slice).map_err(|error| error.to_string())?,
@@ -3318,37 +3314,8 @@ impl<'a> Kernel<'a> {
             };
             outcomes.insert(slice.slice_id, outcome);
         }
-        let shard_set = ShardSetV1 {
-            subject_id: slice_set.subject_id.clone(),
-            slice_set_id: slice_set_record.clone(),
-            all_shards_required: slice_set.all_shards_required,
-            shards: slice_set
-                .slices
-                .iter()
-                .map(|slice| ShardReceiptV1 {
-                    slice_id: slice.slice_id.clone(),
-                    runtime_node_id: slice.runtime_node_id.clone(),
-                    outcome: outcomes.remove(&slice.slice_id).unwrap_or_else(|| {
-                        ShardOutcomeV1::Missing {
-                            reason: "dynamic shard produced no terminal outcome".into(),
-                        }
-                    }),
-                })
-                .collect(),
-        };
-        shard_set.validate_against(&slice_set)?;
-        let mut artifact_inputs = vec![slice_set_record.clone()];
-        artifact_inputs.extend(
-            shard_set
-                .shards
-                .iter()
-                .flat_map(|shard| match &shard.outcome {
-                    ShardOutcomeV1::Completed {
-                        result_artifact_ids,
-                    } => result_artifact_ids.clone(),
-                    ShardOutcomeV1::Failed { .. } | ShardOutcomeV1::Missing { .. } => vec![],
-                }),
-        );
+        let shard_set = scatter::fold_shards(&slice_set, slice_set_record, &outcomes)?;
+        let artifact_inputs = scatter::shard_artifact_inputs(&shard_set);
         let operation_id = review_store::content_id(
             &serde_json::to_value(&shard_set).map_err(|error| error.to_string())?,
         )

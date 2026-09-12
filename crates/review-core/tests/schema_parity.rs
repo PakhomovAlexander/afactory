@@ -32,7 +32,8 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 125] = [
+const SCHEMAS: [&str; 129] = [
+    "task-inspection-v5.json",
     "task-provider-context-v2.json",
     "task-broker-binding-v1.json",
     "task-broker-operation-v1.json",
@@ -44,6 +45,8 @@ const SCHEMAS: [&str; 125] = [
     "task-inspection-v4.json",
     "task-list-entry-v2.json",
     "task-execution-record-v3.json",
+    "task-execution-record-v4.json",
+    "task-owned-child-set-v1.json",
     "task-token-usage-v2.json",
     "broker-operation-receipt-v2.json",
     "task-review-attempt-provenance-v1.json",
@@ -70,6 +73,7 @@ const SCHEMAS: [&str; 125] = [
     "task-provider-admission-v2.json",
     "task-provider-probe-policy-v1.json",
     "legacy-review-task-policy-v2.json",
+    "legacy-review-task-policy-v3.json",
     "task-review-subject-v1.json",
     "task-review-round-v1.json",
     "task-review-result-metadata-v1.json",
@@ -2850,3 +2854,6 @@ mod task_broker;
 
 #[path = "schema_parity/task_provider_probe.rs"]
 mod task_provider_probe;
+
+#[path = "schema_parity/task_owned.rs"]
+mod task_owned;

@@ -2,6 +2,7 @@
 //! authority; deserializing a mapping never authorizes a Task or replaces recompilation.
 
 pub mod artifact;
+pub mod owned;
 pub mod resources;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -256,6 +257,7 @@ pub fn compile_legacy_review(
         replaced_workers: BTreeMap::new(),
         max_parallel: context.max_parallel,
         allowances: BTreeMap::new(),
+        owned_children: BTreeMap::new(),
         token_scopes: BTreeMap::new(),
     };
     graph.nodes.insert(

@@ -84,6 +84,30 @@ pub struct DeveloperGrant {
 /// package authority. Possession of actor strings or serialized PlanDecision does not implement
 /// this interface. Every execution adapter must use this same boundary on resume and dispatch.
 pub trait TaskAuthority: Sync {
+    fn validate_owned_children(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _parent: &task::execution::TaskInvocationV1,
+        _children: &task::owned_children::TaskOwnedChildSetV1,
+    ) -> Result<(), String> {
+        Err("Owned Task child admission is not configured".into())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn validate_owned_completion(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _parent: &task::execution::TaskInvocationV1,
+        _children: &task::owned_children::TaskOwnedChildSetV1,
+        _facts: &[execution::owned::TaskOwnedChildEvidence],
+        _output: &task::execution::TaskOutputV1,
+    ) -> Result<(), String> {
+        Err("Owned Task completion is not configured".into())
+    }
     /// Re-derive named Broker operations from the exact captured Worker policy. Serialized
     /// handle/binding data alone cannot authorize connector access.
     fn validate_broker_binding(
@@ -225,6 +249,7 @@ pub(super) struct WritePermit {
     event_type: EventType,
     valid_until: Option<u64>,
     review_round: Option<review_round::ReviewRoundFence>,
+    review_prefix: Option<(String, u64)>,
 }
 
 impl WritePermit {
@@ -247,6 +272,18 @@ impl WritePermit {
                 .is_some_and(|until| now().map_or(true, |time| time >= until))
         {
             return Err(conflict("Task write lost its sequence/lease comparison"));
+        }
+        if let Some((run_id, expected)) = &self.review_prefix {
+            let actual: u64 = connection.query_row(
+                "SELECT COALESCE(MAX(sequence)+1,0) FROM events WHERE run_id=?1",
+                [run_id],
+                |row| row.get(0),
+            )?;
+            if actual != *expected {
+                return Err(conflict(
+                    "Owned completion lost its canonical Review prefix",
+                ));
+            }
         }
         if let Some(round) = &self.review_round {
             round.validate(connection)?;
@@ -928,6 +965,7 @@ impl EventStore {
         // access; a removed or corrupted active artifact must never inherit cached authority.
         if let Some(state) = &state {
             execution::broker::validate_cached(cas, state)?;
+            execution::owned::validate_cached(cas, state)?;
             if state.planning.is_some() {
                 state.planning_proof(cas)?;
             }
@@ -1071,9 +1109,46 @@ impl EventStore {
         task_id: &str,
         transition: TaskTransitionV1,
     ) -> Result<RunEvent, StoreError> {
+        self.append_task_transition_with_owned_prefix(cas, task_id, transition, None)
+    }
+
+    fn append_task_transition_with_owned_prefix(
+        &mut self,
+        cas: &Cas,
+        task_id: &str,
+        transition: TaskTransitionV1,
+        owned_prefix: Option<(u64, Option<(String, u64)>)>,
+    ) -> Result<RunEvent, StoreError> {
         transition.validate().map_err(conflict)?;
         let state = self.task_projection(cas, task_id)?;
         let first = state.as_ref().map_or(0, |s| s.next_sequence);
+        if owned_prefix
+            .as_ref()
+            .is_some_and(|(expected, _)| *expected != first)
+        {
+            return Err(conflict("Owned completion lost its Task prefix"));
+        }
+        let owned_record = if let TaskChangeV1::ExecutionRecorded { record_id } = &transition.change
+        {
+            execution::owned::is_owned_record(
+                &execution::read_execution_record(cas, record_id)?.record,
+            )
+        } else {
+            false
+        };
+        let valid_until = if owned_record {
+            state.as_ref().map(|state| {
+                state.lease_until.min(
+                    state
+                        .plan_id
+                        .as_ref()
+                        .and_then(|id| state.decisions.get(id))
+                        .map_or(u64::MAX, |decision| decision.valid_until),
+                )
+            })
+        } else {
+            None
+        };
         let refs = references(cas, &transition.change, state.as_ref())?;
         let value = serde_json::to_value(&transition)?;
         let run_id = task_run_id(task_id)?;
@@ -1111,8 +1186,9 @@ impl EventStore {
             first,
             payloads: vec![value],
             event_type: EventType::TaskTransitionV1,
-            valid_until: None,
+            valid_until,
             review_round,
+            review_prefix: owned_prefix.and_then(|(_, prefix)| prefix),
         };
         self.append_batch_inner(&run_id, cas, &[event], Some(&permit), None)?
             .pop()
@@ -1549,6 +1625,37 @@ impl EventStore {
         lease: &TaskLease,
         authority: &dyn TaskAuthority,
     ) -> Result<(TaskProjection, ExecutionPlanV1), StoreError> {
+        self.checked_task_current(cas, lease, authority, true)
+    }
+
+    /// Current recording authority does not permit another execution effect. It retains
+    /// writer, exact admitted plan, developer approval and Review Round fences at expiry.
+    pub fn check_current_task_plan_for_recording(
+        &self,
+        cas: &Cas,
+        lease: &TaskLease,
+        authority: &dyn TaskAuthority,
+    ) -> Result<ExecutionPlanV1, StoreError> {
+        self.checked_task_recording(cas, lease, authority)
+            .map(|(_, plan)| plan)
+    }
+
+    fn checked_task_recording(
+        &self,
+        cas: &Cas,
+        lease: &TaskLease,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(TaskProjection, ExecutionPlanV1), StoreError> {
+        self.checked_task_current(cas, lease, authority, false)
+    }
+
+    fn checked_task_current(
+        &self,
+        cas: &Cas,
+        lease: &TaskLease,
+        authority: &dyn TaskAuthority,
+        dispatching: bool,
+    ) -> Result<(TaskProjection, ExecutionPlanV1), StoreError> {
         let state = self
             .task_projection(cas, &lease.task_id)?
             .ok_or_else(|| conflict("Unknown Task"))?;
@@ -1562,7 +1669,22 @@ impl EventStore {
         if !state.admitted || state.phase != (TaskPhaseV1::Running {}) {
             return Err(conflict("Task is not admitted and running"));
         }
-        let plan = self.current_task_plan(cas, &state, authority, time)?;
+        let plan = if dispatching {
+            self.current_task_plan(cas, &state, authority, time)?
+        } else {
+            let id = state
+                .plan_id
+                .as_deref()
+                .ok_or_else(|| conflict("Task has no plan"))?;
+            let plan = self.authorized_plan(cas, &state, id, authority)?;
+            state.check_plan_decision(cas, time)?;
+            if let Some(decision) = state.decisions.get(id) {
+                authority
+                    .authorization_current(&decision.value)
+                    .map_err(conflict)?;
+            }
+            plan
+        };
         if let Some(round) = review_round::ReviewRoundFence::capture(cas, &state.revision)? {
             round.validate(&self.conn)?;
         }

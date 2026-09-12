@@ -178,16 +178,12 @@ fn broker_target(
     plan: &ExecutionPlanV1,
     node: &str,
 ) -> Result<TaskBrokerTargetV1, StoreError> {
-    let operator = &state
+    let resolved = state
         .execution
         .as_ref()
         .ok_or_else(|| conflict("Task has no execution"))?
-        .graph
-        .nodes
-        .get(node)
-        .ok_or_else(|| conflict("Unknown Task Broker node"))?
-        .operator;
-    match operator {
+        .resolve_node(node)?;
+    match &resolved.definition.operator {
         CompiledOperator::ReviewDomain {
             operation: ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot },
             ..
@@ -273,16 +269,18 @@ fn broker_lease(
     {
         let round: LegacyReviewRoundV1 =
             payload(cas, &input.artifact_ids[0], LEGACY_REVIEW_ROUND_V1)?;
-        let operator = &state
+        let resolved = state
             .execution
             .as_ref()
             .expect("checked execution")
-            .graph
-            .nodes[&attempt.node]
-            .operator;
-        match operator {
+            .resolve_node(&attempt.node)?;
+        match &resolved.definition.operator {
             CompiledOperator::ReviewDomain { review_node, .. } => {
-                lease.node_id = review_node.clone()
+                lease.node_id = resolved
+                    .owned
+                    .as_ref()
+                    .and_then(|owner| owner.review_node.clone())
+                    .unwrap_or_else(|| review_node.clone())
             }
             CompiledOperator::ProviderAdmissionBrokered { .. } => {}
             _ => {
@@ -681,6 +679,7 @@ impl EventStore {
             event_type: EventType::TaskBrokerTransitionV1,
             valid_until,
             review_round,
+            review_prefix: None,
         };
         self.append_batch_inner(&run_id, cas, &[event], Some(&permit), None)?
             .pop()

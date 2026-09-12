@@ -19,6 +19,7 @@ use std::collections::BTreeSet;
 
 pub const REVIEW_TASK_POLICY_V1: &str = "af/LegacyReviewTaskPolicy@1";
 pub const REVIEW_TASK_POLICY_V2: &str = "af/LegacyReviewTaskPolicy@2";
+pub const REVIEW_TASK_POLICY_V3: &str = "af/LegacyReviewTaskPolicy@3";
 pub const REVIEW_DEPENDENCY_V1: &str = "af/LegacyReviewDependency@1";
 pub const REVIEW_INVOCATION_POLICY_V1: &str = "af/LegacyReviewInvocationPolicy@1";
 const ROOT: &str = "af/legacy-review";
@@ -163,9 +164,37 @@ pub struct LegacyReviewPlanCompiler {
     policy_id: String,
     policy: ReviewTaskPolicy,
     policy_v2: Option<ReviewTaskPolicyV2>,
+    owned_children: bool,
 }
 
 impl LegacyReviewPlanCompiler {
+    pub fn capture_v3(
+        cas: &Cas,
+        round: CapturedLegacyReviewRound,
+        engine_id: String,
+        settings: ReviewPlanSettingsV2,
+    ) -> Result<Self, String> {
+        settings.review.validate()?;
+        cas.verify(&engine_id).map_err(|e| e.to_string())?;
+        let policy = ReviewTaskPolicyV2 {
+            engine_id,
+            campaign_manifest_id: round.binding().campaign_manifest_id,
+            settings,
+        };
+        let envelope = capture_or_read(
+            cas,
+            REVIEW_TASK_POLICY_V3,
+            "policy",
+            vec![
+                policy.engine_id.clone(),
+                policy.campaign_manifest_id.clone(),
+            ],
+            &policy,
+            None,
+        )?;
+        Self::reopen(cas, round, &policy.engine_id, &envelope.artifact_id)
+    }
+
     pub fn capture_v2(
         cas: &Cas,
         round: CapturedLegacyReviewRound,
@@ -236,7 +265,7 @@ impl LegacyReviewPlanCompiler {
                     .map_err(|e| e.to_string())?,
                 None,
             ),
-            REVIEW_TASK_POLICY_V2 => {
+            REVIEW_TASK_POLICY_V2 | REVIEW_TASK_POLICY_V3 => {
                 let v2: ReviewTaskPolicyV2 =
                     serde_json::from_value(envelope.payload.clone()).map_err(|e| e.to_string())?;
                 (
@@ -324,6 +353,7 @@ impl LegacyReviewPlanCompiler {
             policy_id: policy_id.into(),
             policy,
             policy_v2,
+            owned_children: envelope.artifact_type == REVIEW_TASK_POLICY_V3,
         })
     }
     pub fn policy_id(&self) -> &str {
@@ -405,6 +435,12 @@ impl LegacyReviewPlanCompiler {
             },
         )?;
         let compiled = &mut captured.compilation;
+        if self.owned_children {
+            review_config::task::legacy_review::owned::install_owned_review_children(
+                &captured.loaded,
+                compiled,
+            )?;
+        }
         // Every reviewer receipt and executed Gate/Scatter is an explicit acceptance input,
         // including nodes that the original Ledger did not consume.
         let mut evidence = BTreeMap::new();
@@ -534,7 +570,14 @@ impl LegacyReviewPlanCompiler {
     ) -> Result<(ExecutionPlanV1, CapturedReviewCompilation), String> {
         // Check policy bytes on every admission/resume, even when the compiler stays in memory.
         let (policy_type, policy_payload) = if let Some(v2) = &self.policy_v2 {
-            (REVIEW_TASK_POLICY_V2, serde_json::to_value(v2))
+            (
+                if self.owned_children {
+                    REVIEW_TASK_POLICY_V3
+                } else {
+                    REVIEW_TASK_POLICY_V2
+                },
+                serde_json::to_value(v2),
+            )
         } else {
             (REVIEW_TASK_POLICY_V1, serde_json::to_value(&self.policy))
         };
@@ -648,7 +691,17 @@ impl LegacyReviewPlanCompiler {
                 .map_err(|e| e.to_string())?,
                 execution: self.policy.settings.executions[review_node].clone(),
                 result_type: graph.slots[slot].output_type.clone(),
-                timeout_ms: graph.allowances[&mapping.task_node].wall_ms_per_attempt,
+                timeout_ms: graph
+                    .allowances
+                    .get(&mapping.task_node)
+                    .or_else(|| {
+                        graph
+                            .owned_children
+                            .get(&mapping.task_node)
+                            .map(|template| &template.allowance)
+                    })
+                    .ok_or("Captured Worker has no Attempt allowance")?
+                    .wall_ms_per_attempt,
             };
             let recorded_policy = recorded
                 .map(|plan| {

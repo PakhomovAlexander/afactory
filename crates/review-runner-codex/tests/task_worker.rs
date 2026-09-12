@@ -15,6 +15,30 @@ fn native_task_adapter_declares_trusted_unsafe_credentials() {
 }
 
 #[test]
+fn review_role_keeps_the_legacy_workspace_write_sandbox() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let program = temp.path().join("fake-codex");
+    std::fs::write(&program, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$@\" >&2\nprintf '%s\\n' '{\"type\":\"item.completed\",\"item\":{\"type\":\"agent_message\",\"text\":\"OK\"}}' '{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}'\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = CodexTaskAdapter::new(&Command::new(program.to_str().unwrap(), vec![])).unwrap();
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"review".to_vec(),
+        Duration::from_secs(5),
+        true,
+    );
+    assert_eq!(returned.message.unwrap(), b"OK");
+    let flags = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
+    let flags: Vec<_> = flags.lines().collect();
+    let index = flags.iter().position(|value| *value == "-s").unwrap();
+    assert_eq!(flags[index + 1], "workspace-write");
+    assert!(!flags.contains(&"read-only"));
+    assert!(!flags.iter().any(|flag| flag.contains("dangerously-bypass")));
+}
+
+#[test]
 fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_message() {
     for timed_out in [true, false] {
         let temp = tempfile::tempdir().unwrap();
