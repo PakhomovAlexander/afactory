@@ -1,5 +1,7 @@
+use crate::control::{ReceiveError, receive};
 use crate::{OUTPUT_DRAIN_GRACE, SupervisedError, kill_process_group};
 use std::io::Read;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -59,6 +61,16 @@ pub(crate) fn collect(
     pid: u32,
     cleanup: &mut Option<Instant>,
 ) -> Drained {
+    collect_cancellable(drain, stream, pid, cleanup, None)
+}
+
+pub(crate) fn collect_cancellable(
+    drain: Drain,
+    stream: &'static str,
+    pid: u32,
+    cleanup: &mut Option<Instant>,
+    cancellation: Option<&AtomicBool>,
+) -> Drained {
     collect_with(
         drain,
         stream,
@@ -66,6 +78,7 @@ pub(crate) fn collect(
         cleanup,
         OUTPUT_DRAIN_GRACE,
         kill_process_group,
+        cancellation,
     )
 }
 
@@ -76,28 +89,32 @@ fn collect_with(
     cleanup: &mut Option<Instant>,
     grace: Duration,
     kill: impl FnOnce(u32),
+    cancellation: Option<&AtomicBool>,
 ) -> Drained {
     let deadline = cleanup.unwrap_or_else(|| Instant::now() + grace);
-    let status = match drain
-        .completion
-        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-    {
+    let status = match receive(
+        &drain.completion,
+        deadline.saturating_duration_since(Instant::now()),
+        cancellation,
+    ) {
         Ok(Ok(())) => Ok(false),
         Ok(Err(source)) => Err(SupervisedError::OutputRead { stream, source }),
-        Err(mpsc::RecvTimeoutError::Timeout) => {
+        Err(error @ (ReceiveError::Timeout | ReceiveError::Cancelled)) => {
             let deadline = *cleanup.get_or_insert_with(|| Instant::now() + grace);
             kill(pid);
             // The reader may have obtained a final chunk without appending it yet. Wait for
             // bounded completion before taking its bytes. Both pipes share this deadline.
             let bytes = collect_after_kill_until(drain, deadline);
-            let status = if stream == "stderr" {
+            let status = if matches!(error, ReceiveError::Cancelled) {
+                Err(SupervisedError::Cancelled)
+            } else if stream == "stderr" {
                 Ok(true)
             } else {
                 Err(SupervisedError::OutputHeld(stream))
             };
             return Drained { bytes, status };
         }
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(SupervisedError::OutputRead {
+        Err(ReceiveError::Disconnected) => Err(SupervisedError::OutputRead {
             stream,
             source: std::io::Error::other("output reader stopped without a result"),
         }),
@@ -138,6 +155,7 @@ mod tests {
             &mut None,
             OUTPUT_DRAIN_GRACE,
             |_| {},
+            None,
         );
         assert_eq!(drained.bytes, b"prefix");
         assert!(matches!(
@@ -155,6 +173,52 @@ mod tests {
             collect_after_kill(drain_async(BrokenReader(false))),
             b"prefix"
         );
+    }
+
+    #[test]
+    fn cancelled_drain_waits_for_buffered_prefix_and_keeps_cancellation_primary() {
+        struct FinalPrefix {
+            ready: Option<mpsc::Sender<()>>,
+            killed: mpsc::Receiver<()>,
+        }
+        impl Read for FinalPrefix {
+            fn read(&mut self, target: &mut [u8]) -> std::io::Result<usize> {
+                let Some(ready) = self.ready.take() else {
+                    return Err(std::io::Error::other("read failed after cancellation"));
+                };
+                target[..6].copy_from_slice(b"prefix");
+                ready.send(()).unwrap();
+                self.killed.recv().unwrap();
+                std::thread::sleep(Duration::from_millis(30));
+                Ok(6)
+            }
+        }
+        for stream in ["stdout", "stderr"] {
+            let (ready, begun) = mpsc::channel();
+            let (release, killed) = mpsc::channel();
+            let drain = drain_async(FinalPrefix {
+                ready: Some(ready),
+                killed,
+            });
+            begun.recv_timeout(Duration::from_secs(1)).unwrap();
+            let cancelled = AtomicBool::new(true);
+            let mut cleanup = None;
+            let output = collect_with(
+                drain,
+                stream,
+                0,
+                &mut cleanup,
+                Duration::from_secs(1),
+                |_| release.send(()).unwrap(),
+                Some(&cancelled),
+            );
+            assert_eq!(output.bytes, b"prefix");
+            assert!(matches!(output.status, Err(SupervisedError::Cancelled)));
+            assert!(
+                cleanup.is_some(),
+                "both pipe cleanups must share the post-kill deadline"
+            );
+        }
     }
 
     #[test]
@@ -191,6 +255,7 @@ mod tests {
                 &mut cleanup,
                 Duration::from_secs(1),
                 |_| kill.send(()).unwrap(),
+                None,
             );
             assert_eq!(drained.bytes, b"prefix");
             if stream == "stdout" {
@@ -210,6 +275,7 @@ mod tests {
                 &mut cleanup,
                 Duration::from_secs(1),
                 |_| {},
+                None,
             );
             assert_eq!(cleanup, Some(deadline));
         }

@@ -74,6 +74,7 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
                 (serde_json::to_vec(&json!({"schema":"af.worker-reply/1","outputs":{"output":[{"outcome":"passed","text":"Checked document"}]}})).unwrap(),11)
             };
             ModelWorkerReturn {
+                usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&bytes).unwrap()],
                 message: if n == self.overrun_at {
                     Err("fixture transport failed after reporting usage".into())

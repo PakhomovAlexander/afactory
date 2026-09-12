@@ -842,6 +842,7 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
             self.execute_reviewer(cas, input, attempt, broker)
         } else {
             TaskWorkOutput {
+                usage_observation: None,
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 outputs: if broker.is_some() {
                     Err("Review domain operation does not consume Broker Handles".into())

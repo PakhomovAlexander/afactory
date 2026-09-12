@@ -59,6 +59,19 @@ authorizes another call. Wider values use additive usage/provenance and Review p
 contracts, while representable values retain their previous encoding. See
 [ADR-0085](../adr/0085-retain-exact-native-task-usage-across-multiple-turns.md).
 
+Malformed native usage preserves known contributions in `TaskUsageObservation@1`. Its billing
+completeness is separate from optional metadata validity. Incomplete billing refuses business
+output and retains at least the original reservation and known charge floor; a fully reported
+failure retains its exact charge. The sidecar preserves both facts before CAS publication and
+through recovery. Valid native calls retain their previous artifact identities. See
+[ADR-0088](../adr/0088-retain-native-billing-completeness-with-task-usage.md).
+
+The native adapter's controlled invocation boundary can stop an owned process group and retain
+cancelled usage through bounded output draining. Unsupported adapters refuse a supplied control.
+TaskRuntime, heartbeat and CLI signal forwarding are separate caller work; this boundary alone
+does not provide a domain-level Task cancellation command. See
+[ADR-0087](../adr/0087-control-native-task-invocations-through-the-shared-supervisor.md).
+
 Codex final-message capture reads a bounded regular file through the held private output
 directory. Symlinks, FIFOs and other nonregular files refuse without blocking or falling back
 to a different message; an absent or empty regular file retains the existing event-message

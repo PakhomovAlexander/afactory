@@ -83,11 +83,17 @@ pub(super) fn migrate(conn: &Connection) -> Result<(), StoreError> {
     if has_usage_column(conn, "usage_v1_json")?
         && has_usage_column(conn, "usage_v2_json")?
         && has_usage_column(conn, "usage_v3_json")?
+        && has_usage_column(conn, "usage_observation_v1_json")?
     {
         return Ok(());
     }
     let transaction = Transaction::new_unchecked(conn, TransactionBehavior::Immediate)?;
-    for name in ["usage_v1_json", "usage_v2_json", "usage_v3_json"] {
+    for name in [
+        "usage_v1_json",
+        "usage_v2_json",
+        "usage_v3_json",
+        "usage_observation_v1_json",
+    ] {
         if !has_usage_column(&transaction, name)? {
             transaction
                 .execute_batch(&format!("ALTER TABLE attempt_wall ADD COLUMN {name} TEXT"))?;
@@ -177,16 +183,54 @@ impl EventStore {
                 usage: wall.usage.as_ref().map(Into::into),
             },
             true,
+            None,
         )
     }
 
     /// Record an exact cumulative Task usage floor before fallible output publication.
     /// Native turn components and charge retain their full aggregate range.
     pub fn record_task_attempt_wall(&self, wall: &TaskAttemptWall) -> Result<(), StoreError> {
-        self.record_wall(wall, false)
+        self.record_wall(wall, false, None)
     }
 
-    fn record_wall(&self, wall: &TaskAttemptWall, legacy: bool) -> Result<(), StoreError> {
+    /// Persist native observation and its effective cumulative charge in the same transaction.
+    /// Absence retains prior facts; incompleteness is sticky without a whole-Attempt replacement.
+    pub fn record_task_attempt_wall_with_observation(
+        &self,
+        wall: &TaskAttemptWall,
+        observation: &review_core::task::usage::TaskUsageObservationV1,
+    ) -> Result<(), StoreError> {
+        observation.validate().map_err(StoreError::Conflict)?;
+        self.record_wall(wall, false, Some(observation))
+    }
+
+    pub fn task_attempt_usage_observation(
+        &self,
+        run_id: &str,
+        attempt_id: &str,
+    ) -> Result<Option<review_core::task::usage::TaskUsageObservationV1>, StoreError> {
+        if !has_usage_column(&self.conn, "usage_observation_v1_json")? {
+            return Ok(None);
+        }
+        let text: Option<String> = self.conn.query_row(
+            "SELECT usage_observation_v1_json FROM attempt_wall WHERE run_id = ?1 AND attempt_id = ?2",
+            rusqlite::params![run_id, attempt_id], |row| row.get(0),
+        ).optional()?.flatten();
+        text.map(|text| {
+            let observation: review_core::task::usage::TaskUsageObservationV1 =
+                serde_json::from_str(&text)?;
+            observation.validate().map_err(StoreError::Conflict)?;
+            Ok(observation)
+        })
+        .transpose()
+    }
+
+    fn record_wall(
+        &self,
+        wall: &TaskAttemptWall,
+        legacy: bool,
+        observation: Option<&review_core::task::usage::TaskUsageObservationV1>,
+    ) -> Result<(), StoreError> {
         fn bounded(value: u64, what: &str) -> Result<i64, StoreError> {
             i64::try_from(value).map_err(|_| {
                 StoreError::Conflict(format!("attempt wall {what} exceeds SQLite range"))
@@ -196,7 +240,7 @@ impl EventStore {
         let previous = transaction
             .query_row(
                 "SELECT input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                reasoning_tokens, chargeable_tokens, usage_v1_json, usage_v2_json, usage_v3_json
+                reasoning_tokens, chargeable_tokens, usage_v1_json, usage_v2_json, usage_v3_json, usage_observation_v1_json
              FROM attempt_wall WHERE run_id = ?1 AND attempt_id = ?2",
                 rusqlite::params![wall.run_id, wall.attempt_id],
                 |row| {
@@ -204,14 +248,45 @@ impl EventStore {
                         usage(row, 0)?,
                         row.get::<_, Option<String>>(7)?,
                         row.get::<_, Option<String>>(8)?.is_some(),
+                        row.get::<_, Option<String>>(9)?,
                     ))
                 },
             )
             .optional()?;
-        let prior_v2 = previous.as_ref().and_then(|(_, v2, _)| v2.clone());
-        let has_v3 = previous.as_ref().is_some_and(|(_, _, v3)| *v3);
+        let prior_v2 = previous.as_ref().and_then(|(_, v2, _, _)| v2.clone());
+        let has_v3 = previous.as_ref().is_some_and(|(_, _, v3, _)| *v3);
+        let previous_observation = previous
+            .as_ref()
+            .and_then(|(_, _, _, text)| text.as_deref())
+            .map(serde_json::from_str::<review_core::task::usage::TaskUsageObservationV1>)
+            .transpose()?;
+        if let Some(previous) = &previous_observation {
+            previous.validate().map_err(StoreError::Conflict)?;
+        }
+        let mut observation = observation.cloned();
+        if let Some(previous) = previous_observation {
+            match &mut observation {
+                Some(current) => current.merge_previous(&previous),
+                None => observation = Some(previous),
+            }
+        }
         let mut usage = wall.usage.clone();
-        merge_usage(&mut usage, previous.and_then(|(usage, _, _)| usage));
+        merge_usage(&mut usage, previous.and_then(|(usage, _, _, _)| usage));
+        if let Some(reported) = observation
+            .as_ref()
+            .and_then(|value| value.reported_usage.as_ref())
+            && usage
+                .as_ref()
+                .is_none_or(|value| value.chargeable_tokens < reported.chargeable_tokens)
+        {
+            return Err(StoreError::Conflict(
+                "Task effective charge is below its native observation".into(),
+            ));
+        }
+        let observation = observation
+            .as_ref()
+            .map(serde_json::to_string)
+            .transpose()?;
         let wide = has_v3
             || usage
                 .as_ref()
@@ -240,8 +315,8 @@ impl EventStore {
                 "INSERT OR REPLACE INTO attempt_wall (
                     run_id, attempt_id, node_id, round, epoch, started_unix_ms, elapsed_ms,
                     input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                    reasoning_tokens, chargeable_tokens, usage_v1_json, usage_v2_json, usage_v3_json
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+                    reasoning_tokens, chargeable_tokens, usage_v1_json, usage_v2_json, usage_v3_json, usage_observation_v1_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 rusqlite::params![
                     wall.run_id,
                     wall.attempt_id,
@@ -258,19 +333,21 @@ impl EventStore {
                     integer(usage.as_ref().map(|u| u.chargeable_tokens)),
                     v1,
                     v2,
-                    v3
+                    v3,
+                    observation
                 ],
             )?;
         } else {
             // Upgrading a measurement preserves existing historical bytes and numeric columns.
             transaction.execute(
                 "INSERT INTO attempt_wall (run_id, attempt_id, node_id, round, epoch,
-                    started_unix_ms, elapsed_ms, usage_v2_json, usage_v3_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    started_unix_ms, elapsed_ms, usage_v2_json, usage_v3_json, usage_observation_v1_json)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                  ON CONFLICT(run_id, attempt_id) DO UPDATE SET
                     node_id=excluded.node_id, round=excluded.round, epoch=excluded.epoch,
                     started_unix_ms=excluded.started_unix_ms, elapsed_ms=excluded.elapsed_ms,
-                    usage_v2_json=excluded.usage_v2_json, usage_v3_json=excluded.usage_v3_json",
+                    usage_v2_json=excluded.usage_v2_json, usage_v3_json=excluded.usage_v3_json,
+                    usage_observation_v1_json=excluded.usage_observation_v1_json",
                 rusqlite::params![
                     wall.run_id,
                     wall.attempt_id,
@@ -280,7 +357,8 @@ impl EventStore {
                     started,
                     elapsed,
                     v2,
-                    v3
+                    v3,
+                    observation
                 ],
             )?;
         }
@@ -328,13 +406,31 @@ impl EventStore {
         let v1 = column("usage_v1_json")?;
         let v2 = column("usage_v2_json")?;
         let v3 = column("usage_v3_json")?;
+        let observation = column("usage_observation_v1_json")?;
         let mut statement = self.conn.prepare(&format!(
             "SELECT attempt_id, node_id, round, epoch, started_unix_ms, elapsed_ms,
                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                reasoning_tokens, chargeable_tokens, {v1}, {v2}, {v3}
+                reasoning_tokens, chargeable_tokens, {v1}, {v2}, {v3}, {observation}
              FROM attempt_wall WHERE run_id = ?1 ORDER BY started_unix_ms, attempt_id"
         ))?;
         let rows = statement.query_map([run_id], |row| {
+            if let Some(text) = row.get::<_, Option<String>>(15)? {
+                let observation: review_core::task::usage::TaskUsageObservationV1 =
+                    serde_json::from_str(&text).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            15,
+                            rusqlite::types::Type::Text,
+                            Box::new(error),
+                        )
+                    })?;
+                observation.validate().map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        15,
+                        rusqlite::types::Type::Text,
+                        Box::new(std::io::Error::other(error)),
+                    )
+                })?;
+            }
             let unsigned = |value: i64| u64::try_from(value).unwrap_or(0);
             Ok(TaskAttemptWall {
                 run_id: run_id.to_string(),

@@ -53,6 +53,44 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         timeout: Duration,
         writable: bool,
     ) -> ModelWorkerReturn {
+        self.invoke_inner(cas, workdir, input, timeout, writable, None)
+    }
+
+    fn invoke_controlled(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+        broker: Option<&dyn review_runner::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ModelWorkerReturn {
+        if broker.is_some() {
+            return self.invoke_with_broker(cas, workdir, input, timeout, writable, broker);
+        }
+        self.invoke_inner(cas, workdir, input, timeout, writable, cancellation)
+    }
+}
+
+impl CodexTaskAdapter {
+    fn invoke_inner(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ModelWorkerReturn {
+        if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+            return ModelWorkerReturn {
+                usage_observation: None,
+                message: Err("Worker invocation was cancelled before starting".into()),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
+                raw_artifact_ids: vec![],
+            };
+        }
         let staging = match tempfile::tempdir() {
             Ok(directory) => directory,
             Err(error) => {
@@ -89,18 +127,27 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         if let Some(home) = &self.codex_home {
             runner = runner.with_grant("CODEX_HOME", home);
         }
-        let capture = runner.capture_settled_with_stdin(cas, &command, input);
+        let capture =
+            runner.capture_settled_with_stdin_controlled(cas, &command, input, cancellation);
         let events = TaskEvents::parse(&capture.stdout);
         let mut returned = ModelWorkerReturn {
+            usage_observation: None,
             message: Err("Codex Worker framing failed".into()),
             usage: None,
             raw_artifact_ids: capture.raw_artifact_ids,
         };
-        if events.usage.input_tokens.is_some() {
-            returned.usage = Some(events.usage);
-        }
+        returned.usage = events.reported_usage();
+        returned.usage_observation = events.observation();
         if !capture.status.as_ref().is_ok_and(|status| status.success()) || events.error.is_some() {
-            returned.message = Err(format!("Codex Worker failed with {:?}", capture.status));
+            returned.message = Err(if events.malformed_usage {
+                format!(
+                    "Codex Worker returned malformed native usage: {:?}",
+                    events.error
+                )
+            } else {
+                // Keep the historical valid-usage failure diagnostic and artifact identity.
+                format!("Codex Worker failed with {:?}", capture.status)
+            });
             return returned;
         }
         returned.message = read_final_message(&output_directory).and_then(|bytes| {
@@ -148,9 +195,70 @@ struct TaskEvents {
     usage: review_core::task::usage::TaskTokenUsageV3,
     final_message: Option<String>,
     error: Option<String>,
+    incomplete_charge: bool,
+    malformed_usage: bool,
 }
 
 impl TaskEvents {
+    fn reported_usage(&self) -> Option<review_core::task::usage::TaskTokenUsageV3> {
+        let u = &self.usage;
+        (u.input_tokens.is_some()
+            || u.output_tokens.is_some()
+            || u.cache_read_tokens.is_some()
+            || u.cache_write_tokens.is_some()
+            || u.reasoning_tokens.is_some())
+        .then(|| u.clone())
+    }
+
+    fn observation(&self) -> Option<review_core::task::usage::TaskUsageObservationV1> {
+        self.malformed_usage
+            .then(|| review_core::task::usage::TaskUsageObservationV1 {
+                reported_usage: self.reported_usage(),
+                charge_complete: !self.incomplete_charge,
+            })
+    }
+
+    fn add_usage(&mut self, value: Option<&serde_json::Value>) {
+        use review_runner::task::usage::NativeCounter;
+        let Some(value) = value.filter(|v| v.is_object()) else {
+            self.malformed_usage = true;
+            self.incomplete_charge = true;
+            self.error = Some("Codex turn.completed requires a usage object".into());
+            return;
+        };
+        let input = NativeCounter::read(value, "input_tokens").value();
+        let output = NativeCounter::read(value, "output_tokens").value();
+        let cache = NativeCounter::read(value, "cached_input_tokens").optional_zero();
+        let write = NativeCounter::read(value, "cache_write_input_tokens").optional_zero();
+        let reasoning = NativeCounter::read(value, "reasoning_output_tokens").optional_zero();
+        // A malformed discount does not establish any uncached input contribution. A valid
+        // output counter and all preceding turns still establish their exact paid floor.
+        let uncached = input
+            .zip(cache)
+            .and_then(|(input, cache)| input.checked_sub(cache));
+        let complete = uncached.is_some() && output.is_some();
+        self.incomplete_charge |= !complete;
+        if !complete || write.is_none() || reasoning.is_none() {
+            self.malformed_usage = true;
+            self.error = Some("Codex returned malformed native usage".into());
+        }
+        for (total, amount) in [
+            (&mut self.usage.input_tokens, input),
+            (&mut self.usage.output_tokens, output),
+            (&mut self.usage.cache_read_tokens, cache),
+            (&mut self.usage.cache_write_tokens, write),
+            (&mut self.usage.reasoning_tokens, reasoning),
+        ] {
+            if let Some(amount) = amount {
+                add_task_usage(total, amount);
+            }
+        }
+        self.usage.chargeable_tokens = (self.usage.chargeable_tokens.get()
+            + u128::from(uncached.unwrap_or(0))
+            + u128::from(output.unwrap_or(0)))
+        .into();
+    }
+
     /// Fold the JSONL stream. Unknown event types are ignored — the CLI adds kinds freely —
     /// but the three that matter are pinned by fixtures captured from a real run.
     fn parse(stdout: &[u8]) -> TaskEvents {
@@ -161,24 +269,7 @@ impl TaskEvents {
             };
             match value.get("type").and_then(|t| t.as_str()) {
                 Some("turn.completed") => {
-                    if let Some(usage) = value.get("usage") {
-                        let count =
-                            |key: &str| usage.get(key).and_then(|v| v.as_u64()).unwrap_or(0);
-                        let input = count("input_tokens");
-                        let cache_read = count("cached_input_tokens");
-                        let output = count("output_tokens");
-                        let reasoning = count("reasoning_output_tokens");
-                        let cache_write = count("cache_write_input_tokens");
-                        let chargeable =
-                            u128::from(input.saturating_sub(cache_read)) + u128::from(output);
-                        add_task_usage(&mut events.usage.input_tokens, input);
-                        add_task_usage(&mut events.usage.output_tokens, output);
-                        add_task_usage(&mut events.usage.cache_read_tokens, cache_read);
-                        add_task_usage(&mut events.usage.cache_write_tokens, cache_write);
-                        add_task_usage(&mut events.usage.reasoning_tokens, reasoning);
-                        events.usage.chargeable_tokens =
-                            (events.usage.chargeable_tokens.get() + chargeable).into();
-                    }
+                    events.add_usage(value.get("usage"));
                 }
                 Some("item.completed") => {
                     if let Some(item) = value.get("item")
@@ -210,3 +301,6 @@ impl TaskEvents {
 fn add_task_usage(total: &mut Option<review_core::task::usage::DecimalU128>, amount: u64) {
     *total = Some((total.map_or(0, |n| n.get()) + u128::from(amount)).into());
 }
+
+#[cfg(test)]
+mod usage_tests;

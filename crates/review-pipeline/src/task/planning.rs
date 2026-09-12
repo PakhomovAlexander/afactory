@@ -69,6 +69,7 @@ impl TaskOperatorHost for PlanningTaskDomain<'_> {
         attempt: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput {
         TaskWorkOutput {
+            usage_observation: None,
             usage: None,
             outputs: if attempt.is_some() {
                 Err("Planning context cannot consume an Attempt".into())

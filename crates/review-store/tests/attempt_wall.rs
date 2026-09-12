@@ -427,3 +427,125 @@ fn native_component_upgrade_preserves_old_bytes_and_refuses_malformed_newest_dat
     assert!(store.attempt_wall("campaign-x").is_err());
     assert_eq!(prior(), old_bytes);
 }
+
+#[test]
+fn observation_is_atomic_sticky_and_never_erased_by_older_or_absent_measurement() {
+    use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("events.sqlite");
+    let store = EventStore::open(&path).unwrap();
+    let observation = TaskUsageObservationV1 {
+        reported_usage: Some(TaskTokenUsageV3::charge_only(7)),
+        charge_complete: false,
+    };
+    store
+        .record_task_attempt_wall_with_observation(&task_wall("a", 100, 1), &observation)
+        .unwrap();
+    for supplied in [
+        None,
+        Some(TaskUsageObservationV1 {
+            reported_usage: Some(TaskTokenUsageV3::charge_only(9)),
+            charge_complete: true,
+        }),
+    ] {
+        if let Some(value) = supplied {
+            store
+                .record_task_attempt_wall_with_observation(&task_wall("a", 9, 2), &value)
+                .unwrap();
+        } else {
+            let mut wall = task_wall("a", 0, 2);
+            wall.usage = None;
+            store.record_task_attempt_wall(&wall).unwrap();
+        }
+        assert!(
+            !store
+                .task_attempt_usage_observation("campaign-x", "a")
+                .unwrap()
+                .unwrap()
+                .charge_complete
+        );
+        assert_eq!(
+            store.task_attempt_wall("campaign-x").unwrap()[0]
+                .usage
+                .as_ref()
+                .unwrap()
+                .chargeable_tokens
+                .get(),
+            100
+        );
+    }
+    store.record_attempt_wall(&wall("a", 1, 3)).unwrap();
+    let expected = store
+        .task_attempt_usage_observation("campaign-x", "a")
+        .unwrap()
+        .unwrap();
+    assert!(!expected.charge_complete);
+    assert_eq!(
+        expected
+            .reported_usage
+            .as_ref()
+            .unwrap()
+            .chargeable_tokens
+            .get(),
+        9
+    );
+    assert_eq!(
+        store.task_attempt_wall("campaign-x").unwrap()[0]
+            .usage
+            .as_ref()
+            .unwrap()
+            .chargeable_tokens
+            .get(),
+        23000
+    );
+    let too_high = TaskUsageObservationV1 {
+        reported_usage: Some(TaskTokenUsageV3::charge_only(u128::MAX)),
+        charge_complete: false,
+    };
+    assert!(
+        store
+            .record_task_attempt_wall_with_observation(&task_wall("a", 9, 99), &too_high)
+            .is_err()
+    );
+    assert_eq!(
+        store.task_attempt_wall("campaign-x").unwrap()[0].elapsed_ms,
+        3,
+        "failed observation cannot partially write wall or usage"
+    );
+    drop(store);
+    let store = EventStore::open_read_only(&path).unwrap();
+    assert_eq!(
+        store
+            .task_attempt_usage_observation("campaign-x", "a")
+            .unwrap(),
+        Some(expected)
+    );
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    for bad in [
+        "{}",
+        "null",
+        r#"{"charge_complete":true}"#,
+        r#"{"charge_complete":false,"reported_usage":null}"#,
+    ] {
+        conn.execute(
+            "UPDATE attempt_wall SET usage_observation_v1_json=?1",
+            [bad],
+        )
+        .unwrap();
+        assert!(
+            store
+                .task_attempt_usage_observation("campaign-x", "a")
+                .is_err()
+        );
+        assert!(
+            store.task_attempt_wall("campaign-x").is_err(),
+            "invalid observation cannot fall back to known usage"
+        );
+        let writer = EventStore::open(&path).unwrap();
+        assert!(
+            writer
+                .record_task_attempt_wall(&task_wall("a", 0, 100))
+                .is_err()
+        );
+    }
+}

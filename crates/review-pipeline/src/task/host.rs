@@ -650,6 +650,7 @@ impl<'a> CapturedTaskHost<'a> {
         let mut raw_artifact_ids = Vec::new();
         let mut charged_tokens = Some(0);
         let mut token_usage = None;
+        let mut usage_observation = None;
         let mut feedback_code = None;
         let outputs = (|| {
             let brokered = match &worker.transport {
@@ -738,6 +739,7 @@ impl<'a> CapturedTaskHost<'a> {
                 .as_ref()
                 .map(|usage| usage.chargeable_tokens.get());
             token_usage = result.usage;
+            usage_observation = result.usage_observation;
             let reply = result.reply?;
             let producer = Producer::Attempt {
                 run_id: self.run_id.clone(),
@@ -831,6 +833,7 @@ impl<'a> CapturedTaskHost<'a> {
             None
         };
         TaskWorkOutput {
+            usage_observation,
             usage: token_usage,
             outputs,
             charged_tokens,
@@ -940,6 +943,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
                 self.worker_execute(cas, input, attempt, worker, broker)
             }
             (Some(_), None) => TaskWorkOutput {
+                usage_observation: None,
                 usage: None,
                 outputs: Err("Worker has no durably started Attempt".into()),
                 charged_tokens: Some(0),

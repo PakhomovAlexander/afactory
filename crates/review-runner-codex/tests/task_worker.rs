@@ -173,6 +173,10 @@ fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage
             cas.get(&returned.raw_artifact_ids[0]).unwrap(),
             output.as_bytes()
         );
+        assert!(
+            returned.usage_observation.is_none(),
+            "valid usage retains the frozen path, including failed calls"
+        );
         let admitted = returned
             .message
             .and_then(|bytes| contract.validate_reply(&bytes));
@@ -228,4 +232,63 @@ fn multiple_native_turns_retain_exact_components_and_uncached_charge() {
         cas.get(&returned.raw_artifact_ids[0]).unwrap(),
         output.as_bytes()
     );
+}
+
+#[test]
+fn malformed_native_usage_refuses_message_and_survives_raw_capture_outage() {
+    for (billing_invalid, outage) in [(true, false), (false, false), (true, true)] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas_path = temp.path().join("cas");
+        let cas = Cas::open(&cas_path).unwrap();
+        let mut usage = serde_json::json!({"input_tokens":11,"output_tokens":7});
+        usage[if billing_invalid {
+            "input_tokens"
+        } else {
+            "reasoning_output_tokens"
+        }] = serde_json::Value::Null;
+        let output=serde_json::json!({"type":"turn.completed","usage":usage}).to_string() + "\n" + &serde_json::json!({"type":"item.completed","item":{"type":"agent_message","text":"OK"}}).to_string();
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{}'\nprintf '%s' 'usage fixture' >&2\n",
+                output.replace('\'', "'\\''")
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if outage {
+            std::fs::remove_dir_all(&cas_path).unwrap();
+            std::fs::write(&cas_path, b"outage").unwrap();
+        }
+        let adapter =
+            CodexTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            Duration::from_secs(5),
+            false,
+        );
+        assert!(returned.message.is_err());
+        let observation = returned.usage_observation.unwrap();
+        assert_eq!(observation.charge_complete, !billing_invalid);
+        assert_eq!(observation.reported_usage, returned.usage);
+        assert_eq!(
+            returned.usage.unwrap().chargeable_tokens.get(),
+            if billing_invalid { 7 } else { 18 }
+        );
+        if outage {
+            assert!(returned.raw_artifact_ids.is_empty());
+        } else {
+            assert_eq!(
+                cas.get(&returned.raw_artifact_ids[0]).unwrap(),
+                output.as_bytes()
+            );
+            assert_eq!(
+                cas.get(&returned.raw_artifact_ids[1]).unwrap(),
+                b"usage fixture"
+            );
+        }
+    }
 }

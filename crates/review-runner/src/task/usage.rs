@@ -10,6 +10,36 @@ use review_core::{
 };
 use review_store::{Cas, validate_envelope};
 
+/// Native protocol counters are per-event u64 numbers. Absence is distinct from a present
+/// invalid value; only the provider's declared optional fields may interpret absence as zero.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeCounter {
+    Absent,
+    Value(u64),
+    Invalid,
+}
+impl NativeCounter {
+    pub fn read(value: &serde_json::Value, key: &str) -> Self {
+        match value.get(key) {
+            None => Self::Absent,
+            Some(value) => value.as_u64().map_or(Self::Invalid, Self::Value),
+        }
+    }
+    pub fn value(self) -> Option<u64> {
+        match self {
+            Self::Value(n) => Some(n),
+            _ => None,
+        }
+    }
+    pub fn optional_zero(self) -> Option<u64> {
+        match self {
+            Self::Absent => Some(0),
+            Self::Value(n) => Some(n),
+            Self::Invalid => None,
+        }
+    }
+}
+
 impl From<&TokenUsage> for TaskTokenUsageV1 {
     fn from(value: &TokenUsage) -> Self {
         Self {

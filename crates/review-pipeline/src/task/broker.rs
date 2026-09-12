@@ -112,6 +112,7 @@ impl ExactReceiptSink for TaskBrokerBoundary<'_, '_> {
 
 fn failed(message: impl Into<String>, charged_tokens: Option<u128>) -> TaskWorkOutput {
     TaskWorkOutput {
+        usage_observation: None,
         usage: None,
         outputs: Err(message.into()),
         charged_tokens,

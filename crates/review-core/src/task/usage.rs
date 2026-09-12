@@ -172,6 +172,54 @@ impl From<TaskTokenUsageV1> for TaskTokenUsageV2 {
 
 pub const TASK_TOKEN_USAGE_V3: &str = "af/TaskTokenUsage@3";
 
+pub const TASK_USAGE_OBSERVATION_V1: &str = "af/TaskUsageObservation@1";
+
+/// Native counters and their unambiguous billing floor, independent of the common charged
+/// amount. Incomplete reporting never grants another reservation or enlarges any limit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskUsageObservationV1 {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub reported_usage: Option<TaskTokenUsageV3>,
+    pub charge_complete: bool,
+}
+
+impl TaskUsageObservationV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        super::require(
+            !self.charge_complete || self.reported_usage.is_some(),
+            "Complete charge observation requires reported usage, including known zero",
+        )
+    }
+
+    /// Observations are cumulative, not additive spend. No current contract authorizes a
+    /// later observation to erase uncertainty or a previously reported counter/floor.
+    pub fn merge_previous(&mut self, previous: &Self) {
+        self.charge_complete &= previous.charge_complete;
+        if let Some(previous) = &previous.reported_usage {
+            match &mut self.reported_usage {
+                None => self.reported_usage = Some(previous.clone()),
+                Some(current) => {
+                    current.input_tokens = current.input_tokens.max(previous.input_tokens);
+                    current.output_tokens = current.output_tokens.max(previous.output_tokens);
+                    current.cache_read_tokens =
+                        current.cache_read_tokens.max(previous.cache_read_tokens);
+                    current.cache_write_tokens =
+                        current.cache_write_tokens.max(previous.cache_write_tokens);
+                    current.reasoning_tokens =
+                        current.reasoning_tokens.max(previous.reasoning_tokens);
+                    current.chargeable_tokens =
+                        current.chargeable_tokens.max(previous.chargeable_tokens);
+                }
+            }
+        }
+    }
+}
+
 /// One native invocation can contain many turns. Both its components and charge are exact
 /// cumulative counters; the captured reservation remains a separate, unchanged u64 limit.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

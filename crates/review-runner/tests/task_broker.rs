@@ -18,7 +18,8 @@ use review_core::{
 };
 use review_runner::TokenUsage;
 use review_runner::task::{
-    ModelWorkerReturn, WorkerContract, WorkerModelAdapter, invoke_model, invoke_model_with_broker,
+    ModelWorkerReturn, WorkerContract, WorkerModelAdapter, invoke_model, invoke_model_controlled,
+    invoke_model_with_broker,
 };
 use review_store::Cas;
 use serde_json::json;
@@ -97,6 +98,7 @@ impl WorkerModelAdapter for NativeModel<'_> {
         assert_eq!(timeout, TIMEOUT);
         assert!(writable);
         ModelWorkerReturn {
+            usage_observation: None,
             message: if self.failed {
                 Err("reported Provider failure".into())
             } else {
@@ -185,8 +187,8 @@ fn absent_broker_forwards_exact_invocation_and_retains_success_or_failed_evidenc
             model.credential_mode(),
             BrokerCredentialModeV1::TrustedUnsafe
         );
-        for legacy_entry in [true, false] {
-            let result = if legacy_entry {
+        for legacy_entry in 0..3 {
+            let result = if legacy_entry == 0 {
                 invoke_model(
                     &fixture.cas,
                     fixture.directory.path(),
@@ -196,7 +198,7 @@ fn absent_broker_forwards_exact_invocation_and_retains_success_or_failed_evidenc
                     TIMEOUT,
                     true,
                 )
-            } else {
+            } else if legacy_entry == 1 {
                 invoke_model_with_broker(
                     &fixture.cas,
                     fixture.directory.path(),
@@ -205,6 +207,18 @@ fn absent_broker_forwards_exact_invocation_and_retains_success_or_failed_evidenc
                     &fixture.context_id,
                     TIMEOUT,
                     true,
+                    None,
+                )
+            } else {
+                invoke_model_controlled(
+                    &fixture.cas,
+                    fixture.directory.path(),
+                    &model,
+                    &fixture.contract,
+                    &fixture.context_id,
+                    TIMEOUT,
+                    true,
+                    None,
                     None,
                 )
             };
@@ -220,8 +234,45 @@ fn absent_broker_forwards_exact_invocation_and_retains_success_or_failed_evidenc
             assert_eq!(result.raw_artifact_ids.len(), 1);
             assert_eq!(fixture.cas.get(&result.raw_artifact_ids[0]).unwrap(), RAW);
         }
-        assert_eq!(model.calls.load(Ordering::SeqCst), 2);
+        assert_eq!(model.calls.load(Ordering::SeqCst), 3);
     }
+}
+
+#[test]
+fn unsupported_control_is_refused_without_invoking_adapter_or_broker() {
+    let fixture = Fixture::new();
+    let model = NativeModel {
+        fixture: &fixture,
+        calls: AtomicUsize::new(0),
+        failed: false,
+    };
+    let local = LocalBroker::new(VALID_REPLY);
+    let broker = local.issue();
+    for cancelled in [false, true] {
+        let flag = std::sync::atomic::AtomicBool::new(cancelled);
+        let result = invoke_model_controlled(
+            &fixture.cas,
+            fixture.directory.path(),
+            &model,
+            &fixture.contract,
+            &fixture.context_id,
+            TIMEOUT,
+            true,
+            Some(&broker),
+            Some(&flag),
+        );
+        assert!(
+            result
+                .reply
+                .unwrap_err()
+                .contains("does not support controlled invocation")
+        );
+        assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 0);
+        assert!(result.raw_artifact_ids.is_empty());
+    }
+    assert_eq!(model.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(local.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(broker.charged_usage(), 0);
 }
 
 #[test]
@@ -298,6 +349,7 @@ impl WorkerModelAdapter for BrokeredModel {
             .unwrap();
         let raw_artifact_ids = vec![cas.put(&response.body).unwrap()];
         ModelWorkerReturn {
+            usage_observation: None,
             message: if self.failed {
                 Err("framing failed after paid operation".into())
             } else {

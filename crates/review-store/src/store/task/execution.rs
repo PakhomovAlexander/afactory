@@ -4,6 +4,7 @@
 pub mod broker;
 mod encoding;
 pub mod owned;
+pub mod usage_observation;
 pub use encoding::{DecodedTaskExecutionRecord, read_execution_record};
 
 use review_attempt::task_budget::{TaskBudget, TaskReservation};
@@ -711,6 +712,7 @@ impl TaskProjection {
             TaskExecutionRecordV1::UsageObserved {
                 attempt_id,
                 charged_tokens,
+                raw_artifact_ids,
                 ..
             } => {
                 let attempt = execution
@@ -720,6 +722,14 @@ impl TaskProjection {
                 if !attempt.started || attempt.released {
                     return Err(conflict("Usage observation requires started Task work"));
                 }
+                usage_observation::validate(
+                    cas,
+                    &self.task_id,
+                    attempt_id,
+                    attempt,
+                    *charged_tokens,
+                    raw_artifact_ids,
+                )?;
                 execution
                     .budget
                     .observe_charge_exact(&attempt.reservation.id, *charged_tokens)
@@ -908,6 +918,7 @@ impl TaskProjection {
                 attempt_id,
                 charged_tokens,
                 result,
+                raw_artifact_ids,
                 ..
             } => {
                 let attempt = execution
@@ -918,6 +929,14 @@ impl TaskProjection {
                 if !attempt.started || attempt.released || attempt.settlement.is_some() {
                     return Err(conflict("Task settlement has no unsettled started Attempt"));
                 }
+                usage_observation::validate(
+                    cas,
+                    &self.task_id,
+                    attempt_id,
+                    &attempt,
+                    *charged_tokens,
+                    raw_artifact_ids,
+                )?;
                 if let TaskAttemptResultV1::Succeeded { output_id } = result {
                     let out = output(cas, output_id)?;
                     verify_attempt_producer(
@@ -1117,11 +1136,31 @@ impl EventStore {
                         .map_err(|error| StoreError::Artifact(error.to_string()))
                     })
                     .transpose()?;
+                let raw_artifact_ids = self
+                    .task_attempt_usage_observation(&task_run_id(&lease.task_id)?, id)?
+                    .map(|observation| {
+                        usage_observation::capture_task_usage_observation(
+                            cas,
+                            review_core::Producer::Attempt {
+                                run_id: task_run_id(&lease.task_id)?,
+                                node_id: attempt.reservation.node.clone(),
+                                attempt_id: id.clone(),
+                            },
+                            attempt
+                                .context_id
+                                .as_deref()
+                                .ok_or_else(|| conflict("Started Task has no context"))?,
+                            &observation,
+                        )
+                    })
+                    .transpose()?
+                    .into_iter()
+                    .collect();
                 TaskExecutionRecordV1::Settled {
                     attempt_id: id.clone(),
                     charged_tokens: observed.max(u128::from(attempt.reservation.tokens)),
                     result: TaskAttemptResultV1::Abandoned { diagnostic_id },
-                    raw_artifact_ids: vec![],
+                    raw_artifact_ids,
                     usage_id,
                 }
             } else {

@@ -260,6 +260,7 @@ impl LegacyReviewTaskHost<'_, '_> {
         broker: Option<&dyn review_broker::ExactBrokerClient>,
     ) -> TaskWorkOutput {
         let mut result = TaskWorkOutput {
+            usage_observation: None,
             usage: Some(TaskTokenUsageV3::charge_only(0)),
             outputs: Err("Review Worker was not started".into()),
             charged_tokens: Some(0),
@@ -344,6 +345,7 @@ impl LegacyReviewTaskHost<'_, '_> {
                 }
             };
             result.usage = returned.usage;
+            result.usage_observation = returned.usage_observation;
             result.charged_tokens = result
                 .usage
                 .as_ref()

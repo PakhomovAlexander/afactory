@@ -5,12 +5,14 @@ use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
 mod capture;
+mod control;
 mod drain;
 mod spawn;
 
 use capture::run_supervised_inner;
 pub use capture::{
-    SupervisedCapture, run_supervised_captured, run_supervised_captured_with_policy,
+    SupervisedCapture, run_supervised_captured, run_supervised_captured_cancellable,
+    run_supervised_captured_cancellable_with_policy, run_supervised_captured_with_policy,
 };
 use drain::{collect_after_kill, collect_stderr, drain_async};
 

@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 152] = [
+const SCHEMAS: [&str; 153] = [
     "task-inspection-v8.json",
     "provider-doctor-v2.json",
     "review-outcome-v2.json",
@@ -61,6 +61,7 @@ const SCHEMAS: [&str; 152] = [
     "task-owned-child-set-v1.json",
     "task-token-usage-v2.json",
     "task-token-usage-v3.json",
+    "task-usage-observation-v1.json",
     "broker-operation-receipt-v2.json",
     "task-review-attempt-provenance-v1.json",
     "task-review-attempt-provenance-v2.json",
@@ -2608,6 +2609,8 @@ fn legacy_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
 
 #[path = "schema_parity/task_usage.rs"]
 mod task_usage;
+#[path = "schema_parity/task_usage_observation.rs"]
+mod task_usage_observation;
 
 #[test]
 fn task_review_conclusions_preserve_exact_cumulative_charge_and_execution_contracts() {

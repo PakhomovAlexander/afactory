@@ -199,6 +199,7 @@ impl ProviderTaskDomain<'_> {
             Ok(value) => value,
             Err(error) => {
                 return TaskWorkOutput {
+                    usage_observation: None,
                     usage: None,
                     outputs: Err(error),
                     charged_tokens: Some(0),
@@ -259,6 +260,7 @@ impl ProviderTaskDomain<'_> {
             )]))
         })();
         TaskWorkOutput {
+            usage_observation: returned.usage_observation,
             usage: returned.usage,
             outputs,
             charged_tokens,

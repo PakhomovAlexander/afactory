@@ -414,6 +414,7 @@ fn worker_value(cas: &Cas, id: &str) -> Result<WorkerValue, String> {
 
 /// Usage and raw evidence survive both nonzero process exits and output-schema refusal.
 pub struct WorkerReturn {
+    pub usage_observation: Option<review_core::task::usage::TaskUsageObservationV1>,
     pub reply: Result<WorkerReply, String>,
     pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
     pub raw_artifact_ids: Vec<String>,
@@ -424,6 +425,9 @@ pub struct WorkerReturn {
 /// final-message bytes even when they are not a Reviewer Result; the captured Worker schema
 /// performs admission afterwards. Every failure retains raw evidence and any known usage.
 pub struct ModelWorkerReturn {
+    /// Explicit native billing completeness when reporting was malformed or partial. None
+    /// preserves the existing complete-known / wholly-unavailable usage convention.
+    pub usage_observation: Option<review_core::task::usage::TaskUsageObservationV1>,
     pub message: Result<Vec<u8>, String>,
     pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
     pub raw_artifact_ids: Vec<String>,
@@ -466,12 +470,38 @@ pub trait WorkerModelAdapter: Send + Sync {
     ) -> ModelWorkerReturn {
         if broker.is_some() {
             return ModelWorkerReturn {
+                usage_observation: None,
                 message: Err("Worker model adapter does not consume Broker Handles".into()),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 raw_artifact_ids: vec![],
             };
         }
         self.invoke(cas, workdir, input, timeout, writable)
+    }
+
+    /// Optional cooperative cancellation is an installed transport capability. An adapter
+    /// must implement in-flight cancellation before accepting Some; a preflight flag check
+    /// alone cannot establish support. None preserves the existing Broker/native hook.
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_controlled(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+        broker: Option<&dyn ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ModelWorkerReturn {
+        if cancellation.is_some() {
+            return ModelWorkerReturn {
+                usage_observation: None,
+                message: Err("Worker model adapter does not support controlled invocation".into()),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
+                raw_artifact_ids: vec![],
+            };
+        }
+        self.invoke_with_broker(cas, workdir, input, timeout, writable, broker)
     }
 }
 
@@ -483,6 +513,7 @@ impl ModelWorkerReturn {
             _ => vec![],
         };
         Self {
+            usage_observation: None,
             message: Err(error.to_string()),
             usage: None,
             raw_artifact_ids,
@@ -517,10 +548,29 @@ pub fn invoke_model_with_broker(
     writable: bool,
     broker: Option<&dyn ExactBrokerClient>,
 ) -> WorkerReturn {
+    invoke_model_controlled(
+        cas, workdir, adapter, contract, context_id, timeout, writable, broker, None,
+    )
+}
+
+/// Same captured context/output validation with explicit optional transport cancellation.
+#[allow(clippy::too_many_arguments)]
+pub fn invoke_model_controlled(
+    cas: &Cas,
+    workdir: &Path,
+    adapter: &dyn WorkerModelAdapter,
+    contract: &WorkerContract,
+    context_id: &str,
+    timeout: Duration,
+    writable: bool,
+    broker: Option<&dyn ExactBrokerClient>,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
+) -> WorkerReturn {
     let bytes = match contract.read_context(cas, context_id) {
         Ok((_, bytes)) => bytes,
         Err(error) => {
             return WorkerReturn {
+                usage_observation: None,
                 reply: Err(error),
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 raw_artifact_ids: vec![],
@@ -528,7 +578,8 @@ pub fn invoke_model_with_broker(
             };
         }
     };
-    let returned = adapter.invoke_with_broker(cas, workdir, bytes, timeout, writable, broker);
+    let returned =
+        adapter.invoke_controlled(cas, workdir, bytes, timeout, writable, broker, cancellation);
     let (reply, feedback_code) = match returned.message {
         Ok(bytes) => {
             let reply = contract.validate_reply(&bytes);
@@ -540,6 +591,7 @@ pub fn invoke_model_with_broker(
         Err(error) => (Err(error), Some(TaskFeedbackCodeV1::ProviderFailure)),
     };
     WorkerReturn {
+        usage_observation: returned.usage_observation,
         reply,
         usage: returned.usage,
         raw_artifact_ids: returned.raw_artifact_ids,
@@ -575,6 +627,7 @@ pub fn invoke_command(
                 TaskFeedbackCodeV1::ProcessFailure
             });
             WorkerReturn {
+                usage_observation: None,
                 reply,
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 raw_artifact_ids: vec![raw.raw_artifact],
@@ -582,6 +635,7 @@ pub fn invoke_command(
             }
         }
         Err(error) => WorkerReturn {
+            usage_observation: None,
             raw_artifact_ids: match &error {
                 RunnerError::TimedOut { raw_artifact, .. } => {
                     raw_artifact.iter().cloned().collect()
@@ -607,6 +661,7 @@ pub fn invoke_command_bytes(
 ) -> ModelWorkerReturn {
     match capture_command(cas, workdir, runtime_root, command, bytes, timeout) {
         Ok(raw) => ModelWorkerReturn {
+            usage_observation: None,
             message: if raw.status.success() {
                 Ok(raw.stdout)
             } else {

@@ -351,6 +351,7 @@ impl review_pipeline::task::TaskOperatorHost for AdmissionOnly {
         _: Option<&review_store::store::task::execution::PreparedTaskAttempt>,
     ) -> review_pipeline::task::TaskWorkOutput {
         review_pipeline::task::TaskWorkOutput {
+            usage_observation: None,
             usage: None,
             outputs: Err("Installed Review plan admission cannot execute work".into()),
             charged_tokens: Some(0),

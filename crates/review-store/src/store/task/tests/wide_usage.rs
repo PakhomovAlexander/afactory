@@ -461,3 +461,152 @@ fn execution_record_readers_preserve_each_declared_counter_domain() {
             .is_ok()
     );
 }
+
+#[test]
+fn native_usage_observation_binds_context_producer_floor_and_preserves_late_charge() {
+    let mut f = Fixture::new(false).with_execution_graph();
+    let lease = f.open();
+    f.propose(&lease);
+    f.store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    f.record_execution_inputs(&lease);
+    let context = f.cas.put_json(&json!({"context":"native usage"})).unwrap();
+    let attempt = f
+        .store
+        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .unwrap();
+    f.store
+        .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+        .unwrap();
+    let observation = TaskUsageObservationV1 {
+        reported_usage: Some(TaskTokenUsageV3::charge_only(3)),
+        charge_complete: false,
+    };
+    let producer = Producer::Attempt {
+        run_id: task_run_id(lease.task_id()).unwrap(),
+        node_id: "root.nodes.write".into(),
+        attempt_id: attempt.id().into(),
+    };
+    let usage_id = f.cas.put_json(&json!({"chargeable_tokens":"10"})).unwrap();
+    let charge = u128::from(attempt.reservation().tokens);
+    for variant in [
+        "producer",
+        "context",
+        "subject",
+        "duplicate",
+        "charge",
+        "malformed",
+    ] {
+        let mut producer = producer.clone();
+        let mut refs = vec![context.clone()];
+        let mut subject = None;
+        let mut value = serde_json::to_value(&observation).unwrap();
+        if variant == "producer" {
+            if let Producer::Attempt { node_id, .. } = &mut producer {
+                *node_id = "root.nodes.other".into();
+            }
+        }
+        if variant == "context" {
+            refs.clear();
+        }
+        if variant == "subject" {
+            subject = Some(context.clone());
+        }
+        if variant == "malformed" {
+            value["reported_usage"] = json!(null);
+        }
+        let id = f
+            .cas
+            .put_artifact(TASK_USAGE_OBSERVATION_V1, producer, refs, subject, value)
+            .unwrap()
+            .0;
+        let raw = if variant == "duplicate" {
+            vec![id.clone(), id]
+        } else {
+            vec![id]
+        };
+        let before = f.store.len(&task_run_id(lease.task_id()).unwrap()).unwrap();
+        assert!(
+            f.store
+                .observe_task_usage(
+                    &f.cas,
+                    &lease,
+                    TaskExecutionRecordV1::UsageObserved {
+                        attempt_id: attempt.id().into(),
+                        charged_tokens: if variant == "charge" {
+                            charge - 1
+                        } else {
+                            charge
+                        },
+                        usage_id: usage_id.clone(),
+                        raw_artifact_ids: raw,
+                    }
+                )
+                .is_err(),
+            "{variant}"
+        );
+        assert_eq!(
+            f.store.len(&task_run_id(lease.task_id()).unwrap()).unwrap(),
+            before
+        );
+    }
+    let id = execution::usage_observation::capture_task_usage_observation(
+        &f.cas,
+        producer,
+        &context,
+        &observation,
+    )
+    .unwrap();
+    f.store
+        .observe_task_usage(
+            &f.cas,
+            &lease,
+            TaskExecutionRecordV1::UsageObserved {
+                attempt_id: attempt.id().into(),
+                charged_tokens: charge,
+                usage_id: usage_id.clone(),
+                raw_artifact_ids: vec![id.clone()],
+            },
+        )
+        .unwrap();
+    let late = u128::from(u64::MAX) + 7;
+    f.store
+        .observe_task_usage(
+            &f.cas,
+            &lease,
+            TaskExecutionRecordV1::UsageObserved {
+                attempt_id: attempt.id().into(),
+                charged_tokens: late,
+                usage_id: usage_id.clone(),
+                raw_artifact_ids: vec![],
+            },
+        )
+        .unwrap();
+    let diagnostic_id = f
+        .cas
+        .put_json(&json!({"error":"malformed native usage"}))
+        .unwrap();
+    f.store
+        .settle_task_attempt(
+            &f.cas,
+            &lease,
+            TaskExecutionRecordV1::Settled {
+                attempt_id: attempt.id().into(),
+                charged_tokens: charge,
+                result: TaskAttemptResultV1::Failed {
+                    diagnostic_id,
+                    feedback_id: None,
+                },
+                raw_artifact_ids: vec![id],
+                usage_id: Some(usage_id),
+            },
+            &f.authority,
+        )
+        .unwrap();
+    f.store = EventStore::open(&f.path).unwrap();
+    let execution = f.state().execution.unwrap();
+    assert_eq!(execution.budget.committed_tokens(), late);
+    assert_eq!(execution.budget.begun_attempts(), 1);
+    assert_eq!(execution.attempt_accounting()[0].charged_tokens, late);
+}

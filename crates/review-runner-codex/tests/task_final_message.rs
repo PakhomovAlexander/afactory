@@ -61,6 +61,7 @@ fn run_case(case: &str) {
         r#"#!/usr/bin/python3
 import json, os, sys
 sys.stdin.read()
+print('native-final-message fixture diagnostic', file=sys.stderr)
 output = sys.argv[sys.argv.index('-o') + 1]
 case = '{case}'
 if case == 'fifo':
@@ -103,6 +104,13 @@ print(json.dumps({{'type':'turn.completed','usage':{{'input_tokens':184467440737
     assert_eq!(usage.output_tokens.unwrap().get(), 20);
     assert_eq!(usage.chargeable_tokens.get(), u128::from(u64::MAX) + 20);
     assert_eq!(returned.raw_artifact_ids.len(), 2);
+    // The fixture emits its own diagnostic: interpreter startup warnings differ by platform.
+    let stderr = cas.get(&returned.raw_artifact_ids[1]).unwrap();
+    assert!(
+        String::from_utf8(stderr)
+            .unwrap()
+            .contains("native-final-message fixture diagnostic\n")
+    );
     let stdout = cas.get(&returned.raw_artifact_ids[0]).unwrap();
     assert!(
         String::from_utf8(stdout)

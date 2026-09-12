@@ -1,10 +1,12 @@
-use crate::drain::{Drain, Drained, collect, collect_after_kill_until, drain_async};
+use crate::control::{ReceiveError, cancelled, receive};
+use crate::drain::{Drain, Drained, collect_after_kill_until, collect_cancellable, drain_async};
 use crate::{
     ExitPolicy, SupervisedError, SupervisedOutput, SupervisedStreamError, kill_process_group,
-    stdin_writer_wait, wait_exact,
+    stdin_writer_wait, wait_exact, wait_exact_cancellable,
 };
 use std::io::Write;
 use std::process::{Command, ExitStatus, Stdio};
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 /// Process outcome and bytes are independent: failed transport cannot erase reported usage.
@@ -47,6 +49,42 @@ pub fn run_supervised_captured_with_policy(
     timeout: Duration,
     exit_policy: ExitPolicy,
 ) -> SupervisedCapture {
+    captured_inner(command, input, timeout, exit_policy, None)
+}
+
+/// Cancellation closes and reaps the same owned group as a deadline, retaining both streams.
+pub fn run_supervised_captured_cancellable(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+    cancellation: &AtomicBool,
+) -> SupervisedCapture {
+    run_supervised_captured_cancellable_with_policy(
+        command,
+        input,
+        timeout,
+        ExitPolicy::PreserveProcessGroup,
+        cancellation,
+    )
+}
+
+pub fn run_supervised_captured_cancellable_with_policy(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+    exit_policy: ExitPolicy,
+    cancellation: &AtomicBool,
+) -> SupervisedCapture {
+    captured_inner(command, input, timeout, exit_policy, Some(cancellation))
+}
+
+fn captured_inner(
+    command: &mut Command,
+    input: Option<Vec<u8>>,
+    timeout: Duration,
+    exit_policy: ExitPolicy,
+    cancellation: Option<&AtomicBool>,
+) -> SupervisedCapture {
     let writer = input.map(|input| {
         move |stdin: &mut dyn Write| match stdin.write_all(&input) {
             Ok(()) => Ok(()),
@@ -54,7 +92,7 @@ pub fn run_supervised_captured_with_policy(
             Err(error) => Err(error),
         }
     });
-    let capture = run_supervised_inner(command, writer, timeout, exit_policy);
+    let capture = run_supervised_controlled(command, writer, timeout, exit_policy, cancellation);
     SupervisedCapture {
         status: capture.status.map_err(|error| match error {
             SupervisedStreamError::Process(error) => error,
@@ -144,6 +182,23 @@ where
     E: Send,
     F: FnOnce(&mut dyn Write) -> Result<(), E> + Send,
 {
+    run_supervised_controlled(command, writer, timeout, exit_policy, None)
+}
+
+fn run_supervised_controlled<E, F>(
+    command: &mut Command,
+    writer: Option<F>,
+    timeout: Duration,
+    exit_policy: ExitPolicy,
+    cancellation: Option<&AtomicBool>,
+) -> StreamCapture<E>
+where
+    E: Send,
+    F: FnOnce(&mut dyn Write) -> Result<(), E> + Send,
+{
+    if cancelled(cancellation) {
+        return StreamCapture::empty(SupervisedError::Cancelled);
+    }
     command.stdin(if writer.is_some() {
         Stdio::piped()
     } else {
@@ -175,7 +230,11 @@ where
         let stdout = drain_async(child.stdout.take().expect("stdout was piped"));
         let stderr = drain_async(child.stderr.take().expect("stderr was piped"));
         let deadline = Instant::now() + timeout;
-        let status = match wait_exact(child, deadline) {
+        let waited = match cancellation {
+            Some(flag) => wait_exact_cancellable(child, deadline, Some(flag)),
+            None => wait_exact(child, deadline),
+        };
+        let status = match waited {
             Ok(status) => status,
             Err(error) => {
                 return failed(SupervisedStreamError::Process(error), stdout, stderr, pid);
@@ -185,19 +244,22 @@ where
             kill_process_group(pid);
         }
         if let Some(receiver) = stdin_result {
-            let error = match receiver.recv_timeout(stdin_writer_wait(deadline)) {
+            let error = match receive(&receiver, stdin_writer_wait(deadline), cancellation) {
                 Ok(Ok(Ok(()))) => None,
                 Ok(Ok(Err(error))) => Some(SupervisedStreamError::Input(error)),
                 Ok(Err(_)) => Some(SupervisedStreamError::Process(SupervisedError::Stdin(
                     std::io::Error::other("input writer panicked"),
                 ))),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                Err(ReceiveError::Cancelled) => {
+                    Some(SupervisedStreamError::Process(SupervisedError::Cancelled))
+                }
+                Err(ReceiveError::Timeout) => {
                     Some(SupervisedStreamError::Process(SupervisedError::TimedOut {
                         stdout: vec![],
                         stderr: vec![],
                     }))
                 }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                Err(ReceiveError::Disconnected) => {
                     Some(SupervisedStreamError::Process(SupervisedError::Stdin(
                         std::io::Error::other("input writer stopped without a result"),
                     )))
@@ -208,16 +270,21 @@ where
             }
         }
         let mut cleanup = None;
-        let stdout = collect(stdout, "stdout", pid, &mut cleanup);
+        let stdout = collect_cancellable(stdout, "stdout", pid, &mut cleanup, cancellation);
         if stdout.status.is_err() {
             cleanup.get_or_insert_with(|| Instant::now() + crate::OUTPUT_DRAIN_GRACE);
             kill_process_group(pid);
         }
-        let stderr = collect(stderr, "stderr", pid, &mut cleanup);
+        let stderr = collect_cancellable(stderr, "stderr", pid, &mut cleanup, cancellation);
         if stderr.status.is_err() {
             kill_process_group(pid);
         }
-        completed(status, stdout, stderr)
+        let mut capture = completed(status, stdout, stderr);
+        if capture.status.is_ok() && cancelled(cancellation) {
+            kill_process_group(pid);
+            capture.status = Err(SupervisedStreamError::Process(SupervisedError::Cancelled));
+        }
+        capture
     })
 }
 

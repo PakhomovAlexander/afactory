@@ -32,7 +32,9 @@ use review_core::{
 use review_store::Cas;
 
 use crate::command_runner::RunnerError;
-use review_process::{SupervisedError, run_supervised_captured};
+use review_process::{
+    SupervisedError, run_supervised_captured, run_supervised_captured_cancellable,
+};
 
 /// Appended to every package prompt by a model adapter: the exact result contract, kept in
 /// one place, versioned with the parser it feeds.
@@ -1208,7 +1210,7 @@ impl ModelRunner {
         command: &Command,
         input: Option<Vec<u8>>,
     ) -> Result<RawCapture, RunnerError> {
-        let capture = self.capture_process(command, input);
+        let capture = self.capture_process(command, input, None);
         let status = capture.status.map_err(|error| match error {
             RunnerError::TimedOut { after_ms, .. } => RunnerError::TimedOut {
                 after_ms,
@@ -1235,7 +1237,19 @@ impl ModelRunner {
         command: &Command,
         input: Vec<u8>,
     ) -> SettledCapture {
-        let mut capture = self.capture_process(command, Some(input));
+        self.capture_settled_with_stdin_controlled(cas, command, input, None)
+    }
+
+    /// Cooperative process cancellation preserves the same redacted bytes and CAS-failure
+    /// accounting as the ordinary settled capture. None retains the original transport.
+    pub fn capture_settled_with_stdin_controlled(
+        &self,
+        cas: &Cas,
+        command: &Command,
+        input: Vec<u8>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> SettledCapture {
+        let mut capture = self.capture_process(command, Some(input), cancellation);
         for bytes in [&capture.stdout, &capture.stderr] {
             if bytes.is_empty() {
                 continue;
@@ -1252,7 +1266,12 @@ impl ModelRunner {
         capture
     }
 
-    fn capture_process(&self, command: &Command, input: Option<Vec<u8>>) -> SettledCapture {
+    fn capture_process(
+        &self,
+        command: &Command,
+        input: Option<Vec<u8>>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> SettledCapture {
         let mut capture = SettledCapture {
             status: Err(RunnerError::Refused("unresolved command".into())),
             stdout: vec![],
@@ -1283,7 +1302,10 @@ impl ModelRunner {
         for grant in &self.grants {
             cmd.env(&grant.name, &grant.value);
         }
-        let output = run_supervised_captured(&mut cmd, input, self.timeout);
+        let output = match cancellation {
+            Some(flag) => run_supervised_captured_cancellable(&mut cmd, input, self.timeout, flag),
+            None => run_supervised_captured(&mut cmd, input, self.timeout),
+        };
         capture.stdout = redact(output.stdout, &self.grants);
         capture.stderr = redact(output.stderr, &self.grants);
         if output.stderr_held {

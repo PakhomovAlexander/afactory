@@ -32,6 +32,7 @@ impl review_runner::task::WorkerModelAdapter for LocalReadiness {
         assert_eq!(input, b"Reply with exactly: OK\n");
         assert!(!writable);
         review_runner::task::ModelWorkerReturn {
+            usage_observation: None,
             message: Ok(b"OK".to_vec()),
             raw_artifact_ids: vec![cas.put(b"OK").unwrap()],
             usage: Some(review_runner::TokenUsage::charge_only(0).into()),
@@ -158,6 +159,7 @@ impl TaskOperatorHost for BrokerHost<'_> {
             "fixture panic after exact paid overrun"
         );
         TaskWorkOutput {
+            usage_observation: None,
             usage: None,
             outputs: Err("malformed fixture output after payment".into()),
             charged_tokens: Some(3),

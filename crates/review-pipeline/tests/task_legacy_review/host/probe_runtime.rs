@@ -72,6 +72,7 @@ impl WorkerModelAdapter for Model {
             .map(|reply| reply.body)
             .map_err(|error| error.to_string());
         ModelWorkerReturn {
+            usage_observation: None,
             raw_artifact_ids: message
                 .as_ref()
                 .ok()

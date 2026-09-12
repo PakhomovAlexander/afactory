@@ -1075,6 +1075,7 @@ impl TaskOperatorHost for ReviewTaskDomain {
             _ => return self.code.execute(cas, input, attempt),
         };
         TaskWorkOutput {
+            usage_observation: None,
             usage: None,
             outputs,
             charged_tokens: Some(0),

@@ -57,6 +57,7 @@ impl WorkerModelAdapter for Model {
             usage.input_tokens = Some((u128::from(u64::MAX) + 20).into());
         }
         ModelWorkerReturn {
+            usage_observation: None,
             message: Ok(message.as_bytes().to_vec()),
             usage: Some(usage),
             raw_artifact_ids: vec![cas.put(message.as_bytes()).unwrap()],
@@ -756,4 +757,118 @@ fn late_provider_usage_after_doctor_blocks_business_without_reprobing() {
     assert_eq!(execution.budget.begun_attempts(), 1);
     assert!(execution.budget.breached());
     assert_eq!(model.calls.load(Ordering::SeqCst), 1);
+}
+
+#[test]
+fn incomplete_billing_on_captured_reviewers_never_publishes_a_selected_result() {
+    struct Malformed(AtomicUsize);
+    impl WorkerModelAdapter for Malformed {
+        fn provider_kind(&self) -> &'static str {
+            "claude"
+        }
+        fn model_settings(&self) -> Option<(String, String)> {
+            Some(("claude-fixture".into(), "high".into()))
+        }
+        fn invoke(
+            &self,
+            cas: &Cas,
+            _: &std::path::Path,
+            input: Vec<u8>,
+            _: std::time::Duration,
+            writable: bool,
+        ) -> ModelWorkerReturn {
+            assert!(!writable);
+            let call = self.0.fetch_add(1, Ordering::SeqCst);
+            assert!(call <= 2);
+            if call == 0 {
+                assert_eq!(input, b"Reply with exactly: OK\n");
+            } else {
+                assert!(
+                    String::from_utf8(input)
+                        .unwrap()
+                        .contains("Captured instruction marker.")
+                );
+            }
+            let usage = review_core::task::usage::TaskTokenUsageV3::charge_only(if call == 0 {
+                1
+            } else {
+                11
+            });
+            ModelWorkerReturn {
+                usage_observation: (call > 0).then(|| {
+                    review_core::task::usage::TaskUsageObservationV1 {
+                        reported_usage: Some(usage.clone()),
+                        charge_complete: false,
+                    }
+                }),
+                usage: Some(usage),
+                message: if call == 0 {
+                    Ok(b"OK".to_vec())
+                } else {
+                    Err("malformed native billing counter".into())
+                },
+                raw_artifact_ids: vec![cas.put(b"native usage fixture").unwrap()],
+            }
+        }
+    }
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let (compiler, lease, plan) = admitted_plan(&cas, &mut store, "trusted_unsafe");
+    let model = Malformed(AtomicUsize::new(0));
+    let models = plan
+        .bindings
+        .iter()
+        .map(|(slot, binding)| {
+            (
+                slot.clone(),
+                TaskModelBinding {
+                    binding: binding.clone(),
+                    adapter: &model as &dyn WorkerModelAdapter,
+                },
+            )
+        })
+        .collect();
+    let shared = SharedEventStore::new(&mut store);
+    let host =
+        LegacyReviewTaskHost::new(&cas, shared.clone(), &compiler, lease.clone(), models).unwrap();
+    let authority = CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+    let runtime =
+        TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host).unwrap();
+    assert!(!runtime.execute().unwrap().complete());
+    let state = runtime.projection().unwrap();
+    let execution = state.execution.unwrap();
+    let reviewer_node=execution.graph.nodes.iter().find(|(_,node)|matches!(&node.operator,review_graph::task::CompiledOperator::ReviewDomain{review_node,..} if review_node=="reviewer")).unwrap().0;
+    let reviewers: Vec<_> = execution
+        .attempt_accounting()
+        .into_iter()
+        .filter(|row| &row.reservation.node == reviewer_node)
+        .collect();
+    assert!(!reviewers.is_empty());
+    for row in &reviewers {
+        assert_eq!(row.charged_tokens, u128::from(row.reservation.tokens));
+        assert!(matches!(
+            row.result,
+            Some(review_core::task::execution::TaskAttemptResultV1::Failed { .. })
+        ));
+        let run = review_store::store::task::task_run_id(lease.task_id()).unwrap();
+        let observation = shared
+            .lock()
+            .unwrap()
+            .task_attempt_usage_observation(&run, &row.attempt_id)
+            .unwrap()
+            .unwrap();
+        assert!(!observation.charge_complete);
+        assert_eq!(
+            observation.reported_usage.unwrap().chargeable_tokens.get(),
+            11
+        );
+    }
+    assert!(!execution.outputs.contains_key(reviewer_node));
+    assert!(
+        !host
+            .publish_recorded_round_conclusion(&cas)
+            .unwrap()
+            .can_continue
+    );
 }

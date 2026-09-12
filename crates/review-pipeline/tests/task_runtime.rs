@@ -22,6 +22,8 @@ mod publication;
 mod reservation;
 #[path = "task_runtime/retry.rs"]
 mod retry;
+#[path = "task_runtime/usage_observation.rs"]
+mod usage_observation;
 #[path = "task_runtime/usage_recovery.rs"]
 mod usage_recovery;
 #[path = "task_runtime/wide_usage.rs"]
@@ -499,6 +501,7 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
                 (serde_json::to_vec(&json!({"schema":"af.worker-reply/1","outputs":{"output":[{"outcome":"passed","text":"Checked document"}]}})).unwrap(),11)
             };
             ModelWorkerReturn {
+                usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&bytes).unwrap()],
                 message: Ok(bytes),
                 usage: Some(review_runner::TokenUsage::charge_only(cost).into()),
@@ -660,6 +663,7 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
                 serde_json::to_vec(&json!({"schema":"af.worker-reply/1","outputs":{"output":[{"outcome":"passed","text":"A checked migration guide"}]}})).unwrap()
             };
             ModelWorkerReturn {
+                usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&message).unwrap()],
                 message: Ok(message),
                 usage: Some(

@@ -38,6 +38,7 @@ pub struct TaskOwnedChildrenInputs {
 }
 
 pub struct TaskWorkOutput {
+    pub usage_observation: Option<review_core::task::usage::TaskUsageObservationV1>,
     /// Adapter-reported counters survive output/CAS failure until durable accounting.
     pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
     pub outputs: Result<BTreeMap<String, ArtifactInputV1>, String>,
@@ -143,6 +144,7 @@ pub trait TaskOperatorHost: Sync {
     ) -> TaskWorkOutput {
         if broker.is_some() {
             return TaskWorkOutput {
+                usage_observation: None,
                 usage: None,
                 outputs: Err("Task operator does not consume Broker Handles".into()),
                 charged_tokens: Some(0),
@@ -605,6 +607,7 @@ impl TaskRuntime<'_, '_> {
                 self.execute_host(input, attempt.as_ref())
             }))
             .unwrap_or_else(|_| TaskWorkOutput {
+                usage_observation: None,
                 usage: None,
                 outputs: Err("Task operator panicked".into()),
                 charged_tokens: None,
@@ -625,10 +628,34 @@ impl TaskRuntime<'_, '_> {
                         .transpose(),
                 };
                 let usage = usage_result.as_ref().ok().and_then(Option::as_ref);
+                let observation = result.usage_observation.take();
+                if let Some(observation) = &observation {
+                    observation.validate()?;
+                    if observation.reported_usage.as_ref() != usage {
+                        result.outputs = Err(
+                            "Native usage observation differs from the returned counters".into(),
+                        );
+                    }
+                    if !observation.charge_complete {
+                        result.outputs = Err("Native billing usage is incomplete".into());
+                    }
+                }
                 let charge = result
                     .charged_tokens
                     .into_iter()
                     .chain(usage.as_ref().map(|usage| usage.chargeable_tokens.get()))
+                    .chain(
+                        observation
+                            .as_ref()
+                            .and_then(|o| o.reported_usage.as_ref())
+                            .map(|u| u.chargeable_tokens.get()),
+                    )
+                    .chain(
+                        observation
+                            .as_ref()
+                            .filter(|o| !o.charge_complete)
+                            .map(|_| u128::from(attempt.reservation().tokens)),
+                    )
                     .max();
                 result.charged_tokens = charge;
                 let wall = review_store::TaskAttemptWall {
@@ -652,13 +679,39 @@ impl TaskRuntime<'_, '_> {
                         }
                     }),
                 };
-                self.store
-                    .lock()
-                    .expect("Task Store")
-                    .record_task_attempt_wall(&wall)
-                    .map_err(|error| {
-                        format!("Cannot retain Task usage before publication: {error}")
-                    })?;
+                let store = self.store.lock().expect("Task Store");
+                match &observation {
+                    Some(observation) => {
+                        store.record_task_attempt_wall_with_observation(&wall, observation)
+                    }
+                    None => store.record_task_attempt_wall(&wall),
+                }
+                .map_err(|error| format!("Cannot retain Task usage before publication: {error}"))?;
+                // SQL-only reads remain available through CAS failure. A repeated measurement
+                // cannot erase earlier incompleteness or lower the effective sidecar floor.
+                let observation = store
+                    .task_attempt_usage_observation(&wall.run_id, attempt.id())
+                    .map_err(|e| e.to_string())?;
+                let prior_charge = store
+                    .task_attempt_wall(&wall.run_id)
+                    .map_err(|e| e.to_string())?
+                    .into_iter()
+                    .find(|w| w.attempt_id == attempt.id())
+                    .and_then(|w| w.usage)
+                    .map(|u| u.chargeable_tokens.get());
+                drop(store);
+                let charge = charge.into_iter().chain(prior_charge).max();
+                result.charged_tokens = charge;
+                if let Some(observation) = &observation {
+                    if !observation.charge_complete {
+                        result.outputs = Err("Native billing usage is incomplete".into());
+                    }
+                    let id = review_store::store::task::execution::usage_observation::capture_task_usage_observation(
+                        self.cas, Producer::Attempt { run_id: wall.run_id.clone(), node_id: input.node.clone(), attempt_id: attempt.id().into() },
+                        attempt.context_id(), observation,
+                    ).map_err(|error| error.to_string())?;
+                    result.raw_artifact_ids.push(id);
+                }
                 let usage = usage_result?;
                 if let Some(charge) = charge
                     && (result.usage_id.is_none()
@@ -711,7 +764,7 @@ impl TaskRuntime<'_, '_> {
                         .as_ref()
                         .map_or(0, |a| u128::from(a.reservation().tokens))
                 });
-            if attempt.is_none() && charged != 0 {
+            if attempt.is_none() && (charged != 0 || result.usage_observation.is_some()) {
                 return Err("Pure Task operator reported a paid operation".into());
             }
             let produced = result.outputs.and_then(|values| {
