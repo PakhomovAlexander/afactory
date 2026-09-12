@@ -223,6 +223,16 @@ impl TaskOperatorHost for PlanningTaskHost<'_> {
     }
 }
 impl TaskDomain for PlanningTaskHost<'_> {
+    fn validate_retry(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        input: &TaskInvocationV1,
+        previous: &BTreeMap<String, review_core::task::execution::TaskAttemptResultV1>,
+    ) -> Result<(), String> {
+        self.inner.validate_retry(cas, task, plan, input, previous)
+    }
     fn validate_context(
         &self,
         cas: &Cas,

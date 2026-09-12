@@ -194,3 +194,25 @@ fn an_untrusted_option_is_refused_before_the_model_starts() {
         RunnerError::Refused(_)
     ));
 }
+
+#[test]
+fn settled_held_output_retains_redacted_bytes_without_admitting_a_message() {
+    let (dir, cas) = workdir();
+    let runner = ModelRunner::new(dir.path(), Duration::from_secs(1))
+        .with_grant("FIXTURE_SECRET", "sensitive-fixture-value");
+    let capture = runner.capture_settled_with_stdin(
+        &cas,
+        &sh("printf '%s' \"$FIXTURE_SECRET\"; printf '%s' \"$FIXTURE_SECRET\" >&2; sleep 30 &"),
+        vec![],
+    );
+    assert!(matches!(
+        capture.status,
+        Err(RunnerError::Failed { exit_code: -1, .. })
+    ));
+    assert_eq!(capture.stdout, b"[redacted]");
+    assert_eq!(capture.stderr, b"[redacted]");
+    assert_eq!(capture.raw_artifact_ids.len(), 2);
+    for id in capture.raw_artifact_ids {
+        assert_eq!(cas.get(&id).unwrap(), b"[redacted]");
+    }
+}

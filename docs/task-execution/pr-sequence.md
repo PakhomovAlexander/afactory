@@ -279,3 +279,22 @@ two ignored; all seven final scope cases and the real Store reopen/refused-retry
 Workspace Clippy and changed-document Markdown pass. A complete gate follows. These changes
 support captured executable-plan admission; they do not yet connect the legacy CLI to Task
 execution. ADR-0071 records the shared authority and scope-lifetime boundaries.
+
+The captured-authority/scoped-budget full gate at internal `8af1b2a` stopped at the Codex
+500 ms usage-retention fixture. Concurrent repetition localized the empty capture to a fake
+executable that had not reached its first instruction. A bounded, empty fixture-readiness
+branch now prepares that path before the unchanged measured invocation; 32 repetitions with
+four test binaries in flight pass all original assertions.
+
+A separate supervisor correction retains already-read output for non-timeout failures,
+including typed stdin failure, read failure and held stdout. Both native adapters keep exact
+`u64::MAX` usage while refusing the message. The focused process/adapter gate passes 80 tests
+with one ignored; Store, pipeline, source and check regressions pass 302 with four ignored.
+These are targeted results, not a replacement for the interrupted full gate
+([ADR-0072](../adr/0072-retain-process-output-independently-of-transport-status.md)).
+
+The Store also checks captured retry eligibility before either reservation API, refuses
+concurrent pending Attempts and recovers a previously selected output without paying again.
+The captured Worker, Provider and planning wrappers forward the domain decision. The actual
+captured Review failure-class policy remains part of its executable adapter
+([ADR-0073](../adr/0073-check-task-retry-eligibility-before-reservation.md)).

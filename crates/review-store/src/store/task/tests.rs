@@ -4,6 +4,7 @@ use review_core::task::plan::PlanDependencyV1;
 mod planning;
 mod report;
 mod reservation;
+mod retry;
 mod review;
 mod source;
 mod token_scopes;
@@ -15,10 +16,36 @@ struct Authority {
     current: bool,
     valid_until: u64,
     output_allowed: bool,
+    retry_allowed: bool,
     corrupt_during_output: Option<std::path::PathBuf>,
 }
 
 impl TaskAuthority for Authority {
+    fn validate_retry(
+        &self,
+        cas: &Cas,
+        _: &TaskRevisionV1,
+        _: &ExecutionPlanV1,
+        _: &review_core::task::execution::TaskInvocationV1,
+        previous: &BTreeMap<String, review_core::task::execution::TaskAttemptResultV1>,
+    ) -> Result<(), String> {
+        for result in previous.values() {
+            match result {
+                review_core::task::execution::TaskAttemptResultV1::Failed {
+                    diagnostic_id, ..
+                }
+                | review_core::task::execution::TaskAttemptResultV1::Abandoned { diagnostic_id } => {
+                    cas.verify(diagnostic_id).map_err(|e| e.to_string())?;
+                }
+                _ => return Err("Selected output reached retry policy".into()),
+            }
+        }
+        if self.retry_allowed {
+            Ok(())
+        } else {
+            Err("Captured fixture policy refuses retry".into())
+        }
+    }
     fn validate_planning_inputs(
         &self,
         _: &Cas,
@@ -217,6 +244,7 @@ impl Fixture {
             current: true,
             valid_until: now().unwrap() + 500_000,
             output_allowed: true,
+            retry_allowed: true,
             corrupt_during_output: None,
         };
         Self {

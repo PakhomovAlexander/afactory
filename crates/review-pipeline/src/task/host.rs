@@ -125,6 +125,16 @@ impl TaskEnvironment for EmptyTaskEnvironment {
 /// Domain operators retain their own receipt semantics. This interface cannot create an
 /// Attempt, execute a child graph, authorize a plan, or change the parent's allowance.
 pub trait TaskDomain: TaskOperatorHost {
+    fn validate_retry(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _input: &TaskInvocationV1,
+        _previous: &BTreeMap<String, review_core::task::execution::TaskAttemptResultV1>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     /// Domain-specific conclusion assembled from this Task's common execution projection.
     fn assemble_result(
         &self,
@@ -214,6 +224,16 @@ impl<'a> CapturedTaskAuthority<'a> {
 }
 
 impl TaskAuthority for CapturedTaskAuthority<'_> {
+    fn validate_retry(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        input: &TaskInvocationV1,
+        previous: &BTreeMap<String, review_core::task::execution::TaskAttemptResultV1>,
+    ) -> Result<(), String> {
+        self.domain.validate_retry(cas, task, plan, input, previous)
+    }
     fn validate_planning_inputs(
         &self,
         cas: &Cas,
@@ -679,6 +699,16 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
 }
 
 impl TaskDomain for CapturedTaskHost<'_> {
+    fn validate_retry(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        input: &TaskInvocationV1,
+        previous: &BTreeMap<String, review_core::task::execution::TaskAttemptResultV1>,
+    ) -> Result<(), String> {
+        self.domain.validate_retry(cas, task, plan, input, previous)
+    }
     fn validate_context(
         &self,
         cas: &Cas,

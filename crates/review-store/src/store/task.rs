@@ -92,6 +92,18 @@ pub trait TaskAuthority: Sync {
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
     ) -> Result<Vec<GeneratedOriginV1>, String>;
+    /// Trusted retry eligibility over durable failures of this exact invocation. Attempt
+    /// count and token capacity alone do not authorize retrying every failure class.
+    fn validate_retry(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _invocation: &review_core::task::execution::TaskInvocationV1,
+        _previous: &BTreeMap<String, review_core::task::execution::TaskAttemptResultV1>,
+    ) -> Result<(), String> {
+        Ok(())
+    }
     fn authorize_decision(
         &self,
         task: &TaskRevisionV1,

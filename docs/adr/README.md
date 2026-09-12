@@ -139,3 +139,5 @@ options you rejected and why — that is the part future-you needs.
   codecs](0069-compile-captured-review-ports-with-explicit-artifact-codecs.md)
 - [0070 — Separate Review domain operations and fence Task dispatch by Round](0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md)
 - [0071 — Share captured Review authority and Task token scopes](0071-share-captured-review-authority-and-task-token-scopes.md)
+- [0072 — Retain process output independently of transport status](0072-retain-process-output-independently-of-transport-status.md)
+- [0073 — Check Task retry eligibility before reservation](0073-check-task-retry-eligibility-before-reservation.md)

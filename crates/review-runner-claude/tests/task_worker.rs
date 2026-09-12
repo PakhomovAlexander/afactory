@@ -15,10 +15,21 @@ fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_messa
         let script = temp.path().join("provider");
         let quoted = output.replace('\'', "'\\''");
         std::fs::write(&script, format!(
-            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{quoted}'\nprintf '%s' 'diagnostic' >&2\n{}\n",
+            "#!/bin/sh\nif [ \"$1\" = --fixture-ready ]; then exit 0; fi\ncat >/dev/null\nprintf '%s' '{quoted}'\nprintf '%s' 'diagnostic' >&2\n{}\n",
             if timed_out { "sleep 10" } else { "exit 0" }
         )).unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        // macOS may delay the first execution of a newly written script before its first
+        // instruction. Prepare that executable without output; the measured provider invocation
+        // below still gets the original 500 ms and must retain all already reported usage.
+        let mut ready = std::process::Command::new(&script);
+        ready.arg("--fixture-ready").current_dir(temp.path());
+        assert!(
+            review_runner::run_supervised(&mut ready, None, Duration::from_secs(5))
+                .unwrap()
+                .status
+                .success()
+        );
         if !timed_out {
             // Deterministically refuse CAS writes without relying on effective-user permissions.
             std::fs::remove_dir_all(&cas_path).unwrap();
@@ -40,6 +51,16 @@ fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_messa
         assert!(
             returned.message.is_err(),
             "a printed message cannot overcome transport failure"
+        );
+        assert!(
+            returned.usage.is_some(),
+            "timed_out={timed_out}; message={:?}; captured={:?}",
+            returned.message,
+            returned
+                .raw_artifact_ids
+                .iter()
+                .map(|id| cas.get(id))
+                .collect::<Vec<_>>()
         );
         assert_eq!(returned.usage.unwrap().chargeable_tokens, u64::MAX);
         if timed_out {

@@ -288,6 +288,47 @@ impl TaskExecutionProjection {
             .collect()
     }
 
+    fn validate_retry(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        node: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(), StoreError> {
+        let (invocation_id, input) = self
+            .invocations
+            .get(node)
+            .ok_or_else(|| conflict("Unknown Task invocation"))?;
+        let mut previous = BTreeMap::new();
+        for (id, attempt) in self
+            .attempts
+            .iter()
+            .filter(|(_, a)| &a.invocation_id == invocation_id && !a.released)
+        {
+            match &attempt.settlement {
+                Some(TaskExecutionRecordV1::Settled {
+                    result: TaskAttemptResultV1::Succeeded { .. },
+                    ..
+                }) => {
+                    return Err(conflict(
+                        "Task invocation already selected an output; recover its publication",
+                    ));
+                }
+                Some(TaskExecutionRecordV1::Settled { result, .. }) => {
+                    previous.insert(id.clone(), result.clone());
+                }
+                _ => return Err(conflict("Task invocation still has a pending Attempt")),
+            }
+        }
+        if !previous.is_empty() {
+            authority
+                .validate_retry(cas, task, plan, input, &previous)
+                .map_err(conflict)?;
+        }
+        Ok(())
+    }
+
     fn new(cas: &Cas, state: &TaskProjection) -> Result<Self, StoreError> {
         let plan = plan(
             cas,
@@ -1018,10 +1059,11 @@ impl EventStore {
         node: &str,
         authority: &dyn TaskAuthority,
     ) -> Result<ReservedTaskAttempt, StoreError> {
-        let (state, _) = self.checked_task_dispatch(cas, lease, authority)?;
+        let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
         let mut execution = state
             .execution
             .ok_or_else(|| conflict("Task has no recorded invocation"))?;
+        execution.validate_retry(cas, &state.revision, &plan, node, authority)?;
         let (invocation_id, input) = execution
             .invocations
             .get(node)
@@ -1138,6 +1180,7 @@ impl EventStore {
         let mut execution = state
             .execution
             .ok_or_else(|| conflict("Task has no recorded invocation"))?;
+        execution.validate_retry(cas, &state.revision, &plan, node, authority)?;
         let (invocation_id, invocation) = execution
             .invocations
             .get(node)

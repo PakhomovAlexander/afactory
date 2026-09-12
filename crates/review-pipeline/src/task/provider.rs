@@ -249,6 +249,20 @@ impl TaskOperatorHost for ProviderTaskDomain<'_> {
     }
 }
 impl TaskDomain for ProviderTaskDomain<'_> {
+    fn validate_retry(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        input: &TaskInvocationV1,
+        previous: &BTreeMap<String, review_core::task::execution::TaskAttemptResultV1>,
+    ) -> Result<(), String> {
+        if self.slots(input).is_some() {
+            Ok(())
+        } else {
+            self.inner.validate_retry(cas, task, plan, input, previous)
+        }
+    }
     fn assemble_result(
         &self,
         cas: &Cas,

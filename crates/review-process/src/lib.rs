@@ -4,6 +4,15 @@ use std::io::{Read, Write};
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};
 
+mod capture;
+mod drain;
+
+use capture::run_supervised_inner;
+pub use capture::{
+    SupervisedCapture, run_supervised_captured, run_supervised_captured_with_policy,
+};
+use drain::{collect_after_kill, collect_stderr, drain_async};
+
 const STDIN_EXIT_GRACE: Duration = Duration::from_millis(500);
 const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(5);
 
@@ -90,17 +99,7 @@ pub fn run_supervised_with_policy(
     timeout: Duration,
     exit_policy: ExitPolicy,
 ) -> Result<SupervisedOutput, SupervisedError> {
-    let writer = input.map(|input| {
-        move |stdin: &mut dyn Write| match stdin.write_all(&input) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
-            Err(error) => Err(error),
-        }
-    });
-    run_supervised_inner(command, writer, timeout, exit_policy).map_err(|error| match error {
-        SupervisedStreamError::Process(error) => error,
-        SupervisedStreamError::Input(error) => SupervisedError::Stdin(error),
-    })
+    run_supervised_captured_with_policy(command, input, timeout, exit_policy).into_result()
 }
 
 /// Run a bounded process while a caller streams its stdin without first materializing one large
@@ -116,7 +115,7 @@ where
     E: Send,
     F: FnOnce(&mut dyn Write) -> Result<(), E> + Send,
 {
-    run_supervised_inner(command, Some(writer), timeout, exit_policy)
+    run_supervised_inner(command, Some(writer), timeout, exit_policy).into_result()
 }
 
 /// Run a bounded process with caller-defined streaming on both stdin and stdout. The callbacks
@@ -269,164 +268,10 @@ where
     })
 }
 
-fn run_supervised_inner<E, F>(
-    command: &mut std::process::Command,
-    writer: Option<F>,
-    timeout: Duration,
-    exit_policy: ExitPolicy,
-) -> Result<SupervisedOutput, SupervisedStreamError<E>>
-where
-    E: Send,
-    F: FnOnce(&mut dyn Write) -> Result<(), E> + Send,
-{
-    command.stdin(if writer.is_some() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    });
-    command.stdout(Stdio::piped());
-    command.stderr(Stdio::piped());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
-
-    let mut child = command
-        .spawn()
-        .map_err(SupervisedError::Spawn)
-        .map_err(SupervisedStreamError::Process)?;
-    let pid = child.id();
-    std::thread::scope(|scope| {
-        let stdin_result = writer.map(|writer| {
-            let mut stdin = child.stdin.take().expect("stdin was piped");
-            let (send, receive) = std::sync::mpsc::channel();
-            scope.spawn(move || {
-                let result =
-                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| writer(&mut stdin)));
-                let _ = send.send(result);
-            });
-            receive
-        });
-
-        let stdout = drain_async(child.stdout.take().expect("stdout was piped"));
-        let stderr = drain_async(child.stderr.take().expect("stderr was piped"));
-        let deadline = Instant::now() + timeout;
-        let status = match wait_exact(child, deadline) {
-            Ok(status) => status,
-            Err(SupervisedError::TimedOut { .. }) => {
-                return Err(SupervisedStreamError::Process(SupervisedError::TimedOut {
-                    stdout: collect_after_kill(stdout),
-                    stderr: collect_after_kill(stderr),
-                }));
-            }
-            Err(error) => return Err(SupervisedStreamError::Process(error)),
-        };
-        if exit_policy == ExitPolicy::KillProcessGroup {
-            kill_process_group(pid);
-        }
-
-        if let Some(receiver) = stdin_result {
-            match receiver.recv_timeout(stdin_writer_wait(deadline)) {
-                Ok(Ok(Ok(()))) => {}
-                Ok(Ok(Err(error))) => return Err(SupervisedStreamError::Input(error)),
-                Ok(Err(_)) => {
-                    return Err(SupervisedStreamError::Process(SupervisedError::Stdin(
-                        std::io::Error::other("input writer panicked"),
-                    )));
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    kill_process_group(pid);
-                    return Err(SupervisedStreamError::Process(SupervisedError::TimedOut {
-                        stdout: collect_after_kill(stdout),
-                        stderr: collect_after_kill(stderr),
-                    }));
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    return Err(SupervisedStreamError::Process(SupervisedError::Stdin(
-                        std::io::Error::other("input writer stopped without a result"),
-                    )));
-                }
-            }
-        }
-
-        let stdout =
-            collect_output(stdout, "stdout", pid).map_err(SupervisedStreamError::Process)?;
-        let (stderr, stderr_held) =
-            collect_stderr(stderr, pid).map_err(SupervisedStreamError::Process)?;
-        Ok(SupervisedOutput {
-            status,
-            stdout,
-            stderr,
-            stderr_held,
-        })
-    })
-}
-
-fn collect_after_kill(receiver: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>) -> Vec<u8> {
-    receiver
-        .recv_timeout(OUTPUT_DRAIN_GRACE)
-        .ok()
-        .and_then(Result::ok)
-        .unwrap_or_default()
-}
-
 fn stdin_writer_wait(deadline: Instant) -> Duration {
     deadline
         .saturating_duration_since(Instant::now())
         .max(STDIN_EXIT_GRACE)
-}
-
-fn drain_async(
-    mut pipe: impl Read + Send + 'static,
-) -> std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>> {
-    let (send, receive) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        let result = pipe.read_to_end(&mut bytes).map(|_| bytes);
-        let _ = send.send(result);
-    });
-    receive
-}
-
-fn collect_output(
-    receiver: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
-    stream: &'static str,
-    pid: u32,
-) -> Result<Vec<u8>, SupervisedError> {
-    match receiver.recv_timeout(OUTPUT_DRAIN_GRACE) {
-        Ok(Ok(bytes)) => Ok(bytes),
-        Ok(Err(source)) => Err(SupervisedError::OutputRead { stream, source }),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            kill_process_group(pid);
-            Err(SupervisedError::OutputHeld(stream))
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(SupervisedError::OutputRead {
-            stream,
-            source: std::io::Error::other("output reader stopped without a result"),
-        }),
-    }
-}
-
-fn collect_stderr(
-    receiver: std::sync::mpsc::Receiver<std::io::Result<Vec<u8>>>,
-    pid: u32,
-) -> Result<(Vec<u8>, bool), SupervisedError> {
-    match receiver.recv_timeout(OUTPUT_DRAIN_GRACE) {
-        Ok(Ok(bytes)) => Ok((bytes, false)),
-        Ok(Err(source)) => Err(SupervisedError::OutputRead {
-            stream: "stderr",
-            source,
-        }),
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            kill_process_group(pid);
-            Ok((Vec::new(), true))
-        }
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(SupervisedError::OutputRead {
-            stream: "stderr",
-            source: std::io::Error::other("output reader stopped without a result"),
-        }),
-    }
 }
 
 fn wait_exact(

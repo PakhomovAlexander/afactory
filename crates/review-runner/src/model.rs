@@ -32,7 +32,7 @@ use review_core::{
 use review_store::Cas;
 
 use crate::command_runner::RunnerError;
-use review_process::{SupervisedError, run_supervised};
+use review_process::{SupervisedError, run_supervised_captured};
 
 /// Appended to every package prompt by a model adapter: the exact result contract, kept in
 /// one place, versioned with the parser it feeds.
@@ -1283,37 +1283,27 @@ impl ModelRunner {
         for grant in &self.grants {
             cmd.env(&grant.name, &grant.value);
         }
-        match run_supervised(&mut cmd, input, self.timeout) {
-            Ok(output) => {
-                capture.status = Ok(output.status);
-                capture.stdout = redact(output.stdout, &self.grants);
-                capture.stderr = redact(output.stderr, &self.grants);
-                if output.stderr_held {
-                    capture
-                        .stderr
-                        .extend_from_slice(b"\nstderr was still held after 5 seconds\n");
-                }
-            }
-            Err(error) => {
-                capture.status = Err(match error {
-                    SupervisedError::TimedOut { stdout, stderr } => {
-                        capture.stdout = redact(stdout, &self.grants);
-                        capture.stderr = redact(stderr, &self.grants);
-                        RunnerError::TimedOut {
-                            after_ms: self.timeout.as_millis() as u64,
-                            raw_artifact: None,
-                        }
-                    }
-                    SupervisedError::Spawn(error) => {
-                        RunnerError::Unavailable(format!("{}: {error}", command.program))
-                    }
-                    error => RunnerError::Failed {
-                        exit_code: -1,
-                        stderr_excerpt: error.to_string(),
-                    },
-                });
-            }
+        let output = run_supervised_captured(&mut cmd, input, self.timeout);
+        capture.stdout = redact(output.stdout, &self.grants);
+        capture.stderr = redact(output.stderr, &self.grants);
+        if output.stderr_held {
+            capture
+                .stderr
+                .extend_from_slice(b"\nstderr was still held after 5 seconds\n");
         }
+        capture.status = output.status.map_err(|error| match error {
+            SupervisedError::TimedOut { .. } => RunnerError::TimedOut {
+                after_ms: self.timeout.as_millis() as u64,
+                raw_artifact: None,
+            },
+            SupervisedError::Spawn(error) => {
+                RunnerError::Unavailable(format!("{}: {error}", command.program))
+            }
+            error => RunnerError::Failed {
+                exit_code: -1,
+                stderr_excerpt: error.to_string(),
+            },
+        });
         capture
     }
 }
