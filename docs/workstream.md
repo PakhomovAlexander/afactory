@@ -1,6 +1,19 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
 **Active increment:** [Task execution](task-execution.md), P00–P14, authorized as three PRs.
+
+Native cancellation and billing-completeness code `0ec8467` matches frozen tree `6a656c62`
+and passes the full gate: **1,115 tests, zero failures, 15 ignored** across 132 suites, plus
+formatting, Clippy, documentation tests and byte-identical fixtures. Native controlled calls stop
+the owned process group and retain usage; incomplete billing preserves original reservations
+and known floors through CAS recovery. Valid native reports retain their previous identities.
+The Linux stderr fixture now emits and checks its own diagnostic. Fresh CI remains required;
+TaskRuntime/heartbeat/CLI forwarding is a subsequent uncommitted slice. See
+[ADR-0087](adr/0087-control-native-task-invocations-through-the-shared-supervisor.md) and
+[ADR-0088](adr/0088-retain-native-billing-completeness-with-task-usage.md).
+
+## Earlier Task checkpoints
+
 The installed Review CLI checkpoint `fdffb1c` matches frozen `32c0f4b`, tree `910d188d`, and
 passes **1,078 tests, zero failures, 15 ignored** across 127 suites plus formatting, Clippy,
 documentation and byte-identical fixtures. New Review and Provider doctor share the original

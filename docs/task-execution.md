@@ -19,6 +19,16 @@ supplement it. Claude calls use only `claude-personal`.
 
 ## Progress
 
+Native cancellation and billing-completeness code `0ec8467` matches frozen tree `6a656c62`
+and passes the full gate: **1,115 tests, zero failures, 15 ignored** across 132 suites, plus
+formatting, Clippy, documentation tests and byte-identical fixtures. Native controlled calls stop
+the owned process group and retain usage; incomplete billing preserves original reservations
+and known floors through CAS recovery. Valid native reports retain their previous identities.
+The Linux stderr fixture now emits and checks its own diagnostic. Fresh CI remains required;
+TaskRuntime/heartbeat/CLI forwarding is a subsequent uncommitted slice. See
+[ADR-0087](adr/0087-control-native-task-invocations-through-the-shared-supervisor.md) and
+[ADR-0088](adr/0088-retain-native-billing-completeness-with-task-usage.md).
+
 Native conformance checkpoint `582ad8e` exactly matches frozen tree `d5943472` and passes
 **1,093 tests, zero failures, 15 ignored** across 129 suites, plus formatting, Clippy,
 documentation tests and byte-identical fixture reproduction. Native multi-turn usage retains
@@ -26,7 +36,9 @@ exact components and charges through failed output, CAS outage, timeout and reop
 Codex final-message reads are bounded and refuse symlinks and nonregular files. Expired Review
 publication recovery pins the exact failed-report output prefix, executes no new work and cannot
 mark the Task Satisfied. Fresh inspection@8 preserves raw history and unchanged Store bytes.
-The fixture-only ETXTBSY correction also passes; Linux CI remains required for this checkpoint.
+Published `0a95a94` failed Check in CI `34717558032` because the native-output fixture
+expected stderr that it did not emit; container-probes passed. The next checkpoint corrects
+that fixture without changing production output limits.
 See [exact native usage](adr/0085-retain-exact-native-task-usage-across-multiple-turns.md) and
 [recording recovery](adr/0086-record-expired-review-publication-without-restarting-work.md).
 
@@ -35,8 +47,8 @@ and Provider doctor use one common Task, original resources and canonical outcom
 checks cover shared probes, Round continuation, SIGKILL recovery and missing-state refusal.
 Published `b2ce782` failed CI Check during a fake-runtime executable setup; container-probes
 passed. The new checkpoint contains the fixture-only correction without changing deadlines.
-Native cancellation controls and malformed/missing usage conformance remain under implementation
-or audit, alongside live Provider and P14 evidence. See
+Native cancellation and malformed/missing usage conformance now pass the later local gate.
+Caller forwarding, live Provider and P14 evidence remain in progress. See
 [ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md).
 
 The common Task Broker checkpoint `1a9ab83` matches frozen tree `34fc57e` and passes the

@@ -826,3 +826,29 @@ checks pass; the full combined gate and fresh Linux CI remain pending. See
 [ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md),
 [exact native usage](adr/0085-retain-exact-native-task-usage-across-multiple-turns.md) and
 [recording recovery](adr/0086-record-expired-review-publication-without-restarting-work.md).
+
+## 2026-09-12 native cancellation and billing completeness
+
+Code `0ec8467a4358ee9857af6029eeddca22a7d3c6e1` exactly matches frozen tree
+`6a656c6272ff7226d2a44c796da6f6579ce996d9`, verification commit
+`133257d7a5ba47f4230219c68febaf9911b773cb`. The full gate passes **1,115 tests, zero failures,
+15 ignored** across 132 suites, formatting, all-target Clippy, documentation tests and byte-identical
+synthetic reproduction. Core parity covers 153 registered schemas. No live models ran.
+
+The controlled native boundary in ADR-0087 retains existing invocation identity and captures
+paid prefixes through cancellation and bounded post-kill draining. ADR-0088 separates reported
+billing completeness from effective charge, preserves prior valid turns and stores the observation
+atomically before CAS publication. Focused native, sidecar, runtime and captured Review checks
+cover malformed reporting, exact fully reported failures, sticky recovery and wide late floors.
+Historical absent-protocol usage keeps its existing reservation convention; it is never a synthetic
+known zero. These contracts do not yet connect heartbeat or CLI signal loss to the control.
+
+Published `0a95a94` failed Check in CI `34717558032`: the final-message fixture required two raw
+streams while its Python executable emitted only stdout. macOS happened to add a Python startup
+warning on stderr; Linux did not. This checkpoint emits its own diagnostic and verifies retained
+bytes. The isolated test and Clippy passed before the complete gate; production deadlines, output
+bounds and refusal expectations remain unchanged. This checkpoint now needs Linux CI.
+
+Actual TaskRuntime/host/heartbeat forwarding is the next separate slice. CLI signal policy, live
+Provider evidence, the separately budgeted pilot and release migration remain open. No requested
+specialist PR reviewer has run; this deterministic gate does not replace those reviews.
