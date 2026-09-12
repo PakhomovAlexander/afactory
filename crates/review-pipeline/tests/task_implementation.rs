@@ -516,11 +516,7 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
         let host =
             CommandTaskHost::capture(&cas, &compiler, &task, &plan, graph, &environment, &domain)
                 .unwrap();
-        let authority = CapturedTaskAuthority {
-            compiler: &compiler,
-            domain: &host,
-            developer: &NoTaskDeveloper,
-        };
+        let authority = CapturedTaskAuthority::new(&compiler, &host, &NoTaskDeveloper);
         let lease = store
             .open_task(&cas, &revision, "test-writer", 60_000)
             .unwrap();

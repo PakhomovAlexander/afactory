@@ -302,11 +302,7 @@ fn run_planner(
         task,
     };
     let developer = developer::host(cas, authority, None);
-    let trusted = CapturedTaskAuthority {
-        compiler,
-        domain: &host,
-        developer: developer.as_ref(),
-    };
+    let trusted = CapturedTaskAuthority::new(compiler, &host, developer.as_ref());
     let state = {
         let runtime = TaskRuntime::new(store, cas, lease.clone(), &trusted, &host)?;
         let _report = runtime.execute()?;

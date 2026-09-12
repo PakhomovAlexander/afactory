@@ -1447,6 +1447,19 @@ impl EventStore {
         lease: &TaskLease,
         authority: &dyn TaskAuthority,
     ) -> Result<ExecutionPlanV1, StoreError> {
+        self.checked_task_dispatch(cas, lease, authority)
+            .map(|(_, plan)| plan)
+    }
+
+    /// Reuse one freshly validated projection within a Store operation. Publication still
+    /// re-reads authority and the log through append_task_transition, including after any
+    /// domain callback; this does not create a reusable dispatch capability.
+    fn checked_task_dispatch(
+        &self,
+        cas: &Cas,
+        lease: &TaskLease,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(TaskProjection, ExecutionPlanV1), StoreError> {
         let state = self
             .task_projection(cas, &lease.task_id)?
             .ok_or_else(|| conflict("Unknown Task"))?;
@@ -1460,6 +1473,7 @@ impl EventStore {
         if !state.admitted || state.phase != (TaskPhaseV1::Running {}) {
             return Err(conflict("Task is not admitted and running"));
         }
-        self.current_task_plan(cas, &state, authority, time)
+        let plan = self.current_task_plan(cas, &state, authority, time)?;
+        Ok((state, plan))
     }
 }

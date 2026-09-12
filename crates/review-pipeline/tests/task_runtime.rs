@@ -409,11 +409,7 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
         &DocumentDomain,
     )
     .unwrap();
-    let authority = CapturedTaskAuthority {
-        compiler: &f.compiler,
-        domain: &host,
-        developer: &NoTaskDeveloper,
-    };
+    let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
     let lease = f
         .store
         .open_task(&f.cas, &f.revision_id, "shared-store", 60_000)
@@ -569,11 +565,7 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
             &models,
         )
         .unwrap();
-        let authority = CapturedTaskAuthority {
-            compiler: &f.compiler,
-            domain: &host,
-            developer: &NoTaskDeveloper,
-        };
+        let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
         let lease = f
             .store
             .open_task(&f.cas, &f.revision_id, "writer", 60000)
@@ -702,11 +694,7 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
         &models,
     )
     .unwrap();
-    let authority = CapturedTaskAuthority {
-        compiler: &f.compiler,
-        domain: &host,
-        developer: &NoTaskDeveloper,
-    };
+    let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
     let lease = f
         .store
         .open_task(&f.cas, &f.revision_id, "model-test", 60_000)
@@ -750,11 +738,7 @@ fn captured_command_worker_executes_and_replays_through_the_common_task_runtime(
         &DocumentDomain,
     )
     .unwrap();
-    let authority = CapturedTaskAuthority {
-        compiler: &f.compiler,
-        domain: &host,
-        developer: &NoTaskDeveloper,
-    };
+    let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
     let lease = f
         .store
         .open_task(&f.cas, &f.revision_id, "test-writer", 60_000)
@@ -821,11 +805,7 @@ fn failed_command_and_schema_refusal_exhaust_bounded_attempts_without_publishing
             &DocumentDomain,
         )
         .unwrap();
-        let authority = CapturedTaskAuthority {
-            compiler: &f.compiler,
-            domain: &host,
-            developer: &NoTaskDeveloper,
-        };
+        let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
         let lease = f
             .store
             .open_task(&f.cas, &f.revision_id, "test-writer", 60_000)

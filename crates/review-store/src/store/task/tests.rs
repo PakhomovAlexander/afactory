@@ -11,6 +11,7 @@ struct Authority {
     current: bool,
     valid_until: u64,
     output_allowed: bool,
+    corrupt_during_output: Option<std::path::PathBuf>,
 }
 
 impl TaskAuthority for Authority {
@@ -78,6 +79,9 @@ impl TaskAuthority for Authority {
         _: &review_core::task::execution::TaskInvocationV1,
         _: &review_core::task::execution::TaskOutputV1,
     ) -> Result<(), String> {
+        if let Some(path) = &self.corrupt_during_output {
+            std::fs::write(path, b"changed during domain validation").map_err(|e| e.to_string())?;
+        }
         if self.output_allowed {
             Ok(())
         } else {
@@ -209,6 +213,7 @@ impl Fixture {
             current: true,
             valid_until: now().unwrap() + 500_000,
             output_allowed: true,
+            corrupt_during_output: None,
         };
         Self {
             _dir: dir,
@@ -894,6 +899,86 @@ fn shared_execution_replays_reserved_attempts_and_publishes_outputs_once() {
     assert_eq!(execution.budget.begun_attempts(), 1);
     assert_eq!(execution.outputs["root.nodes.write"].0, output_id);
     assert!(execution.pending_attempts().is_empty());
+}
+
+#[test]
+fn output_publication_rechecks_authority_after_domain_validation_including_replay() {
+    use review_core::task::execution::*;
+    for replay in [false, true] {
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f.open();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        let invocation_id = f.record_execution_inputs(&lease);
+        let context_id = f.cas.put_json(&json!({"context":"fixture"})).unwrap();
+        let attempt = f
+            .store
+            .prepare_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.write",
+                &context_id,
+                &f.authority,
+            )
+            .unwrap();
+        f.store
+            .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+            .unwrap();
+        let output_id = f.execution_output(&invocation_id, attempt.id());
+        f.store
+            .settle_task_attempt(
+                &f.cas,
+                &lease,
+                TaskExecutionRecordV1::Settled {
+                    attempt_id: attempt.id().into(),
+                    charged_tokens: 7,
+                    result: TaskAttemptResultV1::Succeeded {
+                        output_id: output_id.clone(),
+                    },
+                    raw_artifact_ids: vec![],
+                    usage_id: None,
+                },
+                &f.authority,
+            )
+            .unwrap();
+        if replay {
+            f.store
+                .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
+                .unwrap();
+        }
+        let graph_id = &f.plan.compiled_graph_id;
+        let hex = graph_id.strip_prefix("sha256:").unwrap_or(graph_id);
+        let path = f
+            ._dir
+            .path()
+            .join("cas/objects")
+            .join(&hex[..2])
+            .join(&hex[2..]);
+        let bytes = std::fs::read(&path).unwrap();
+        let run_id = task_run_id(&f.revision.task_id).unwrap();
+        let events = f.store.replay(&run_id).unwrap().len();
+        f.authority.corrupt_during_output = Some(path.clone());
+        assert!(
+            f.store
+                .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
+                .is_err()
+        );
+        assert_eq!(f.store.replay(&run_id).unwrap().len(), events);
+        std::fs::write(path, bytes).unwrap();
+        f.authority.corrupt_during_output = None;
+        let execution = f.state().execution.unwrap();
+        assert_eq!(execution.budget.committed_tokens(), 7);
+        assert_eq!(execution.budget.begun_attempts(), 1);
+        f.store
+            .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
+            .unwrap();
+        assert_eq!(
+            f.state().execution.unwrap().outputs["root.nodes.write"].0,
+            output_id
+        );
+    }
 }
 
 #[test]

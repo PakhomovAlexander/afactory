@@ -1077,11 +1077,7 @@ fn start_captured(
         &models,
     )?;
     let developer = developer::host(&cas, &authority, None);
-    let trusted = CapturedTaskAuthority {
-        compiler: &compiler,
-        domain: &host,
-        developer: developer.as_ref(),
-    };
+    let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
     let lease = store
         .open_task(
             &cas,
@@ -1330,11 +1326,7 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
         &models,
     )?;
     let developer = developer::host(&cas, &authority, None);
-    let trusted = CapturedTaskAuthority {
-        compiler: &compiler,
-        domain: &host,
-        developer: developer.as_ref(),
-    };
+    let trusted = CapturedTaskAuthority::new(&compiler, &host, developer.as_ref());
     let lease = store
         .take_task_lease(&cas, id, &format!("cli-{}", std::process::id()), 15_000)
         .map_err(|e| e.to_string())?;

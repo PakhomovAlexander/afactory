@@ -622,6 +622,103 @@ fn package_capture_checks_the_same_bytes_before_parsing_and_never_falls_through(
 }
 
 #[test]
+fn captured_plan_validation_rechecks_bytes_and_never_reuses_changed_authority() {
+    for generated in [false, true] {
+        let mut f = Fixture::new();
+        if generated {
+            f.compiler.generated.insert(
+                "builtin/document".into(),
+                GeneratedOriginV1 {
+                    pipeline_id: f.compiler.packages["builtin/document"]
+                        .dependency
+                        .artifact_id
+                        .clone(),
+                    proposal_id: f.revision_id.clone(),
+                    bootstrap_plan_id: f.compiler.policy_id.clone(),
+                },
+            );
+        }
+        let (plan, _) = f
+            .compiler
+            .compile(&f.cas, &f.revision_id, "builtin/document")
+            .unwrap();
+        let validator = CapturedTaskPlanValidator::new(&f.compiler);
+        assert_eq!(
+            validator.validate_plan(&f.cas, &f.task, &plan).unwrap(),
+            plan.generated_origins
+        );
+        assert_eq!(
+            validator.validate_plan(&f.cas, &f.task, &plan).unwrap(),
+            plan.generated_origins
+        );
+        let mut changed_task = f.task.clone();
+        changed_task.goal.push_str(" changed");
+        assert!(
+            validator
+                .validate_plan(&f.cas, &changed_task, &plan)
+                .is_err()
+        );
+        let mut changed = plan.clone();
+        changed.limits.tokens += 1;
+        assert!(validator.validate_plan(&f.cas, &f.task, &changed).is_err());
+        let mut changed = plan.clone();
+        changed
+            .bindings
+            .values_mut()
+            .next()
+            .unwrap()
+            .invocation_policy_id = f.revision_id.clone();
+        assert!(validator.validate_plan(&f.cas, &f.task, &changed).is_err());
+        if generated {
+            let mut stripped = plan.clone();
+            stripped.generated_origins.clear();
+            assert!(validator.validate_plan(&f.cas, &f.task, &stripped).is_err());
+        }
+        let mut ids = BTreeSet::from([
+            plan.task_revision_id.clone(),
+            plan.compiled_graph_id.clone(),
+            plan.engine_id.clone(),
+            plan.authority.policy_id.clone(),
+        ]);
+        ids.extend(plan.dependencies.values().map(|d| d.artifact_id.clone()));
+        ids.extend(
+            plan.bindings
+                .values()
+                .map(|b| b.invocation_policy_id.clone()),
+        );
+        for id in ids {
+            let hex = id.strip_prefix("sha256:").unwrap();
+            let file = f
+                ._dir
+                .path()
+                .join("cas/objects")
+                .join(&hex[..2])
+                .join(&hex[2..]);
+            let original = std::fs::read(&file).unwrap();
+            std::fs::write(&file, b"corrupted after validation").unwrap();
+            assert!(
+                validator.validate_plan(&f.cas, &f.task, &plan).is_err(),
+                "{id}"
+            );
+            std::fs::remove_file(&file).unwrap();
+            assert!(
+                validator.validate_plan(&f.cas, &f.task, &plan).is_err(),
+                "{id}"
+            );
+            assert!(
+                !file.exists(),
+                "memoized validation must not recreate missing authority"
+            );
+            std::fs::write(&file, original).unwrap();
+            assert_eq!(
+                validator.validate_plan(&f.cas, &f.task, &plan).unwrap(),
+                plan.generated_origins
+            );
+        }
+    }
+}
+
+#[test]
 fn restored_packages_keep_identity_and_missing_graph_is_not_recreated_during_validation() {
     let f = Fixture::new();
     let (plan, _) = f

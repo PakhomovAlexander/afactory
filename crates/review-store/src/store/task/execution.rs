@@ -823,11 +823,8 @@ impl EventStore {
         invocation_id: &str,
         authority: &dyn TaskAuthority,
     ) -> Result<(), StoreError> {
-        self.check_task_dispatch(cas, lease, authority)?;
+        let (state, _) = self.checked_task_dispatch(cas, lease, authority)?;
         let input = invocation(cas, invocation_id)?;
-        let state = self
-            .task_projection(cas, &lease.task_id)?
-            .ok_or_else(|| conflict("Unknown Task"))?;
         if let Some((old, _)) = state
             .execution
             .as_ref()
@@ -858,10 +855,7 @@ impl EventStore {
         context_id: &str,
         authority: &dyn TaskAuthority,
     ) -> Result<PreparedTaskAttempt, StoreError> {
-        let plan = self.check_task_dispatch(cas, lease, authority)?;
-        let state = self
-            .task_projection(cas, &lease.task_id)?
-            .ok_or_else(|| conflict("Unknown Task"))?;
+        let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
         let mut execution = state
             .execution
             .ok_or_else(|| conflict("Task has no recorded invocation"))?;
@@ -995,9 +989,22 @@ impl EventStore {
             TaskExecutionRecordV1::Settled {
                 result: TaskAttemptResultV1::Succeeded { output_id },
                 ..
-            } => self
-                .validate_task_output(cas, lease, output_id, Some(attempt_id), authority)
-                .err(),
+            } => (|| {
+                let id = state
+                    .plan_id
+                    .as_ref()
+                    .ok_or_else(|| conflict("Task has no plan"))?;
+                let plan = self.authorized_plan(cas, &state, id, authority)?;
+                Self::validate_task_output(
+                    cas,
+                    &state,
+                    &plan,
+                    output_id,
+                    Some(attempt_id),
+                    authority,
+                )
+            })()
+            .err(),
             _ => None,
         };
         if let Some(error) = &failure {
@@ -1019,21 +1026,13 @@ impl EventStore {
     }
 
     fn validate_task_output(
-        &self,
         cas: &Cas,
-        lease: &TaskLease,
+        state: &TaskProjection,
+        plan: &ExecutionPlanV1,
         output_id: &str,
         attempt_id: Option<&str>,
         authority: &dyn TaskAuthority,
-    ) -> Result<(), StoreError> {
-        let state = self
-            .task_projection(cas, &lease.task_id)?
-            .ok_or_else(|| conflict("Unknown Task"))?;
-        let id = state
-            .plan_id
-            .as_ref()
-            .ok_or_else(|| conflict("Task has no plan"))?;
-        let plan = self.authorized_plan(cas, &state, id, authority)?;
+    ) -> Result<(TaskOutputV1, TaskInvocationV1), StoreError> {
         let out = output(cas, output_id)?;
         let input = invocation(cas, &out.invocation_id)?;
         if let Some(attempt_id) = attempt_id {
@@ -1060,8 +1059,9 @@ impl EventStore {
                 .map_err(|e| StoreError::Artifact(e.to_string()))?;
         }
         authority
-            .validate_output(cas, &state.revision, &plan, &input, &out)
-            .map_err(conflict)
+            .validate_output(cas, &state.revision, plan, &input, &out)
+            .map_err(conflict)?;
+        Ok((out, input))
     }
 
     pub fn publish_task_output(
@@ -1072,13 +1072,21 @@ impl EventStore {
         attempt_id: Option<&str>,
         authority: &dyn TaskAuthority,
     ) -> Result<(), StoreError> {
-        self.check_task_dispatch(cas, lease, authority)?;
-        self.validate_task_output(cas, lease, output_id, attempt_id, authority)?;
-        let out = output(cas, output_id)?;
-        let input = invocation(cas, &out.invocation_id)?;
-        let state = self
-            .task_projection(cas, &lease.task_id)?
-            .ok_or_else(|| conflict("Unknown Task"))?;
+        let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
+        let (_, input) =
+            Self::validate_task_output(cas, &state, &plan, output_id, attempt_id, authority)?;
+        // New publication revalidates after the domain callback at append_task_transition.
+        // Idempotent replay has no append, so retain that fresh read explicitly on this path.
+        let state = if state
+            .execution
+            .as_ref()
+            .is_some_and(|e| e.outputs.contains_key(&input.node))
+        {
+            self.task_projection(cas, &lease.task_id)?
+                .ok_or_else(|| conflict("Unknown Task"))?
+        } else {
+            state
+        };
         if let Some(execution) = &state.execution {
             if let Some((old, _)) = execution.outputs.get(&input.node) {
                 let same_attempt = match attempt_id {

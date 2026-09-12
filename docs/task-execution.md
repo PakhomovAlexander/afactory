@@ -36,7 +36,7 @@ supplement it. Claude calls use only `claude-personal`.
   passes the full gate, including CLI execution, repair, planning, approval and reuse.
 - [ ] P13: document execution and independent acceptance pass the full gate. Read-only issue
   capture and local/Jira source conformance pass the full gate.
-  Ticket revision refresh passes targeted CLI/Store/budget fixtures; its full gate is pending.
+  Ticket revision refresh and result-scoped delivery pass the full gate.
   Remaining Provider evidence and Review compatibility are still required.
 - [ ] P14: compatibility, benchmark and consumer release.
 
@@ -144,8 +144,9 @@ across 89 suites; formatting, Clippy and synthetic fixture reproduction passed. 
 checked 96 files with zero errors. Prior candidate gates also passed on read-only archives and
 with the exact cleared Gate environment. No model review was repeated after these corrections.
 
-**Current resume:** finish the refresh/delivery gate, compose requirements-aware independent
-acceptance with Review, and complete legacy Review entry-point migration plus P14 evidence.
+**Current resume:** verify the captured-plan performance correction, complete legacy Review
+entry-point migration and remaining conformance, then finish P14 evidence. Refresh, delivery
+and requirements-aware independent acceptance alongside Review pass the local full gate.
 Signed developer plan decisions are implemented; external PR review awaits Claude personal login.
 Fixed implementation cutover is described in
 [ADR-0051](adr/0051-compile-fixed-implementation-tasks-into-the-common-runtime.md).

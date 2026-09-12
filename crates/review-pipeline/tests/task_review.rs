@@ -397,11 +397,7 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
         let host =
             CapturedTaskHost::capture(&cas, &compiler, &task, &plan, graph, &environment, &domain)
                 .unwrap();
-        let authority = CapturedTaskAuthority {
-            compiler: &compiler,
-            domain: &host,
-            developer: &NoTaskDeveloper,
-        };
+        let authority = CapturedTaskAuthority::new(&compiler, &host, &NoTaskDeveloper);
         let lease = store
             .open_task(&cas, &revision, "test-writer", 60000)
             .unwrap();

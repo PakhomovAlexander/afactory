@@ -185,9 +185,23 @@ impl TaskDeveloper for NoTaskDeveloper {
 }
 
 pub struct CapturedTaskAuthority<'a> {
-    pub compiler: &'a TaskPlanCompiler,
-    pub domain: &'a dyn TaskDomain,
-    pub developer: &'a dyn TaskDeveloper,
+    compiler: review_config::task::catalog::CapturedTaskPlanValidator<'a>,
+    domain: &'a dyn TaskDomain,
+    developer: &'a dyn TaskDeveloper,
+}
+
+impl<'a> CapturedTaskAuthority<'a> {
+    pub fn new(
+        compiler: &'a TaskPlanCompiler,
+        domain: &'a dyn TaskDomain,
+        developer: &'a dyn TaskDeveloper,
+    ) -> Self {
+        Self {
+            compiler: review_config::task::catalog::CapturedTaskPlanValidator::new(compiler),
+            domain,
+            developer,
+        }
+    }
 }
 
 impl TaskAuthority for CapturedTaskAuthority<'_> {
