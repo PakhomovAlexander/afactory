@@ -248,5 +248,8 @@ container probes. The next installed frontend checkpoint compiles explicit Revie
 original-node mappings, typed fan-in lanes, inherited Gate conditions and shared Provider guards.
 It preserves flat and enveloped artifact identities and captures an exact Round before Generation.
 The compiler/graph suites pass 123 tests, zero failures; the new schema and real-Store capture
-checks pass, and workspace Clippy passes. Full verification is next. This does not yet cut over
-the legacy CLI or execute Scatter through the common runtime. ADR-0069 records the boundary.
+checks pass, and workspace Clippy passes. The complete gate at `7013f8d` (stacked as `eb9d808`)
+passes **834 tests, zero failures, 15 ignored**, across 114 suites, plus formatting, Clippy,
+documentation tests and byte-identical frozen reproduction. Markdown passes. This does not yet
+cut over the legacy CLI or execute Scatter through the common runtime. ADR-0069 records the
+boundary.

@@ -19,6 +19,12 @@ supplement it. Claude calls use only `claude-personal`.
 
 ## Progress
 
+The latest captured Review frontend checkpoint passes the full gate at `eb9d808` (internal
+`7013f8d`): 834 tests, zero failures, 15 ignored, plus documentation tests and frozen
+reproduction. Its preceding common in-flight usage checkpoint passes CI at `166bc45`.
+The legacy Review CLI still requires its execution cutover; the detailed checkpoint history is
+in [the three-PR record](task-execution/pr-sequence.md).
+
 - [x] P00: unchanged-source baseline gate and fixture identities recorded below.
 - [ ] P01: contracts, schemas, ADR-0046/0047 and fixtures implemented; one review Round
   completed, Findings corrected and final gate passed locally; main integration remains pending.

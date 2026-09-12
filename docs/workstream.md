@@ -1,24 +1,17 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Active increment:** [Task execution](task-execution.md), P00–P14. The owner approved
-implementation on 2026-09-10. Contracts, common execution, sharing, embedding, bounded repair,
-selection and generated-plan approval are implemented in the stacked PRs. Portable export and
-contract tests, the software/document starter pack and heavy repair-history continuation pass the
-full gate. Read-only issue capture and source conformance also pass. Ticket revision refresh
-and result-scoped delivery pass the full gate. Requirements acceptance now composes with
-embedded Review on the final Snapshot. The shared-Store/domain extraction checkpoint passes
-805 local tests, zero failures, 15 ignored. Its performance correction passes 807 local tests,
-documentation tests and frozen reproduction, with unchanged deadlines and verifier reserves.
-Linux CI passes at `facbfb4`. Durable scheduler reports and recoverable domain publication
-pass 811 local tests, documentation tests and frozen reproduction at `d0d4ad0`; Linux CI
-passes at `c45a55b`. Actual reservation followed by exact-context binding passes 814 tests,
-documentation tests and frozen reproduction at `7ba2338` (stacked as `2d8421e`). One-invocation
-Review operation extraction, typed side metadata and common Attempt currentness pass the full
-gate at `d63d8b2`: 816 tests, zero failures, 15 ignored; CI passes at `63aa222`. Canonical Review
-selection from the common Task ledger passes the complete gate at `2445f8f` (stacked as
-`f54d16a`): 819 tests, zero failures, 15 ignored. The legacy entry-point cutover and P14 release
-evidence remain required. The completed
-M0–M9 record below remains the compatibility foundation.
+**Active increment:** [Task execution](task-execution.md), P00–P14, authorized as three PRs.
+Common Task workflows, shared packages, embedding, repair, selection/generation, exact-plan
+approval, export, starters and issue/document Tasks are implemented on the PR branches.
+The captured Review frontend checkpoint passes the complete local gate: **834 tests, zero
+failures, 15 ignored**, documentation tests and byte-identical frozen reproduction at
+`7013f8d` (stacked as `eb9d808`). It adds explicit contracts, typed fan-in, original artifact
+identity and current Round capture. The preceding in-flight usage checkpoint passes CI at
+`166bc45`. The legacy CLI execution cutover, external PR reviews, remaining conformance and
+P14 pilot/release evidence are still required. The [three-PR checkpoint record](task-execution/pr-sequence.md)
+retains implementation and verification details; [Review compatibility](task-execution/review-compatibility.md)
+records the outstanding domain/runtime connections. The completed M0–M9 record below remains
+the compatibility foundation.
 
 **Status:** M0–M9 are complete and shipped in private release `v0.6.0` from exact `main` commit
 `fb462ba`. M7 adds base-bound, seal-checked Proposal
