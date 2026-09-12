@@ -161,3 +161,18 @@ both subsequent full runs passed that suite without changing its code or limits.
 CI for the preceding refresh checkpoint at `3f467c7` passes Check, CLI smoke and live container
 probes in run `34660902042`. Legacy Review migration and the remaining P14 evidence are still
 required. Claude personal remains signed out; no PR 2 reviewer has run.
+
+The legacy Review migration now has a shared connection boundary for the Task runtime and
+Review domain evidence. Exact reviewer input resolution and sealed Proposal preparation are
+separated from execution accounting. All 68 pipeline tests pass after the Store/input
+extraction; targeted Proposal, Integration and Task-runtime cases also pass after the output
+extraction, with Clippy. The new integration case observes the real Started barrier and writes
+through the same Store before settlement, then replays with one Attempt. The complete local gate passes **805 tests, zero failures,
+15 ignored**, across 113 suites, plus formatting, Clippy and frozen reproduction. The legacy
+CLI still uses its historical execution owner at this checkpoint; converting
+that owner and its bounded Scatter/continuation semantics remains required.
+
+CI for `4acc628` passes container probes but both heavy-review cases reach the unchanged
+90-second Task deadline after ten Attempts, before the final goal evaluator can start (run
+`34663288212`). The local full gate passes those cases. Repeated captured-plan validation is
+being investigated; no Task deadline, verifier reserve or acceptance assertion has been relaxed.

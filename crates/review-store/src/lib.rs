@@ -16,6 +16,7 @@ pub mod canonical;
 pub mod cas;
 pub mod ledger;
 pub mod legacy;
+pub mod shared;
 pub mod store;
 pub mod subject;
 
@@ -29,6 +30,7 @@ pub use legacy::{
     AddSummary, CanonicalReduction, CanonicalStage, Ingest, LegacyRow, PreparedReviewReduction,
     canonical_finding_id, import_ledger_jsonl, legacy_fingerprint, prepare_canonical_review,
 };
+pub use shared::SharedEventStore;
 pub use store::{
     AttemptUsage, AttemptWall, EventStore, NewEvent, StoreError, validate_reviewer_result,
 };

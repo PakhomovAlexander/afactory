@@ -316,6 +316,138 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'output':[{'outcome':'
 "#;
 
 #[test]
+fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
+    use review_core::task::event::{TaskChangeV1, TaskTransitionV1};
+    use review_core::task::execution::TaskExecutionRecordV1;
+    use review_store::SharedEventStore;
+    use review_store::store::task::{TaskLease, task_run_id};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Observer<'a> {
+        store: SharedEventStore<'a>,
+        lease: TaskLease,
+        inner: &'a dyn TaskOperatorHost,
+        calls: AtomicUsize,
+    }
+    impl<'a> Observer<'a> {
+        fn lock(&self) -> std::sync::MutexGuard<'_, &'a mut EventStore> {
+            // A heartbeat may briefly own the connection. Bound the wait so a runtime that
+            // accidentally calls the host while holding its lock fails instead of hanging.
+            let until = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            loop {
+                match self.store.try_lock() {
+                    Ok(store) => return store,
+                    Err(std::sync::TryLockError::WouldBlock)
+                        if std::time::Instant::now() < until =>
+                    {
+                        std::thread::sleep(std::time::Duration::from_millis(1));
+                    }
+                    Err(error) => panic!("host cannot access the shared Store: {error}"),
+                }
+            }
+        }
+    }
+    impl TaskOperatorHost for Observer<'_> {
+        fn prepare_context(
+            &self,
+            cas: &Cas,
+            input: &TaskInvocationV1,
+            feedback: &[String],
+        ) -> Result<String, String> {
+            {
+                let store = self.lock();
+                let state = store
+                    .task_projection(cas, self.lease.task_id())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(state.plan_id.as_deref(), Some(input.plan_id.as_str()));
+            }
+            self.inner.prepare_context(cas, input, feedback)
+        }
+
+        fn execute(
+            &self,
+            cas: &Cas,
+            input: &TaskInvocationV1,
+            attempt: Option<&PreparedTaskAttempt>,
+        ) -> TaskWorkOutput {
+            let attempt = attempt.expect("the fixture invokes one Worker");
+            {
+                let mut store = self.lock();
+                let events = store
+                    .replay(&task_run_id(self.lease.task_id()).unwrap())
+                    .unwrap();
+                let started = events.iter().any(|event| {
+                    let transition: TaskTransitionV1 = serde_json::from_value(event.payload.clone()).unwrap();
+                    let TaskChangeV1::ExecutionRecorded { record_id } = transition.change else {
+                        return false;
+                    };
+                    let record: TaskExecutionRecordV1 = serde_json::from_value(cas.get_json(&record_id).unwrap()["payload"].clone()).unwrap();
+                    matches!(record, TaskExecutionRecordV1::Started { attempt_id } if attempt_id == attempt.id())
+                });
+                assert!(
+                    started,
+                    "the domain must observe the durable Started barrier"
+                );
+                // Exercise a domain-side durable mutation on the same connection while the
+                // runtime owns a live Attempt. The subsequent settlement must see this lease.
+                store.renew_task_lease(cas, &self.lease, 60_000).unwrap();
+            }
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            self.inner.execute(cas, input, Some(attempt))
+        }
+    }
+
+    let mut f = Fixture::new(SUCCESS);
+    let host = CommandTaskHost::capture(
+        &f.cas,
+        &f.compiler,
+        &f.task,
+        &f.plan,
+        f.graph.clone(),
+        &EmptyTaskEnvironment,
+        &DocumentDomain,
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority {
+        compiler: &f.compiler,
+        domain: &host,
+        developer: &NoTaskDeveloper,
+    };
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "shared-store", 60_000)
+        .unwrap();
+    f.store
+        .propose_task_plan(&f.cas, &lease, &f.plan_id, &authority)
+        .unwrap();
+    f.store.admit_task_plan(&f.cas, &lease, &authority).unwrap();
+    let shared = SharedEventStore::new(&mut f.store);
+    let observer = Observer {
+        store: shared.clone(),
+        lease: lease.clone(),
+        inner: &host,
+        calls: AtomicUsize::new(0),
+    };
+    let runtime =
+        TaskRuntime::with_store(shared.clone(), &f.cas, lease.clone(), &authority, &observer)
+            .unwrap();
+    assert!(runtime.execute().unwrap().complete());
+    assert!(runtime.execute().unwrap().complete());
+    assert_eq!(observer.calls.load(Ordering::SeqCst), 1);
+    let projection = shared
+        .lock()
+        .unwrap()
+        .task_projection(&f.cas, lease.task_id())
+        .unwrap()
+        .unwrap();
+    let execution = projection.execution.unwrap();
+    assert_eq!(execution.budget.begun_attempts(), 1);
+    assert!(execution.pending_attempts().is_empty());
+    assert!(execution.outputs.contains_key("root.nodes.write"));
+}
+
+#[test]
 fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_business_worker() {
     use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
     use std::sync::atomic::{AtomicUsize, Ordering};

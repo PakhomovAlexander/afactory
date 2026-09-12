@@ -6,8 +6,10 @@ selection and generated-plan approval are implemented in the stacked PRs. Portab
 contract tests, the software/document starter pack and heavy repair-history continuation pass the
 full gate. Read-only issue capture and source conformance also pass. Ticket revision refresh
 and result-scoped delivery pass the full gate. Requirements acceptance now composes with
-embedded Review on the final Snapshot; the complete gate passes 804 tests, zero failures,
-15 ignored. Review compatibility and P14 release evidence remain required. The completed
+embedded Review on the final Snapshot. The shared-Store/domain extraction checkpoint passes
+805 local tests, zero failures, 15 ignored. Linux CI heavy Tasks currently exhaust their
+unchanged deadline before the final evaluator; performance correction, Review compatibility
+and P14 release evidence remain required. The completed
 M0–M9 record below remains the compatibility foundation.
 
 **Status:** M0–M9 are complete and shipped in private release `v0.6.0` from exact `main` commit

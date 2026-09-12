@@ -22,6 +22,8 @@
 //! A blocked gate makes every node after it unreachable, so a review that could not build
 //! produces no reviewer artifacts at all — not reviewer artifacts nobody reads.
 
+mod reviewer_inputs;
+mod reviewer_output;
 pub mod scatter;
 pub mod task;
 
@@ -47,25 +49,22 @@ use review_core::{
     CampaignOpenedPayloadV1, Capture as SnapshotCapture, EventType, IntegrationCandidateV1,
     IntegrationCheckV1, IntegrationChecksCompletedPayloadV1, IntegrationChecksV1,
     IntegrationCommittedPayloadV1, IntegrationConflictPayloadV1, IntegrationPlanV1,
-    IntegrationPreparedPayloadV1, LegacyStageOutput, MAX_CHANGE_SET_BYTES,
-    MAX_PRIOR_FINDINGS_BYTES, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1,
-    PortArtifactsV1, Producer, ProposalAcceptedPayloadV1, ProposalCandidateV1,
-    ProposalPreparedPayloadV1, ProposalRefusalReasonV1, ProposalRefusedPayloadV1,
-    RecordedSetPayloadV1, ReviewerExecutionBindingV1, ReviewerResultContract,
-    ReviewerResultRejection, RoundStartedPayloadV1, RunCacheFailureReasonV5, RunCacheFailureV5,
-    RunCacheKindV5, RunCacheMaterializationV5, RunCacheSnapshotV5, RunExecutionBindingV4,
-    RunExecutionProviderV4, RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2,
-    RunReportPayloadV3, RunReportPayloadV4, RunReportPayloadV5, RunSandboxModeV4,
-    RunSuppressionReasonV2, RunVerdictV3, ShardOutcomeV1, ShardReceiptV1, ShardSetV1,
-    SliceSetAcceptedPayloadV1, SliceSetV1, SnapshotAffinity, SourceSnapshot, SubjectV1,
-    run_report_closes_round,
+    IntegrationPreparedPayloadV1, LegacyStageOutput, MissingNodeV2, NodeInvocationPayloadV1,
+    NodeOutputReceiptPayloadV1, PortArtifactsV1, Producer, ProposalAcceptedPayloadV1,
+    ProposalCandidateV1, ProposalPreparedPayloadV1, RecordedSetPayloadV1,
+    ReviewerExecutionBindingV1, ReviewerResultContract, ReviewerResultRejection,
+    RoundStartedPayloadV1, RunCacheFailureReasonV5, RunCacheFailureV5, RunCacheKindV5,
+    RunCacheMaterializationV5, RunCacheSnapshotV5, RunExecutionBindingV4, RunExecutionProviderV4,
+    RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3,
+    RunReportPayloadV4, RunReportPayloadV5, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV3,
+    ShardOutcomeV1, ShardReceiptV1, ShardSetV1, SliceSetAcceptedPayloadV1, SliceSetV1,
+    SnapshotAffinity, SourceSnapshot, SubjectV1, run_report_closes_round,
 };
 use review_graph::{
     ArtifactMap, Dispatch, Node, NodeFailureClass, NodeKind, NodeOutcome, PortContract, RunReport,
 };
 use review_runner::{
-    ContextManifest, ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact,
-    ReviewerInputs, ReviewerProposalDeclaration, RunnerError, TokenUsage,
+    ContextManifest, ReviewerAdapter, ReviewerAttemptContext, RunnerError, TokenUsage,
 };
 use review_sandbox::{
     CacheError, CacheErrorKind, CacheKind, CacheMaterialization, CacheSource, ContainerProvider,
@@ -1164,7 +1163,7 @@ pub fn run_verdict(report: &RunReport, convergence: &Convergence) -> RunVerdict 
 /// What a pipeline needs to run one generation.
 pub struct Kernel<'a> {
     cas: &'a Cas,
-    store: Mutex<&'a mut EventStore>,
+    store: review_store::SharedEventStore<'a>,
     run_id: String,
     /// The immutable subject. Every node is materialized from this, so they all inspect the
     /// same content by construction rather than by discipline.
@@ -1384,7 +1383,7 @@ fn persisted_verdict(
 impl<'a> Kernel<'a> {
     fn new(
         cas: &'a Cas,
-        store: &'a mut EventStore,
+        store: review_store::SharedEventStore<'a>,
         run_id: impl Into<String>,
         snapshot: Manifest,
         subject: review_core::SubjectKind,
@@ -1401,32 +1400,36 @@ impl<'a> Kernel<'a> {
         if subject != authority.subject_kind {
             return Err("pipeline Subject kind disagrees with Round authority".into());
         }
-        let replayed = replay_execution(store, cas, &run_id, &authority)?;
-        if !replayed.outstanding_attempts.is_empty() {
-            let events: Vec<NewEvent> = replayed
-                .outstanding_attempts
-                .iter()
-                .map(|(node, attempt, charged)| {
-                    let mut event = NewEvent::new(
-                        EventType::AttemptFencedV1,
-                        serde_json::to_value(AttemptFencedPayloadV1 {
-                            reason: "process ended before attempt publication".into(),
-                            charged: Some(*charged),
-                        })
-                        .expect("typed attempt fence"),
-                    )
-                    .node(node)
-                    .attempt(attempt)
-                    .caused_by(authority.round_event_id.clone())
-                    .correlating(authority.subject_id.clone());
-                    event.artifact_refs.extend(authority.artifact_refs());
-                    event
-                })
-                .collect();
-            store
-                .append_batch(&run_id, cas, &events)
-                .map_err(|error| error.to_string())?;
-        }
+        let replayed = {
+            let mut store = store.lock().expect("event store");
+            let replayed = replay_execution(&store, cas, &run_id, &authority)?;
+            if !replayed.outstanding_attempts.is_empty() {
+                let events: Vec<NewEvent> = replayed
+                    .outstanding_attempts
+                    .iter()
+                    .map(|(node, attempt, charged)| {
+                        let mut event = NewEvent::new(
+                            EventType::AttemptFencedV1,
+                            serde_json::to_value(AttemptFencedPayloadV1 {
+                                reason: "process ended before attempt publication".into(),
+                                charged: Some(*charged),
+                            })
+                            .expect("typed attempt fence"),
+                        )
+                        .node(node)
+                        .attempt(attempt)
+                        .caused_by(authority.round_event_id.clone())
+                        .correlating(authority.subject_id.clone());
+                        event.artifact_refs.extend(authority.artifact_refs());
+                        event
+                    })
+                    .collect();
+                store
+                    .append_batch(&run_id, cas, &events)
+                    .map_err(|error| error.to_string())?;
+            }
+            replayed
+        };
         let attempts =
             AttemptLedger::scoped(&authority.round_event_id, replayed.attempt_counts.clone());
         let prior_findings = Some(authority.prior_finding_set_id.clone());
@@ -1446,7 +1449,7 @@ impl<'a> Kernel<'a> {
             .collect();
         Ok(Kernel {
             cas,
-            store: Mutex::new(store),
+            store,
             run_id,
             snapshot,
             subject,
@@ -1502,7 +1505,7 @@ impl<'a> Kernel<'a> {
     /// an unsupported diff cannot silently execute with whole-tree semantics.
     fn for_subject(
         cas: &'a Cas,
-        store: &'a mut EventStore,
+        store: review_store::SharedEventStore<'a>,
         run_id: impl Into<String>,
         snapshot: Manifest,
         subject: review_core::SubjectKind,
@@ -1524,6 +1527,26 @@ impl<'a> Kernel<'a> {
     pub fn from_loaded(
         cas: &'a Cas,
         store: &'a mut EventStore,
+        run_id: impl Into<String>,
+        snapshot: Manifest,
+        loaded: &review_config::Loaded,
+        authority: RoundAuthority,
+    ) -> Result<Kernel<'a>, String> {
+        Self::from_loaded_with_store(
+            cas,
+            review_store::SharedEventStore::new(store),
+            run_id,
+            snapshot,
+            loaded,
+            authority,
+        )
+    }
+
+    /// Use the same serialized Store connection as an enclosing Task runtime. This preserves
+    /// domain durability without a second SQLite writer or an in-memory event handoff.
+    pub fn from_loaded_with_store(
+        cas: &'a Cas,
+        store: review_store::SharedEventStore<'a>,
         run_id: impl Into<String>,
         snapshot: Manifest,
         loaded: &review_config::Loaded,
@@ -3329,142 +3352,6 @@ impl<'a> Kernel<'a> {
         Ok(vec![artifact])
     }
 
-    #[allow(clippy::too_many_arguments)] // one exact Attempt boundary; grouping would obscure authority inputs
-    fn prepare_proposal(
-        &self,
-        node_id: &str,
-        attempt: &AttemptId,
-        result_artifact: &str,
-        declaration: Result<Option<ReviewerProposalDeclaration>, String>,
-        assigned_finding_ids: &[String],
-        report_count: usize,
-        sealed: &review_sandbox::SealedSandbox,
-    ) -> Result<PreparedProposal, String> {
-        let refused = |reason| {
-            PreparedProposal::Refused(
-                NewEvent::new(
-                    EventType::ProposalRefusedV1,
-                    serde_json::to_value(ProposalRefusedPayloadV1 {
-                        reason,
-                        result_artifact_id: result_artifact.to_string(),
-                    })
-                    .expect("typed Proposal refusal serializes"),
-                )
-                .node(node_id)
-                .attempt(attempt.to_string())
-                .referencing(vec![result_artifact.to_string()]),
-            )
-        };
-        let declaration = match declaration {
-            Ok(Some(declaration)) => declaration,
-            Ok(None) => return Ok(PreparedProposal::None),
-            Err(_) => return Ok(refused(ProposalRefusalReasonV1::MalformedDeclaration)),
-        };
-        if self.authority.finding_identity_policy != review_core::CANONICAL_FINDING_IDENTITY_POLICY
-        {
-            return Ok(refused(ProposalRefusalReasonV1::InvalidClaim));
-        }
-        if declaration.patch.is_empty() || declaration.patch.len() > MAX_CHANGE_SET_BYTES {
-            return Ok(refused(ProposalRefusalReasonV1::MalformedDeclaration));
-        }
-        let mut report_indexes = declaration.report_indexes;
-        report_indexes.sort_unstable();
-        if report_indexes.windows(2).any(|pair| pair[0] == pair[1])
-            || report_indexes
-                .iter()
-                .any(|index| usize::try_from(*index).map_or(true, |index| index >= report_count))
-        {
-            return Ok(refused(ProposalRefusalReasonV1::InvalidClaim));
-        }
-        let mut finding_ids = declaration.finding_ids;
-        finding_ids.sort();
-        if finding_ids.windows(2).any(|pair| pair[0] == pair[1])
-            || finding_ids
-                .iter()
-                .any(|id| !assigned_finding_ids.contains(id))
-            || report_indexes.is_empty() && finding_ids.is_empty()
-        {
-            return Ok(refused(ProposalRefusalReasonV1::InvalidClaim));
-        }
-        let mut evidence_ids = declaration.evidence_ids;
-        evidence_ids.sort();
-        if evidence_ids.windows(2).any(|pair| pair[0] == pair[1])
-            || evidence_ids.iter().any(|id| self.cas.verify(id).is_err())
-        {
-            return Ok(refused(ProposalRefusalReasonV1::InvalidEvidence));
-        }
-        let mut paths = declaration.paths;
-        paths.sort();
-        if paths.is_empty()
-            || paths.windows(2).any(|pair| pair[0] == pair[1])
-            || paths
-                .iter()
-                .any(|path| !review_core::is_valid_repo_path(path))
-        {
-            return Ok(refused(ProposalRefusalReasonV1::InvalidPath));
-        }
-        if sealed.mutations.is_empty() {
-            return Ok(refused(ProposalRefusalReasonV1::EmptyMutation));
-        }
-        if paths != sealed.mutations.paths() {
-            return Ok(refused(ProposalRefusalReasonV1::PathMismatch));
-        }
-        let final_manifest = sealed
-            .capture_snapshot(self.cas)
-            .map_err(|error| error.to_string())?;
-        let diff = manifest_diff(sealed.baseline.as_ref(), &final_manifest, self.cas)
-            .map_err(|error| error.to_string())?;
-        if declaration.patch.as_bytes() != diff.patch() {
-            return Ok(refused(ProposalRefusalReasonV1::PatchMismatch));
-        }
-        let patch_artifact_id = self
-            .cas
-            .put(diff.patch())
-            .map_err(|error| error.to_string())?;
-        let derived_manifest_artifact_id = self
-            .cas
-            .put_json(&serde_json::to_value(&final_manifest).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
-        let candidate = ProposalCandidateV1 {
-            base_snapshot_id: self.authority.head_snapshot_id.clone(),
-            patch_artifact_id: patch_artifact_id.clone(),
-            derived_manifest_artifact_id: derived_manifest_artifact_id.clone(),
-            result_artifact_id: result_artifact.to_string(),
-            report_indexes,
-            finding_ids,
-            evidence_ids: evidence_ids.clone(),
-            paths,
-            description: declaration.description,
-            auto_apply_nominated: declaration.auto_apply_nominated,
-        };
-        candidate.validate().map_err(str::to_string)?;
-        let candidate_artifact = self
-            .cas
-            .put_json(&serde_json::to_value(candidate).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
-        let mut artifacts = vec![
-            candidate_artifact.clone(),
-            result_artifact.to_string(),
-            patch_artifact_id,
-            derived_manifest_artifact_id,
-        ];
-        artifacts.extend(evidence_ids);
-        Ok(PreparedProposal::Prepared {
-            candidate_artifact: candidate_artifact.clone(),
-            event: NewEvent::new(
-                EventType::ProposalPreparedV1,
-                serde_json::to_value(ProposalPreparedPayloadV1 {
-                    candidate_artifact_id: candidate_artifact,
-                    result_artifact_id: result_artifact.to_string(),
-                })
-                .map_err(|error| error.to_string())?,
-            )
-            .node(node_id)
-            .attempt(attempt.to_string())
-            .referencing(artifacts),
-        })
-    }
-
     fn run_reviewer(&self, node: &Node, node_inputs: &ArtifactMap) -> Result<Vec<String>, String> {
         let node_id = node.id.as_str();
         let binding_node = self.reviewer_binding_node(node_id);
@@ -3488,8 +3375,14 @@ impl<'a> Kernel<'a> {
                 return Err(error);
             }
         };
-        let result_contract = match reviewer_result_contract(node) {
-            Ok(contract) => contract,
+        let mut inputs = match reviewer_inputs::prepare(
+            self.cas,
+            &self.authority,
+            self.pipeline_version,
+            node,
+            node_inputs,
+        ) {
+            Ok(inputs) => inputs,
             Err(error) => {
                 if let Some(prepared) = prepared.take() {
                     self.release_prepared_attempt(
@@ -3502,253 +3395,8 @@ impl<'a> Kernel<'a> {
                 return Err(error);
             }
         };
-
-        // Prior findings arrive through the wired `prior_findings` input port — a data artifact
-        // the pipeline routed from the generation node — not from ambient kernel state. A
-        // reviewer that declares no such input receives none; the plan is the delivery.
-        let prior_findings_contract = node
-            .inputs
-            .iter()
-            .find(|port| is_reviewer_prior_set_input(port, self.pipeline_version));
-        let exact_finding_set = prior_findings_contract.is_some_and(is_reviewer_finding_set_input);
-        if (result_contract == ReviewerResultContract::V2) != exact_finding_set {
-            let error = format!(
-                "reviewer `{node_id}` must pair ReviewerResult@2 with an exact FindingSet@1 input"
-            );
-            if let Some(prepared) = prepared.take() {
-                self.release_prepared_attempt(
-                    node_id,
-                    &prepared.attempt,
-                    prepared.reservation.as_ref(),
-                    &error,
-                )?;
-            }
-            return Err(error);
-        }
-        let prior_findings_port = prior_findings_contract.map(|port| port.name.as_str());
-        let prior_findings_artifact = prior_findings_port
-            .and_then(|port| node_inputs.get(port))
-            .and_then(|artifacts| artifacts.first())
-            .cloned();
-        let mut inputs = ReviewerInputs {
-            result_contract,
-            finding_identity_policy: Some(self.authority.finding_identity_policy.clone()),
-            ..ReviewerInputs::default()
-        };
-        let resolved_inputs = (|| -> Result<(), String> {
-            for (port, artifacts) in node_inputs {
-                let contract = node
-                    .inputs
-                    .iter()
-                    .find(|contract| contract.name == *port)
-                    .ok_or_else(|| {
-                        format!("reviewer input port '{port}' has no declared contract")
-                    })?;
-                if is_reviewer_prior_set_input(contract, self.pipeline_version) {
-                    continue;
-                }
-                let is_change_set = is_change_set_port(contract, self.pipeline_version);
-                let mut resolved = Vec::with_capacity(artifacts.len());
-                for artifact in artifacts {
-                    if is_change_set
-                        && self.authority.change_set_id.as_deref() == Some(artifact.as_str())
-                    {
-                        resolved.push(ReviewerInputArtifact::from_resolved_change_set(
-                            self.authority
-                                .change_set
-                                .as_ref()
-                                .ok_or("Round authority has no validated Change Set input")?
-                                .clone(),
-                        )?);
-                        continue;
-                    }
-                    let limit = if is_change_set {
-                        MAX_CHANGE_SET_BYTES
-                    } else {
-                        MAX_PRIOR_FINDINGS_BYTES
-                    };
-                    let encoded = self
-                        .cas
-                        .get_bounded(artifact, limit as u64)
-                        .map_err(|error| error.to_string())?;
-                    if is_change_set {
-                        resolved.push(ReviewerInputArtifact::change_set_from_encoded(
-                            artifact.clone(),
-                            &encoded,
-                        )?);
-                    } else {
-                        let value =
-                            serde_json::from_slice(&encoded).map_err(|error| error.to_string())?;
-                        resolved.push(ReviewerInputArtifact::from_json(
-                            artifact.clone(),
-                            contract.artifact_type.clone(),
-                            value,
-                            encoded.len(),
-                        ));
-                    }
-                }
-                inputs.artifacts.insert(port.clone(), resolved);
-            }
-            Ok(())
-        })();
-        if let Err(error) = resolved_inputs {
-            if let Some(prepared) = prepared.take() {
-                self.release_prepared_attempt(
-                    node_id,
-                    &prepared.attempt,
-                    prepared.reservation.as_ref(),
-                    &error,
-                )?;
-            }
-            return Err(error);
-        }
-        if let Some(artifact) = &prior_findings_artifact {
-            let encoded = match self
-                .cas
-                .get_bounded(artifact, MAX_PRIOR_FINDINGS_BYTES as u64)
-            {
-                Ok(encoded) => encoded,
-                Err(error) => {
-                    if let Some(prepared) = prepared.take() {
-                        self.release_prepared_attempt(
-                            node_id,
-                            &prepared.attempt,
-                            prepared.reservation.as_ref(),
-                            &error.to_string(),
-                        )?;
-                    }
-                    return Err(error.to_string());
-                }
-            };
-            let value: serde_json::Value = match serde_json::from_slice(&encoded) {
-                Ok(value) => value,
-                Err(error) => {
-                    if let Some(prepared) = prepared.take() {
-                        self.release_prepared_attempt(
-                            node_id,
-                            &prepared.attempt,
-                            prepared.reservation.as_ref(),
-                            &error.to_string(),
-                        )?;
-                    }
-                    return Err(error.to_string());
-                }
-            };
-            let value = if exact_finding_set {
-                let envelope: review_core::ArtifactEnvelope = match serde_json::from_value(value) {
-                    Ok(envelope) => envelope,
-                    Err(error) => {
-                        let error = format!(
-                            "exact prior FindingSet@1 `{artifact}` is not an envelope: {error}"
-                        );
-                        if let Some(prepared) = prepared.take() {
-                            self.release_prepared_attempt(
-                                node_id,
-                                &prepared.attempt,
-                                prepared.reservation.as_ref(),
-                                &error,
-                            )?;
-                        }
-                        return Err(error);
-                    }
-                };
-                if let Err(error) = review_store::validate_envelope(&envelope) {
-                    if let Some(prepared) = prepared.take() {
-                        self.release_prepared_attempt(
-                            node_id,
-                            &prepared.attempt,
-                            prepared.reservation.as_ref(),
-                            &error,
-                        )?;
-                    }
-                    return Err(error);
-                }
-                if envelope.artifact_type != review_core::contract::FINDING_SET_V1 {
-                    let error = format!("exact prior artifact `{artifact}` is not FindingSet@1");
-                    if let Some(prepared) = prepared.take() {
-                        self.release_prepared_attempt(
-                            node_id,
-                            &prepared.attempt,
-                            prepared.reservation.as_ref(),
-                            &error,
-                        )?;
-                    }
-                    return Err(error);
-                }
-                let mut set: review_core::FindingSetV1 =
-                    match serde_json::from_value(envelope.payload) {
-                        Ok(set) => set,
-                        Err(error) => {
-                            let error = format!("exact prior FindingSet@1 is invalid: {error}");
-                            if let Some(prepared) = prepared.take() {
-                                self.release_prepared_attempt(
-                                    node_id,
-                                    &prepared.attempt,
-                                    prepared.reservation.as_ref(),
-                                    &error,
-                                )?;
-                            }
-                            return Err(error);
-                        }
-                    };
-                if let Err(error) = set.validate() {
-                    if let Some(prepared) = prepared.take() {
-                        self.release_prepared_attempt(
-                            node_id,
-                            &prepared.attempt,
-                            prepared.reservation.as_ref(),
-                            &error,
-                        )?;
-                    }
-                    return Err(error);
-                }
-                let round_assignment = match self.cas.get_json(&self.authority.prior_finding_set_id)
-                {
-                    Ok(assignment) => assignment,
-                    Err(error) => {
-                        let error =
-                            format!("exact Round finding assignment is unreadable: {error}");
-                        if let Some(prepared) = prepared.take() {
-                            self.release_prepared_attempt(
-                                node_id,
-                                &prepared.attempt,
-                                prepared.reservation.as_ref(),
-                                &error,
-                            )?;
-                        }
-                        return Err(error);
-                    }
-                };
-                if let Err(error) = retain_round_assignment(&mut set, &round_assignment) {
-                    if let Some(prepared) = prepared.take() {
-                        self.release_prepared_attempt(
-                            node_id,
-                            &prepared.attempt,
-                            prepared.reservation.as_ref(),
-                            &error,
-                        )?;
-                    }
-                    return Err(error);
-                }
-                serde_json::to_value(set).expect("validated FindingSet@1 serializes")
-            } else {
-                value
-            };
-            // An empty assignment needs no prompt section and requires an empty disposition list.
-            let findings_field = if exact_finding_set {
-                "findings"
-            } else {
-                "prior_findings"
-            };
-            let has_findings = value
-                .get(findings_field)
-                .and_then(|findings| findings.as_array())
-                .is_some_and(|findings| !findings.is_empty());
-            if has_findings {
-                inputs.prior_findings = Some(value);
-            }
-        }
-        inputs.prior_findings_artifact_id = prior_findings_artifact.clone();
+        let result_contract = inputs.result_contract;
+        let prior_findings_artifact = inputs.prior_findings_artifact_id.clone();
 
         let mut retry_failures: Vec<String> = Vec::new();
         let broker_fence_authority = self
@@ -4020,9 +3668,11 @@ impl<'a> Kernel<'a> {
                             .cas
                             .put_json(&result_value)
                             .map_err(|error| error.to_string())?;
-                        let proposal = self.prepare_proposal(
+                        let proposal = reviewer_output::prepare_proposal(
+                            self.cas,
+                            &self.authority,
                             node_id,
-                            &attempt,
+                            &attempt.to_string(),
                             &result_artifact,
                             proposal_declaration,
                             &assigned_finding_ids,

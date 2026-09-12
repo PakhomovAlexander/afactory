@@ -21,7 +21,7 @@ use review_graph::task::{CompiledOperator, CompiledTask};
 use review_graph::{ArtifactMap, Dispatch, Node, NodeFailureClass, RunReport};
 use review_store::store::task::execution::PreparedTaskAttempt;
 use review_store::store::task::{TaskAuthority, TaskLease, TaskProjection, task_run_id};
-use review_store::{Cas, EventStore, validate_envelope};
+use review_store::{Cas, EventStore, SharedEventStore, validate_envelope};
 
 pub struct TaskWorkOutput {
     pub outputs: Result<BTreeMap<String, ArtifactInputV1>, String>,
@@ -52,7 +52,7 @@ pub trait TaskOperatorHost: Sync {
 }
 
 pub struct TaskRuntime<'a> {
-    store: Mutex<&'a mut EventStore>,
+    store: SharedEventStore<'a>,
     cas: &'a Cas,
     lease: TaskLease,
     plan_id: String,
@@ -90,13 +90,29 @@ impl<'a> TaskRuntime<'a> {
         authority: &'a dyn TaskAuthority,
         host: &'a dyn TaskOperatorHost,
     ) -> Result<Self, String> {
-        let plan = store
-            .check_task_dispatch(cas, &lease, authority)
-            .map_err(|e| e.to_string())?;
-        let projection = store
-            .task_projection(cas, lease.task_id())
-            .map_err(|e| e.to_string())?
-            .ok_or("Unknown Task")?;
+        Self::with_store(SharedEventStore::new(store), cas, lease, authority, host)
+    }
+
+    /// Domain handlers may retain a clone for durable evidence and broker checks. Locks must
+    /// be released before calling a handler or starting an external operation.
+    pub fn with_store(
+        store: SharedEventStore<'a>,
+        cas: &'a Cas,
+        lease: TaskLease,
+        authority: &'a dyn TaskAuthority,
+        host: &'a dyn TaskOperatorHost,
+    ) -> Result<Self, String> {
+        let (plan, projection) = {
+            let locked = store.lock().expect("Task Store");
+            let plan = locked
+                .check_task_dispatch(cas, &lease, authority)
+                .map_err(|e| e.to_string())?;
+            let projection = locked
+                .task_projection(cas, lease.task_id())
+                .map_err(|e| e.to_string())?
+                .ok_or("Unknown Task")?;
+            (plan, projection)
+        };
         let value = envelope(cas, &plan.compiled_graph_id)?;
         if value.artifact_type != "af/CompiledTask@1" {
             return Err("Task plan has no compiled Task graph".into());
@@ -107,7 +123,7 @@ impl<'a> TaskRuntime<'a> {
             return Err("Unsupported compiled Task version".into());
         }
         Ok(Self {
-            store: Mutex::new(store),
+            store,
             cas,
             lease,
             plan_id: projection.plan_id.ok_or("Task has no plan")?,
