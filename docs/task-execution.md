@@ -26,9 +26,11 @@ separate captured policies, credentials and original Attempts. Failed readiness 
 late receipts, panic and CAS failure preserve exact paid usage in the same Task ledger.
 CLI show/explain/list verify typed Broker evidence and cumulative charges after reopen.
 The published checkpoint also passes CI `34702550379` at documentation head `c55f96e`.
-Owned Scatter children now compile under the same scheduler and ledger, with focused Store,
-Graph and host tests passing; their full integration gate is pending. Heavy continuation and
-legacy CLI cutover remain. The proposed
+The owned Review checkpoint `d9babab` matches frozen tree `47c73ec` and passes the full gate:
+**1,009 tests, zero failures, 15 ignored** across 125 suites, plus formatting, Clippy,
+documentation and byte-identical fixture reproduction. Registered slices use the same
+scheduler and ledger, and canonical completion recovers without repeating paid work.
+Heavy continuation and legacy CLI cutover remain. The proposed
 [owned-child decision](adr/0081-register-owned-review-children-in-the-common-task-runtime.md)
 records registration, factual recovery and immutable completion. See
 [Review compatibility](task-execution/review-compatibility.md) and

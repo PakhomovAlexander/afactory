@@ -651,3 +651,19 @@ is already 3,095,643 bytes before owned children: roughly 773,910 byte-estimated
 before role prompts, beyond the configured 400,000-token Attempt. Exact per-role planning and
 a concrete review capacity solution are required before external calls. No review caps have
 been changed, and a usable `claude-personal` login remains pending.
+
+The owned Review checkpoint is complete at `d9babab5fbadd82fdc9b58dbdccfd68a67171546`,
+identical to frozen verification `47c73ece6fbd0057f18682bbfd4f4de4aabc942a`, tree
+`45f01a539a653c9d5dc72851fd086499fdc63134`. The complete gate passes **1,009 tests, zero
+failures, 15 ignored**, across 125 suites, including formatting, Clippy, documentation tests
+and byte-identical synthetic fixture reproduction. Store tests compare Task and Review
+transaction prefixes for canonical parent publication and reject publication after sealing,
+writer takeover or Round supersession. A reopened Runtime reaches a satisfied, finished
+Task; actual native adapter flag tests preserve Claude read-only tools and Codex workspace
+writes. Fresh CLI tests preserve ordinary inspection@3, Broker@4 and owned inspection@5
+without changing either Task or Review history.
+
+Heavy Round continuation is the next checkpoint in the same PR: it retains original Task
+limits, cumulative usage and retired scopes across exact canonical Round changes. Its code
+and tests are in progress and are excluded from the owned checkpoint above. The existing
+external-review capacity and personal-login gaps remain; no specialist reviewer has run.

@@ -70,6 +70,6 @@ repeat paid calls. The Store must retain historical child registrations for acco
 refusing their use for current dispatch after a plan or Round handoff. The additional wire and
 inspection generations keep old artifacts readable without relabeling their payloads.
 
-This implements part of the authorized common-runtime design. Its specialist review and full
-integration gate remain pending; it does not by itself complete the legacy CLI cutover or the
-live performance pilot.
+This implements part of the authorized common-runtime design. Its specialist review remains
+pending. The full repository gate passes at `d9babab`; the legacy CLI cutover and live
+performance pilot remain required.

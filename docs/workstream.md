@@ -1,11 +1,12 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
 **Active increment:** [Task execution](task-execution.md), P00–P14, authorized as three PRs.
-Common Task Broker checkpoint `1a9ab83` (frozen identical tree `34fc57e`) passes the complete
-local gate: **978 tests, zero failures, 15 ignored**, plus formatting, Clippy, documentation and
-frozen reproduction. Separate captured Provider probes, business Broker operations and CLI
-inspection share original Task Attempts and retain exact failed/late usage. Owned Scatter
-children are in implementation; heavy continuation and legacy CLI cutover remain.
+Owned Review checkpoint `d9babab` (frozen identical tree `47c73ec`) passes the complete
+local gate: **1,009 tests, zero failures, 15 ignored**, plus formatting, Clippy, documentation
+and frozen reproduction. Registered slices share the original Task scheduler and budget;
+replay preserves complete, failed and missing outcomes and canonical Review receipts.
+Separate captured Provider probes and business Broker operations retain exact failed/late
+usage. Heavy continuation and legacy CLI cutover remain in progress.
 
 Common Task workflows, shared packages, embedding, repair, selection/generation, exact-plan
 approval, export, starters and issue/document Tasks are implemented on the PR branches.
