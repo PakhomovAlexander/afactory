@@ -22,6 +22,13 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # A failed test still leaves valid compiled dependencies; keep them for the next push.
+          cache-on-failure: true
+          # Workspace crates are the bulk of the rebuild; cargo's fingerprints keep them correct.
+          cache-workspace-crates: true
       - name: Check
         run: make check
       - name: CLI smoke
@@ -33,6 +40,13 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # A failed test still leaves valid compiled dependencies; keep them for the next push.
+          cache-on-failure: true
+          # Workspace crates are the bulk of the rebuild; cargo's fingerprints keep them correct.
+          cache-workspace-crates: true
       - name: Verify container runtime
         run: docker info
       - name: Run live container probes
