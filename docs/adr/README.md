@@ -118,3 +118,5 @@ options you rejected and why — that is the part future-you needs.
 - [0093 — Derive CodeTask acceptance from execution and evidence](0093-derive-code-task-acceptance-from-execution-and-evidence.md)
 - [0097 — Share validated source reads within one
   operation](0097-share-validated-source-reads-within-one-operation.md)
+- [0094 — Bind Task Review assignments and readable
+  inputs](0094-bind-task-review-assignments-and-readable-inputs.md)

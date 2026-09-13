@@ -120,7 +120,7 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
                 "Source-writing Worker must expose a kernel-captured candidate port".into(),
             );
         }
-        let (_, _, manifest) = source_snapshot(
+        let (id, _, mut manifest) = source_snapshot(
             cas,
             invocation
                 .inputs
@@ -132,6 +132,7 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
         } else {
             Mode::ReadOnly
         };
+        add_review_inputs(cas, invocation, mode, &id, &mut manifest)?;
         let sandbox = Sandbox::materialize(&manifest, cas, mode).map_err(|e| e.to_string())?;
         review_sandbox::admit(self.policy, &sandbox).map_err(|e| e.to_string())?;
         Ok(sandbox)
@@ -266,5 +267,94 @@ pub fn validate_seal(
     {
         return Err("Seal output does not identify its exact admitted candidate tree".into());
     }
+    Ok(())
+}
+
+/// Host input files belong only to the disposable read-only baseline. They are not source
+/// Snapshot entries and can never flow through the candidate-tree capture path.
+pub(super) fn add_review_inputs(
+    cas: &Cas,
+    invocation: &TaskInvocationV1,
+    mode: Mode,
+    source: &str,
+    manifest: &mut review_source_git::Manifest,
+) -> Result<(), String> {
+    use review_core::task::review::{TASK_REVIEW_SUBJECT_V2, TaskReviewSubjectV2};
+    let Some(port) = invocation
+        .inputs
+        .get("subject")
+        .filter(|p| p.artifact_type == TASK_REVIEW_SUBJECT_V2)
+    else {
+        return Ok(());
+    };
+    port.validate()?;
+    if mode != Mode::ReadOnly || port.cardinality != PortCardinality::One {
+        return Err("Readable Review inputs require a read-only source Worker".into());
+    }
+    let artifact = envelope(cas, &port.artifact_ids[0])?;
+    let subject: TaskReviewSubjectV2 =
+        serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+    subject.validate()?;
+    if subject.snapshot_id != source
+        || artifact.artifact_type != TASK_REVIEW_SUBJECT_V2
+        || artifact.subject_snapshot_id.as_deref() != Some(source)
+        || port.snapshot_id.as_deref() != Some(source)
+    {
+        return Err("Readable Review input changed its exact source Snapshot".into());
+    }
+    let Some(scope) = subject.change_scope.as_ref() else {
+        return Ok(());
+    };
+    let change_id = subject
+        .subject
+        .change_set_id
+        .as_ref()
+        .ok_or("Readable Diff lacks ChangeSet")?;
+    let bytes = cas
+        .get_bounded(change_id, review_core::MAX_CHANGE_SET_BYTES as u64)
+        .map_err(|e| e.to_string())?;
+    let changes: review_core::ChangeSetV1 =
+        serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    changes.validate()?;
+    let patch = cas
+        .get_bounded(
+            &scope.patch.content_id,
+            review_core::MAX_CHANGE_SET_BYTES as u64,
+        )
+        .map_err(|e| e.to_string())?;
+    if patch.len() as u64 != scope.patch.bytes
+        || patch != changes.canonical_patch()?
+        || changes.head_snapshot_id != source
+        || Some(&changes.base_snapshot_id) != subject.subject.base_snapshot_id.as_ref()
+        || changes.changed_paths != scope.changed_paths
+        || changes.renames != scope.renames
+        || changes.rename_detection_truncated != scope.rename_detection_truncated
+        || changes.git_version != scope.git_version
+        || changes.diff_policy_version != scope.diff_policy_version
+        || !artifact.input_artifacts.contains(change_id)
+        || !artifact.input_artifacts.contains(&scope.patch.content_id)
+    {
+        return Err("Readable Review file changed its declared content, bytes or authority".into());
+    }
+    let path = manifest.encode_key(scope.patch.path.as_bytes());
+    // Reserve this exact host-input directory: a source file, directory or symlink there
+    // must not be overwritten or mistaken for host-provided context.
+    let directory = manifest.encode_key(b".af-review-inputs");
+    if manifest
+        .entries
+        .iter()
+        .any(|entry| entry.path == directory || entry.path.starts_with(&format!("{directory}/")))
+    {
+        return Err("Source collides with the declared Review input directory".into());
+    }
+    let mut entries = manifest.entries.clone();
+    entries.push(review_source_git::Entry {
+        path,
+        kind: review_source_git::EntryKind::File,
+        content: scope.patch.content_id.clone(),
+        size: scope.patch.bytes,
+    });
+    *manifest = review_source_git::Manifest::new_with_encoding(entries, manifest.path_encoding)
+        .map_err(|e| e.to_string())?;
     Ok(())
 }

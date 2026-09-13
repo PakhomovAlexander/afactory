@@ -11,6 +11,7 @@ pub mod pipeline;
 pub mod plan;
 pub mod provider;
 pub mod review;
+pub mod review_context;
 pub mod verification;
 
 use std::collections::{BTreeMap, BTreeSet};

@@ -216,8 +216,10 @@ fn capture_authority(
 ) -> Result<(String, RunAuthority, TaskPlanCompiler), String> {
     let bytes = captured_file(cas, manifest, ".af/task-catalog.toml")?;
     let catalog: TaskCatalog = parse(Path::new(".af/task-catalog.toml"), &bytes)?;
-    if catalog.schema != "af.task-catalog/1"
-        || catalog.packages.is_empty()
+    if !matches!(
+        catalog.schema.as_str(),
+        "af.task-catalog/1" | "af.task-catalog/2"
+    ) || catalog.packages.is_empty()
         || catalog.packages.len() > 128
     {
         return Err("Task catalog requires one to 128 exactly pinned packages".into());
@@ -265,6 +267,11 @@ fn capture_authority(
             },
         );
     }
+    let review_generation = if catalog.schema == "af.task-catalog/2" {
+        2
+    } else {
+        1
+    };
     let authority = RunAuthority {
         schema: "af.task-run-authority/1".into(),
         engine_id,
@@ -273,7 +280,7 @@ fn capture_authority(
             .review
             .map(|review| {
                 let review = ReviewTaskPolicy {
-                    schema: "af.review-task-policy/1".into(),
+                    schema: format!("af.review-task-policy/{review_generation}"),
                     check_policy_id: policy_id.clone(),
                     reviewers: review.reviewers,
                     gate: review.gate,

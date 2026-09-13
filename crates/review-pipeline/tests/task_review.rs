@@ -62,6 +62,38 @@ fn node(id: &str, operator: TaskOperatorV1, inputs: BTreeMap<String, ValueRefV1>
 #[test]
 fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger() {
     for case in ["clean", "finding", "demand", "missing", "unavailable"] {
+        run_case(case, false);
+    }
+}
+
+#[test]
+fn review_v2_scopes_dispositions_preserves_actual_producers_and_reads_large_patch() {
+    for case in [
+        "valid",
+        "missing",
+        "duplicate",
+        "unassigned",
+        "large",
+        "mutated",
+        "collision",
+    ] {
+        run_case(case, true);
+    }
+}
+
+#[test]
+fn generation_one_prior_findings_refuse_new_dispatch_without_changing_replay() {
+    run_case("legacy_prior", false);
+}
+
+#[test]
+fn review_passed_receipts_do_not_hide_an_independent_failed_node() {
+    run_case("independent", false);
+}
+
+fn run_case(case: &str, v2: bool) {
+    let two_rounds = v2 || case == "legacy_prior";
+    {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
@@ -87,7 +119,7 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
         };
         let code_id = cas.put_json(&serde_json::to_value(&code).unwrap()).unwrap();
         let policy = ReviewTaskPolicy {
-            schema: "af.review-task-policy/1".into(),
+            schema: format!("af.review-task-policy/{}", if v2 { 2 } else { 1 }),
             check_policy_id: code_id.clone(),
             reviewers: BTreeMap::from([
                 ("correctness".into(), DemandRequirement::Required),
@@ -95,19 +127,33 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
             ]),
             gate: Severity::Major,
             clean_rounds: 1,
-            max_rounds: 1,
+            max_rounds: if two_rounds { 2 } else { 1 },
         };
         let policy_id = cas
             .put_json(&serde_json::to_value(&policy).unwrap())
             .unwrap();
-        let file = cas.put(b"pub fn example() {}\n").unwrap();
-        let manifest = Manifest::new(vec![Entry {
+        let source_bytes = if v2 && matches!(case, "large" | "mutated" | "collision") {
+            "// readable source change\n".repeat(45000).into_bytes()
+        } else {
+            b"pub fn example() {}\n".to_vec()
+        };
+        let file = cas.put(&source_bytes).unwrap();
+        let mut manifest = Manifest::new(vec![Entry {
             path: "lib.rs".into(),
             kind: EntryKind::File,
             content: file,
-            size: 20,
+            size: source_bytes.len() as u64,
         }])
         .unwrap();
+        if v2 && case == "collision" {
+            manifest.entries.push(Entry {
+                path: ".af-review-inputs".into(),
+                kind: EntryKind::File,
+                content: cas.put(b"owned source").unwrap(),
+                size: 12,
+            });
+            manifest = Manifest::new(manifest.entries).unwrap();
+        }
         let origin = cas.put(b"fixture origin").unwrap();
         let snapshot = capture_snapshot(&cas, &manifest, &origin, None).unwrap();
         let source = source_tree(&cas, producer(), &snapshot, vec![]).unwrap();
@@ -129,24 +175,31 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
         };
         let mut public_result = port(TASK_REVIEW_ROUND_V1, same());
         public_result.covers.insert("reviewed".into());
-        let signature = OperatorSignature {
+        let subject_type = if v2 {
+            TASK_REVIEW_SUBJECT_V2
+        } else {
+            TASK_REVIEW_SUBJECT_V1
+        };
+        let result_type = if v2 {
+            review_core::contract::REVIEWER_RESULT_V2
+        } else {
+            review_core::contract::REVIEWER_RESULT_V1
+        };
+        let mut signature = OperatorSignature {
             contract: PipelineContractV1 {
                 inputs: BTreeMap::from([
                     (
                         "source".into(),
                         port(SOURCE_TREE_V1, PortAffinityV1::Unbound {}),
                     ),
-                    ("subject".into(), port(TASK_REVIEW_SUBJECT_V1, same())),
+                    ("subject".into(), port(subject_type, same())),
                     (
                         "history".into(),
                         port(REVIEW_HISTORY_V1, PortAffinityV1::Unbound {}),
                     ),
                     ("checks".into(), port(TASK_CHECK_RECEIPT_V1, same())),
                 ]),
-                outputs: BTreeMap::from([(
-                    "result".into(),
-                    port(review_core::contract::REVIEWER_RESULT_V1, same()),
-                )]),
+                outputs: BTreeMap::from([("result".into(), port(result_type, same()))]),
             },
             effects: BTreeSet::from(["read-source".into()]),
             evidence: BTreeMap::new(),
@@ -161,13 +214,24 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
             )]),
             roles: BTreeSet::from(["review".into()]),
             worker_input_type: Some("af/ReviewInput@1".into()),
-            worker_output_type: Some(review_core::contract::REVIEWER_RESULT_V1.into()),
+            worker_output_type: Some(result_type.into()),
             outcome_port: None,
             attempt: Some(OperatorAttemptCost {
                 tokens: 0,
                 wall_ms: 5000,
             }),
         };
+        if v2 {
+            signature
+                .contract
+                .inputs
+                .insert("assignment".into(), port(TASK_REVIEW_ASSIGNMENT_V1, same()));
+            signature
+                .retains
+                .get_mut("result")
+                .unwrap()
+                .insert("assignment".into());
+        }
         let mut pipeline = PipelineDefinitionV1 {
             schema: PipelineSchemaV1::V1,
             name: "fixture/review".into(),
@@ -229,7 +293,7 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
                     worker: format!("fixture/{name}"),
                     role: "review".into(),
                     input_type: "af/ReviewInput@1".into(),
-                    output_type: review_core::contract::REVIEWER_RESULT_V1.into(),
+                    output_type: result_type.into(),
                     min_attempts: 1,
                     max_attempts: 1,
                     allow_local_replacement: false,
@@ -246,16 +310,21 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
                     ("checks".into(), from("check", "result")),
                 ]),
             );
+            if v2 {
+                reviewer
+                    .inputs
+                    .insert("assignment".into(), from("bind", name));
+            }
             reviewer.when = Some(NodeConditionV1 {
                 node: "check".into(),
                 outcome: ReceiptOutcomeV1::Passed,
             });
             pipeline.nodes.push(reviewer);
-            let stage = json!({"verdict":if case=="finding" {"request-changes"} else {"approve"},"summary":"Fixture review",
-                "reports":if case=="finding" && name=="correctness" {json!([{"severity":"major","file":"lib.rs","line":1,"title":"Missing behavior","body":"The implementation omits the required behavior","fix":"Implement the requested behavior","confidence":0.9}])} else {json!([])},
+            let stage = json!({"verdict":if matches!(case, "finding" | "legacy_prior") {"request-changes"} else {"approve"},"summary":"Fixture review",
+                "reports":if matches!(case, "finding" | "legacy_prior") && name=="correctness" {json!([{"severity":"major","file":"lib.rs","line":1,"title":"Missing behavior","body":"The implementation omits the required behavior","fix":"Implement the requested behavior","confidence":0.9}])} else {json!([])},
                 "benchmark_demands":if case=="demand" && name=="correctness" {json!([{"claim":"Runtime is bounded","why":"Large inputs matter","suggested_method":"Measure the scaling"}])} else {json!([])},"disputes":[]});
             let reply = json!({"schema":"af.worker-reply/1","outputs":{"result":[stage]}});
-            let script = if case == "missing" && name == "bugs" {
+            let script = if !v2 && case == "missing" && name == "bugs" {
                 "import sys; sys.exit(9)".into()
             } else {
                 format!(
@@ -263,11 +332,61 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
                     serde_json::to_string(&serde_json::to_string(&reply).unwrap()).unwrap()
                 )
             };
+            let script = if v2 {
+                format!(
+                    r#"import json,sys,pathlib,os,hashlib
+r=json.load(sys.stdin)
+a=r['inputs']['assignment'][0]['payload']
+s=r['inputs']['subject'][0]['payload']
+assert a['reviewer']=={name:?}
+assert all(f['source']=={name:?} for f in a['findings'])
+assert len(a['findings']) == (1 if s['round']==2 and {name:?}=='correctness' else 0)
+if 'change_scope' in s:
+    patch=s['change_scope']['patch']
+    b=pathlib.Path(patch['path']).read_bytes()
+    assert len(b)==patch['bytes'] and len(b)>780*1024 and b'// readable source change' in b
+    assert len(json.dumps(r))<65536 and 'canonical_patch_base64' not in json.dumps(r)
+    assert 'sha256:'+hashlib.sha256(b'review.kernel/content-id/v1\0'+b).hexdigest()==patch['content_id']
+    print('read exact patch bytes: '+json.dumps(patch,sort_keys=True),file=sys.stderr)
+    if {case:?}=='mutated':
+        os.chmod(patch['path'],0o644)
+        pathlib.Path(patch['path']).write_bytes(b'changed')
+stage={{'verdict':'approve','summary':('read exact patch bytes: '+json.dumps(patch,sort_keys=True)) if 'change_scope' in s else 'Complete source-scoped review','reports':[],'benchmark_demands':[],'dispositions':[]}}
+if s['round']==1 and {name:?}=='correctness':
+    stage['reports']=[{{'severity':'major','file':'lib.rs','line':1,'title':'Missing behavior','body':'The implementation omits the required behavior','fix':'Implement it','confidence':0.9}}]
+    stage['benchmark_demands']=[{{'claim':'Runtime is bounded','why':'Large inputs matter','suggested_method':'Measure scaling'}}]
+if s['round']==2:
+    stage['dispositions']=[{{'finding_id':f['finding_id'],'position':'not_reproduced','reason':'Checked the same declared scope'}} for f in a['findings']]
+    if {name:?}=='correctness':
+        if {case:?}=='missing': stage['dispositions']=[]
+        if {case:?}=='duplicate': stage['dispositions']*=2
+        if {case:?}=='unassigned': stage['dispositions'].append({{'finding_id':'not-assigned','position':'not_reproduced','reason':'Unexpected claim'}})
+print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}))
+"#
+                )
+            } else {
+                script
+            };
             let worker=TaskWorkerManifest {schema:"af.worker/1".into(),name:format!("fixture/{name}"),version:"1.0.0".into(),signature:signature.clone(),
                 runner:TaskWorkerRunner::Command {command:serde_json::from_value(json!({"program":"/usr/bin/python3","args":[{"value":"-B","provenance":"literal"},{"value":"@package/worker.py","provenance":"literal"}]})).unwrap()}};
             let input_schema = json!({"type":"object","required":["source","subject","history","checks"],"additionalProperties":{"type":"array","minItems":1,"maxItems":1,"items":{"type":"object"}}});
             let output_schema = json!({"type":"object","required":["verdict","summary","reports","benchmark_demands","disputes"],"additionalProperties":false,
                 "properties":{"verdict":{"enum":["approve","request-changes","block"]},"summary":{"type":["string","null"]},"reports":{"type":"array"},"benchmark_demands":{"type":"array"},"disputes":{"type":"array"}}});
+            let mut output_schema = output_schema;
+            if v2 {
+                output_schema["required"] = json!([
+                    "verdict",
+                    "summary",
+                    "reports",
+                    "benchmark_demands",
+                    "dispositions"
+                ]);
+                output_schema["properties"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("disputes");
+                output_schema["properties"]["dispositions"] = json!({"type":"array"});
+            }
             packages.push((
                 worker.name.clone(),
                 BTreeMap::from([
@@ -287,6 +406,38 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
                 ]),
             ));
         }
+        if case == "independent" {
+            let mut slot = pipeline.slots["bugs"].clone();
+            slot.worker = "fixture/failing".into();
+            pipeline.slots.insert("failure".into(), slot);
+            let mut failed = pipeline
+                .nodes
+                .iter()
+                .find(|n| n.id == "bugs")
+                .unwrap()
+                .clone();
+            failed.id = "independent_failure".into();
+            failed.operator = TaskOperatorV1::Verify {
+                slot: "failure".into(),
+            };
+            pipeline.nodes.push(failed);
+            let mut files = packages
+                .iter()
+                .find(|(name, _)| name == "fixture/bugs")
+                .unwrap()
+                .1
+                .clone();
+            let mut worker: TaskWorkerManifest =
+                toml::from_str(std::str::from_utf8(&files["worker.toml"]).unwrap()).unwrap();
+            worker.name = "fixture/failing".into();
+            files.insert(
+                "worker.toml".into(),
+                toml::to_string(&worker).unwrap().into_bytes(),
+            );
+            files.insert("worker.py".into(), b"import sys; sys.exit(9)\n".to_vec());
+            packages.push((worker.name, files));
+            pipeline.max_attempts = 4;
+        }
         pipeline.nodes.push(node(
             "reduce",
             TaskOperatorV1::ReviewReduce {},
@@ -299,6 +450,60 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
                 ("bugs".into(), from("bugs", "result")),
             ]),
         ));
+        if two_rounds {
+            let later: Vec<_> = pipeline
+                .nodes
+                .iter()
+                .cloned()
+                .map(|mut n| {
+                    n.id = format!("second_{}", n.id);
+                    for (port, value) in &mut n.inputs {
+                        if port == "history" {
+                            *value = from("reduce", "history");
+                        } else if let ValueRefV1::Node { node, .. } = value {
+                            *node = format!("second_{node}");
+                        }
+                    }
+                    if let Some(condition) = &mut n.when {
+                        condition.node = format!("second_{}", condition.node);
+                    }
+                    n
+                })
+                .collect();
+            pipeline.nodes.extend(later);
+            pipeline
+                .outputs
+                .insert("review".into(), from("second_reduce", "result"));
+            pipeline
+                .outputs
+                .insert("history".into(), from("second_reduce", "history"));
+            pipeline
+                .coverage
+                .insert("reviewed".into(), from("second_reduce", "result"));
+            pipeline.max_attempts = 6;
+        }
+        let base = if v2 && matches!(case, "large" | "mutated" | "collision") {
+            let manifest = Manifest::new(vec![Entry {
+                path: "lib.rs".into(),
+                kind: EntryKind::File,
+                content: cas.put(b"old\n").unwrap(),
+                size: 4,
+            }])
+            .unwrap();
+            let snapshot = capture_snapshot(&cas, &manifest, &origin, None).unwrap();
+            pipeline.contract.inputs.insert(
+                "base".into(),
+                port(SOURCE_TREE_V1, PortAffinityV1::Unbound {}),
+            );
+            for node in &mut pipeline.nodes {
+                if matches!(node.operator, TaskOperatorV1::ReviewBind {}) {
+                    node.inputs.insert("base".into(), root("base"));
+                }
+            }
+            Some(source_tree(&cas, producer(), &snapshot, vec![]).unwrap())
+        } else {
+            None
+        };
         pipeline
             .contract
             .inputs
@@ -312,12 +517,25 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
                 toml::to_string(&pipeline).unwrap().into_bytes(),
             )]),
         ));
-        let task:TaskRevisionV1=serde_json::from_value(json!({"task_id":format!("review-{case}"),"revision":1,"kind":"review","goal":"Review the captured source",
+        let mut task:TaskRevisionV1=serde_json::from_value(json!({"task_id":format!("review-{case}"),"revision":1,"kind":"review","goal":"Review the captured source",
             "inputs":{"source":source,"history":history},"required_outputs":{"review":{"artifact_type":TASK_REVIEW_ROUND_V1,"cardinality":"one"},"history":{"artifact_type":REVIEW_HISTORY_V1,"cardinality":"one"}},
             "acceptance":{"reviewed":{"evidence_type":TASK_REVIEW_ROUND_V1,"verifier_policy":policy_id}},"provenance":{"adapter_id":origin,"input_artifact_ids":[]},
             "authority":{"policy_id":policy_id,"allowed_effects":["execute-checks","read-source"],"data_destinations":[]},
             "limits":{"tokens":1000,"max_attempts":3,"deadline_unix_ms":SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64+60000,"verification":{"tokens":0,"attempts":3,"wall_ms":15000}},
             "strategy":"light","pipeline":{"name":pipeline.name,"fallback":"refuse"},"facts":{}})).unwrap();
+        if two_rounds {
+            task.limits.max_attempts = 6;
+            task.limits.verification.attempts = 6;
+            task.limits.verification.wall_ms = 30000;
+            if let Some(base) = base {
+                task.inputs.insert("base".into(), base);
+            }
+        }
+        if case == "independent" {
+            task.limits.max_attempts = 4;
+            task.limits.verification.attempts = 4;
+            task.limits.verification.wall_ms = 20000;
+        }
         let mut signatures = code_signatures(&code_id, &code).unwrap();
         signatures.extend(review_signatures(&policy_id, &policy).unwrap());
         let mut compiler = TaskPlanCompiler::new(
@@ -330,6 +548,18 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
         .unwrap();
         if case == "finding"
             && let Some(destination) = std::env::var_os("AF_WRITE_TASK_REVIEW_FIXTURE")
+        {
+            export_fixture(
+                std::path::Path::new(&destination),
+                &code,
+                &policy,
+                &task,
+                &packages,
+            );
+        }
+        if v2
+            && case == "valid"
+            && let Some(destination) = std::env::var_os("AF_WRITE_TASK_REVIEW_V2_FIXTURE")
         {
             export_fixture(
                 std::path::Path::new(&destination),
@@ -412,6 +642,139 @@ fn review_task_preserves_changes_requested_and_incomplete_without_partial_ledger
         let report = runtime.execute().unwrap();
         let state = runtime.projection().unwrap();
         let result = domain.result(&cas, &state, &report).unwrap();
+        if case == "independent" {
+            assert!(report.outcomes.iter().any(|(node, outcome)| {
+                node.ends_with(".nodes.independent_failure")
+                    && matches!(outcome, review_graph::NodeOutcome::Failed { .. })
+            }));
+            assert_eq!(result.execution, TaskExecutionV1::Exhausted);
+            assert_eq!(result.acceptance, TaskAcceptanceV1::Inconclusive);
+            assert!(result.missing_obligations.is_empty());
+            let receipt: TaskReviewRoundV1 = serde_json::from_value(
+                cas.get_json(&result.outputs["review"].artifact_ids[0])
+                    .unwrap()["payload"]
+                    .clone(),
+            )
+            .unwrap();
+            assert_eq!(receipt.conclusion, ReviewConclusionV1::Pass);
+            domain.validate_result(&cas, &task, &result).unwrap();
+            let id = cas
+                .put_artifact(
+                    TASK_RESULT_V1,
+                    producer(),
+                    vec![],
+                    None,
+                    serde_json::to_value(&result).unwrap(),
+                )
+                .unwrap()
+                .0;
+            runtime.finish(&id).unwrap();
+            drop(runtime);
+            drop(store);
+            let reopened = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+            let state = reopened
+                .task_projection(&cas, &task.task_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(state.execution.unwrap().budget.begun_attempts(), 4);
+            return;
+        }
+        if case == "legacy_prior" {
+            let execution = state.execution.as_ref().unwrap();
+            assert!(
+                execution
+                    .outputs
+                    .keys()
+                    .any(|n| n.ends_with(".nodes.correctness"))
+            );
+            assert!(
+                !execution
+                    .outputs
+                    .keys()
+                    .any(|n| n.ends_with(".nodes.second_correctness"))
+            );
+            assert_eq!(
+                execution.budget.begun_attempts(),
+                4,
+                "only the second check may execute: {report:?}"
+            );
+            assert_eq!(result.acceptance, TaskAcceptanceV1::Inconclusive);
+            domain.validate_result(&cas, &task, &result).unwrap();
+            let replay = runtime.execute().unwrap();
+            assert_eq!(
+                runtime
+                    .projection()
+                    .unwrap()
+                    .execution
+                    .unwrap()
+                    .budget
+                    .begun_attempts(),
+                4
+            );
+            assert_eq!(
+                domain
+                    .result(&cas, &runtime.projection().unwrap(), &replay)
+                    .unwrap(),
+                result
+            );
+            return;
+        }
+        if v2 && matches!(case, "large" | "mutated" | "collision") {
+            let reader =
+                EventStore::open_read_only(directory.path().join("events.sqlite")).unwrap();
+            let mut reads = 0;
+            for event in reader
+                .replay(&review_store::store::task::task_run_id(&task.task_id).unwrap())
+                .unwrap()
+            {
+                let transition: review_core::task::event::TaskTransitionV1 =
+                    serde_json::from_value(event.payload).unwrap();
+                if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
+                    transition.change
+                {
+                    let record: review_core::task::execution::TaskExecutionRecordV1 =
+                        serde_json::from_value(
+                            cas.get_json(&record_id).unwrap()["payload"].clone(),
+                        )
+                        .unwrap();
+                    if let review_core::task::execution::TaskExecutionRecordV1::Settled {
+                        raw_artifact_ids,
+                        ..
+                    } = record
+                    {
+                        for id in raw_artifact_ids {
+                            let bytes = cas.get(&id).unwrap();
+                            if String::from_utf8_lossy(&bytes).contains("read exact patch bytes:") {
+                                reads += 1;
+                            }
+                        }
+                    }
+                }
+            }
+            assert_eq!(
+                reads,
+                match case {
+                    "large" => 4,
+                    "mutated" => 4,
+                    _ => 0,
+                },
+                "bounded native retrieval evidence: {report:?}"
+            );
+        }
+        if v2 {
+            assert_v2(
+                &cas,
+                &domain,
+                &task,
+                &state,
+                &result,
+                case,
+                &source_bytes,
+                &snapshot,
+                &report,
+            );
+            return;
+        }
         assert!(result.outputs.contains_key("review"), "{case}: {report:?}");
         let review: TaskReviewRoundV1 = serde_json::from_value(
             cas.get_json(&result.outputs["review"].artifact_ids[0])
@@ -520,7 +883,7 @@ fn export_fixture(
         toml::to_string(code).unwrap(),
     )
     .unwrap();
-    let catalog = json!({"schema":"af.task-catalog/1","code_policy":".af/code-policy.toml","packages":pins,"independence":IndependencePolicyV1::default(),
+    let catalog = json!({"schema":if review.generation_two() { "af.task-catalog/2" } else { "af.task-catalog/1" },"code_policy":".af/code-policy.toml","packages":pins,"independence":IndependencePolicyV1::default(),
         "review":{"reviewers":review.reviewers,"gate":review.gate,"clean_rounds":review.clean_rounds,"max_rounds":review.max_rounds}});
     std::fs::write(
         destination.join(".af/task-catalog.toml"),
@@ -534,4 +897,190 @@ fn export_fixture(
         serde_json::to_string_pretty(&file).unwrap() + "\n",
     )
     .unwrap();
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assert_v2(
+    cas: &Cas,
+    domain: &ReviewTaskDomain,
+    task: &TaskRevisionV1,
+    state: &review_store::store::task::TaskProjection,
+    result: &TaskResultV1,
+    case: &str,
+    source_bytes: &[u8],
+    snapshot: &str,
+    report: &review_graph::RunReport,
+) {
+    let execution = state.execution.as_ref().unwrap();
+    let receipt = |name: &str| -> TaskReviewRoundV1 {
+        let (_, (_, output)) = execution
+            .outputs
+            .iter()
+            .find(|(node, _)| node.ends_with(name))
+            .unwrap_or_else(|| panic!("missing {name}: {report:?}"));
+        serde_json::from_value(
+            cas.get_json(&output.outputs["result"].artifact_ids[0])
+                .unwrap()["payload"]
+                .clone(),
+        )
+        .unwrap()
+    };
+    let first = receipt(".nodes.reduce");
+    if matches!(case, "mutated" | "collision") {
+        assert_eq!(first.conclusion, ReviewConclusionV1::Incomplete);
+        assert!(first.finding_set_id.is_none());
+    } else {
+        let findings: review_core::FindingSetV1 = serde_json::from_value(
+            cas.get_json(first.finding_set_id.as_ref().unwrap())
+                .unwrap()["payload"]
+                .clone(),
+        )
+        .unwrap();
+        let demands: review_core::DemandSetV1 = serde_json::from_value(
+            cas.get_json(first.demand_set_id.as_ref().unwrap()).unwrap()["payload"].clone(),
+        )
+        .unwrap();
+        let selected = cas
+            .get_json(&first.selected_results["correctness"])
+            .unwrap();
+        assert!(
+            selected["producer"]["node_id"]
+                .as_str()
+                .unwrap()
+                .ends_with(".nodes.correctness")
+        );
+        for id in findings
+            .selected_report_ids
+            .iter()
+            .chain(&demands.selected_demand_artifact_ids)
+        {
+            assert_eq!(
+                cas.get_json(id).unwrap()["producer"],
+                selected["producer"],
+                "canonical artifacts must retain real Worker address"
+            );
+        }
+        let original: review_core::ArtifactEnvelope =
+            serde_json::from_value(selected.clone()).unwrap();
+        let mut invented = original.producer.clone();
+        if let Producer::Attempt { node_id, .. } = &mut invented {
+            *node_id = "correctness".into();
+        }
+        let forged = cas
+            .put_artifact(
+                &original.artifact_type,
+                invented,
+                original.input_artifacts,
+                original.subject_snapshot_id,
+                original.payload,
+            )
+            .unwrap()
+            .0;
+        let mut wrong = first.invocation.clone();
+        wrong.inputs.get_mut("correctness").unwrap().artifact_ids = vec![forged];
+        assert!(
+            domain
+                .execute(cas, &wrong, None)
+                .outputs
+                .unwrap_err()
+                .contains("declared Worker")
+        );
+        let second = receipt(".nodes.second_reduce");
+        let complete = matches!(case, "valid" | "large");
+        assert_eq!(
+            second.finding_set_id.is_some(),
+            complete,
+            "{case}: {report:?}"
+        );
+        if complete {
+            assert_eq!(second.conclusion, ReviewConclusionV1::ConvergenceExhausted);
+            let set: review_core::FindingSetV1 = serde_json::from_value(
+                cas.get_json(second.finding_set_id.as_ref().unwrap())
+                    .unwrap()["payload"]
+                    .clone(),
+            )
+            .unwrap();
+            let current = cas
+                .get_json(&second.selected_results["correctness"])
+                .unwrap();
+            let set_envelope = cas
+                .get_json(second.finding_set_id.as_ref().unwrap())
+                .unwrap();
+            let mut dispositions = 0;
+            for id in set_envelope["input_artifacts"].as_array().unwrap() {
+                let artifact = cas.get_json(id.as_str().unwrap()).unwrap();
+                if artifact["type"] == "review.kernel/FindingDisposition@1" {
+                    assert_eq!(artifact["producer"], current["producer"]);
+                    dispositions += 1;
+                }
+            }
+            assert_eq!(dispositions, 1);
+            if case == "large" {
+                let (_, (_, bind)) = execution
+                    .outputs
+                    .iter()
+                    .find(|(n, _)| n.ends_with(".nodes.bind"))
+                    .unwrap();
+                let subject: TaskReviewSubjectV2 = serde_json::from_value(
+                    cas.get_json(&bind.outputs["subject"].artifact_ids[0])
+                        .unwrap()["payload"]
+                        .clone(),
+                )
+                .unwrap();
+                let authority_bytes = cas
+                    .get(subject.subject.change_set_id.as_ref().unwrap())
+                    .unwrap();
+                assert!(authority_bytes.len() > review_runner::task::MAX_WORKER_BYTES);
+                assert!(authority_bytes.len() < review_core::MAX_CHANGE_SET_BYTES);
+                assert!(subject.change_scope.unwrap().patch.bytes > 780 * 1024);
+            }
+
+            assert_eq!(set.findings.len(), 1);
+            assert_eq!(
+                set.findings[0].status, "open",
+                "not reproduced never erases an unverified prior Finding"
+            );
+            let (_, (_, output)) = execution
+                .outputs
+                .iter()
+                .find(|(node, _)| node.ends_with(".nodes.second_bind"))
+                .unwrap();
+            for (name, expected) in [("correctness", 1), ("bugs", 0)] {
+                let assignment: TaskReviewAssignmentV1 = serde_json::from_value(
+                    cas.get_json(&output.outputs[name].artifact_ids[0]).unwrap()["payload"].clone(),
+                )
+                .unwrap();
+                assignment.validate().unwrap();
+                assert_eq!(assignment.findings.len(), expected);
+                assert_eq!(assignment.reviewer, name);
+            }
+        } else {
+            assert_eq!(second.conclusion, ReviewConclusionV1::Incomplete);
+        }
+    }
+    let (_, source) = review_source_git::task::read_snapshot(cas, snapshot).unwrap();
+    assert_eq!(
+        source.entries.len(),
+        if case == "collision" { 2 } else { 1 },
+        "host inputs cannot change the source tree"
+    );
+    assert_eq!(
+        cas.get(
+            &source
+                .entries
+                .iter()
+                .find(|e| e.path == "lib.rs")
+                .unwrap()
+                .content
+        )
+        .unwrap(),
+        source_bytes
+    );
+    assert!(
+        source
+            .entries
+            .iter()
+            .all(|e| !e.path.starts_with(".af-review-inputs/"))
+    );
+    domain.validate_result(cas, task, result).unwrap();
 }

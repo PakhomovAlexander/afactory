@@ -28,6 +28,7 @@ pub use ledger::{
 pub use legacy::{
     AddSummary, CanonicalReduction, CanonicalStage, Ingest, LegacyRow, PreparedReviewReduction,
     canonical_finding_id, import_ledger_jsonl, legacy_fingerprint, prepare_canonical_review,
+    prepare_canonical_task_review,
 };
 pub use store::{
     AttemptUsage, AttemptWall, EventStore, NewEvent, StoreError, validate_reviewer_result,

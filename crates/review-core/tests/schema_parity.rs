@@ -32,9 +32,11 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 69] = [
+const SCHEMAS: [&str; 71] = [
     "task-provider-admission-v1.json",
     "task-review-subject-v1.json",
+    "task-review-subject-v2.json",
+    "task-review-assignment-v1.json",
     "task-review-round-v1.json",
     "task-check-receipt-v1.json",
     "task-evaluation-v1.json",
@@ -440,6 +442,7 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     "task-invocation-v1.json",
                     "subject-v1.json",
                     "change-set-v1.json",
+                    "finding-set-v1.json",
                 ]
                 .into_iter()
                 .map(schema)
@@ -2080,4 +2083,76 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
                 .is_err()
         );
     }
+}
+
+#[test]
+fn task_review_readable_context_generations_are_strict() {
+    use review_core::task::review::*;
+    let id = format!("sha256:{}", "a".repeat(64));
+    let value = TaskReviewSubjectV2 {
+        subject_id: id.clone(),
+        subject: SubjectV1::diff(&id, &id, &id),
+        snapshot_id: id.clone(),
+        prior_history_id: id.clone(),
+        round: 2,
+        change_scope: Some(TaskReviewChangeScopeV1 {
+            changed_paths: vec!["src/lib.rs".into()],
+            renames: vec![],
+            rename_detection_truncated: false,
+            git_version: "fixture".into(),
+            diff_policy_version: "fixture".into(),
+            patch: TaskReviewFileV1 {
+                path: TaskReviewFileV1::path_for(&id),
+                content_id: id.clone(),
+                bytes: 1_245_548,
+            },
+        }),
+    };
+    value.validate().unwrap();
+    let encoded = serde_json::to_value(value).unwrap();
+    assert_valid("task-review-subject-v2.json", &encoded);
+    assert!(serde_json::from_value::<TaskReviewSubjectV1>(encoded.clone()).is_err());
+    for (field, replacement) in [
+        ("bytes", json!(4194305)),
+        ("bytes", json!(-1)),
+        ("bytes", json!(1.5)),
+        ("path", json!("../escape")),
+        ("content_id", json!("invented")),
+    ] {
+        let mut bad = encoded.clone();
+        bad["change_scope"]["patch"][field] = replacement;
+        assert_invalid("task-review-subject-v2.json", &bad, "invalid declared file");
+        assert!(
+            serde_json::from_value::<TaskReviewSubjectV2>(bad)
+                .map_err(|e| e.to_string())
+                .and_then(|v| v.validate())
+                .is_err()
+        );
+    }
+    let mut bad = encoded.clone();
+    bad["change_scope"]["canonical_patch_base64"] = json!("AAAA");
+    assert_invalid(
+        "task-review-subject-v2.json",
+        &bad,
+        "no hidden inline patch",
+    );
+    assert!(serde_json::from_value::<TaskReviewSubjectV2>(bad).is_err());
+    let assignment = TaskReviewAssignmentV1 {
+        subject_id: id.clone(),
+        prior_history_id: id,
+        round: 2,
+        reviewer: "correctness".into(),
+        findings: vec![],
+    };
+    assignment.validate().unwrap();
+    let encoded = serde_json::to_value(&assignment).unwrap();
+    assert_valid("task-review-assignment-v1.json", &encoded);
+    let mut bad = encoded;
+    bad["all_reviewers"] = json!(true);
+    assert_invalid(
+        "task-review-assignment-v1.json",
+        &bad,
+        "assignments are source scoped",
+    );
+    assert!(serde_json::from_value::<TaskReviewAssignmentV1>(bad).is_err());
 }
