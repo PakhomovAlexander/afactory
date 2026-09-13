@@ -1,4 +1,4 @@
-schema = "af.task-catalog/2"
+schema = "af.task-catalog/1"
 code_policy = ".af/code-policy.toml"
 
 [packages."fixture/bugs"]
@@ -23,6 +23,7 @@ distinct_providers = false
 distinct_models = false
 
 [review]
+generation = 2
 gate = "major"
 clean_rounds = 1
 max_rounds = 2

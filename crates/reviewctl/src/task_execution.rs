@@ -84,10 +84,28 @@ struct TaskCatalog {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReviewSettings {
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    generation: Option<u32>,
     reviewers: BTreeMap<String, review_core::DemandRequirement>,
     gate: review_core::Severity,
     clean_rounds: u32,
     max_rounds: u32,
+}
+
+impl ReviewSettings {
+    fn policy_generation(&self) -> Result<u32, String> {
+        match self.generation {
+            None => Ok(1),
+            Some(2) => Ok(2),
+            Some(_) => {
+                Err("Review generation must be omitted for compatibility or explicitly 2".into())
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,10 +234,8 @@ fn capture_authority(
 ) -> Result<(String, RunAuthority, TaskPlanCompiler), String> {
     let bytes = captured_file(cas, manifest, ".af/task-catalog.toml")?;
     let catalog: TaskCatalog = parse(Path::new(".af/task-catalog.toml"), &bytes)?;
-    if !matches!(
-        catalog.schema.as_str(),
-        "af.task-catalog/1" | "af.task-catalog/2"
-    ) || catalog.packages.is_empty()
+    if catalog.schema != "af.task-catalog/1"
+        || catalog.packages.is_empty()
         || catalog.packages.len() > 128
     {
         return Err("Task catalog requires one to 128 exactly pinned packages".into());
@@ -267,11 +283,6 @@ fn capture_authority(
             },
         );
     }
-    let review_generation = if catalog.schema == "af.task-catalog/2" {
-        2
-    } else {
-        1
-    };
     let authority = RunAuthority {
         schema: "af.task-run-authority/1".into(),
         engine_id,
@@ -280,7 +291,7 @@ fn capture_authority(
             .review
             .map(|review| {
                 let review = ReviewTaskPolicy {
-                    schema: format!("af.review-task-policy/{review_generation}"),
+                    schema: format!("af.review-task-policy/{}", review.policy_generation()?),
                     check_policy_id: policy_id.clone(),
                     reviewers: review.reviewers,
                     gate: review.gate,
@@ -1011,4 +1022,42 @@ fn delivery_view(cas: &Cas, task: &TaskProjection) -> Result<Option<serde_json::
         .last()
         .map(|(_, record)| cas.get_json(&record.receipt_id).map_err(|e| e.to_string()))
         .transpose()
+}
+
+#[cfg(test)]
+mod review_generation_tests {
+    use super::*;
+
+    #[test]
+    fn review_generation_is_explicit_and_preserves_absent_compatibility() {
+        let value = serde_json::json!({"reviewers":{"correctness":"required"},"gate":"major","clean_rounds":1,"max_rounds":2});
+        let settings: ReviewSettings = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(settings.policy_generation().unwrap(), 1);
+        assert_eq!(serde_json::to_value(settings).unwrap(), value);
+        let mut explicit = value;
+        explicit["generation"] = serde_json::json!(2);
+        assert_eq!(
+            serde_json::from_value::<ReviewSettings>(explicit.clone())
+                .unwrap()
+                .policy_generation()
+                .unwrap(),
+            2
+        );
+        for invalid in [
+            serde_json::json!(0),
+            serde_json::json!(1),
+            serde_json::json!(3),
+            serde_json::json!(null),
+            serde_json::json!("2"),
+            serde_json::json!(4294967296_u64),
+        ] {
+            explicit["generation"] = invalid;
+            assert!(
+                serde_json::from_value::<ReviewSettings>(explicit.clone())
+                    .map_err(|e| e.to_string())
+                    .and_then(|v| v.policy_generation())
+                    .is_err()
+            );
+        }
+    }
 }

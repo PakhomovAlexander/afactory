@@ -120,3 +120,5 @@ options you rejected and why — that is the part future-you needs.
   operation](0097-share-validated-source-reads-within-one-operation.md)
 - [0094 — Bind Task Review assignments and readable
   inputs](0094-bind-task-review-assignments-and-readable-inputs.md)
+- [0099 — Select Task Review generation independently of Provider
+  costs](0099-select-task-review-generation-independently-of-provider-costs.md)
