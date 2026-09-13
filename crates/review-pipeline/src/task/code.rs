@@ -14,7 +14,7 @@ use review_core::task::*;
 use review_graph::task::{CompiledOperator, CompiledTask, OperatorAttemptCost, OperatorSignature};
 use review_graph::{NodeOutcome, RunReport};
 use review_sandbox::{Mode, Policy, Sandbox};
-use review_source_git::task::{CANDIDATE_TREE_V1, SOURCE_TREE_V1, read_snapshot, source_tree};
+use review_source_git::task::{CANDIDATE_TREE_V1, SOURCE_TREE_V1, source_tree};
 use review_store::Cas;
 use review_store::store::task::TaskProjection;
 use review_store::store::task::execution::PreparedTaskAttempt;
@@ -22,7 +22,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use super::host::TaskDomain;
-use super::source::{invocation_producer, seal_candidate, source_input, validate_seal};
+use super::source::{
+    invocation_producer, seal_candidate, source_input, source_snapshot, validate_seal,
+};
 use super::{TaskOperatorHost, TaskWorkOutput, envelope};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -297,8 +299,7 @@ impl CodeTaskDomain {
         names: &BTreeSet<String>,
     ) -> Result<ArtifactInputV1, String> {
         let source = input.inputs.get("source").ok_or("Check needs source")?;
-        let snapshot_id = source_input(cas, source)?;
-        let (_, manifest) = read_snapshot(cas, &snapshot_id)?;
+        let (snapshot_id, _, manifest) = source_snapshot(cas, source)?;
         let mut checks = BTreeMap::new();
         for name in names {
             let definition = self

@@ -116,3 +116,5 @@ options you rejected and why — that is the part future-you needs.
 - [0096 — Revalidate Task execution evidence on cached
   replay](0096-revalidate-task-execution-evidence-on-cached-replay.md)
 - [0093 — Derive CodeTask acceptance from execution and evidence](0093-derive-code-task-acceptance-from-execution-and-evidence.md)
+- [0097 — Share validated source reads within one
+  operation](0097-share-validated-source-reads-within-one-operation.md)
