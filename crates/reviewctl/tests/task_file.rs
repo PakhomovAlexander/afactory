@@ -1009,3 +1009,40 @@ fn task_file_legacy_workers_receive_bound_metadata_with_zero_command_reservation
     assert_eq!(workers, 2);
     assert_eq!(af(&repo, &state, &["run", "pagination-cli"]), run);
 }
+
+#[test]
+fn current_review_catalog_uses_exact_assignments_and_reopens_without_dispatch() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, state) = fixture_named(directory.path(), "review-v2");
+    let invoke = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_af"))
+            .current_dir(&repo)
+            .args(args)
+            .args(["--json", "--state"])
+            .arg(&state)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(3),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()
+    };
+    let result = invoke(&["review", "run", "--file", "review.json"]);
+    assert_eq!(result["attempts"], 6);
+    assert_eq!(result["result"]["execution"], "completed");
+    assert_eq!(result["result"]["acceptance"], "satisfied");
+    assert_eq!(
+        result["result"]["domain_conclusion"],
+        "convergence_exhausted"
+    );
+    let explained = invoke(&["task", "explain", "review-cli"]);
+    let graph = serde_json::to_string(&explained["graph"]).unwrap();
+    assert!(graph.contains("af/TaskReviewSubject@2"));
+    assert!(graph.contains("af/TaskReviewAssignment@1"));
+    assert!(graph.contains("review.kernel/ReviewerResult@2"));
+    assert_eq!(invoke(&["task", "run", "review-cli"]), result);
+}

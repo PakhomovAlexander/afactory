@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 154] = [
+const SCHEMAS: [&str; 156] = [
     "task-inspection-v8.json",
     "provider-doctor-v2.json",
     "review-outcome-v2.json",
@@ -91,6 +91,8 @@ const SCHEMAS: [&str; 154] = [
     "legacy-review-task-policy-v2.json",
     "legacy-review-task-policy-v3.json",
     "task-review-subject-v1.json",
+    "task-review-subject-v2.json",
+    "task-review-assignment-v1.json",
     "task-review-round-v1.json",
     "task-review-result-metadata-v1.json",
     "task-review-context-v1.json",
@@ -2903,3 +2905,116 @@ mod provider_doctor;
 
 #[path = "schema_parity/task_recording.rs"]
 mod task_recording;
+
+#[test]
+fn task_review_readable_context_generations_are_strict() {
+    use review_core::task::review::*;
+    let id = format!("sha256:{}", "a".repeat(64));
+    let value = TaskReviewSubjectV2 {
+        subject_id: id.clone(),
+        subject: SubjectV1::diff(&id, &id, &id),
+        snapshot_id: id.clone(),
+        prior_history_id: id.clone(),
+        continuation_id: None,
+        round: 2,
+        change_scope: Some(TaskReviewChangeScopeV1 {
+            changed_paths: vec!["src/lib.rs".into()],
+            renames: vec![],
+            rename_detection_truncated: false,
+            git_version: "fixture".into(),
+            diff_policy_version: "fixture".into(),
+            patch: TaskReviewFileV1 {
+                path: TaskReviewFileV1::path_for(&id),
+                content_id: id.clone(),
+                bytes: 1_245_548,
+            },
+        }),
+    };
+    value.validate().unwrap();
+    let encoded = serde_json::to_value(value).unwrap();
+    assert_valid("task-review-subject-v2.json", &encoded);
+    assert!(serde_json::from_value::<TaskReviewSubjectV1>(encoded.clone()).is_err());
+    for (field, replacement) in [
+        ("bytes", json!(4194305)),
+        ("bytes", json!(-1)),
+        ("bytes", json!(1.5)),
+        ("path", json!("../escape")),
+        ("content_id", json!("invented")),
+    ] {
+        let mut bad = encoded.clone();
+        bad["change_scope"]["patch"][field] = replacement;
+        assert_invalid("task-review-subject-v2.json", &bad, "invalid declared file");
+        assert!(
+            serde_json::from_value::<TaskReviewSubjectV2>(bad)
+                .map_err(|e| e.to_string())
+                .and_then(|v| v.validate())
+                .is_err()
+        );
+    }
+    let mut bad = encoded.clone();
+    bad["change_scope"]["canonical_patch_base64"] = json!("AAAA");
+    assert_invalid(
+        "task-review-subject-v2.json",
+        &bad,
+        "no hidden inline patch",
+    );
+    assert!(serde_json::from_value::<TaskReviewSubjectV2>(bad).is_err());
+    let assignment = TaskReviewAssignmentV1 {
+        subject_id: id.clone(),
+        prior_history_id: id,
+        round: 2,
+        reviewer: "correctness".into(),
+        findings: vec![],
+    };
+    assignment.validate().unwrap();
+    let encoded = serde_json::to_value(&assignment).unwrap();
+    assert_valid("task-review-assignment-v1.json", &encoded);
+    let mut bad = encoded;
+    bad["all_reviewers"] = json!(true);
+    assert_invalid(
+        "task-review-assignment-v1.json",
+        &bad,
+        "assignments are source scoped",
+    );
+    assert!(serde_json::from_value::<TaskReviewAssignmentV1>(bad).is_err());
+}
+
+#[test]
+fn task_catalog_review_generation_does_not_change_provider_authority() {
+    let mut value = json!({"schema":"af.task-catalog/1","code_policy":".af/code-policy.toml","packages":{"fixture/review":{"version":"1.0.0","digest":format!("sha256:{}","a".repeat(64)),"path":".af/packages/review"}},"independence":{"command_workers_by_package":true,"distinct_principals":true,"distinct_providers":false,"distinct_models":false},"review":{"reviewers":{"correctness":"required"},"gate":"major","clean_rounds":1,"max_rounds":2}});
+    for generation in [1, 2] {
+        let name = format!("task-catalog-v{generation}.json");
+        value["schema"] = json!(format!("af.task-catalog/{generation}"));
+        if generation == 2 {
+            value["provider_admission"] = json!({"tokens":32768,"wall_ms":45000});
+        }
+        value["review"]
+            .as_object_mut()
+            .unwrap()
+            .remove("generation");
+        assert_valid(&name, &value);
+        value["review"]["generation"] = json!(2);
+        assert_valid(&name, &value);
+        for invalid in [
+            json!(0),
+            json!(1),
+            json!(3),
+            json!(null),
+            json!("2"),
+            json!(4294967296_u64),
+        ] {
+            let mut bad = value.clone();
+            bad["review"]["generation"] = invalid;
+            assert_invalid(&name, &bad, "unsupported explicit Review generation");
+        }
+        if generation == 2 {
+            let mut bad = value.clone();
+            bad.as_object_mut().unwrap().remove("provider_admission");
+            assert_invalid(
+                &name,
+                &bad,
+                "Review generation does not waive Provider authority",
+            );
+        }
+    }
+}

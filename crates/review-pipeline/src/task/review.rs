@@ -1,6 +1,8 @@
 //! Review is a domain of the common Task runtime. The atomic gather/reducer barrier uses
 //! the historical canonical reducer; it owns neither an executor nor a child allowance.
 
+mod context;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
@@ -40,9 +42,36 @@ pub struct ReviewTaskPolicy {
     pub allow_targeted_repairs: bool,
 }
 impl ReviewTaskPolicy {
+    pub fn generation_two(&self) -> bool {
+        self.schema == "af.review-task-policy/2"
+    }
+    fn subject_type(&self) -> &'static str {
+        if self.generation_two() {
+            TASK_REVIEW_SUBJECT_V2
+        } else {
+            TASK_REVIEW_SUBJECT_V1
+        }
+    }
+    fn result_contract(&self) -> review_core::ReviewerResultContract {
+        if self.generation_two() {
+            review_core::ReviewerResultContract::V2
+        } else {
+            review_core::ReviewerResultContract::V1
+        }
+    }
+    fn result_type(&self) -> &'static str {
+        if self.generation_two() {
+            review_core::contract::REVIEWER_RESULT_V2
+        } else {
+            review_core::contract::REVIEWER_RESULT_V1
+        }
+    }
+
     pub fn validate(&self) -> Result<(), String> {
-        if self.schema != "af.review-task-policy/1"
-            || !review_core::is_digest(&self.check_policy_id)
+        if !matches!(
+            self.schema.as_str(),
+            "af.review-task-policy/1" | "af.review-task-policy/2"
+        ) || !review_core::is_digest(&self.check_policy_id)
             || self.reviewers.is_empty()
             || self.reviewers.len() > 64
             || self.reviewers.keys().any(|name| {
@@ -101,6 +130,13 @@ pub fn review_signatures(
     };
     let source = port(SOURCE_TREE_V1, PortAffinityV1::Unbound {}, false);
     let history = port(REVIEW_HISTORY_V1, PortAffinityV1::Unbound {}, false);
+    let mut bind_outputs =
+        BTreeMap::from([("subject".into(), port(policy.subject_type(), same(), false))]);
+    if policy.generation_two() {
+        for name in policy.reviewers.keys() {
+            bind_outputs.insert(name.clone(), port(TASK_REVIEW_ASSIGNMENT_V1, same(), false));
+        }
+    }
     let bind = signature(
         BTreeMap::from([
             ("source".into(), source.clone()),
@@ -118,10 +154,7 @@ pub fn review_signatures(
                 ),
             ),
         ]),
-        BTreeMap::from([(
-            "subject".into(),
-            port(TASK_REVIEW_SUBJECT_V1, same(), false),
-        )]),
+        bind_outputs,
         BTreeMap::new(),
         BTreeMap::new(),
         None,
@@ -129,17 +162,11 @@ pub fn review_signatures(
     let mut inputs = BTreeMap::from([
         ("source".into(), source),
         ("history".into(), history),
-        (
-            "subject".into(),
-            port(TASK_REVIEW_SUBJECT_V1, same(), false),
-        ),
+        ("subject".into(), port(policy.subject_type(), same(), false)),
         ("checks".into(), port(TASK_CHECK_RECEIPT_V1, same(), true)),
     ]);
     for name in policy.reviewers.keys() {
-        inputs.insert(
-            name.clone(),
-            port(review_core::contract::REVIEWER_RESULT_V1, same(), true),
-        );
+        inputs.insert(name.clone(), port(policy.result_type(), same(), true));
     }
     let retained = inputs
         .keys()
@@ -252,6 +279,40 @@ impl ReviewTaskDomain {
                     {
                         return Err("Required reviewer must use a reserved verification role and the reducer's exact declared inputs".into());
                     }
+                    if policy.generation_two() {
+                        let subject = node
+                            .inputs
+                            .get("subject")
+                            .ok_or("Review has no Subject binding")?;
+                        let assignment = reviewer
+                            .inputs
+                            .get("assignment")
+                            .ok_or("Reviewer lacks its explicit assignment")?;
+                        if assignment.node != subject.node
+                            || assignment.port != *name
+                            || reviewer
+                                .contract
+                                .inputs
+                                .get("assignment")
+                                .is_none_or(|p| p.artifact_type != TASK_REVIEW_ASSIGNMENT_V1)
+                            || graph.nodes.get(&subject.node).is_none_or(|n| {
+                                !matches!(
+                                    n.operator,
+                                    CompiledOperator::Primitive {
+                                        operator: TaskOperatorV1::ReviewBind {},
+                                        ..
+                                    }
+                                )
+                            })
+                            || reviewer
+                                .contract
+                                .outputs
+                                .get(&address.port)
+                                .is_none_or(|p| p.artifact_type != policy.result_type())
+                        {
+                            return Err("Reviewer must retain its own captured assignment and generation-two result contract".into());
+                        }
+                    }
                 }
             }
         }
@@ -333,7 +394,7 @@ impl ReviewTaskDomain {
             node.contract
                 .outputs
                 .values()
-                .any(|p| p.artifact_type == review_core::contract::REVIEWER_RESULT_V1)
+                .any(|p| p.artifact_type == self.policy.result_type())
         })
     }
     fn value<T: serde::de::DeserializeOwned>(
@@ -395,7 +456,11 @@ impl ReviewTaskDomain {
         })
     }
 
-    fn bind(&self, cas: &Cas, input: &TaskInvocationV1) -> Result<ArtifactInputV1, String> {
+    fn bind_subject(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+    ) -> Result<TaskReviewSubjectV1, String> {
         let snapshot = source_input(
             cas,
             input.inputs.get("source").ok_or("Review has no source")?,
@@ -463,14 +528,7 @@ impl ReviewTaskDomain {
         if let Some(id) = &bound.continuation_id {
             self.restore_continuation(cas, id, &bound, input)?;
         }
-        self.put(
-            cas,
-            input,
-            TASK_REVIEW_SUBJECT_V1,
-            Some(&snapshot),
-            &bound,
-            vec![subject_id],
-        )
+        Ok(bound)
     }
 
     fn current_subject(
@@ -478,8 +536,7 @@ impl ReviewTaskDomain {
         cas: &Cas,
         input: &TaskInvocationV1,
     ) -> Result<TaskReviewSubjectV1, String> {
-        let (_, subject): (_, TaskReviewSubjectV1) =
-            self.value(cas, input, "subject", TASK_REVIEW_SUBJECT_V1)?;
+        let subject = self.read_subject(cas, input)?;
         subject.validate()?;
         let (history_id, history): (_, ReviewHistoryV1) =
             self.value(cas, input, "history", REVIEW_HISTORY_V1)?;
@@ -639,10 +696,17 @@ impl ReviewTaskDomain {
                 continue;
             }
             let (id, stage): (_, serde_json::Value) =
-                self.value(cas, input, name, review_core::contract::REVIEWER_RESULT_V1)?;
-            let (_, stage) = crate::reviewer_stage_output(stage)?;
+                self.value(cas, input, name, self.policy.result_type())?;
+            let (contract, stage) = crate::reviewer_stage_output(stage)?;
+            if contract != self.policy.result_contract() {
+                return Err("Review result changed its captured generation".into());
+            }
             let artifact = envelope(cas, &id)?;
-            review_core::legacy::validate_reviewer_result(&artifact.payload)?;
+            if self.policy.generation_two() {
+                let assignment = self.assignment(&ledger, &subject, name)?;
+                self.validate_stage(&stage, &assignment)?;
+                self.validate_result_assignment(cas, input, name, &artifact, &assignment)?;
+            }
             let Producer::Attempt {
                 run_id,
                 node_id,
@@ -729,11 +793,15 @@ impl ReviewTaskDomain {
                 input_artifacts: refs,
                 subject_snapshot_id: &subject.snapshot_id,
                 subject_id: &subject.subject_id,
-                result_contract: review_core::ReviewerResultContract::V1,
+                result_contract: self.policy.result_contract(),
             })
             .collect();
-        let reduction = review_store::prepare_canonical_review(cas, &run_id, &ledger, &stages)
-            .map_err(|e| e.to_string())?;
+        let reduce = if self.policy.generation_two() {
+            review_store::prepare_canonical_task_review
+        } else {
+            review_store::prepare_canonical_review
+        };
+        let reduction = reduce(cas, &run_id, &ledger, &stages).map_err(|e| e.to_string())?;
         let (_, prior): (_, ReviewHistoryV1) =
             self.value(cas, input, "history", REVIEW_HISTORY_V1)?;
         let (prior_findings, prior_demands) = match prior {
@@ -941,7 +1009,15 @@ impl ReviewTaskDomain {
             .collect();
         let mut result = TaskResultV1 {
             task_revision_id: state.revision_id.clone(),
-            execution: TaskExecutionV1::Completed,
+            execution: if report
+                .outcomes
+                .iter()
+                .any(|(_, o)| matches!(o, NodeOutcome::Failed { .. }))
+            {
+                TaskExecutionV1::Exhausted
+            } else {
+                TaskExecutionV1::Completed
+            },
             acceptance: TaskAcceptanceV1::Inconclusive,
             domain_conclusion: "incomplete".into(),
             outputs,
@@ -949,14 +1025,6 @@ impl ReviewTaskDomain {
             missing_obligations: BTreeSet::new(),
         };
         self.assess(cas, &state.revision, &mut result)?;
-        if report
-            .outcomes
-            .iter()
-            .any(|(_, o)| matches!(o, NodeOutcome::Failed { .. }))
-            && result.acceptance != TaskAcceptanceV1::Satisfied
-        {
-            result.execution = TaskExecutionV1::Exhausted;
-        }
         result.validate()?;
         Ok(result)
     }
@@ -1031,7 +1099,9 @@ impl ReviewTaskDomain {
                 missing.insert(name.clone());
             }
         }
-        let complete = missing.is_empty() && !conclusions.is_empty();
+        let complete = missing.is_empty()
+            && !conclusions.is_empty()
+            && result.execution == TaskExecutionV1::Completed;
         let conclusion = if !complete {
             ReviewConclusionV1::Incomplete
         } else if conclusions.contains(&ReviewConclusionV1::ConvergenceExhausted) {
@@ -1115,9 +1185,7 @@ impl TaskOperatorHost for ReviewTaskDomain {
             Err(error) => return super::control::refused(error),
         };
         let outputs = match self.operator(input) {
-            Ok(TaskOperatorV1::ReviewBind {}) => self
-                .bind(cas, input)
-                .map(|v| BTreeMap::from([("subject".into(), v)])),
+            Ok(TaskOperatorV1::ReviewBind {}) => self.bind_outputs(cas, input),
             Ok(TaskOperatorV1::ReviewReduce {}) => self.reduce_outputs(cas, input),
             Ok(TaskOperatorV1::ReviewAccept {}) => self.accept_implementation(cas, input),
             Ok(TaskOperatorV1::AttestFixes {}) => self.attest_fixes(cas, input),
@@ -1161,7 +1229,31 @@ impl TaskDomain for ReviewTaskDomain {
             return self.validate_fix_context(cas, input);
         }
         if self.reviewer(input) {
-            self.current_subject(cas, input)?;
+            let subject = self.current_subject(cas, input)?;
+            if self.policy.generation_two() {
+                self.current_assignment(cas, input, &subject)?;
+                let (_, mut manifest) = read_snapshot(cas, &subject.snapshot_id)?;
+                super::source::add_review_inputs(
+                    cas,
+                    input,
+                    review_sandbox::Mode::ReadOnly,
+                    &subject.snapshot_id,
+                    &mut manifest,
+                )?;
+            } else {
+                // This callback runs only at a new reservation. Frozen outputs/history still
+                // replay through the unchanged generation-one reducer.
+                let ledger = self.prior_ledger(cas, input, &subject, 0)?;
+                if ledger.finding_views().iter().any(|f| {
+                    !f.authority_diagnostic
+                        && !matches!(
+                            f.status,
+                            review_store::Status::Rejected | review_store::Status::Wontfix
+                        )
+                }) {
+                    return Err("Generation-one Review cannot dispatch with prior Findings; capture generation two assignments".into());
+                }
+            }
             if self.code.review_checks(cas, input)? != ReceiptOutcomeV1::Passed {
                 return Err("Reviewer cannot dispatch before current checks pass".into());
             }
@@ -1179,9 +1271,7 @@ impl TaskDomain for ReviewTaskDomain {
     ) -> Result<(), String> {
         let _operation = self.begin_operation()?;
         let expected = match self.operator(input)? {
-            TaskOperatorV1::ReviewBind {} => {
-                Some(BTreeMap::from([("subject".into(), self.bind(cas, input)?)]))
-            }
+            TaskOperatorV1::ReviewBind {} => Some(self.bind_outputs(cas, input)?),
             TaskOperatorV1::ReviewReduce {} => Some(self.reduce_outputs(cas, input)?),
             TaskOperatorV1::ReviewAccept {} => Some(self.accept_implementation(cas, input)?),
             TaskOperatorV1::AttestFixes {} => Some(self.attest_fixes(cas, input)?),
@@ -1203,12 +1293,21 @@ impl TaskDomain for ReviewTaskDomain {
             for port in output.outputs.values() {
                 for id in &port.artifact_ids {
                     let artifact = envelope(cas, id)?;
-                    if artifact.artifact_type != review_core::contract::REVIEWER_RESULT_V1
+                    if artifact.artifact_type != self.policy.result_type()
                         || artifact.subject_snapshot_id.as_ref() != Some(&subject.snapshot_id)
                     {
                         return Err("Reviewer output has a stale type or Snapshot".into());
                     }
-                    review_core::legacy::validate_reviewer_result(&artifact.payload)?;
+                    if self.policy.generation_two() {
+                        let assignment = self.current_assignment(cas, input, &subject)?;
+                        let (contract, stage) = crate::reviewer_stage_output(artifact.payload)?;
+                        if contract != self.policy.result_contract() {
+                            return Err("Reviewer changed its captured result generation".into());
+                        }
+                        self.validate_stage(&stage, &assignment)?;
+                    } else {
+                        review_core::legacy::validate_reviewer_result(&artifact.payload)?;
+                    }
                 }
             }
             return Ok(());

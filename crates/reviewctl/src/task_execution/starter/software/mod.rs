@@ -363,6 +363,7 @@ fn review(correctness: &TaskWorkerManifest, bugs: &TaskWorkerManifest) -> Pipeli
             node(name, TaskOperatorV1::Verify { slot: name.into() }, {
                 let mut incoming = reduction.clone();
                 incoming.insert("requirements".into(), input("requirements"));
+                incoming.insert("assignment".into(), output("bind", name));
                 incoming
             }),
             "checks",
@@ -819,6 +820,15 @@ fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
                         *value = digest.clone();
                         return Ok(());
                     }
+                    if reference == "urn:review-kernel:schema:reviewer-result:1#/$defs/legacyReport"
+                    {
+                        let original: Value = serde_json::from_slice(include_bytes!(
+                            "../../../../../../schemas/reviewer-result-v1.json"
+                        ))
+                        .map_err(|e| e.to_string())?;
+                        *value = original["$defs"]["legacyReport"].clone();
+                        return Ok(());
+                    }
                     if !reference.starts_with('#') {
                         return Err("Unsupported external Worker schema reference".into());
                     }
@@ -903,7 +913,8 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
         ("requirements", optional_requirements()),
         ("source", port(SOURCE_TREE_V1)),
         ("history", port(REVIEW_HISTORY_V1)),
-        ("subject", same(TASK_REVIEW_SUBJECT_V1)),
+        ("subject", same(TASK_REVIEW_SUBJECT_V2)),
+        ("assignment", same(TASK_REVIEW_ASSIGNMENT_V1)),
         ("checks", same(TASK_CHECK_RECEIPT_V1)),
     ]);
     let reviewer = |name| {
@@ -911,9 +922,9 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
             name,
             "review",
             reviewer_inputs.clone(),
-            ports(&[("result", same(review_core::contract::REVIEWER_RESULT_V1))]),
+            ports(&[("result", same(review_core::contract::REVIEWER_RESULT_V2))]),
             "af/ReviewInput@1",
-            review_core::contract::REVIEWER_RESULT_V1,
+            review_core::contract::REVIEWER_RESULT_V2,
             false,
         )
     };
@@ -995,7 +1006,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
         "../../../../../../schemas/task-evaluation-v1.json"
     ))?;
     let review_schema = payload_schema(include_bytes!(
-        "../../../../../../schemas/reviewer-result-v1.json"
+        "../../../../../../schemas/reviewer-result-v2.json"
     ))?;
     let fix_schema = payload_schema(include_bytes!(
         "../../../../../../schemas/task-fix-verification-v1.json"
@@ -1096,6 +1107,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
         }),
         developers,
         review: Some(ReviewSettings {
+            generation: Some(2),
             reviewers: BTreeMap::from([
                 (
                     "correctness".into(),

@@ -277,7 +277,8 @@ impl ReviewTaskDomain {
             missing.extend(goal.missing_obligations);
             failed |= goal.acceptance == TaskAcceptanceV1::Unsatisfied;
         }
-        result.acceptance = if missing.is_empty() {
+        result.acceptance = if missing.is_empty() && result.execution == TaskExecutionV1::Completed
+        {
             TaskAcceptanceV1::Satisfied
         } else if failed {
             TaskAcceptanceV1::Unsatisfied

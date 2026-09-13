@@ -3,7 +3,10 @@ import runpy
 import sys
 
 request = json.load(sys.stdin)
-assert set(request['inputs']) in [{'source', 'subject', 'history', 'checks'}, {'source', 'subject', 'history', 'checks', 'requirements'}]
+assert set(request['inputs']) in [{'source', 'subject', 'history', 'checks', 'assignment'}, {'source', 'subject', 'history', 'checks', 'assignment', 'requirements'}]
+assignment = request['inputs']['assignment'][0]['payload']
+assert assignment['reviewer'] == 'correctness'
+assert all(f['source'] == 'correctness' for f in assignment['findings'])
 if 'requirements' in request['inputs']:
     assert request['inputs']['requirements'][0]['payload'].get('specification', {}).get('schema') == 'tutorial.pagination/1'
 assert request['inputs']['checks'][0]['payload']['outcome'] == 'passed'
@@ -31,5 +34,9 @@ reports = [] if passed else [{
 print(json.dumps({'schema': 'af.worker-reply/1', 'outputs': {'result': [{
     'verdict': 'approve' if passed else 'request-changes',
     'summary': 'Independent pagination window and input-preservation checks.',
-    'reports': reports, 'benchmark_demands': [], 'disputes': []
+    'reports': reports, 'benchmark_demands': [],
+    'dispositions': [{'finding_id': f['finding_id'],
+                      'position': 'not_reproduced' if passed else 'corroborate',
+                      'reason': 'Repeated the same declared source checks on the current Snapshot.'}
+                     for f in assignment['findings']]
 }]}}))

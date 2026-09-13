@@ -15,6 +15,66 @@ pub fn prepare_canonical_review(
     ledger: &Ledger,
     stages: &[CanonicalStage<'_>],
 ) -> Result<PreparedReviewReduction, StoreError> {
+    validate_stages(ledger, stages)?;
+    let prepared = prepare_canonical_inputs(run_id, ledger, stages)?;
+    prepare_review_outputs(cas, run_id, ledger, &prepared)
+}
+
+/// Generation-two Task reduction keeps the selected flattened Worker address. Logical
+/// reviewer names remain finding/demand sources; they never manufacture an Attempt producer.
+pub fn prepare_canonical_task_review(
+    cas: &Cas,
+    run_id: &str,
+    ledger: &Ledger,
+    stages: &[CanonicalStage<'_>],
+) -> Result<PreparedReviewReduction, StoreError> {
+    validate_stages(ledger, stages)?;
+    let mut prepared = prepare_canonical_inputs(run_id, ledger, stages)?;
+    for (stage, item) in stages.iter().zip(&mut prepared) {
+        let artifact: review_core::ArtifactEnvelope = serde_json::from_value(
+            cas.get_json(stage.result_artifact_id)
+                .map_err(|e| StoreError::Artifact(e.to_string()))?,
+        )?;
+        crate::validate_envelope(&artifact).map_err(|e| StoreError::Conflict(e.to_string()))?;
+        if stage.result_contract != ReviewerResultContract::V2
+            || artifact.artifact_id != stage.result_artifact_id
+            || artifact.artifact_type != review_core::contract::REVIEWER_RESULT_V2
+            || artifact.subject_snapshot_id.as_deref() != Some(stage.subject_snapshot_id)
+            || artifact.input_artifacts != stage.input_artifacts
+            || !matches!(&artifact.producer, Producer::Attempt { run_id: run, attempt_id, .. }
+                if run == run_id && attempt_id == stage.attempt_id)
+        {
+            return Err(StoreError::Conflict(
+                "Task canonical result lost its exact selected Attempt provenance".into(),
+            ));
+        }
+        review_core::validate_reviewer_result_v2(&artifact.payload)
+            .map_err(StoreError::Conflict)?;
+        let mut encoded = serde_json::to_value(stage.stage)?;
+        let object = encoded.as_object_mut().expect("typed stage is an object");
+        let reports = object.remove("findings").expect("typed stage reports");
+        object.insert("reports".into(), reports);
+        let mut dispositions = object.remove("disputes").expect("typed stage dispositions");
+        for entry in dispositions.as_array_mut().expect("typed dispositions") {
+            let entry = entry.as_object_mut().expect("typed disposition");
+            let id = entry.remove("fp").expect("typed disposition ID");
+            entry.insert("finding_id".into(), id);
+        }
+        object.insert("dispositions".into(), dispositions);
+        if encoded != artifact.payload {
+            return Err(StoreError::Conflict(
+                "Task reduction changed the selected result payload".into(),
+            ));
+        }
+        item.provenance
+            .as_mut()
+            .expect("canonical stage provenance")
+            .producer = artifact.producer;
+    }
+    prepare_review_outputs(cas, run_id, ledger, &prepared)
+}
+
+fn validate_stages(ledger: &Ledger, stages: &[CanonicalStage<'_>]) -> Result<(), StoreError> {
     if stages.is_empty()
         || stages.len() > 64
         || stages
@@ -32,8 +92,7 @@ pub fn prepare_canonical_review(
             "Task review reduction needs unique current-Subject stages".into(),
         ));
     }
-    let prepared = prepare_canonical_inputs(run_id, ledger, stages)?;
-    prepare_review_outputs(cas, run_id, ledger, &prepared)
+    Ok(())
 }
 
 pub(super) fn prepare_canonical_inputs(

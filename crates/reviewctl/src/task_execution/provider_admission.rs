@@ -134,4 +134,21 @@ mod tests {
         authority.catalog_id = cas.put(b"schema = 'af.task-catalog/1'\n").unwrap();
         assert!(restore_cost(&cas, &authority).is_err());
     }
+    #[test]
+    fn catalog_two_does_not_select_review_generation() {
+        let mut value: Value = serde_json::from_str(V1_CATALOG).unwrap();
+        value["schema"] = json!("af.task-catalog/2");
+        value["provider_admission"] = json!({"tokens":32768,"wall_ms":45000});
+        value["review"] = json!({"reviewers":{"correctness":"required"},"gate":"major","clean_rounds":1,"max_rounds":2});
+        let old: TaskCatalog = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(old.review.as_ref().unwrap().policy_generation().unwrap(), 1);
+        let original_cost = catalog_cost(&old).unwrap();
+        value["review"]["generation"] = json!(2);
+        let next: TaskCatalog = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            next.review.as_ref().unwrap().policy_generation().unwrap(),
+            2
+        );
+        assert_eq!(catalog_cost(&next).unwrap(), original_cost);
+    }
 }

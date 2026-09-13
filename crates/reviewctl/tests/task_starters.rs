@@ -58,6 +58,33 @@ fn setup(root: &Path, key: Option<&str>) -> (PathBuf, PathBuf) {
     let init = run(root, &args, 0);
     assert_eq!(init["attempts"], 0);
     let repo = root.join("project");
+    let catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(repo.join(".af/task-catalog.toml")).unwrap())
+            .unwrap();
+    assert_eq!(catalog["review"]["generation"].as_integer(), Some(2));
+    for reviewer in ["correctness", "bugs"] {
+        let package = &catalog["packages"][format!("builtin/{reviewer}")];
+        let worker: review_config::task::catalog::TaskWorkerManifest = toml::from_str(
+            &std::fs::read_to_string(
+                repo.join(package["path"].as_str().unwrap())
+                    .join("worker.toml"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            worker.signature.contract.inputs["subject"].artifact_type,
+            "af/TaskReviewSubject@2"
+        );
+        assert_eq!(
+            worker.signature.contract.inputs["assignment"].artifact_type,
+            "af/TaskReviewAssignment@1"
+        );
+        assert_eq!(
+            worker.signature.worker_output_type.as_deref(),
+            Some("review.kernel/ReviewerResult@2")
+        );
+    }
     for args in [
         vec!["init", "-q", "-b", "main"],
         vec!["config", "user.name", "Fixture"],
@@ -359,4 +386,117 @@ fn starter_planner_waits_for_a_signed_decision_then_exports_for_a_second_develop
         0,
     );
     assert_eq!(explanation["plan"]["generated_origins"], json!([]));
+}
+
+#[test]
+fn reviewed_implementation_preserves_evidence_when_independent_work_fails() {
+    use review_config::task::catalog::TaskWorkerManifest;
+    use review_core::task::pipeline::{PipelineDefinitionV1, TaskOperatorV1};
+    for failed_review in [false, true] {
+        let root = tempfile::tempdir().unwrap();
+        let (repo, state) = setup(root.path(), None);
+        let author = worker_path(&repo, "builtin/implementer");
+        if failed_review {
+            std::fs::write(&author,"import json,sys\njson.load(sys.stdin)\nopen('pagination.py','w').write('def paginate(items, offset=0, limit=2):\\n    return items[offset:offset+limit]\\n')\nprint(json.dumps({'schema':'af.worker-reply/1','outputs':{'report':[{'summary':'Injected missing bounds check'}]}}))\n").unwrap();
+        }
+        let failure = repo.join(".af/independent-failure");
+        std::fs::create_dir_all(failure.join("outputs")).unwrap();
+        for name in ["input.schema.json", "outputs/report.schema.json"] {
+            std::fs::copy(author.parent().unwrap().join(name), failure.join(name)).unwrap();
+        }
+        let mut worker: TaskWorkerManifest = toml::from_str(
+            &std::fs::read_to_string(author.parent().unwrap().join("worker.toml")).unwrap(),
+        )
+        .unwrap();
+        worker.name = "fixture/independent-failure".into();
+        std::fs::write(
+            failure.join("worker.toml"),
+            toml::to_string(&worker).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            failure.join("worker.py"),
+            "raise Exception('independent configured Worker failed')\n",
+        )
+        .unwrap();
+        let path = repo.join(".af/task-catalog.toml");
+        let mut catalog: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let pipeline_path = repo
+            .join(
+                catalog["packages"]["builtin/implementation-reviewed"]["path"]
+                    .as_str()
+                    .unwrap(),
+            )
+            .join("pipeline.toml");
+        let mut pipeline: PipelineDefinitionV1 =
+            toml::from_str(&std::fs::read_to_string(&pipeline_path).unwrap()).unwrap();
+        let mut node = pipeline
+            .nodes
+            .iter()
+            .find(|n| matches!(n.operator, TaskOperatorV1::Worker { .. }))
+            .unwrap()
+            .clone();
+        let TaskOperatorV1::Worker { slot } = &node.operator else {
+            unreachable!()
+        };
+        let mut binding = pipeline.slots[slot].clone();
+        binding.worker = worker.name.clone();
+        pipeline.slots.insert("independent_failure".into(), binding);
+        node.id = "independent_failure".into();
+        node.operator = TaskOperatorV1::Worker {
+            slot: "independent_failure".into(),
+        };
+        pipeline.nodes.push(node);
+        pipeline.max_attempts += 1;
+        std::fs::write(pipeline_path, toml::to_string(&pipeline).unwrap()).unwrap();
+        let pin = json!({"path":".af/independent-failure","version":"1.0.0","digest":review_config::lock::package_digest(&worker.name,&failure).unwrap()});
+        catalog["packages"][&worker.name] = toml::Value::try_from(pin.clone()).unwrap();
+        std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
+        let path = repo.join("catalog.toml");
+        let mut shared: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        shared["packages"][&worker.name] = toml::Value::try_from(pin).unwrap();
+        std::fs::write(path, toml::to_string(&shared).unwrap()).unwrap();
+        let path = repo.join("implementation-reviewed.json");
+        let mut file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        file["limits"]["max_attempts"] = json!(6);
+        std::fs::write(path, serde_json::to_vec(&file).unwrap()).unwrap();
+        repin(&repo);
+        let code = if failed_review { 3 } else { 4 };
+        let result = task(
+            &repo,
+            &state,
+            &["task", "start", "--file", "implementation-reviewed.json"],
+            code,
+        );
+        assert_eq!(result["attempts"], 6, "{result:#}");
+        assert_eq!(result["result"]["execution"], "exhausted");
+        assert_eq!(
+            result["result"]["acceptance"],
+            if failed_review {
+                "unsatisfied"
+            } else {
+                "inconclusive"
+            }
+        );
+        assert_eq!(
+            result["review_rounds"][0]["conclusion"],
+            if failed_review {
+                "changes_requested"
+            } else {
+                "pass"
+            }
+        );
+        assert!(!result["result"]["evidence"].as_array().unwrap().is_empty());
+        assert_eq!(
+            task(
+                &repo,
+                &state,
+                &["task", "run", "implementation-reviewed"],
+                code
+            ),
+            result
+        );
+    }
 }
