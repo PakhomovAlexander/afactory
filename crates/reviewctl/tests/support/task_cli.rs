@@ -9,7 +9,18 @@ pub fn copy_tree(source: &Path, destination: &Path) {
         if entry.file_type().unwrap().is_dir() {
             copy_tree(&entry.path(), &target);
         } else {
-            std::fs::copy(entry.path(), target).unwrap();
+            std::fs::copy(entry.path(), &target).unwrap();
+            // Gates supply read-only source files. These are independent disposable
+            // fixtures whose tests intentionally edit them; keep the source immutable.
+            let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                permissions.set_mode(permissions.mode() | 0o200);
+            }
+            #[cfg(not(unix))]
+            permissions.set_readonly(false);
+            std::fs::set_permissions(&target, permissions).unwrap();
         }
     }
 }
