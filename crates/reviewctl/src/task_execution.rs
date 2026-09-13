@@ -763,6 +763,16 @@ pub(super) fn start_review(options: StartOptions) -> Result<i32, String> {
     start_kind(options, Some("review"))
 }
 
+fn effective_task_wall_ms(file_wall_ms: u64, timeout_secs: Option<u64>) -> Result<u64, String> {
+    if file_wall_ms == 0 || timeout_secs == Some(0) {
+        return Err("Task wall_ms and --timeout-secs must be positive".into());
+    }
+    let timeout_ms = timeout_secs
+        .map(|seconds| seconds.checked_mul(1000).ok_or("Task timeout overflow"))
+        .transpose()?;
+    Ok(timeout_ms.map_or(file_wall_ms, |limit| limit.min(file_wall_ms)))
+}
+
 fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32, String> {
     let started = clock()?;
     let bytes = input_file::read(&options.file, 16 * 1024 * 1024)?;
@@ -784,6 +794,9 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
             return Err("Structured requirements must be nonempty and at most 64 KiB".into());
         }
     }
+    // Reject invalid duration before creating state, capturing authority or occupying an ID.
+    let wall = effective_task_wall_ms(file.limits.wall_ms, options.timeout_secs)?;
+    started.checked_add(wall).ok_or("Task deadline overflow")?;
     let (repo, state) = state_path(&options.repo, options.state.as_deref())?;
     std::fs::create_dir_all(&state).map_err(|e| e.to_string())?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
@@ -856,11 +869,7 @@ fn start_captured(
         )?)
     };
     let input_file = cas.put(&bytes).map_err(|e| e.to_string())?;
-    let wall = options
-        .timeout_secs
-        .map(|seconds| seconds.checked_mul(1000).ok_or("Task timeout overflow"))
-        .transpose()?
-        .map_or(file.limits.wall_ms, |limit| limit.min(file.limits.wall_ms));
+    let wall = effective_task_wall_ms(file.limits.wall_ms, options.timeout_secs)?;
     let deadline = started.checked_add(wall).ok_or("Task deadline overflow")?;
     let issue = file
         .issue

@@ -4,6 +4,9 @@ use std::process::Command;
 
 use serde_json::Value;
 
+#[path = "task_file/wall_bounds.rs"]
+mod wall_bounds;
+
 #[path = "support/task_cli.rs"]
 mod task_cli;
 use task_cli::{copy_tree, fixture_named};

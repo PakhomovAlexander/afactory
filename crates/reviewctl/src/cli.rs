@@ -900,8 +900,8 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
         /// Start from the working tree instead of a revision
         #[arg(long, help_heading = "Selector")]
         uncommitted: bool,
-        /// Wall-clock budget for the whole Task
-        #[arg(long, value_name = "N", help_heading = "Budget")]
+        /// Positive wall-clock budget for the whole Task
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..), help_heading = "Budget")]
         timeout_secs: Option<u64>,
         /// One JSON document on stdout instead of text
         #[arg(long, help_heading = "Output")]

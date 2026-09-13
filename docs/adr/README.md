@@ -162,6 +162,7 @@ options you rejected and why — that is the part future-you needs.
 - [0090 — Recheck native Task Provider identity before private invocation](0090-recheck-native-task-provider-identity-before-private-invocation.md)
 - [0091 — Capture explicit Task Provider admission costs](0091-capture-explicit-task-provider-admission-costs.md)
 - [0092 — Capture common Review admission reservations](0092-capture-common-review-admission-reservations.md)
+- [0093 — Derive CodeTask acceptance from execution and evidence](0093-derive-code-task-acceptance-from-execution-and-evidence.md)
 - [0095 — Bind legacy Task context and retry output admission](0095-bind-legacy-task-context-and-retry-output-admission.md)
 - [0096 — Revalidate Task execution evidence on cached
   replay](0096-revalidate-task-execution-evidence-on-cached-replay.md)

@@ -567,7 +567,6 @@ impl CodeTaskDomain {
             evidence,
             missing_obligations: BTreeSet::new(),
         };
-        self.assess(cas, &state.revision, &mut result)?;
         if report
             .outcomes
             .iter()
@@ -575,6 +574,7 @@ impl CodeTaskDomain {
         {
             result.execution = TaskExecutionV1::Exhausted;
         }
+        self.assess(cas, &state.revision, &mut result)?;
         result.validate()?;
         Ok(result)
     }
@@ -628,7 +628,11 @@ impl CodeTaskDomain {
                 missing.insert(name.clone());
             }
         }
-        result.acceptance = if missing.is_empty() {
+        // Passed public receipts cannot make incomplete planned work a completed Task.
+        // A genuine negative receipt remains Unsatisfied independently of execution status.
+        // Use the same rule when Store revalidates the terminal result.
+        result.acceptance = if missing.is_empty() && result.execution == TaskExecutionV1::Completed
+        {
             TaskAcceptanceV1::Satisfied
         } else if failed {
             TaskAcceptanceV1::Unsatisfied
