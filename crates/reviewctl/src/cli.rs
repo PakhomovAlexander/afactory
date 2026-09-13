@@ -226,7 +226,7 @@ pub(crate) struct ReviewNamespace {
 #[command(group = ArgGroup::new("mode").args(["light", "heavy"]))]
 pub(crate) struct RunArgs {
     /// Versioned Review Task file, executed through the shared Task runtime
-    #[arg(long = "file", value_name = "FILE", help_heading = "Selector", conflicts_with_all = ["pipeline", "campaign", "base", "candidate", "focus", "node", "light", "heavy", "restart_round", "provider", "resume_provider", "git_timeout_secs"])]
+    #[arg(long = "file", value_name = "FILE", help_heading = "Selector", conflicts_with_all = ["pipeline", "campaign", "base", "candidate", "focus", "node", "light", "heavy", "restart_round", "provider", "resume_provider", "provider_admission_tokens", "provider_admission_wall_ms", "git_timeout_secs"])]
     pub(crate) task_file: Option<PathBuf>,
     /// Explicit local Worker packages, slot replacements and Provider aliases
     #[arg(
@@ -302,6 +302,22 @@ pub(crate) struct RunArgs {
     /// Bind a pipeline node to a provider from the registry
     #[arg(long, value_name = "NODE=PROVIDER_ID", action = ArgAction::Append, help_heading = "Providers")]
     pub(crate) provider: Vec<String>,
+    /// Tokens reserved for each new common Review Provider admission [new capture: 32768]
+    #[arg(
+        long,
+        value_name = "N",
+        requires = "provider_admission_wall_ms",
+        help_heading = "Budget"
+    )]
+    pub(crate) provider_admission_tokens: Option<u64>,
+    /// Milliseconds reserved per admission; supply both bounds, or omit both on resume
+    #[arg(
+        long,
+        value_name = "N",
+        requires = "provider_admission_tokens",
+        help_heading = "Budget"
+    )]
+    pub(crate) provider_admission_wall_ms: Option<u64>,
     /// Resume a fenced provider operation at the given epoch
     #[arg(long, value_name = "OPERATION_ID:EPOCH", action = ArgAction::Append, help_heading = "Providers")]
     pub(crate) resume_provider: Vec<String>,

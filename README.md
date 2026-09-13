@@ -130,6 +130,14 @@ same durable, charged admission used by `review run` but no Gate or Worker; its 
 by the exact Campaign. Every packaged Claude or Codex Worker requires a named provider from the
 machine-local registry. An empty Diff is refused before all three external boundaries.
 
+New common Review Tasks reserve 32,768 tokens and 45,000 ms per Provider admission capability.
+`review plan` reports this per-capability cost. To choose another finite reservation at capture,
+supply both `--provider-admission-tokens N` and `--provider-admission-wall-ms N` to `review run`
+or `provider doctor`. The original Campaign cap must also fit mandatory Review work. On resume,
+omit both options to retain the captured cost, or supply the exact original pair; existing
+4,096-token plans keep that reservation. An overrun remains charged and stops further dispatch.
+See [ADR-0092](docs/adr/0092-capture-common-review-admission-reservations.md).
+
 Light mode permits one closed review Round. If it finds defects, fix them and run the project's
 deterministic gate; do not start another Campaign. `--heavy` preserves the pipeline's full
 convergence window and is appropriate only when a human explicitly requests deep convergence

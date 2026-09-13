@@ -203,6 +203,13 @@ fn restore(
         engine,
         &state.revision.authority.policy_id,
     )?;
+    if options
+        .provider_admission
+        .as_ref()
+        .is_some_and(|cost| cost != compiler.provider_admission())
+    {
+        return Err("Provider admission override differs from the original captured Review Task; omit both bounds or supply the exact captured pair".into());
+    }
     preflight_inputs(
         options,
         cas,

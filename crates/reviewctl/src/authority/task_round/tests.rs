@@ -163,6 +163,7 @@ to={node="ledger",port="reports"}
         git_timeout: None,
         provider_bindings: BTreeMap::new(),
         provider_resumes: BTreeMap::new(),
+        provider_admission: None,
         json: true,
         node: None,
     };

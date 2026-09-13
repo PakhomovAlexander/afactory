@@ -421,6 +421,7 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
                 "gate": format!("{:?}", convergence.gate).to_lowercase(),
             },
         },
+        "provider_admission": crate::review_task::initial_provider_admission(options),
         "providers": providers,
         "external_effects": token_free_effects(),
     }))

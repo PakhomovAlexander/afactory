@@ -77,6 +77,7 @@ struct Options {
     git_timeout: Option<Duration>,
     provider_bindings: BTreeMap<String, String>,
     provider_resumes: BTreeMap<String, u64>,
+    provider_admission: Option<review_graph::task::OperatorAttemptCost>,
     json: bool,
     /// `af review render`: the Worker whose exact input to compose.
     node: Option<String>,
@@ -567,6 +568,24 @@ fn run_options(args: cli::RunArgs, command: &str) -> Options {
             );
         }
     }
+    let provider_admission = match (
+        args.provider_admission_tokens,
+        args.provider_admission_wall_ms,
+    ) {
+        (None, None) => None,
+        (Some(tokens), Some(wall_ms))
+            if tokens > 0
+                && wall_ms > 0
+                && tokens <= review_core::json::SAFE_INTEGER_MAX as u64
+                && wall_ms <= review_core::json::SAFE_INTEGER_MAX as u64 =>
+        {
+            Some(review_graph::task::OperatorAttemptCost { tokens, wall_ms })
+        }
+        _ => usage_error(
+            command,
+            "Provider admission requires both positive, finite token and millisecond bounds",
+        ),
+    };
     Options {
         repo: args.repo,
         // Routing never overrides an explicit selection; the default is the project's.
@@ -593,6 +612,7 @@ fn run_options(args: cli::RunArgs, command: &str) -> Options {
         git_timeout: args.git_timeout_secs.map(Duration::from_secs),
         provider_bindings,
         provider_resumes,
+        provider_admission,
         json: args.json,
     }
 }
@@ -1707,6 +1727,10 @@ fn print_plan(options: &Options) -> Result<(), String> {
             );
         }
     }
+    println!(
+        "provider admission  {} tokens, {} ms per capability (new capture; resume retains captured cost)",
+        plan["provider_admission"]["tokens"], plan["provider_admission"]["wall_ms"]
+    );
     for provider in plan["providers"].as_array().into_iter().flatten() {
         println!(
             "provider {} -> {}",
@@ -4606,6 +4630,7 @@ fn provider_doctor(options: &Options) -> Result<i32, String> {
     if review_task::uses_common(&cas, &store, &campaign)? {
         return review_task::doctor(options, &cas, &mut store, &repo, &campaign);
     }
+    review_task::refuse_legacy_admission_override(options)?;
     let authority::PreparedRun {
         loaded,
         run_id,
@@ -4659,6 +4684,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     if review_task::uses_common(&cas, &store, &campaign)? {
         return review_task::run(options, &cas, &mut store, &repo, &campaign);
     }
+    review_task::refuse_legacy_admission_override(options)?;
 
     let authority::PreparedRun {
         loaded,
@@ -5585,6 +5611,7 @@ mod option_tests {
             git_timeout: None,
             provider_bindings: std::collections::BTreeMap::new(),
             provider_resumes: std::collections::BTreeMap::new(),
+            provider_admission: None,
             json: false,
             node: None,
         };

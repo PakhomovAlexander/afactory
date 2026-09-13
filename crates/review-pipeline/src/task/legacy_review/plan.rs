@@ -396,6 +396,11 @@ impl LegacyReviewPlanCompiler {
         &self.policy.settings.resources
     }
 
+    /// Original admission allowance; reopening never substitutes current CLI defaults.
+    pub fn provider_admission(&self) -> &OperatorAttemptCost {
+        &self.policy.settings.provider_admission
+    }
+
     pub fn policy_id(&self) -> &str {
         &self.policy_id
     }

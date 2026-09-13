@@ -27,8 +27,26 @@ pub(super) use lifecycle::run;
 // The installed fallback matches the existing onboarding Attempt default. It is captured
 // only for new, previously uncapped Review Tasks; every declared cap takes precedence.
 const UNCAPPED_ATTEMPT_TOKENS: u64 = 300_000;
-const PROVIDER_TOKENS: u64 = 4096;
+const PROVIDER_TOKENS: u64 = 32_768;
 const PROVIDER_WALL_MS: u64 = 45_000;
+
+/// Only initial capture chooses a default. Replay always reads the captured compiler settings.
+pub(super) fn initial_provider_admission(options: &Options) -> OperatorAttemptCost {
+    options
+        .provider_admission
+        .clone()
+        .unwrap_or(OperatorAttemptCost {
+            tokens: PROVIDER_TOKENS,
+            wall_ms: PROVIDER_WALL_MS,
+        })
+}
+
+pub(super) fn refuse_legacy_admission_override(options: &Options) -> Result<(), String> {
+    if options.provider_admission.is_some() {
+        return Err("Provider admission bounds apply only to common Review Tasks; historical Campaign authority cannot change".into());
+    }
+    Ok(())
+}
 
 #[derive(Clone)]
 struct LocalWorkers {
@@ -163,10 +181,7 @@ fn capture_new(
     let resources = review_config::task::legacy_review::resources::ReviewResourcePolicy {
         uncapped_attempt_tokens: UNCAPPED_ATTEMPT_TOKENS,
     };
-    let provider_admission = OperatorAttemptCost {
-        tokens: PROVIDER_TOKENS,
-        wall_ms: PROVIDER_WALL_MS,
-    };
+    let provider_admission = initial_provider_admission(options);
     let mode = match options.mode {
         CampaignMode::Light => ReviewMode::Light,
         CampaignMode::Heavy => ReviewMode::Heavy,
