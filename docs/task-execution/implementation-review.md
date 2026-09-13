@@ -132,7 +132,11 @@ The fixes are in integrated PR1 `c2207ca` (tree prefix `4b0796a`) and PR2 `10c53
 fixture reproduction, formatting and Clippy in **297,311ms**. All 567 exported source
 files and directory bytes/modes remained unchanged. The [final Gate receipt](../../../afactory-wt-task-execution/.scratch/task-pr1-readonly-full-gate-04/root-summary.json)
 binds process SHA-256 `dacbd7ed3c23af3d2bbb097ef5c5298ee0a095e8c1234eb9c954295ccce90be2`.
-The PR2 full Gate is running under root supervision; no result is presumed here.
+PR2 `10c5302` later passed its final readonly full Gate: 1,168 tests, zero failures,
+15 ignored, 134 suites, formatting, Clippy and byte-identical fixtures in 752,255 ms.
+Its raw process SHA-256 is
+`6b751f25e3847fea9d006252abec41fab8e480bb5857598b60a8f6a28d45a649`.
+PR2-specific proof remains on that branch.
 The earlier PR1 `a22be510` Gate passed 758 tests, 15 ignored, 98 suites in 298,346ms;
 it predates the two-file typed-number correction and remains historical evidence.
 
