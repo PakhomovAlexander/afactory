@@ -41,6 +41,7 @@ mod inspection;
 mod issue;
 mod legacy;
 mod planning;
+mod provider_admission;
 pub(super) mod refresh;
 mod selection;
 pub(crate) mod starter;
@@ -131,6 +132,12 @@ struct TaskCatalog {
         skip_serializing_if = "Option::is_none",
         deserialize_with = "present_option"
     )]
+    provider_admission: Option<review_graph::task::OperatorAttemptCost>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
     code_policy: Option<String>,
     #[serde(
         default,
@@ -193,6 +200,12 @@ struct CapturedPackage {
 #[serde(deny_unknown_fields)]
 struct RunAuthority {
     schema: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    provider_admission: Option<review_graph::task::OperatorAttemptCost>,
     engine_id: String,
     #[serde(
         default,
@@ -367,9 +380,9 @@ fn capture_authority(
 ) -> Result<(String, RunAuthority, TaskPlanCompiler), String> {
     let bytes = captured_file(cas, manifest, ".af/task-catalog.toml")?;
     let mut catalog: TaskCatalog = parse(Path::new(".af/task-catalog.toml"), &bytes)?;
+    let provider_admission = provider_admission::catalog_cost(&catalog)?;
     let import_locks = catalog::restore_imports(cas, manifest, &mut catalog)?;
-    if catalog.schema != "af.task-catalog/1"
-        || catalog.packages.is_empty()
+    if catalog.packages.is_empty()
         || catalog.packages.len() > 128
         || catalog.kinds.len() > 128
         || catalog
@@ -518,7 +531,13 @@ fn capture_authority(
         )
     };
     let authority = RunAuthority {
-        schema: "af.task-run-authority/1".into(),
+        schema: if provider_admission.is_some() {
+            "af.task-run-authority/2"
+        } else {
+            "af.task-run-authority/1"
+        }
+        .into(),
+        provider_admission,
         engine_id,
         code_policy_id: code_policy_id.clone(),
         document_policy_id,
@@ -570,13 +589,14 @@ fn restore_compiler(
     id: &str,
     authority: &RunAuthority,
 ) -> Result<TaskPlanCompiler, String> {
-    if authority.schema != "af.task-run-authority/1" || authority.engine_id != engine(cas)? {
+    if authority.engine_id != engine(cas)? {
         return Err(
             "Task requires the exact recorded compatible engine; inspect remains available".into(),
         );
     }
     cas.verify(&authority.catalog_id)
         .map_err(|e| e.to_string())?;
+    let admission_cost = provider_admission::restore_cost(cas, authority)?;
     if let Some(local) = &authority.local_bindings_id {
         cas.verify(local).map_err(|e| e.to_string())?;
     }
@@ -651,12 +671,7 @@ fn restore_compiler(
             )?;
         }
     }
-    Ok(
-        compiler.with_provider_admission(review_graph::task::OperatorAttemptCost {
-            tokens: 4096,
-            wall_ms: 45000,
-        }),
-    )
+    Ok(compiler.with_provider_admission(admission_cost))
 }
 
 fn bind_models(

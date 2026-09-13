@@ -30,7 +30,9 @@ result on another `run`, with unchanged Attempt count and spend.
 selection uses captured applicability facts, strategy priorities and resource feasibility.
 Generation requires a captured Planner and developer signing policy; its exact proposed plan
 waits for signed approval before execution. See the public [Task file](../../schemas/task-file-v1.json)
-and [Task catalog](../../schemas/task-catalog-v1.json) schemas for the input shapes. Package existence, signing keys and joint
+and Task catalog [V1](../../schemas/task-catalog-v1.json) or
+[V2](../../schemas/task-catalog-v2.json) schemas for the input shapes. V2 requires the explicit
+[Provider admission cost](model-bindings.md); V1 retains its fixed allowance. Package existence, signing keys and joint
 resource feasibility still require admission validation.
 
 ```text

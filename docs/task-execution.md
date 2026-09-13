@@ -19,6 +19,10 @@ supplement it. Claude calls use only `claude-personal`.
 
 ## Progress
 
+Task catalog V2 captures an explicit finite Provider admission cost, while V1 keeps its original
+4,096-token/45-second allowance. Restoration uses captured authority and existing Task limits;
+individual overruns still stop dispatch. See [ADR-0091](adr/0091-capture-explicit-task-provider-admission-costs.md).
+
 Native Provider currentness code `bc1799f` matches frozen tree `e3e153e0` and passes the full
 local gate: **1,129 tests, zero failures, 15 ignored** across 132 suites, plus formatting,
 Clippy, documentation tests and byte-identical fixtures. Each native invocation checks the

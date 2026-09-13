@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 153] = [
+const SCHEMAS: [&str; 154] = [
     "task-inspection-v8.json",
     "provider-doctor-v2.json",
     "review-outcome-v2.json",
@@ -52,6 +52,7 @@ const SCHEMAS: [&str; 153] = [
     "task-broker-transition-v1.json",
     "task-file-v1.json",
     "task-catalog-v1.json",
+    "task-catalog-v2.json",
     "compiled-task-v1.json",
     "task-inspection-v3.json",
     "task-inspection-v4.json",

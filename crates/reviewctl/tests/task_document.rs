@@ -3,6 +3,10 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[cfg(unix)]
+#[path = "task_document/provider_admission.rs"]
+mod provider_admission;
+
 fn af(repo: &Path, args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_af"))
         .current_dir(repo)

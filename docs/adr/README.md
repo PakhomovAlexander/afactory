@@ -160,3 +160,4 @@ options you rejected and why — that is the part future-you needs.
 - [0088 — Retain native billing completeness with Task usage](0088-retain-native-billing-completeness-with-task-usage.md)
 - [0089 — Interrupt Task work when its writer heartbeat fails](0089-interrupt-task-work-when-its-writer-heartbeat-fails.md)
 - [0090 — Recheck native Task Provider identity before private invocation](0090-recheck-native-task-provider-identity-before-private-invocation.md)
+- [0091 — Capture explicit Task Provider admission costs](0091-capture-explicit-task-provider-admission-costs.md)

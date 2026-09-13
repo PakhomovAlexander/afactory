@@ -1,0 +1,239 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-catalog:2",
+  "title": "Project TaskCatalog af.task-catalog/2",
+  "$comment": "Project catalog syntax; distinct from af.shared-task-catalog/1. Capture validates imported closure bounds, exact package bytes and versions, policy files, parsed signing keys, installed kind/selection/planner bindings and Provider capabilities. Imports may supply every package. Review settings are validated against the selected domain when used. Defaults may be omitted; options cannot be null. V2 requires an explicit captured Provider admission cost; V1 keeps its original fixed allowance. Cost must also fit the original Task resources.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "packages",
+    "independence",
+    "provider_admission"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.task-catalog/2"
+    },
+    "code_policy": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*[\\\\\\x00-\\x1f\\x7f-\\x9f])(?!(?:.*/)?(?:\\.|\\.\\.|\\.git)(?:/|$))[^/]+(?:/[^/]+)*$"
+    },
+    "document_policy": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*[\\\\\\x00-\\x1f\\x7f-\\x9f])(?!(?:.*/)?(?:\\.|\\.\\.|\\.git)(?:/|$))[^/]+(?:/[^/]+)*$"
+    },
+    "selection": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "propertyNames": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+        },
+        "additionalProperties": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "maxProperties": 128
+      },
+      "maxProperties": 32
+    },
+    "no_match": {
+      "enum": [
+        "refuse",
+        "generate"
+      ]
+    },
+    "developers": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "keys"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.task-developers/1"
+        },
+        "keys": {
+          "type": "object",
+          "propertyNames": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 4096
+          },
+          "minProperties": 1,
+          "maxProperties": 32
+        }
+      }
+    },
+    "planner": {
+      "$ref": "urn:af:schema:task-planner-settings:1"
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviewers",
+        "gate",
+        "clean_rounds",
+        "max_rounds"
+      ],
+      "properties": {
+        "reviewers": {
+          "type": "object",
+          "additionalProperties": {
+            "enum": [
+              "required",
+              "advisory"
+            ]
+          }
+        },
+        "gate": {
+          "enum": [
+            "minor",
+            "major",
+            "blocker"
+          ]
+        },
+        "clean_rounds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "max_rounds": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "allow_targeted_repairs": {
+          "type": "boolean"
+        }
+      }
+    },
+    "packages": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "version",
+          "digest",
+          "path"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+          },
+          "digest": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "path": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^(?!/)(?!.*[\\\\\\x00-\\x1f\\x7f-\\x9f])(?!(?:.*/)?(?:\\.|\\.\\.)(?:/|$))[^/]+(?:/[^/]+)*$"
+          }
+        }
+      },
+      "maxProperties": 128
+    },
+    "kinds": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+      },
+      "maxProperties": 128
+    },
+    "imports": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "pattern": "^(?!/)(?!.*[\\\\\\x00-\\x1f\\x7f-\\x9f])(?!(?:.*/)?(?:\\.|\\.\\.|\\.git)(?:/|$))[^/]+(?:/[^/]+)*$"
+      },
+      "maxItems": 32
+    },
+    "independence": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/independence"
+    },
+    "providers": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      }
+    },
+    "provider_admission": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens",
+        "wall_ms"
+      ],
+      "properties": {
+        "tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "wall_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        }
+      }
+    }
+  },
+  "anyOf": [
+    {
+      "required": [
+        "code_policy"
+      ]
+    },
+    {
+      "required": [
+        "document_policy"
+      ]
+    }
+  ],
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "properties": {
+            "packages": {
+              "minProperties": 1
+            }
+          }
+        },
+        {
+          "required": [
+            "imports"
+          ],
+          "properties": {
+            "imports": {
+              "minItems": 1
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -193,6 +193,7 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
     }
     let catalog = TaskCatalog {
         schema: "af.task-catalog/1".into(),
+        provider_admission: None,
         selection: BTreeMap::new(),
         no_match: review_config::task::selection::NoMatchPolicy::Refuse,
         developers: None,

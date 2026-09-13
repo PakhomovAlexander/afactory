@@ -24,9 +24,26 @@ part of the exact binding. Bare model-family aliases and `-latest` selectors are
 
 Planning performs no model inference. The compiler adds a visible internal capability node
 for each distinct effective Model binding and invocation policy. Slots with the same capability
-share that node. Each reserves **4,096 tokens, one Attempt and 45 seconds** inside the Task's
+share that node. Catalog V1 reserves **4,096 tokens, one Attempt and 45 seconds** inside the Task's
 limits. Admission serving a required verifier is protected alongside that verifier. Pipeline
 and Task limits must have room for these Attempts; children do not create another allowance.
+
+Catalog V2 requires an explicit finite admission cost:
+
+```toml
+schema = "af.task-catalog/2"
+# Keep the catalog's other package, policy and binding declarations.
+[provider_admission]
+tokens = 32768
+wall_ms = 45000
+```
+
+Both values must be integers from 1 through 9,007,199,254,740,991 and fit the Task's original
+resources. Each distinct capability still has one Attempt. This example is a project choice,
+not a default: size the whole Task for this cost, business work and protected verification.
+V1 forbids this field and retains its original allowance. The captured V2 authority records the
+cost and original catalog bytes; changing local files after planning cannot change either.
+See [ADR-0091](../adr/0091-capture-explicit-task-provider-admission-costs.md).
 
 ```text
 account identity probe       planning: no model call
@@ -47,6 +64,13 @@ directory. Its exact prompt and context manifest are persisted before dispatch. 
 same native adapter as downstream Workers. Failure retains reported usage and blocks their
 dispatch. Unknown usage is conservatively charged under the common runtime's existing rule.
 Successful receipts survive replay without another paid probe.
+
+A short probe prompt does not bound the native client's complete context. One observed probe
+charged 5,712 tokens after a cache discount; its 16,331 input tokens and five output tokens
+would charge 16,336 without that discount. Neither figure guarantees a future upper bound.
+Any individual reservation overrun retains exact usage and blocks further dispatch, even if
+the acknowledgement passed and the wider Task has tokens left. Raising a Task total cannot
+clear that fence or change a completed Task.
 
 Before a planned Task resumes, the adapter checks the current account and recompiles against
 the recorded binding. Account, model, package or policy changes cannot silently alter an
