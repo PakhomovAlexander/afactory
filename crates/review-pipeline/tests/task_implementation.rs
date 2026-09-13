@@ -196,13 +196,14 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
         "inconclusive",
         "process_timeout",
         "independent_failed",
+        "failed_with_independent",
     ] {
         let dir = tempfile::tempdir().unwrap();
         let cas = Cas::open(dir.path().join("cas")).unwrap();
         let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
         let command: review_core::Command = match case {
             "passed" | "independent_failed" => serde_json::from_value(json!({"program":"/usr/bin/python3","args":[{"value":"-B","provenance":"literal"},{"value":"-c","provenance":"literal"},{"value":"import pagination; assert pagination.paginate(list(range(7)),2,3) == [2,3,4]","provenance":"literal"}]})).unwrap(),
-            "failed" => review_core::Command::new("/usr/bin/false",vec![]),
+            "failed" | "failed_with_independent" => review_core::Command::new("/usr/bin/false",vec![]),
             "process_timeout" => review_core::Command::new("/bin/sh",vec![review_core::Arg::literal("-c"),review_core::Arg::literal("sleep 1; exit 0")]),
             _ => review_core::Command::new("/no-such-af-check",vec![]),
         };
@@ -302,7 +303,7 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
         evaluate.worker_output_type = Some(TASK_EVALUATION_V1.into());
         evaluate.outcome_port = Some("result".into());
         let mut pipeline = pipeline(&implement, &evaluate);
-        if case == "independent_failed" {
+        if matches!(case, "independent_failed" | "failed_with_independent") {
             // A separate, declared Worker is outside the successful acceptance chain.
             // Give this new four-Attempt fixture its exact bound; existing cases stay unchanged.
             task.limits.max_attempts = 4;
@@ -387,7 +388,7 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
                 ]),
             ));
         }
-        if case == "independent_failed" {
+        if matches!(case, "independent_failed" | "failed_with_independent") {
             let mut files = packages
                 .iter()
                 .find(|(name, _)| name == "fixture/implementer")
@@ -497,6 +498,7 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
             match case {
                 "passed" => 3,
                 "independent_failed" => 4,
+                "failed_with_independent" => 3,
                 _ => 2,
             },
             "{case}: {report:?}"
@@ -510,17 +512,26 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
             result.acceptance,
             match case {
                 "passed" => TaskAcceptanceV1::Satisfied,
-                "failed" => TaskAcceptanceV1::Unsatisfied,
+                "failed" | "failed_with_independent" => TaskAcceptanceV1::Unsatisfied,
                 _ => TaskAcceptanceV1::Inconclusive,
             }
         );
-        if case == "independent_failed" {
+        if matches!(case, "independent_failed" | "failed_with_independent") {
             assert_eq!(result.execution, TaskExecutionV1::Exhausted);
-            assert_eq!(result.domain_conclusion, "incomplete");
-            assert!(
-                result.missing_obligations.is_empty(),
-                "the public verification did pass"
-            );
+            if case == "independent_failed" {
+                assert_eq!(result.domain_conclusion, "incomplete");
+                assert!(
+                    result.missing_obligations.is_empty(),
+                    "the public verification did pass"
+                );
+            } else {
+                assert_eq!(result.domain_conclusion, "changes_requested");
+                assert_eq!(
+                    result.missing_obligations,
+                    BTreeSet::from(["verified".into()]),
+                    "the genuine failed receipt remains a negative acceptance verdict"
+                );
+            }
             assert!(!result.evidence.is_empty());
             assert!(matches!(
                 report.outcome("root.nodes.independent"),
@@ -578,7 +589,7 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
             .unwrap()
             .0;
         runtime.finish(&result_id).unwrap();
-        if case == "independent_failed" {
+        if matches!(case, "independent_failed" | "failed_with_independent") {
             let final_state = runtime.projection().unwrap();
             assert_eq!(
                 final_state.phase,

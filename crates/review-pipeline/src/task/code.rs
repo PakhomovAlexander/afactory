@@ -611,11 +611,11 @@ impl CodeTaskDomain {
                 missing.insert(name.clone());
             }
         }
-        // Passed public receipts remain evidence, but cannot make incomplete planned work
-        // a completed Task. Use the same rule when Store revalidates the terminal result.
-        result.acceptance = if result.execution != TaskExecutionV1::Completed {
-            TaskAcceptanceV1::Inconclusive
-        } else if missing.is_empty() {
+        // Passed public receipts cannot make incomplete planned work a completed Task.
+        // A genuine negative receipt remains Unsatisfied independently of execution status.
+        // Use the same rule when Store revalidates the terminal result.
+        result.acceptance = if missing.is_empty() && result.execution == TaskExecutionV1::Completed
+        {
             TaskAcceptanceV1::Satisfied
         } else if failed {
             TaskAcceptanceV1::Unsatisfied
