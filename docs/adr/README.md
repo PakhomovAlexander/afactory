@@ -165,3 +165,5 @@ options you rejected and why — that is the part future-you needs.
 - [0095 — Bind legacy Task context and retry output admission](0095-bind-legacy-task-context-and-retry-output-admission.md)
 - [0096 — Revalidate Task execution evidence on cached
   replay](0096-revalidate-task-execution-evidence-on-cached-replay.md)
+- [0097 — Share validated source reads within one
+  operation](0097-share-validated-source-reads-within-one-operation.md)

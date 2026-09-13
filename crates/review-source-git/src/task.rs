@@ -101,6 +101,17 @@ pub fn capture_snapshot(
         .put_json(&serde_json::to_value(manifest).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
     read_manifest(cas, &manifest_id)?;
+    publish_snapshot(cas, manifest, manifest_id, origin_id, parent)
+}
+
+// Only called immediately after this operation has validated the complete source bytes.
+fn publish_snapshot(
+    cas: &Cas,
+    manifest: &Manifest,
+    manifest_id: String,
+    origin_id: &str,
+    parent: Option<&str>,
+) -> Result<String, String> {
     let record = TaskSnapshot {
         schema: "af.task-snapshot/1".into(),
         manifest_id,
@@ -116,9 +127,18 @@ pub fn source_tree(
     cas: &Cas,
     producer: Producer,
     snapshot_id: &str,
-    mut refs: Vec<String>,
+    refs: Vec<String>,
 ) -> Result<ArtifactInputV1, String> {
     read_snapshot(cas, snapshot_id)?;
+    publish_source_tree(cas, producer, snapshot_id, refs)
+}
+
+fn publish_source_tree(
+    cas: &Cas,
+    producer: Producer,
+    snapshot_id: &str,
+    mut refs: Vec<String>,
+) -> Result<ArtifactInputV1, String> {
     refs.push(snapshot_id.into());
     refs.sort();
     refs.dedup();
@@ -163,4 +183,32 @@ pub fn descends_from(cas: &Cas, child: &str, ancestor: &str) -> Result<bool, Str
         }
     }
     Err("Task Snapshot ancestry exceeds graph bound".into())
+}
+
+/// Seal one candidate against its captured parent in a single trusted operation. Both trees
+/// are freshly verified; publishing their derived metadata does not reread those same trees.
+/// No verified state escapes this call or authorizes a later operation without fresh reads.
+pub fn derive_source_tree(
+    cas: &Cas,
+    producer: Producer,
+    manifest_id: &str,
+    parent_snapshot_id: &str,
+    refs: Vec<String>,
+) -> Result<ArtifactInputV1, String> {
+    let (parent, _) = read_snapshot(cas, parent_snapshot_id)?;
+    let manifest = read_manifest(cas, manifest_id)?;
+    let canonical = cas
+        .put_json(&serde_json::to_value(&manifest).map_err(|e| e.to_string())?)
+        .map_err(|e| e.to_string())?;
+    if canonical != manifest_id {
+        return Err("Candidate Manifest is not canonical".into());
+    }
+    let snapshot_id = publish_snapshot(
+        cas,
+        &manifest,
+        canonical,
+        &parent.origin_id,
+        Some(parent_snapshot_id),
+    )?;
+    publish_source_tree(cas, producer, &snapshot_id, refs)
 }

@@ -11,8 +11,8 @@ use review_core::{PortCardinality, Producer};
 use review_graph::task::OperatorSignature;
 use review_sandbox::{Mode, Policy, Sandbox};
 use review_source_git::task::{
-    CANDIDATE_TREE_V1, CandidateTree, SOURCE_TREE_V1, SourceTree, capture_snapshot, read_manifest,
-    read_snapshot, source_tree,
+    CANDIDATE_TREE_V1, CandidateTree, SOURCE_TREE_V1, SourceTree, TaskSnapshot, derive_source_tree,
+    read_manifest, read_snapshot,
 };
 use review_store::Cas;
 use review_store::store::task::execution::PreparedTaskAttempt;
@@ -51,6 +51,14 @@ pub fn invocation_producer(
 }
 
 pub fn source_input(cas: &Cas, input: &ArtifactInputV1) -> Result<String, String> {
+    source_snapshot(cas, input).map(|(id, _, _)| id)
+}
+
+/// Read exact source authority and its validated tree once for this operation.
+pub fn source_snapshot(
+    cas: &Cas,
+    input: &ArtifactInputV1,
+) -> Result<(String, TaskSnapshot, review_source_git::Manifest), String> {
     input.validate()?;
     if input.artifact_type != SOURCE_TREE_V1 || input.cardinality != PortCardinality::One {
         return Err("Source environment requires one typed SourceTree".into());
@@ -63,8 +71,8 @@ pub fn source_input(cas: &Cas, input: &ArtifactInputV1) -> Result<String, String
     {
         return Err("SourceTree disagrees with its admitted Snapshot".into());
     }
-    read_snapshot(cas, &source.snapshot_id)?;
-    Ok(source.snapshot_id)
+    let (snapshot, manifest) = read_snapshot(cas, &source.snapshot_id)?;
+    Ok((source.snapshot_id, snapshot, manifest))
 }
 
 fn candidate_port(signature: &OperatorSignature) -> bool {
@@ -112,14 +120,13 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
                 "Source-writing Worker must expose a kernel-captured candidate port".into(),
             );
         }
-        let id = source_input(
+        let (_, _, manifest) = source_snapshot(
             cas,
             invocation
                 .inputs
                 .get("source")
                 .ok_or("Source Worker has no source port")?,
         )?;
-        let (_, manifest) = read_snapshot(cas, &id)?;
         let mode = if candidate_port(signature) {
             Mode::EphemeralWrite
         } else {
@@ -226,18 +233,11 @@ pub fn seal_candidate(cas: &Cas, invocation: &TaskInvocationV1) -> Result<Artifa
     {
         return Err("Seal candidate has no admitted Attempt or parent affinity".into());
     }
-    let (parent, _) = read_snapshot(cas, &candidate.parent_snapshot_id)?;
-    let manifest = read_manifest(cas, &candidate.manifest_id)?;
-    let id = capture_snapshot(
-        cas,
-        &manifest,
-        &parent.origin_id,
-        Some(&candidate.parent_snapshot_id),
-    )?;
-    source_tree(
+    derive_source_tree(
         cas,
         invocation_producer(cas, invocation, None)?,
-        &id,
+        &candidate.manifest_id,
+        &candidate.parent_snapshot_id,
         input.artifact_ids.clone(),
     )
 }
@@ -254,14 +254,13 @@ pub fn validate_seal(
     let candidate: CandidateTree =
         serde_json::from_value(envelope(cas, &input.artifact_ids[0])?.payload)
             .map_err(|e| e.to_string())?;
-    let source = source_input(
+    let (_, snapshot, _) = source_snapshot(
         cas,
         output
             .outputs
             .get("snapshot")
             .ok_or("Seal has no Snapshot")?,
     )?;
-    let (snapshot, _) = read_snapshot(cas, &source)?;
     if snapshot.parent_snapshot_id.as_ref() != Some(&candidate.parent_snapshot_id)
         || snapshot.manifest_id != candidate.manifest_id
     {
