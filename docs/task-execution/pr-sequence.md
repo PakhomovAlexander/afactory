@@ -934,3 +934,25 @@ The Linux stderr fixture now emits and checks its own diagnostic. Fresh CI remai
 TaskRuntime/heartbeat/CLI forwarding is a subsequent uncommitted slice. See
 [ADR-0087](../adr/0087-control-native-task-invocations-through-the-shared-supervisor.md) and
 [ADR-0088](../adr/0088-retain-native-billing-completeness-with-task-usage.md).
+
+## 2026-09-13 — readonly fixture Gates complete
+
+PR 1 `1228417` passes its full readonly Gate at tree `03d83ac2`: 735 tests, zero failures,
+fifteen ignored, formatting, Clippy and fixture reproduction in 207,658 ms. The preceding
+unpaid run exposed two readonly-copy writes after 181,973 ms; that failure remains retained.
+Product's shared fixture correction passes the same full Gate at tree `1a49e2d7`: 1,137
+passed, zero failed and fifteen ignored in 605,202 ms. Both executions retain unchanged
+source bytes/modes and complete raw output, without guard trips or unreaped owned processes.
+
+Root audited PR 1's ten raw evidence records and committed the exact verified tree. Product
+`727c0d5` merges that commit while retaining its already-corrected shared helper and equivalent
+regression; the Product tree is unchanged, so its existing full Gate remains exact evidence.
+The following release-note/status changes affect documentation only. They do not select a
+release version, change a consumer pin or claim P14 completion.
+
+Claude personal authentication and all nine requested initial admissions passed. The three
+Campaigns stopped at required Gates before any specialist Attempt, totaling 20,935 charged
+tokens. All original Store/CAS and failures remain intact. Gate corrections pass locally;
+explicit recovery proposals preserve original spending within the prior combined cap and
+await renewed-spend approval. No recovery or follow-up specialist Round has run. The owner
+instructed working without CI today; no CI wait, rerun or billing work is queued.

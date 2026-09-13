@@ -9,6 +9,40 @@ release pages only.
 
 ## [Unreleased]
 
+### Authority compatibility
+
+The Task increment is implemented on the development branches and remains unreleased.
+New Task execution requires its versioned `.af` catalog, Pipeline/Worker contracts and lock.
+Every generated Execution Plan requires an authorized developer's exact-plan approval.
+Local bindings do not travel with shared definitions. Existing `.review` consumers still
+need the supported `af onboard --migrate --apply` path; validate migrated authority together
+with the chosen released binary and its verified archive digests before switching launchers.
+No release version or consumer pin has been selected by this preparation.
+
+New Review executions use the common Task runtime. Historical paid Campaigns preserve their
+captured executor, authority and accounting; they are not rewritten into new Tasks. Keep the
+original Store and known-good release for historical continuation and rollback. An older
+binary must not reinterpret unsupported new state, and rollback cannot refund recorded usage
+or reopen completed work. Release-bound migration and rollback evidence remain P14 gates.
+
+### Changes
+
+- Make Task the common durable execution model for implementation, Review and documents,
+  with typed Pipeline input/output contracts, captured context and shared budget accounting.
+- Compose reusable Review Pipelines inside implementation, with independent acceptance and
+  bounded repairs that retain Finding and Snapshot provenance.
+- Select fitting shared Pipelines; persist generated definitions and plans for developer
+  review when configured generation is needed; export definitions for subsequent reuse.
+- Share versioned Pipeline/Worker packages and starter workflows through Git, with local
+  Provider bindings, deterministic contract checks, Jira/local source capture and explicit
+  delivery to a new local worktree.
+- Preserve Provider usage and recovery evidence across cancellation, writer loss and storage
+  failures, and capture explicit admission allowances in Task catalog V2.
+
+Specialist PR reviews, the separately budgeted live pilot, supported boundary checks and the
+checksummed consumer cutover remain required before release completion. See
+[Task execution status](docs/task-execution.md).
+
 ## [0.8.0] - 2026-09-08
 
 ### Authority compatibility
