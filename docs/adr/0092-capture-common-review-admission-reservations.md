@@ -27,7 +27,9 @@ mandatory Review work and configured aggregate scopes before any paid Attempt. S
 perform its existing token-free local Provider identity read; this is not paid admission.
 No Task token limit, Attempt limit, verifier protection, overrun rule or accounting path changes.
 For uncapped policies the existing resource-envelope calculation includes the chosen cost;
-explicit Campaign token caps remain hard limits.
+explicit Campaign token caps remain admission limits. They do not impose a native-provider
+consumption cap: actual usage can exceed a reservation, remains fully charged, and blocks
+subsequent work when the captured budget is breached.
 
 Resume uses the original captured cost, even for a 4,096-token plan. Omitting both options reads
 that cost; supplying both must match its tokens and wall time exactly. A differing override
