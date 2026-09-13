@@ -2,33 +2,41 @@
 
 **Active increment:** [Task execution](task-execution.md), P00–P14, authorized as three PRs.
 
-Native Provider currentness code `bc1799f` matches frozen tree `e3e153e0` and passes the full
-local gate: **1,129 tests, zero failures, 15 ignored** across 132 suites, plus formatting,
-Clippy, documentation tests and byte-identical fixtures. Each native invocation checks the
-captured account and local authentication context before private send, sharing its original
-Attempt deadline and cancellation control. Drift refuses with known-zero new usage and retains
-prior admission/spend. Source cancellation now proves live process cleanup. The check-to-client
-credential race remains explicit in [ADR-0090](adr/0090-recheck-native-task-provider-identity-before-private-invocation.md).
+WS5 source corrections are integrated in PR1 `c2207ca` and PR2 `10c5302`. Explicit Review
+generation2 now supplies exact per-reviewer prior-Finding assignments, complete dispositions,
+readable bounded patch transport and selected Attempt provenance. Old captured generations
+remain readable. Current PR2 starters select generation2 independently of Provider catalog
+version. Failed execution cannot become Satisfied merely because public obligations passed;
+real negative receipts remain Unsatisfied. Warm Store evidence is freshly verified, source
+reads share validation within one operation, and PR2 Review memos are cleared at each external
+operation. The [implementation review record](task-execution/implementation-review.md) maps
+all specialist reports to corrections, remaining limits and exact focused receipts.
 
-The preceding heartbeat checkpoint `3d74329`, tree `61cc27fb`, passes 1,123 tests and the same
-full gate. Common Task, planning, Review and doctor connect exact writer-lease failure to
-supervised Worker/Gate/Integration cancellation, preserving paid observations and preventing
-later work. Its first frozen gate hit SQLite I/O while the host disk was full; removing obsolete
-build caches made the unchanged tree pass. The Linux stdin fixture correction preserves the
-intended blocked pipe and passes original-versus-fixed Linux and macOS checks. See
-[ADR-0089](adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md).
+PR1's final read-only full Gate at `c2207ca` passes **759 tests, zero failures, 15 ignored**
+across 98 suites, formatting, Clippy and byte-identical fixtures in 297,311ms, with all 567
+source files and directory modes unchanged. PR2 `10c5302` passes its final readonly
+full Gate: **1,168 tests, zero failures, 15 ignored**, 134 suites, formatting, Clippy and
+byte-identical fixtures in 752,255 ms; all 996 source files and directory modes remain
+unchanged. Earlier Provider-currentness `bc1799f`
+(tree `e3e153e0`, 1,129 tests/132 suites) and heartbeat `3d74329` (1,123 tests) remain included
+historical checkpoints. Their exact native identity/cancellation guarantees and the residual
+check-to-client credential race remain in
+[ADR-0089](adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md) and
+[ADR-0090](adr/0090-recheck-native-task-provider-identity-before-private-invocation.md).
+Published `5aa6bd52` passed historical
+[CI run 34723107534](https://github.com/PakhomovAlexander/afactory/actions/runs/34723107534).
+The owner has instructed working without CI today; no retry or billing action is queued.
 
-Published documentation head `5aa6bd52b5850ede200643f3dd1e5a3e526cd04a` passes both Check and
-container-probes in [CI run 34723107534](https://github.com/PakhomovAlexander/afactory/actions/runs/34723107534).
-This verifies the Provider-currentness checkpoint and its preceding usage, recording-recovery
-and heartbeat changes. The earlier Linux stdin fixture failure is retained in the checkpoint
-history; it is not an outstanding failure of this candidate.
-
-No requested external PR reviewer has run. Personal Claude authentication remains unresolved;
-the retained profile observation is false/none and terminal comparison is pending. Docker
-recovery and exact owned-container cleanup remain pending locally. Required live boundary
-probes, separately budgeted calibration/pilot runs and supported consumer release migration
-remain. Neither the local gate nor green container CI supplies live-model evidence.
+Personal Claude authentication and Docker restart/owned cleanup are complete. PR1 Fable and
+Opus returned selected partial results; the original Campaign lacks Sol/Gather/Ledger and
+remains Incomplete. A separately authorized Sol WholeTree recovery closed Fail(exhausted)
+with seven Findings on the same candidate. Combined PR1 spend is 1,655,355 tokens, 255,355
+over the 1,400,000 approval; further paid review calls are stopped. The original claims remain
+open or partial, with no canonical fixed/rejected/wontfix transition invented by local fixes.
+PR2/PR3 specialist reviews and remaining supported-environment, benchmark, calibration/pilot
+and consumer-release evidence remain. Deterministic Gates supply no live-model performance
+claim. Previous current-status passages are preserved verbatim in the
+[pre-WS5 status archive](task-execution/status-before-ws5-review-2026-09-14.txt).
 
 ## Earlier Task checkpoints
 

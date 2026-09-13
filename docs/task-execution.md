@@ -1,6 +1,6 @@
 # Task execution increment
 
-**Status:** implementation in progress, 2026-09-13. Baseline is kernel `5464b38` (0.8.0).
+**Status:** implementation and review corrections in progress, 2026-09-14. Baseline is kernel `5464b38` (0.8.0).
 The accepted hub implementation sequence is P00–P14; kernel contracts, fixtures and progress
 are canonical here. The hub design is in its `docs/architecture/task-execution.md` and the
 delivery plan in `docs/workstreams/task-execution/implementation-plan.md`.
@@ -19,36 +19,61 @@ supplement it. Claude calls use only `claude-personal`.
 
 ## Progress
 
-New legacy Worker captures keep execution identity and wire budgets in a Task/plan-bound
-context. Domain-output rejection retains typed retry feedback and exact accounting; internal
-Manifest metadata has a separate finite limit. See
-[ADR-0095](adr/0095-bind-legacy-task-context-and-retry-output-admission.md).
+The WS5 corrections are integrated in PR1 `c2207ca` and PR2 `10c5302`. Newly selected
+`review.generation = 2` captures compact Subject2 metadata, exact reviewer-scoped prior-Finding
+assignments and ReviewerResult2 dispositions. Readable patch files retain the original 4MiB
+ChangeSet authority and 1MiB initial-message bound. Report, Demand and disposition producers
+retain the selected flattened Task Attempt. Absent selection preserves generation1 independently
+of catalog version; new V1 reservations with eligible prior Findings refuse before dispatch,
+and recorded old outputs remain replayable. Current PR2 software starters explicitly select
+this generation. See [ADR-0094](adr/0094-bind-task-review-assignments-and-readable-inputs.md)
+and [ADR-0099](adr/0099-select-task-review-generation-independently-of-provider-costs.md).
 
-Task catalog V2 captures an explicit finite Provider admission cost, while V1 keeps its original
-4,096-token/45-second allowance. Restoration uses captured authority and existing Task limits;
-individual overruns still stop dispatch. See [ADR-0091](adr/0091-capture-explicit-task-provider-admission-costs.md).
+Result construction determines failed execution before acceptance. Passing receipts cannot
+make incomplete work Satisfied; genuine negative verification remains Unsatisfied, preserving
+its evidence. Warm Store projections verify the full execution reference closure. PR2 Review
+round/repair memos are shared only within a serialized synchronous operation and cleared before
+the next entry; source identity reads share fresh validation only inside an operation. See
+[ADR-0093](adr/0093-derive-code-task-acceptance-from-execution-and-evidence.md),
+[ADR-0096](adr/0096-revalidate-task-execution-evidence-on-cached-replay.md),
+[ADR-0097](adr/0097-share-validated-source-reads-within-one-operation.md) and
+[ADR-0098](adr/0098-scope-review-memos-to-one-domain-operation.md).
 
-The current Product tree `1a49e2d7a55260f23cf76667cebe6199f1e2e210` passes the full Gate
-from a read-only Git export with HOME absent: **1,137 tests, zero failures, 15 ignored**
-across 133 suites, plus formatting, Clippy and byte-identical fixture reproduction, in
-605,202 ms. PR 1's corresponding fixture correction passes 735 tests and its full readonly
-Gate. Product `727c0d5` incorporates PR 1 `1228417` without changing the verified Product
-tree: the shared helper and equivalent regression already contain the same fix. Copies used
-by tests gain only owner-write permission; captured source and executable meaning remain intact.
+New legacy Worker captures bind execution identity and wire budgets to Task/plan authority;
+domain-output rejection retains typed retry feedback and exact accounting. Internal Manifest
+metadata has its own finite bound, while delivered Worker input keeps its original limit
+([ADR-0095](adr/0095-bind-legacy-task-context-and-retry-output-admission.md)). PR2 catalog2
+captures explicit Provider admission cost; catalog1 retains 4,096 tokens/45 seconds. New
+common Review/doctor captures retain their own explicit cost; every resume uses original
+captured resources. Actual overruns still stop dispatch. See
+[ADR-0091](adr/0091-capture-explicit-task-provider-admission-costs.md) and
+[ADR-0092](adr/0092-capture-common-review-admission-reservations.md).
 
-The earlier Provider-currentness, heartbeat, native usage and recording-recovery checkpoints
-remain included. Published `5aa6bd5` passes historical
-[CI run 34723107534](https://github.com/PakhomovAlexander/afactory/actions/runs/34723107534),
-including container probes. The owner instructed working without CI today; no CI wait, rerun
-or billing action is queued. Current local corrections remain unpushed.
+PR1 `c2207ca` passes its final read-only full Gate: **759 tests, zero failures, 15 ignored**
+across 98 suites, plus formatting, Clippy and byte-identical fixture reproduction, in
+297,311 ms. All 567 source files and directory modes remain unchanged. PR2 `10c5302`
+passes its final readonly full Gate: **1,168 tests, zero failures, 15 ignored**, across
+134 suites, formatting, Clippy and byte-identical fixtures in 752,255 ms. All 996 source
+files and directory modes remain unchanged.
+The final focused receipts and exact code boundaries are in the
+[implementation review record](task-execution/implementation-review.md).
 
-Claude personal authentication is confirmed through its configured personal profile, and all
-nine first-Campaign admissions passed. Each PR Campaign then stopped at a local Gate before
-specialist review. The failures are corrected and verified; renewed review admissions still
-await explicit approval. The original three Campaigns retain 20,935 charged tokens and zero
-specialist Attempts, Findings or Ledgers. Docker's authorized restart also completed.
-Separately budgeted document calibration, live pilot/boundary evidence and supported consumer
-migration remain required. Deterministic Gates do not provide live-model performance evidence.
+The prior Product checkpoint `1a49e2d7a55260f23cf76667cebe6199f1e2e210` passed 1,137 tests,
+15 ignored, 133 suites in 605,202ms from a read-only export with HOME absent. It predates
+these review corrections and is retained as historical evidence. Published `5aa6bd5` passed historical
+[CI run 34723107534](https://github.com/PakhomovAlexander/afactory/actions/runs/34723107534).
+The owner instructed working without CI today; no CI wait, rerun or billing action is queued.
+
+Personal Claude authentication and the authorized Docker restart/owned cleanup completed.
+The original PR1 three-specialist Campaign remains Incomplete with selected Fable and Opus
+results but no combined Ledger. The separately authorized Sol WholeTree recovery closed
+Fail(exhausted) with seven open Findings on the same candidate. Their combined recorded spend
+is 1,655,355 tokens against 1,400,000 approved, exceeding it by 255,355; no further paid review
+calls are authorized. Source corrections are not canonical Finding closure or a clean review.
+PR2/PR3 specialist work, explicit performance measurements, remaining P14 calibration/pilot
+and supported consumer release migration remain. See the linked review record for all partial,
+unfulfilled and qualified findings/declarations. Replaced current-status passages are retained
+verbatim in the [pre-WS5 status archive](task-execution/status-before-ws5-review-2026-09-14.txt).
 
 ## Earlier verified checkpoints
 
@@ -264,21 +289,19 @@ across 89 suites; formatting, Clippy and synthetic fixture reproduction passed. 
 checked 96 files with zero errors. Prior candidate gates also passed on read-only archives and
 with the exact cleared Gate environment. No model review was repeated after these corrections.
 
-**Current resume:** complete the remaining P14 calibration and live evidence, external PR
-reviews, and supported consumer/release migration. Exact native usage, expired-Waiting factual
-recovery, heartbeat cancellation, heavy continuation, Jira refresh and result-scoped delivery
-are implemented and included in the current 1,137-test source tree and the recorded earlier
-Linux CI checkpoint.
+**Current resume:** complete final local Gates, the outstanding PR2/PR3 specialist reviews,
+P14 calibration/live pilot and supported consumer/release migration. The integrated Review
+fixes and qualified performance findings are recorded above and in the
+[implementation review record](task-execution/implementation-review.md). New model calls
+remain paused after the recorded PR1 budget overrun; prior token-free renders do not authorize
+new spending or establish review verdicts.
 
-Token-free preflights fit all three PRs at their recorded candidate revisions; their exact
-limits and evidence are in the [three-PR record](task-execution/pr-sequence.md). Those fits are
-not authentication, model usage or review verdicts, and a changed candidate needs a new render.
-The original approved 761,856-token Document calibration stopped after its first admission
-charged 5,712 tokens against 4,096 reserved, with no assessment or retry. The new source-bound
-proposal passes independent preparation checks and awaits approval for 1,990,656 reserved
-tokens. The performance pilot has a distinct unapproved budget.
-Continue P00–P14 in the approved three PRs; completed deterministic gates do not replace these
-remaining release requirements.
+The separate Document calibration accepted its ten controls, then stopped on its third
+historical assessment's classification failure. No paid retry or later-row execution is
+authorized by that stopped batch. Current P14 receipts and remaining approvals are tracked
+in the Hub's `docs/workstreams/task-execution.md`. The live product pilot has a separate
+unapproved budget. Continue the approved three-PR increment; deterministic tests and source
+integration do not establish release completion.
 
 ## P00 baseline evidence
 
