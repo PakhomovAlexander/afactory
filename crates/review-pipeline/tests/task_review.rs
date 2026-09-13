@@ -354,7 +354,10 @@ if 'change_scope' in s:
         pathlib.Path(patch['path']).write_bytes(b'changed')
 stage={{'verdict':'approve','summary':('read exact patch bytes: '+json.dumps(patch,sort_keys=True)) if 'change_scope' in s else 'Complete source-scoped review','reports':[],'benchmark_demands':[],'dispositions':[]}}
 if s['round']==1 and {name:?}=='correctness':
-    stage['reports']=[{{'severity':'major','file':'lib.rs','line':1,'title':'Missing behavior','body':'The implementation omits the required behavior','fix':'Implement it','confidence':0.9}}]
+    stage['reports']=[{{'severity':'major','file':'lib.rs','line':1,'title':'Missing behavior','body':'The implementation omits the required behavior','fix':'Implement it','confidence':1.0}}]
+    if {case:?}=='valid':
+        stage['reports'][0].pop('confidence')
+        stage['reports'][0].pop('line')
     stage['benchmark_demands']=[{{'claim':'Runtime is bounded','why':'Large inputs matter','suggested_method':'Measure scaling'}}]
 if s['round']==2:
     stage['dispositions']=[{{'finding_id':f['finding_id'],'position':'not_reproduced','reason':'Checked the same declared scope'}} for f in a['findings']]
@@ -729,11 +732,11 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
                 if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
                     transition.change
                 {
-                    let record: review_core::task::execution::TaskExecutionRecordV1 =
-                        serde_json::from_value(
-                            cas.get_json(&record_id).unwrap()["payload"].clone(),
-                        )
-                        .unwrap();
+                    let record = review_store::store::task::execution::read_execution_record(
+                        &cas, &record_id,
+                    )
+                    .unwrap()
+                    .record;
                     if let review_core::task::execution::TaskExecutionRecordV1::Settled {
                         raw_artifact_ids,
                         ..

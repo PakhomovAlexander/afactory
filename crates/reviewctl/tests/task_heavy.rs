@@ -281,7 +281,10 @@ fn heavy_review_cannot_erase_negative_missing_stale_or_rediscovered_claims() {
 
 /// Upgrade only this newly configured disposable fixture. Frozen bounded-repair bytes stay V1.
 fn upgrade_review_generation(packages: &Path, catalog: &mut toml::Value) {
-    catalog["review"]["generation"] = toml::Value::Integer(2);
+    catalog["review"]
+        .as_table_mut()
+        .unwrap()
+        .insert("generation".into(), toml::Value::Integer(2));
     let mut output_schema: Value =
         serde_json::from_slice(include_bytes!("../../../schemas/reviewer-result-v2.json")).unwrap();
     let original_schema: Value =

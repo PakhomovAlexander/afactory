@@ -48,20 +48,7 @@ pub fn prepare_canonical_task_review(
                 "Task canonical result lost its exact selected Attempt provenance".into(),
             ));
         }
-        review_core::validate_reviewer_result_v2(&artifact.payload)
-            .map_err(StoreError::Conflict)?;
-        let mut encoded = serde_json::to_value(stage.stage)?;
-        let object = encoded.as_object_mut().expect("typed stage is an object");
-        let reports = object.remove("findings").expect("typed stage reports");
-        object.insert("reports".into(), reports);
-        let mut dispositions = object.remove("disputes").expect("typed stage dispositions");
-        for entry in dispositions.as_array_mut().expect("typed dispositions") {
-            let entry = entry.as_object_mut().expect("typed disposition");
-            let id = entry.remove("fp").expect("typed disposition ID");
-            entry.insert("finding_id".into(), id);
-        }
-        object.insert("dispositions".into(), dispositions);
-        if encoded != artifact.payload {
+        if selected_task_stage(&artifact.payload)? != *stage.stage {
             return Err(StoreError::Conflict(
                 "Task reduction changed the selected result payload".into(),
             ));
@@ -72,6 +59,31 @@ pub fn prepare_canonical_task_review(
             .producer = artifact.producer;
     }
     prepare_review_outputs(cas, run_id, ledger, &prepared)
+}
+
+// Compare the existing typed stage semantics after strict wire validation. Canonical JSON
+// stores 1.0 as 1, and the contract permits omitted nullable report fields. Neither changes
+// the selected result or authorizes changing its producer, references, or actual field values.
+fn selected_task_stage(payload: &serde_json::Value) -> Result<LegacyStageOutput, StoreError> {
+    review_core::validate_reviewer_result_v2(payload).map_err(StoreError::Conflict)?;
+    let mut decoded = payload.clone();
+    let object = decoded
+        .as_object_mut()
+        .expect("validated result is an object");
+    let reports = object.remove("reports").expect("validated result reports");
+    object.insert("findings".into(), reports);
+    let mut dispositions = object
+        .remove("dispositions")
+        .expect("validated result dispositions");
+    for entry in dispositions.as_array_mut().expect("validated dispositions") {
+        let entry = entry.as_object_mut().expect("validated disposition");
+        let id = entry
+            .remove("finding_id")
+            .expect("validated disposition ID");
+        entry.insert("fp".into(), id);
+    }
+    object.insert("disputes".into(), dispositions);
+    Ok(serde_json::from_value(decoded)?)
 }
 
 fn validate_stages(ledger: &Ledger, stages: &[CanonicalStage<'_>]) -> Result<(), StoreError> {
@@ -627,4 +639,34 @@ pub(super) fn prepare_review_outputs(
         ledger: projected,
         events,
     })
+}
+
+#[cfg(test)]
+mod task_selected_stage_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn selected_stage_preserves_canonical_numbers_optional_fields_and_exact_payload() {
+        let mut payload = json!({"verdict":"request-changes","summary":"Review","reports":[{"severity":"major","file":"lib.rs","title":"Missing behavior","body":"Required behavior is absent","fix":"Implement it","confidence":1.0}],"benchmark_demands":[],"dispositions":[]});
+        let original = selected_task_stage(&payload).unwrap();
+        let stored: serde_json::Value =
+            serde_json::from_slice(&crate::canonical::canonicalize(&payload).unwrap()).unwrap();
+        assert_eq!(stored["reports"][0]["confidence"], json!(1));
+        assert_eq!(selected_task_stage(&stored).unwrap(), original);
+        payload["reports"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("confidence");
+        let omitted = selected_task_stage(&payload).unwrap();
+        assert_eq!(omitted.findings[0].confidence, None);
+        assert_eq!(omitted.findings[0].line, None);
+        payload["reports"][0]["confidence"] = json!(null);
+        payload["reports"][0]["line"] = json!(null);
+        assert_eq!(selected_task_stage(&payload).unwrap(), omitted);
+        payload["reports"][0]["title"] = json!("A changed selected claim");
+        assert_ne!(selected_task_stage(&payload).unwrap(), omitted);
+        payload["reports"][0]["unknown"] = json!(true);
+        assert!(selected_task_stage(&payload).is_err());
+    }
 }

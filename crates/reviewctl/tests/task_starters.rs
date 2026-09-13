@@ -451,12 +451,18 @@ fn reviewed_implementation_preserves_evidence_when_independent_work_fails() {
         pipeline.max_attempts += 1;
         std::fs::write(pipeline_path, toml::to_string(&pipeline).unwrap()).unwrap();
         let pin = json!({"path":".af/independent-failure","version":"1.0.0","digest":review_config::lock::package_digest(&worker.name,&failure).unwrap()});
-        catalog["packages"][&worker.name] = toml::Value::try_from(pin.clone()).unwrap();
+        catalog["packages"].as_table_mut().unwrap().insert(
+            worker.name.clone(),
+            toml::Value::try_from(pin.clone()).unwrap(),
+        );
         std::fs::write(path, toml::to_string(&catalog).unwrap()).unwrap();
         let path = repo.join("catalog.toml");
         let mut shared: toml::Value =
             toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-        shared["packages"][&worker.name] = toml::Value::try_from(pin).unwrap();
+        shared["packages"]
+            .as_table_mut()
+            .unwrap()
+            .insert(worker.name.clone(), toml::Value::try_from(pin).unwrap());
         std::fs::write(path, toml::to_string(&shared).unwrap()).unwrap();
         let path = repo.join("implementation-reviewed.json");
         let mut file: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
