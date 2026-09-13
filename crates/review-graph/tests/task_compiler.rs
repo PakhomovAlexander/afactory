@@ -1,3 +1,6 @@
+#[path = "task_compiler/node_bounds.rs"]
+mod node_bounds;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use review_core::task::{TaskRevisionV1, pipeline::*};

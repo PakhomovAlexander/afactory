@@ -367,6 +367,7 @@ pub struct CompileContext<'a> {
     /// Trusted Task-kind policy: each obligation identifies the public final output whose
     /// Snapshot its evidence must judge. Pipeline authors cannot redirect this obligation.
     pub acceptance_outputs: BTreeMap<String, String>,
+    /// Maximum physical expanded nodes, including root inputs and Select nodes.
     pub max_nodes: usize,
     pub max_depth: usize,
 }
@@ -492,6 +493,7 @@ pub fn compile_task(
     for port in boundary_outputs.values_mut() {
         port.root_default = None;
     }
+    compiler.require_node_capacity()?;
     compiler.graph.nodes.insert(
         "root.inputs".into(),
         CompiledNode {
@@ -560,6 +562,13 @@ pub fn compile_task(
 type Boundary = (BTreeMap<String, Address>, BTreeMap<String, Address>);
 
 impl Compiler<'_> {
+    fn require_node_capacity(&self) -> Result<(), String> {
+        if self.graph.nodes.len() >= self.context.max_nodes {
+            return Err("Expanded Task exceeds the node limit".into());
+        }
+        Ok(())
+    }
+
     fn select(
         &mut self,
         qualified: &str,
@@ -633,9 +642,7 @@ impl Compiler<'_> {
                 Some(previous) => previous.intersection(&receipts).cloned().collect(),
             });
         }
-        if self.graph.nodes.len() > self.context.max_nodes {
-            return Err("Expanded Task exceeds the node limit".into());
-        }
+        self.require_node_capacity()?;
         self.graph.nodes.insert(
             qualified.into(),
             CompiledNode {
@@ -1021,9 +1028,7 @@ impl Compiler<'_> {
                                 "{qualified} must bind every configured reviewer and check; missing runtime results remain typed incomplete evidence"
                             ));
                         }
-                        if self.graph.nodes.len() > self.context.max_nodes {
-                            return Err("Expanded Task exceeds the node limit".into());
-                        }
+                        self.require_node_capacity()?;
                         let paid = matches!(
                             operator,
                             TaskOperatorV1::Worker { .. }

@@ -4,6 +4,9 @@ use std::process::Command;
 
 use serde_json::Value;
 
+#[path = "task_file/wall_bounds.rs"]
+mod wall_bounds;
+
 fn copy_tree(source: &Path, destination: &Path) {
     std::fs::create_dir_all(destination).unwrap();
     for entry in std::fs::read_dir(source).unwrap() {

@@ -441,6 +441,16 @@ pub(super) fn start_review(options: StartOptions) -> Result<i32, String> {
     start_kind(options, Some("review"))
 }
 
+fn effective_task_wall_ms(file_wall_ms: u64, timeout_secs: Option<u64>) -> Result<u64, String> {
+    if file_wall_ms == 0 || timeout_secs == Some(0) {
+        return Err("Task wall_ms and --timeout-secs must be positive".into());
+    }
+    let timeout_ms = timeout_secs
+        .map(|seconds| seconds.checked_mul(1000).ok_or("Task timeout overflow"))
+        .transpose()?;
+    Ok(timeout_ms.map_or(file_wall_ms, |limit| limit.min(file_wall_ms)))
+}
+
 fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32, String> {
     let started = clock()?;
     let mut bytes = Vec::new();
@@ -460,6 +470,9 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
     {
         return Err("Task file requires schema af.task-file/1, a valid ID, supported kind and nonempty goal".into());
     }
+    // Reject invalid duration before creating state, capturing authority or occupying an ID.
+    let wall = effective_task_wall_ms(file.limits.wall_ms, options.timeout_secs)?;
+    started.checked_add(wall).ok_or("Task deadline overflow")?;
     let (repo, state) = state_path(&options.repo, options.state.as_deref())?;
     std::fs::create_dir_all(&state).map_err(|e| e.to_string())?;
     let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
@@ -524,11 +537,7 @@ fn start_captured(
     let adapter = cas
         .put_json(&json!({"schema":"af.task-file-adapter/1","source_file_id":input_file}))
         .map_err(|e| e.to_string())?;
-    let wall = options
-        .timeout_secs
-        .map(|seconds| seconds.checked_mul(1000).ok_or("Task timeout overflow"))
-        .transpose()?
-        .map_or(file.limits.wall_ms, |limit| limit.min(file.limits.wall_ms));
+    let wall = effective_task_wall_ms(file.limits.wall_ms, options.timeout_secs)?;
     let mut revision=TaskRevisionV1 {
         task_id:file.task_id,revision:1,previous_revision_id:None,kind:file.kind,goal:file.goal,
         inputs:BTreeMap::from([("source".into(),source_port),("requirements".into(),ArtifactInputV1 {artifact_ids:vec![requirements.clone()],artifact_type:"af/Requirements@1".into(),cardinality:PortCardinality::One,snapshot_id:None})]),

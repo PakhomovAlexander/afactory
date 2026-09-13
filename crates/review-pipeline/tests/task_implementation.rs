@@ -190,12 +190,18 @@ fn worker_inputs(ports: &[&str]) -> Value {
 
 #[test]
 fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator() {
-    for case in ["passed", "failed", "inconclusive", "process_timeout"] {
+    for case in [
+        "passed",
+        "failed",
+        "inconclusive",
+        "process_timeout",
+        "independent_failed",
+    ] {
         let dir = tempfile::tempdir().unwrap();
         let cas = Cas::open(dir.path().join("cas")).unwrap();
         let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
         let command: review_core::Command = match case {
-            "passed" => serde_json::from_value(json!({"program":"/usr/bin/python3","args":[{"value":"-B","provenance":"literal"},{"value":"-c","provenance":"literal"},{"value":"import pagination; assert pagination.paginate(list(range(7)),2,3) == [2,3,4]","provenance":"literal"}]})).unwrap(),
+            "passed" | "independent_failed" => serde_json::from_value(json!({"program":"/usr/bin/python3","args":[{"value":"-B","provenance":"literal"},{"value":"-c","provenance":"literal"},{"value":"import pagination; assert pagination.paginate(list(range(7)),2,3) == [2,3,4]","provenance":"literal"}]})).unwrap(),
             "failed" => review_core::Command::new("/usr/bin/false",vec![]),
             "process_timeout" => review_core::Command::new("/bin/sh",vec![review_core::Arg::literal("-c"),review_core::Arg::literal("sleep 1; exit 0")]),
             _ => review_core::Command::new("/no-such-af-check",vec![]),
@@ -237,7 +243,7 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
             )
             .unwrap()
             .0;
-        let task = TaskRevisionV1 {
+        let mut task = TaskRevisionV1 {
             previous_revision_id: None,
             task_id:format!("pagination-{case}"),revision:1,kind:"implement".into(),goal:"Implement this Jira ticket: offset/limit pagination".into(),
             inputs:BTreeMap::from([("source".into(),source_input), ("requirements".into(),ArtifactInputV1 {artifact_ids:vec![requirements.clone()],artifact_type:"af/Requirements@1".into(),cardinality:PortCardinality::One,snapshot_id:None})]),
@@ -295,7 +301,23 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
         evaluate.worker_input_type = Some("af/EvaluationInput@1".into());
         evaluate.worker_output_type = Some(TASK_EVALUATION_V1.into());
         evaluate.outcome_port = Some("result".into());
-        let pipeline = pipeline(&implement, &evaluate);
+        let mut pipeline = pipeline(&implement, &evaluate);
+        if case == "independent_failed" {
+            // A separate, declared Worker is outside the successful acceptance chain.
+            // Give this new four-Attempt fixture its exact bound; existing cases stay unchanged.
+            task.limits.max_attempts = 4;
+            pipeline.max_attempts = 4;
+            let mut slot = pipeline.slots["implementer"].clone();
+            slot.worker = "fixture/independent".into();
+            slot.min_attempts = 0;
+            pipeline.slots.insert("independent".into(), slot);
+            let mut node = pipeline.nodes[0].clone();
+            node.id = "independent".into();
+            node.operator = TaskOperatorV1::Worker {
+                slot: "independent".into(),
+            };
+            pipeline.nodes.push(node);
+        }
         let mut compiler = TaskPlanCompiler::new(
             policy_id.clone(),
             policy_id.clone(),
@@ -364,6 +386,23 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
                     ("worker.py".into(), script.as_bytes().to_vec()),
                 ]),
             ));
+        }
+        if case == "independent_failed" {
+            let mut files = packages
+                .iter()
+                .find(|(name, _)| name == "fixture/implementer")
+                .unwrap()
+                .1
+                .clone();
+            let mut manifest: TaskWorkerManifest =
+                toml::from_str(std::str::from_utf8(&files["worker.toml"]).unwrap()).unwrap();
+            manifest.name = "fixture/independent".into();
+            files.insert(
+                "worker.toml".into(),
+                toml::to_string(&manifest).unwrap().into_bytes(),
+            );
+            files.insert("worker.py".into(), b"import sys; sys.exit(7)\n".to_vec());
+            packages.push((manifest.name, files));
         }
         if case == "passed"
             && let Some(destination) = std::env::var_os("AF_WRITE_TASK_FIXTURE")
@@ -445,7 +484,7 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
             .propose_task_plan(&cas, &lease, &plan_id, &authority)
             .unwrap();
         store.admit_task_plan(&cas, &lease, &authority).unwrap();
-        let runtime = TaskRuntime::new(&mut store, &cas, lease, &authority, &host).unwrap();
+        let runtime = TaskRuntime::new(&mut store, &cas, lease.clone(), &authority, &host).unwrap();
         let report = runtime.execute().unwrap();
         let state = runtime.projection().unwrap();
         let execution = state.execution.as_ref().unwrap();
@@ -455,12 +494,16 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
         );
         assert_eq!(
             execution.budget.begun_attempts(),
-            if case == "passed" { 3 } else { 2 },
+            match case {
+                "passed" => 3,
+                "independent_failed" => 4,
+                _ => 2,
+            },
             "{case}: {report:?}"
         );
         assert_eq!(
             execution.outputs.contains_key("root.nodes.evaluate"),
-            case == "passed"
+            matches!(case, "passed" | "independent_failed")
         );
         let result = domain.result(&cas, &state, &report).unwrap();
         assert_eq!(
@@ -471,6 +514,20 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
                 _ => TaskAcceptanceV1::Inconclusive,
             }
         );
+        if case == "independent_failed" {
+            assert_eq!(result.execution, TaskExecutionV1::Exhausted);
+            assert_eq!(result.domain_conclusion, "incomplete");
+            assert!(
+                result.missing_obligations.is_empty(),
+                "the public verification did pass"
+            );
+            assert!(!result.evidence.is_empty());
+            assert!(matches!(
+                report.outcome("root.nodes.independent"),
+                Some(review_graph::NodeOutcome::Failed { .. })
+            ));
+            domain.validate_result(&cas, &task, &result).unwrap();
+        }
         let s1 = result.outputs["snapshot"].snapshot_id.as_ref().unwrap();
         assert_ne!(s1, &s0);
         let (snapshot, manifest) = read_snapshot(&cas, s1).unwrap();
@@ -521,6 +578,51 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
             .unwrap()
             .0;
         runtime.finish(&result_id).unwrap();
+        if case == "independent_failed" {
+            let final_state = runtime.projection().unwrap();
+            assert_eq!(
+                final_state.phase,
+                TaskPhaseV1::Finished {
+                    result_id: result_id.clone()
+                }
+            );
+            let begun = final_state
+                .execution
+                .as_ref()
+                .unwrap()
+                .budget
+                .begun_attempts();
+            drop(runtime);
+            drop(store);
+            let mut reopened = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+            let replay = reopened
+                .task_projection(&cas, &task.task_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(replay.phase, final_state.phase);
+            assert_eq!(
+                replay.execution.as_ref().unwrap().outputs,
+                final_state.execution.as_ref().unwrap().outputs
+            );
+            assert_eq!(
+                replay.execution.as_ref().unwrap().budget.committed_tokens(),
+                0
+            );
+            assert_eq!(
+                replay.execution.as_ref().unwrap().budget.begun_attempts(),
+                begun
+            );
+            let prefix = reopened
+                .len(&review_store::store::task::task_run_id(&task.task_id).unwrap())
+                .unwrap();
+            assert!(TaskRuntime::new(&mut reopened, &cas, lease, &authority, &host).is_err());
+            assert_eq!(
+                reopened
+                    .len(&review_store::store::task::task_run_id(&task.task_id).unwrap())
+                    .unwrap(),
+                prefix
+            );
+        }
     }
 }
 
