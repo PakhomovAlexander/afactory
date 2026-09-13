@@ -280,6 +280,9 @@ pub struct TaskProjection {
     recording_recovery: Option<recording::RecordingRecovery>,
     recording_report: Option<recording::RecordingRecovery>,
     decisions: BTreeMap<String, Decision>,
+    // Exact reference closure of the parsed prefix, including superseded execution evidence.
+    // This memo saves parsing only: every object is verified again on the next access.
+    artifact_refs: BTreeSet<String>,
     pub execution: Option<execution::TaskExecutionProjection>,
     pub planning: Option<planning::TaskPlanningProof>,
     pub deliveries: Vec<(String, task::delivery::TaskDeliveryRecordV1)>,
@@ -1069,6 +1072,17 @@ impl TaskProjection {
 impl EventStore {
     /// Enumerate only validated common Task streams; Review run IDs are not Task labels.
     pub fn task_ids(&self, cas: &Cas) -> Result<Vec<String>, StoreError> {
+        self.map_tasks(cas, |task| task.task_id)
+    }
+
+    /// Project each Task once, in label order, and retain only the caller's mapped value.
+    /// Every stream still passes full replay and fresh artifact validation. A listing can
+    /// consume that checked projection without retaining all Tasks or projecting them again.
+    pub fn map_tasks<T>(
+        &self,
+        cas: &Cas,
+        mut map: impl FnMut(TaskProjection) -> T,
+    ) -> Result<Vec<T>, StoreError> {
         let mut ids = BTreeSet::new();
         for run_id in self.run_ids()? {
             if !run_id.starts_with("task:") {
@@ -1087,11 +1101,16 @@ impl EventStore {
             if task_run_id(&task.task_id)? != run_id {
                 return Err(conflict("Task stream identity differs from its revision"));
             }
-            self.task_projection(cas, &task.task_id)?
-                .ok_or_else(|| conflict("Task disappeared"))?;
             ids.insert(task.task_id);
         }
-        Ok(ids.into_iter().collect())
+        ids.into_iter()
+            .map(|id| {
+                let task = self
+                    .task_projection(cas, &id)?
+                    .ok_or_else(|| conflict("Task disappeared"))?;
+                Ok(map(task))
+            })
+            .collect()
     }
 
     pub fn task_projection(
@@ -1105,6 +1124,7 @@ impl EventStore {
             .as_ref()
             .filter(|state| state.task_id == task_id)
             .cloned();
+        let mut verified = BTreeSet::new();
         // Cached prefix is only a parse memo. Revalidate current revision/plan bytes on every
         // access; a removed or corrupted active artifact must never inherit cached authority.
         if let Some(state) = &state {
@@ -1176,19 +1196,21 @@ impl EventStore {
                 )?);
             }
             active_refs.extend(state.recording_recovery_refs(cas)?);
+            active_refs.extend(state.artifact_refs.iter().cloned());
             for id in active_refs {
                 cas.verify(&id)
                     .map_err(|e| StoreError::Artifact(e.to_string()))?;
+                verified.insert(id);
             }
         }
         let first = state.as_ref().map_or(0, |state| state.next_sequence);
-        let mut verified = BTreeSet::new();
         for event in self.replay_from(&task_run_id(task_id)?, first)? {
             if event.event_type == EventType::TaskBrokerTransitionV1 {
                 let state = state
                     .as_mut()
                     .ok_or_else(|| conflict("Task Broker evidence precedes genesis"))?;
                 execution::broker::apply_event(cas, state, &event)?;
+                verified.extend(event.artifact_refs.iter().cloned());
                 continue;
             }
             if !matches!(
@@ -1251,6 +1273,7 @@ impl EventStore {
                     recording_recovery: None,
                     recording_report: None,
                     decisions: BTreeMap::new(),
+                    artifact_refs: BTreeSet::new(),
                     execution: None,
                     planning: None,
                     deliveries: Vec::new(),
@@ -1265,6 +1288,9 @@ impl EventStore {
             && state.next_sequence != first
         {
             review_integration::validate_cached(self, cas, state)?;
+        }
+        if let Some(state) = &mut state {
+            state.artifact_refs = verified;
         }
         *self.task_cache.borrow_mut() = state.clone();
         Ok(state)
