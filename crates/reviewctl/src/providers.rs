@@ -178,10 +178,49 @@ pub fn discover_with_cancel(cancelled: &AtomicBool) -> ProviderInventory {
     if cancelled.load(Ordering::Acquire) {
         providers.extend(specs[providers.len()..].iter().map(unprobed_status));
     }
+    cross_reference_logged_in_siblings(&mut providers);
     ProviderInventory {
         providers,
         registry,
         warning,
+    }
+}
+
+/// Point each logged-out context at the same-kind contexts on this machine that are logged in.
+///
+/// The usual cause of a `not authenticated` registry entry is an `auth_dir` naming a directory
+/// the operator never logged in to, while the intended login sits in another directory `af`
+/// also probed (often the ambient `CLAUDE_CONFIG_DIR`). Naming that sibling turns a bare
+/// status into the exact `auth_dir` correction; nothing here reads credentials or probes again.
+fn cross_reference_logged_in_siblings(providers: &mut [ProviderStatus]) {
+    let logged_in: Vec<(String, String)> = providers
+        .iter()
+        .filter(|provider| provider.status == "authenticated")
+        .map(|provider| {
+            let context = if provider.auth_context == "CLI default" {
+                "the CLI default directory".to_string()
+            } else {
+                provider.auth_context.clone()
+            };
+            (
+                provider.kind.clone(),
+                format!(
+                    "{} is authenticated in {context} ({})",
+                    provider.id, provider.subscription
+                ),
+            )
+        })
+        .collect();
+    for provider in providers
+        .iter_mut()
+        .filter(|provider| provider.status == "not authenticated")
+    {
+        for (_, sibling) in logged_in.iter().filter(|(kind, _)| *kind == provider.kind) {
+            if !provider.detail.is_empty() {
+                provider.detail.push_str("; ");
+            }
+            provider.detail.push_str(sibling);
+        }
     }
 }
 
@@ -593,6 +632,9 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool) -> ProviderStatus 
         ProviderKind::Claude => parse_claude_status(output.status.success(), &output.stdout),
         ProviderKind::Codex => parse_codex_status(output.status.success(), &output.stdout),
     };
+    if status == "not authenticated" {
+        detail = logged_out_detail(&spec);
+    }
     let mut subscription = match spec.kind {
         ProviderKind::Claude => claude_subscription(&output.stdout),
         ProviderKind::Codex if auth_type == "API key" => "API billing".to_string(),
@@ -2216,19 +2258,50 @@ fn append_transition(
 }
 
 fn continuation_error(spec: &ProviderSpec, operation_id: &str, epoch: u64) -> String {
-    let auth_dir = spec
-        .auth_dir
-        .as_deref()
-        .map(Path::display)
-        .map(|path| path.to_string())
-        .unwrap_or_else(|| "<configured-auth-dir>".to_string());
-    let login = match spec.kind {
-        ProviderKind::Claude => format!("CLAUDE_CONFIG_DIR={auth_dir} claude auth login"),
-        ProviderKind::Codex => format!("CODEX_HOME={auth_dir} codex login"),
-    };
+    let login = login_command(spec);
     format!(
         "provider operation `{operation_id}` is waiting_for_human; run `{login}` in a persistent terminal, then rerun with --resume-provider {operation_id}:{epoch}"
     )
+}
+
+/// The harness login command that writes credentials into exactly the context `spec` probes.
+///
+/// The selector is repeated on the command line so a login started from another shell cannot
+/// land in a different directory than the one `af` reads for this Provider.
+fn login_command(spec: &ProviderSpec) -> String {
+    let (selector, login) = match spec.kind {
+        ProviderKind::Claude => ("CLAUDE_CONFIG_DIR", "claude auth login"),
+        ProviderKind::Codex => ("CODEX_HOME", "codex login"),
+    };
+    match spec.auth_dir.as_deref() {
+        Some(auth_dir) => format!("{selector}={} {login}", auth_dir.display()),
+        None => login.to_string(),
+    }
+}
+
+/// Why a `not authenticated` row is not authenticated, and the one command that fixes it.
+///
+/// The harness CLI is the authority on whether a directory holds a login; `af` never inspects
+/// credential files. What it can add is the directory it actually asked about and, for a
+/// registry entry, the reminder that `auth_dir` itself may be the mistake.
+fn logged_out_detail(spec: &ProviderSpec) -> String {
+    let harness = match spec.kind {
+        ProviderKind::Claude => "Claude",
+        ProviderKind::Codex => "Codex",
+    };
+    let context = spec
+        .auth_dir
+        .as_deref()
+        .map(|path| path.display().to_string())
+        .unwrap_or_else(|| "the CLI default directory".to_string());
+    let mut detail = format!(
+        "no {harness} login in {context}; fix: {}",
+        login_command(spec)
+    );
+    if spec.registry_declared {
+        detail.push_str(", or point auth_dir at the directory that holds the intended login");
+    }
+    detail
 }
 
 fn elapsed_ms(started: Instant) -> u64 {
@@ -3083,6 +3156,129 @@ auth_dir = "{}"
         assert_eq!(status, "not authenticated");
         assert_eq!(parse_claude_status(true, "{}").0, "unknown");
         assert_eq!(parse_codex_status(true, "changed output").0, "unknown");
+    }
+
+    #[test]
+    fn logged_out_rows_name_the_context_the_login_command_and_the_registry_fix() {
+        let declared = ProviderSpec {
+            id: "claude-personal".to_string(),
+            kind: ProviderKind::Claude,
+            auth_dir: Some(PathBuf::from("/profiles/claude-personal")),
+            explicit_selector: true,
+            registry_declared: true,
+            source: "/registry.toml".to_string(),
+        };
+        assert_eq!(
+            logged_out_detail(&declared),
+            "no Claude login in /profiles/claude-personal; fix: CLAUDE_CONFIG_DIR=/profiles/claude-personal claude auth login, or point auth_dir at the directory that holds the intended login"
+        );
+        let ambient = ProviderSpec {
+            id: "claude-ambient".to_string(),
+            kind: ProviderKind::Claude,
+            auth_dir: None,
+            explicit_selector: false,
+            registry_declared: false,
+            source: "ambient".to_string(),
+        };
+        assert_eq!(
+            logged_out_detail(&ambient),
+            "no Claude login in the CLI default directory; fix: claude auth login"
+        );
+        let codex = ProviderSpec {
+            id: "codex-ambient".to_string(),
+            kind: ProviderKind::Codex,
+            auth_dir: Some(PathBuf::from("/profiles/codex")),
+            explicit_selector: false,
+            registry_declared: false,
+            source: "ambient".to_string(),
+        };
+        assert_eq!(
+            logged_out_detail(&codex),
+            "no Codex login in /profiles/codex; fix: CODEX_HOME=/profiles/codex codex login"
+        );
+        // The admission continuation names the same command, so the two surfaces cannot drift.
+        assert!(continuation_error(&declared, "op", 1).contains(&login_command(&declared)));
+    }
+
+    #[test]
+    fn logged_out_rows_point_at_logged_in_siblings_of_the_same_kind() {
+        fn row(id: &str, kind: &str, context: &str, status: &str, plan: &str) -> ProviderStatus {
+            ProviderStatus {
+                id: id.to_string(),
+                kind: kind.to_string(),
+                command: kind.to_string(),
+                auth_context: context.to_string(),
+                source: String::new(),
+                status: status.to_string(),
+                auth_type: "-".to_string(),
+                subscription: plan.to_string(),
+                limits: Vec::new(),
+                detail: if status == "not authenticated" {
+                    "no login".to_string()
+                } else {
+                    String::new()
+                },
+            }
+        }
+        let mut providers = vec![
+            row(
+                "claude-ambient",
+                "claude",
+                "CLI default",
+                "authenticated",
+                "Claude Max",
+            ),
+            row(
+                "claude-personal",
+                "claude",
+                "/profiles/stale",
+                "not authenticated",
+                "-",
+            ),
+            row(
+                "claude-work",
+                "claude",
+                "/profiles/claude-work",
+                "unavailable",
+                "-",
+            ),
+            row(
+                "codex-personal",
+                "codex",
+                "/profiles/codex",
+                "authenticated",
+                "ChatGPT Pro",
+            ),
+            row(
+                "codex-work",
+                "codex",
+                "/profiles/codex-work",
+                "not authenticated",
+                "-",
+            ),
+        ];
+        cross_reference_logged_in_siblings(&mut providers);
+        assert_eq!(
+            providers[1].detail,
+            "no login; claude-ambient is authenticated in the CLI default directory (Claude Max)"
+        );
+        assert_eq!(
+            providers[4].detail,
+            "no login; codex-personal is authenticated in /profiles/codex (ChatGPT Pro)"
+        );
+        assert!(providers[0].detail.is_empty());
+        assert!(providers[2].detail.is_empty());
+        assert!(providers[3].detail.is_empty());
+
+        let mut alone = vec![row(
+            "claude-personal",
+            "claude",
+            "/profiles/stale",
+            "not authenticated",
+            "-",
+        )];
+        cross_reference_logged_in_siblings(&mut alone);
+        assert_eq!(alone[0].detail, "no login");
     }
 
     #[test]

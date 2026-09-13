@@ -170,7 +170,10 @@ while ambiguous or escaping layouts fail closed. See
 [`ADR-0035`](docs/adr/0035-address-campaign-state-by-opaque-id.md).
 
 `af provider status` and the TUI's **PROVIDERS** tab inspect the machine-local Claude and Codex
-authentication contexts without reading credentials. Codex ChatGPT logins also show the plan,
+authentication contexts without reading credentials. A `not authenticated` row names the directory
+it probed, the exact login command for that directory, and every same-kind context on the machine
+that is already logged in, because a registry `auth_dir` naming the wrong directory is the usual
+cause. Codex ChatGPT logins also show the plan,
 quota windows, utilization, and reset time exposed by Codex's local app-server protocol. Claude
 Code has no headless usage command, so Afactory opens the fixed local `/usage` screen in a bounded
 pseudo-terminal and reports the all-model and available model-specific weekly percentages (for
