@@ -879,12 +879,9 @@ fn start_captured(
             )
         })
         .transpose()?;
-    let mut requirements_payload = match legacy_budget {
-        Some(tokens) => {
-            json!({"text":file.goal,"task_id":file.task_id,"budget":{"reserved_tokens":tokens}})
-        }
-        None => json!({"text":file.goal}),
-    };
+    // Runner/context authority owns legacy identity and wire budgets; business data
+    // retains the explicit Task-file specification and Issue capture below.
+    let mut requirements_payload = json!({"text":file.goal});
     if let Some(specification) = &file.requirements {
         requirements_payload["specification"] = json!(specification);
     }

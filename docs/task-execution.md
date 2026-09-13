@@ -19,6 +19,11 @@ supplement it. Claude calls use only `claude-personal`.
 
 ## Progress
 
+New legacy Worker captures keep execution identity and wire budgets in a Task/plan-bound
+context. Domain-output rejection retains typed retry feedback and exact accounting; internal
+Manifest metadata has a separate finite limit. See
+[ADR-0095](adr/0095-bind-legacy-task-context-and-retry-output-admission.md).
+
 Task catalog V2 captures an explicit finite Provider admission cost, while V1 keeps its original
 4,096-token/45-second allowance. Restoration uses captured authority and existing Task limits;
 individual overruns still stop dispatch. See [ADR-0091](adr/0091-capture-explicit-task-provider-admission-costs.md).

@@ -167,6 +167,15 @@ pub struct PlanningTaskHost<'a> {
 pub type ProposalValidator<'a> =
     dyn Fn(&Cas, &TaskRevisionV1, &PipelineProposalV1) -> Result<(), String> + Sync + 'a;
 impl TaskOperatorHost for PlanningTaskHost<'_> {
+    fn output_rejection_feedback(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: &PreparedTaskAttempt,
+    ) -> Result<Option<String>, String> {
+        self.inner.output_rejection_feedback(cas, input, attempt)
+    }
+
     fn prepare_context(
         &self,
         cas: &Cas,

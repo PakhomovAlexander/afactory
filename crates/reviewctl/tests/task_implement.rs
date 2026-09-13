@@ -276,6 +276,21 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
     )
     .unwrap();
     assert!(evaluator_input.get("goal").is_some());
+    assert_eq!(
+        evaluator_input["budget"],
+        serde_json::json!({"reserved_tokens":1000})
+    );
+    assert_eq!(evaluator_input["task_id"], outcome["task_id"]);
+    assert_eq!(evaluator["legacy"]["budget_tokens"], 1000);
+    assert_eq!(evaluator["legacy"]["plan_id"], outcome["plan_id"]);
+    for entry in outcome["execution_records"].as_array().unwrap() {
+        if matches!(
+            entry["record"]["kind"].as_str(),
+            Some("prepared" | "reserved")
+        ) {
+            assert_eq!(entry["record"]["reserved_tokens"], 0);
+        }
+    }
     assert!(evaluator_input.get("gates").is_some());
     assert!(evaluator_input.get("implementer_output").is_none());
     assert!(evaluator_input.get("implementer_transcript").is_none());

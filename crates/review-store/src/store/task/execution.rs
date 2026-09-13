@@ -111,6 +111,13 @@ pub struct PreparedTaskAttempt {
     context_id: String,
 }
 
+/// Returned only after the original Attempt charge and conclusion are durable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TaskSettlement {
+    Settled,
+    OutputRejected { reason: String },
+}
+
 impl PreparedTaskAttempt {
     pub fn task_id(&self) -> &str {
         &self.task_id
@@ -1561,9 +1568,30 @@ impl EventStore {
         &mut self,
         cas: &Cas,
         lease: &TaskLease,
-        mut settlement: TaskExecutionRecordV1,
+        settlement: TaskExecutionRecordV1,
         authority: &dyn TaskAuthority,
     ) -> Result<(), StoreError> {
+        match self
+            .settle_task_attempt_with_feedback(cas, lease, settlement, authority, || Ok(None))?
+        {
+            TaskSettlement::Settled => Ok(()),
+            TaskSettlement::OutputRejected { reason } => {
+                Err(StoreError::TaskOutputRejected(reason))
+            }
+        }
+    }
+
+    /// The callback only captures bounded retry data; it cannot dispatch work. It runs
+    /// only for domain rejection, before publishing the immutable failed settlement.
+    /// Operational Store failures remain errors and never authorize another Attempt.
+    pub fn settle_task_attempt_with_feedback(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        mut settlement: TaskExecutionRecordV1,
+        authority: &dyn TaskAuthority,
+        rejected_feedback: impl FnOnce() -> Result<Option<String>, StoreError>,
+    ) -> Result<TaskSettlement, StoreError> {
         let TaskExecutionRecordV1::Settled { attempt_id, .. } = &settlement else {
             return Err(conflict("Expected a Task settlement"));
         };
@@ -1583,7 +1611,7 @@ impl EventStore {
             .and_then(|a| a.settlement.as_ref())
         {
             return if old == &settlement {
-                Ok(())
+                Ok(TaskSettlement::Settled)
             } else {
                 Err(conflict("Conflicting Task settlement"))
             };
@@ -1617,14 +1645,21 @@ impl EventStore {
             if let TaskExecutionRecordV1::Settled { result, .. } = &mut settlement {
                 *result = TaskAttemptResultV1::Failed {
                     diagnostic_id,
-                    feedback_id: None,
+                    feedback_id: if matches!(error, StoreError::TaskOutputRejected(_)) {
+                        rejected_feedback()?
+                    } else {
+                        None
+                    },
                 };
             }
         }
         self.task_execution_record(cas, lease, settlement, now()?)?;
         match failure {
+            Some(StoreError::TaskOutputRejected(reason)) => {
+                Ok(TaskSettlement::OutputRejected { reason })
+            }
             Some(error) => Err(error),
-            None => Ok(()),
+            None => Ok(TaskSettlement::Settled),
         }
     }
 
@@ -1663,7 +1698,7 @@ impl EventStore {
         }
         authority
             .validate_output(cas, &state.revision, plan, &input, &out)
-            .map_err(conflict)?;
+            .map_err(StoreError::TaskOutputRejected)?;
         Ok((out, input))
     }
 

@@ -106,6 +106,17 @@ pub trait TaskOperatorHost: Sync {
         Ok(())
     }
 
+    /// Bounded, typed feedback for output rejected by the Store's domain admission.
+    /// This captures data only and must not dispatch work or include diagnostic prose.
+    fn output_rejection_feedback(
+        &self,
+        _cas: &Cas,
+        _input: &TaskInvocationV1,
+        _attempt: &PreparedTaskAttempt,
+    ) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+
     /// Pure rendering/capture only: no Provider operation or subprocess may start here.
     fn prepare_context(
         &self,
@@ -801,7 +812,7 @@ impl TaskRuntime<'_, '_> {
             if let Err(error) = control::check(self.cancellation) {
                 result.outputs = Err(error);
             }
-            let produced = result.outputs.and_then(|values| {
+            let mut produced = result.outputs.and_then(|values| {
                 self.record_output(input_id, input, values.clone(), attempt.as_ref())
                     .map(|id| (id, values))
             });
@@ -818,10 +829,11 @@ impl TaskRuntime<'_, '_> {
                         }
                     }
                 };
-                self.store
+                let settlement = self
+                    .store
                     .lock()
                     .expect("Task Store")
-                    .settle_task_attempt(
+                    .settle_task_attempt_with_feedback(
                         self.cas,
                         &self.lease,
                         TaskExecutionRecordV1::Settled {
@@ -832,8 +844,19 @@ impl TaskRuntime<'_, '_> {
                             usage_id: result.usage_id,
                         },
                         self.authority,
+                        || {
+                            self.host
+                                .output_rejection_feedback(self.cas, input, attempt)
+                                .map_err(review_store::StoreError::Artifact)
+                        },
                     )
                     .map_err(|e| e.to_string())?;
+                if let review_store::store::task::execution::TaskSettlement::OutputRejected {
+                    reason,
+                } = settlement
+                {
+                    produced = Err(reason);
+                }
             }
             match produced {
                 Ok((id, values)) => {

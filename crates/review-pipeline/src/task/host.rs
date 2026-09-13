@@ -524,10 +524,13 @@ struct CapturedWorker<'a> {
     instructions: String,
     signature: OperatorSignature,
     contract: WorkerContract,
+    legacy_budget_tokens: Option<u64>,
 }
 
 pub struct CapturedTaskHost<'a> {
     run_id: String,
+    task_id: String,
+    task_revision_id: String,
     graph: CompiledTask,
     workers: BTreeMap<String, CapturedWorker<'a>>,
     environment: &'a dyn TaskEnvironment,
@@ -626,16 +629,86 @@ impl<'a> CapturedTaskHost<'a> {
                     instructions,
                     signature: manifest.signature.clone(),
                     contract,
+                    legacy_budget_tokens: match &manifest.runner {
+                        TaskWorkerRunner::LegacyTaskCommand {
+                            legacy_budget_tokens,
+                            ..
+                        } => *legacy_budget_tokens,
+                        _ => None,
+                    },
                 },
             );
         }
         Ok(Self {
             run_id: task_run_id(&task.task_id).map_err(|e| e.to_string())?,
+            task_id: task.task_id.clone(),
+            task_revision_id: plan.task_revision_id.clone(),
             graph,
             workers,
             environment,
             domain,
         })
+    }
+
+    fn prepare_worker_context(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        feedback: &[String],
+        worker: &CapturedWorker<'_>,
+    ) -> Result<String, String> {
+        match worker.legacy_budget_tokens {
+            Some(budget_tokens) => worker.contract.prepare_legacy(
+                cas,
+                input,
+                feedback,
+                &worker.instructions,
+                review_runner::task::legacy::LegacyTaskContext {
+                    task_id: self.task_id.clone(),
+                    task_revision_id: self.task_revision_id.clone(),
+                    plan_id: input.plan_id.clone(),
+                    budget_tokens,
+                },
+            ),
+            None => worker
+                .contract
+                .prepare(cas, input, feedback, &worker.instructions),
+        }
+    }
+
+    fn worker_feedback(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: &PreparedTaskAttempt,
+        worker: &CapturedWorker<'_>,
+        code: review_core::task::feedback::TaskFeedbackCodeV1,
+    ) -> Result<String, String> {
+        use review_core::task::feedback::*;
+        let (context, _) = worker.contract.read_context(cas, attempt.context_id())?;
+        if context.invocation != *input || attempt.node() != input.node {
+            return Err("Retry feedback belongs to another invocation".into());
+        }
+        let feedback = TaskRetryFeedbackV1 {
+            attempt_id: attempt.id().into(),
+            contract_id: worker.contract.id().into(),
+            code,
+            compiler: None,
+        };
+        feedback.validate()?;
+        cas.put_artifact(
+            TASK_RETRY_FEEDBACK_V1,
+            Producer::Attempt {
+                run_id: self.run_id.clone(),
+                node_id: input.node.clone(),
+                attempt_id: attempt.id().into(),
+            },
+            vec![attempt.context_id().into(), worker.contract.id().into()],
+            None,
+            serde_json::to_value(feedback).map_err(|e| e.to_string())?,
+        )
+        .map(|(id, _)| id)
+        .map_err(|e| e.to_string())
     }
 
     fn worker_execute(
@@ -808,30 +881,14 @@ impl<'a> CapturedTaskHost<'a> {
                 .finish(cas, input, &worker.signature, attempt, sandbox, outputs)
         })();
         let feedback_id = if outputs.is_err() {
-            let feedback = TaskRetryFeedbackV1 {
-                attempt_id: attempt.id().into(),
-                contract_id: worker.contract.id().into(),
-                code: feedback_code.unwrap_or(TaskFeedbackCodeV1::OutputAdmissionRejected),
-                compiler: None,
-            };
-            feedback
-                .validate()
-                .and_then(|()| {
-                    cas.put_artifact(
-                        TASK_RETRY_FEEDBACK_V1,
-                        Producer::Attempt {
-                            run_id: self.run_id.clone(),
-                            node_id: input.node.clone(),
-                            attempt_id: attempt.id().into(),
-                        },
-                        vec![attempt.context_id().into(), worker.contract.id().into()],
-                        None,
-                        serde_json::to_value(feedback).map_err(|e| e.to_string())?,
-                    )
-                    .map(|(id, _)| id)
-                    .map_err(|e| e.to_string())
-                })
-                .ok()
+            self.worker_feedback(
+                cas,
+                input,
+                attempt,
+                worker,
+                feedback_code.unwrap_or(TaskFeedbackCodeV1::OutputAdmissionRejected),
+            )
+            .ok()
         } else {
             None
         };
@@ -900,6 +957,26 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         self.domain.commit_domain_output(cas, input, id, output)
     }
 
+    fn output_rejection_feedback(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: &PreparedTaskAttempt,
+    ) -> Result<Option<String>, String> {
+        match self.workers.get(&input.node) {
+            Some(worker) => self
+                .worker_feedback(
+                    cas,
+                    input,
+                    attempt,
+                    worker,
+                    review_core::task::feedback::TaskFeedbackCodeV1::OutputAdmissionRejected,
+                )
+                .map(Some),
+            None => self.domain.output_rejection_feedback(cas, input, attempt),
+        }
+    }
+
     fn prepare_context(
         &self,
         cas: &Cas,
@@ -907,9 +984,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         feedback: &[String],
     ) -> Result<String, String> {
         match self.workers.get(&input.node) {
-            Some(worker) => worker
-                .contract
-                .prepare(cas, input, feedback, &worker.instructions),
+            Some(worker) => self.prepare_worker_context(cas, input, feedback, worker),
             None => self.domain.prepare_context(cas, input, feedback),
         }
     }
@@ -1098,11 +1173,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
                     "Rendered model context exceeds its admitted Attempt token reservation".into(),
                 );
             }
-            if worker
-                .contract
-                .prepare(cas, input, feedback, &worker.instructions)?
-                != context_id
-            {
+            if self.prepare_worker_context(cas, input, feedback, worker)? != context_id {
                 return Err(
                     "Task context changed captured inputs, instructions, contracts or feedback"
                         .into(),
