@@ -178,6 +178,19 @@ impl ProviderTaskDomain<'_> {
     }
 }
 impl TaskOperatorHost for ProviderTaskDomain<'_> {
+    fn output_rejection_feedback(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: &PreparedTaskAttempt,
+    ) -> Result<Option<String>, String> {
+        if self.slots(input).is_none() {
+            self.inner.output_rejection_feedback(cas, input, attempt)
+        } else {
+            Ok(None)
+        }
+    }
+
     fn prepare_context(
         &self,
         cas: &Cas,

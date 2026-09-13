@@ -502,18 +502,15 @@ fn start_captured(
     mut store: EventStore,
     source: review_source_git::Snapshot,
     (authority_id, authority, mut compiler): (String, RunAuthority, TaskPlanCompiler),
-    legacy_budget: Option<u64>,
+    _legacy_budget: Option<u64>,
 ) -> Result<i32, String> {
     let origin=cas.put_json(&json!({"schema":"af.task-source-origin/1","repository_id":source.repository_id,"source_revision":source.source_revision,"content_digest":source.content_digest})).map_err(|e|e.to_string())?;
     let snapshot = capture_snapshot(&cas, &source.manifest, &origin, None)?;
     let source_port = source_tree(&cas, producer(), &snapshot, vec![origin])?;
     let input_file = cas.put(&bytes).map_err(|e| e.to_string())?;
-    let requirements_payload = match legacy_budget {
-        Some(tokens) => {
-            json!({"text":file.goal,"task_id":file.task_id,"budget":{"reserved_tokens":tokens}})
-        }
-        None => json!({"text":file.goal}),
-    };
+    // Execution identity and legacy wire budgets belong to captured runner/context
+    // authority. Requirements remain the same business input for both entry points.
+    let requirements_payload = json!({"text":file.goal});
     let requirements = cas
         .put_artifact(
             "af/Requirements@1",

@@ -52,6 +52,14 @@ pub enum TaskWorkerRunner {
     LegacyTaskCommand {
         command: CommandSpec,
         protocol: review_runner::task::legacy::LegacyTaskProtocol,
+        /// Legacy wire data, not a command token reservation. Absence is read-only
+        /// compatibility for packages captured before explicit legacy context existed.
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "review_core::task::present_option"
+        )]
+        legacy_budget_tokens: Option<u64>,
     },
     Model {
         provider_kind: String,
@@ -275,7 +283,18 @@ impl TaskPlanCompiler {
             files,
         };
         // Validate before publishing even an unreachable captured artifact.
-        Self::parse_package(&bytes)?;
+        let (_, worker) = Self::parse_package(&bytes)?;
+        if matches!(
+            worker.as_ref().map(|worker| &worker.runner),
+            Some(TaskWorkerRunner::LegacyTaskCommand {
+                legacy_budget_tokens: None,
+                ..
+            })
+        ) {
+            return Err(
+                "New legacy command packages require explicit runner.legacy_budget_tokens".into(),
+            );
+        }
         let (id, _) = cas
             .put_artifact(
                 TASK_PACKAGE_V1,
@@ -390,6 +409,8 @@ impl TaskPlanCompiler {
                     return Err("Worker Attempt wall limit is zero".into());
                 }
                 match &worker.runner {
+                    TaskWorkerRunner::LegacyTaskCommand { legacy_budget_tokens: Some(tokens), .. }
+                        if *tokens > 9_007_199_254_740_991 => return Err("Legacy wire budget exceeds the safe integer range".into()),
                     TaskWorkerRunner::Command {command} | TaskWorkerRunner::LegacyTaskCommand {command, ..} if command.program.trim().is_empty() || cost.tokens != 0 => return Err("Command Worker requires a program and zero model-token reservation".into()),
                     TaskWorkerRunner::Model {provider_kind, model, effort} if !review_core::task::is_name(provider_kind) || model.trim().is_empty() || !review_core::task::is_name(effort) || cost.tokens == 0 => return Err("Model Worker needs explicit Provider/model/effort and token reservation".into()),
                     _ => (),

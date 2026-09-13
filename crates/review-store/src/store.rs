@@ -32,6 +32,9 @@ pub enum StoreError {
     },
     /// Two events claimed the same sequence, or an event id repeated.
     Conflict(String),
+    /// The captured domain rejected structurally valid output. This is distinct from
+    /// an authority, artifact or persistence failure at the Store boundary.
+    TaskOutputRejected(String),
     /// A Broker completion lost the atomic race with Attempt fencing or replacement.
     AttemptNotCurrent,
     /// The CAS could not make a referenced object durable.
@@ -50,6 +53,9 @@ impl std::fmt::Display for StoreError {
                 "event references an artifact that is not durable: {digest}"
             ),
             StoreError::Conflict(what) => write!(f, "event store conflict: {what}"),
+            StoreError::TaskOutputRejected(what) => {
+                write!(f, "Task output admission rejected: {what}")
+            }
             StoreError::AttemptNotCurrent => {
                 write!(
                     f,

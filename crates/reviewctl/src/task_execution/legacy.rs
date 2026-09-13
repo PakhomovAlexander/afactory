@@ -124,6 +124,7 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
                 BTreeMap::from([("result".into(), BTreeSet::from([code_policy_id.clone()]))]);
         }
         manifest.runner = TaskWorkerRunner::LegacyTaskCommand {
+            legacy_budget_tokens: Some(loaded.pipeline.attempt_tokens),
             command: serde_json::from_value(
                 serde_json::to_value(&package.runner).map_err(|e| e.to_string())?,
             )
