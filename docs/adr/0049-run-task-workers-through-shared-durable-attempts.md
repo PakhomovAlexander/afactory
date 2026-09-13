@@ -88,10 +88,3 @@ The remaining legacy-entry-point adapters, authenticated developer CLI and suppo
 execution routes must still use these same boundaries. Live Provider probes remain release gates.
 `trusted_local` remains an explicit non-isolating environment; it cannot claim container policy
 or protect a host approval service from arbitrary model-controlled host code.
-
-Schema-valid Worker payloads can still fail domain admission. The Store records that outcome
-as a failed Attempt with the actual reported usage and typed `output_admission_rejected`
-feedback, then the common runtime may use the declared retry allowance. Diagnostic prose is
-not retry input. A CAS, authority or persistence error remains an operational failure and
-does not authorize another Worker dispatch. Feedback persistence failure leaves the recorded
-Attempt and known usage recoverable rather than hiding a charge or claiming successful output.

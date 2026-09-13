@@ -19,6 +19,11 @@ supplement it. Claude calls use only `claude-personal`.
 
 ## Progress
 
+New legacy Worker captures keep execution identity and wire budgets in a Task/plan-bound
+context. Domain-output rejection retains typed retry feedback and exact accounting; internal
+Manifest metadata has a separate finite limit. See
+[ADR-0095](adr/0095-bind-legacy-task-context-and-retry-output-admission.md).
+
 - [x] P00: unchanged-source baseline gate and fixture identities recorded below.
 - [ ] P01: contracts, schemas, ADR-0046/0047 and fixtures implemented; one review Round
   completed, Findings corrected and final gate passed locally; main integration remains pending.

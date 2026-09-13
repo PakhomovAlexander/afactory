@@ -56,27 +56,3 @@ Native Task transport regressions separately prove that timeout and CAS failure 
 business result while retaining reported usage. Arithmetic overflow saturates the reported
 counter rather than discarding an overrun or panicking. Raw stdout/stderr remain available
 when CAS storage succeeds. Legacy review capture retains its existing interface and framing.
-
-## Explicit legacy context
-
-New `legacy_task_command` packages declare `runner.legacy_budget_tokens`, including explicit
-zero. It is a nonnegative safe integer and describes the original wire budget; command
-Attempt reservations remain zero model tokens. The fixed adapter captures the pinned
-`pipeline.attempt_tokens` value in this field. Generic Task files use the same runner without
-adding Task identity or budget metadata to the business Requirements artifact.
-
-New compatibility contracts bind this value and publish `af/TaskContext@2` with the captured
-Task revision, Task identity and ExecutionPlan identity. Preparation, dispatch and replay
-validate those bindings. An absent or changed binding is a refusal, not an ambient default.
-Previously captured packages without this field retain their original compatibility contract,
-`af/TaskContext@1` serialization and Requirements-based wire reader. New capture refuses the
-old missing-field shape; persisted artifacts are never rewritten to manufacture new authority.
-
-The new context generation reads current/source Manifest metadata through a separate 8 MiB
-compatibility limit. This is a new host metadata limit, not a general Manifest contract. It
-validates canonical path order/encoding, entry fields, content identities and each Snapshot's
-Manifest digest, without retrieving every file blob to derive mutation paths. Materialization
-and output admission still verify file content at their own boundaries. Internal lookup
-identities are recorded; only rendered/retrieved Worker context contributes context bytes and
-tokens. The final Worker input remains bounded to 1 MiB. Old captured contexts keep their
-original rendering and bounds so that their identities and retry inputs remain exact.
