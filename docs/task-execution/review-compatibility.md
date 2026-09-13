@@ -3,8 +3,10 @@
 New `af review run` executions and Provider doctor now use the common Task runtime alongside
 Task-file and embedded Review. Historical paid Campaigns retain their original executor and
 accounting; missing common Task state refuses instead of falling back. The installed CLI
-cutover passes the full local gate at `fdffb1c` (1,078 tests); CI and remaining native
-conformance are separate requirements. See
+cutover and subsequent usage, recovery and cancellation changes pass the full local gate:
+1,129 tests, zero failures, 15 ignored across 132 suites. Published `5aa6bd52` passes Check and
+container-probes in [CI run 34723107534](https://github.com/PakhomovAlexander/afactory/actions/runs/34723107534).
+Live supported-environment evidence, external PR reviews and release remain separate requirements. See
 [ADR-0084](../adr/0084-route-new-review-commands-through-the-common-task.md).
 
 ## Adapter boundaries
@@ -38,7 +40,9 @@ settlement. The remaining reservation stays held, an overrun blocks further effe
 terminal reports or writer-loss recovery cannot refund known usage. Duplicate observations do
 not double-charge. The original settlement bytes and exact replay comparison are preserved
 ([ADR-0068](../adr/0068-retain-inflight-task-usage-in-the-common-budget.md)). The actual broker
-receipt adapter must feed these observations through the common Store.
+receipt adapter feeds these observations through the common Store under the original Attempt.
+Provider readiness and business calls retain separate captured policies and reservations in
+that same Task budget ([ADR-0080](../adr/0080-bind-broker-evidence-to-the-original-task-attempt.md)).
 
 ## Installed cutover
 
@@ -83,8 +87,10 @@ ledger, retry loop, Worker transport or budget. The legacy Kernel composes that 
 common runtime publishes domain invocation identity before reserving an Attempt and rendering
 its context; lost acknowledgement is recoverable with the same durable invocation. New Task
 dispatch and publication compare the captured Round under the same SQLite writer lock.
-Superseded/closed Rounds stop further effects while late usage, settlement and release remain
-recordable ([ADR-0070](../adr/0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md)).
+Ordinary dispatch stops on superseded or closed Rounds while late usage, settlement and release
+remain recordable ([ADR-0070](../adr/0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md)).
+Captured post-Round Integration and factual publication recovery use their separate, narrowly
+fenced transitions; they do not reopen ordinary Round dispatch.
 
 Canonical RunReport publication is also shared with the domain operations. Its execution owner
 supplies the recorded spend, retaining the historical optional value for uncapped runs. The
@@ -93,26 +99,29 @@ verdict ordering, cache evidence and the one-conclusion guard retain their origi
 this extraction adds neither an execution ledger nor a new public verdict policy.
 
 The trusted context adapter now uses actual common Attempts and canonical replay. Task-backed
-inspection reads canonical reports and exact common accounting. Legacy CLI ownership and Broker
-currentness still need their complete adapter paths; synthetic legacy Attempt lifecycle events
-cannot substitute for them.
+inspection reads canonical reports and exact common accounting. Installed Review CLI and
+Provider doctor use this path, and Broker receipts remain bound to the original common Attempt.
+Native invocations recheck their captured Provider identity before private send; exact writer
+loss interrupts supervised work and retains observed usage. See the
+[model and cancellation boundary](model-bindings.md).
 
 The captured definition loader is now shared with the CLI, retaining package/policy validation,
 Snapshot reachability and recorded light/heavy mode. Common compiled graphs support named
 aggregate token scopes for retries and bounded child groups. Reservations and all usage count
 against the same Run and matching scopes; graph replacement retains original scope charges.
-Review's captured compiler must assign scopes by Campaign and numeric Round, preserving epochs
+Review's captured compiler assigns scopes by Campaign and numeric Round, preserving epochs
 without resetting lifetime Task spend ([ADR-0071](../adr/0071-share-captured-review-authority-and-task-token-scopes.md)).
 
-Bounded Scatter must keep its parent DAG fixed while the common runtime owns every child
-invocation and its accounting. Heavy Campaign continuation must retain one original Task
-allowance and all prior spend across Round revisions. A wrapper around `Kernel::run`, disabling
-its budget while leaving its Attempt ledger active, or creating a fresh Task for each Round
-would not complete this migration.
+Bounded Scatter keeps its parent DAG fixed while the common runtime owns every registered child
+invocation and its accounting. Heavy Campaign continuation retains the original Task allowance
+and prior spend across Round revisions; each successor plan requires admission. The
+[heavy Review walkthrough](heavy-review.md) records the shared history and acceptance boundary.
 
 Historical Campaign readers and resumes retain their original event types and identities.
-Frozen fixtures remain byte-identical. New compatibility contracts and adapters are unreleased
-until the entry-point, interruption, broker, Proposal, Scatter and heavy-continuation gates pass.
+Frozen fixtures remain byte-identical. Entry-point, interruption, Broker, Proposal, Scatter and
+heavy-continuation gates pass in the current checkpoint. Release remains pending live evidence,
+external reviews, the pilot and supported consumer migration. Earlier current-status wording is
+retained in the [2026-09-13 archive](status-archive-2026-09-13.txt).
 
 The captured Round can now compile directly from its recorded Campaign Manifest, authority
 Snapshot and packages. The installed resource translator derives Worker timeouts, two-Attempt

@@ -35,11 +35,23 @@ build caches made the unchanged tree pass. The Linux stdin fixture correction pr
 intended blocked pipe and passes original-versus-fixed Linux and macOS checks. See
 [ADR-0089](adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md).
 
-Fresh CI is required for these commits. Published `7bb8bbc` failed Check in CI `34720000638`
-on that Linux stdin fixture; container-probes passed. No requested external PR reviewer has
-run. The configured Claude personal profile still reports false/none; terminal comparison is
-pending. Local Docker stopped responding after disk exhaustion; exact owned-container cleanup
-is unconfirmed and restart approval is pending. Required live probes and P14 evidence remain.
+Published documentation head `5aa6bd52b5850ede200643f3dd1e5a3e526cd04a` passes both Check and
+container-probes in [CI run 34723107534](https://github.com/PakhomovAlexander/afactory/actions/runs/34723107534).
+This verifies the Provider-currentness checkpoint and its preceding usage, recording-recovery
+and heartbeat changes. The earlier Linux stdin fixture failure is retained in the checkpoint
+history; it is not an outstanding failure of this candidate.
+
+No requested external PR reviewer has run. Personal Claude authentication remains unresolved;
+the retained profile observation is false/none and terminal comparison is pending. Docker
+recovery and exact owned-container cleanup remain pending locally. Required live boundary
+probes, separately budgeted calibration/pilot runs and supported consumer release migration
+remain. Neither the local gate nor green container CI supplies live-model evidence.
+
+## Earlier verified checkpoints
+
+The following records describe their original checkpoint boundaries; the current result above
+supersedes their pending-CI and next-conformance notes. Replaced current-status passages are
+retained in the [2026-09-13 status archive](task-execution/status-archive-2026-09-13.txt).
 
 Native cancellation and billing-completeness code `0ec8467` matches frozen tree `6a656c62`
 and passes the full gate: **1,115 tests, zero failures, 15 ignored** across 132 suites, plus
@@ -132,7 +144,8 @@ in [the three-PR record](task-execution/pr-sequence.md).
 - [ ] P13: document execution and independent acceptance pass the full gate. Read-only issue
   capture and local/Jira source conformance pass the full gate.
   Ticket revision refresh and result-scoped delivery pass the full gate.
-  Remaining Provider evidence and Review compatibility are still required.
+  Common Review compatibility is implemented and verified. Live supported-environment evidence,
+  external PR review and integration remain required.
 - [ ] P14: compatibility, benchmark and consumer release.
 
 The owner authorized the complete plan in [three PRs](task-execution/pr-sequence.md).
@@ -247,16 +260,18 @@ across 89 suites; formatting, Clippy and synthetic fixture reproduction passed. 
 checked 96 files with zero errors. Prior candidate gates also passed on read-only archives and
 with the exact cleared Gate environment. No model review was repeated after these corrections.
 
-**Current resume:** finish native usage and expired-Waiting conformance, then the remaining
-P14 evidence. The captured-plan performance correction passes local and Linux CI
-gates. Canonical Task-to-Review selection passes the full local gate; in-flight usage accounting
-preserves observed broker spend through settlement and recovery, with a complete local gate of
-823 passing tests and no failures. Refresh, delivery
-and requirements-aware independent acceptance alongside Review pass the local full gate.
-Signed developer plan decisions are implemented; external PR review awaits Claude personal login.
-Fixed implementation cutover is described in
-[ADR-0051](adr/0051-compile-fixed-implementation-tasks-into-the-common-runtime.md).
-Continue P00–P14 in the approved three PRs; this internal checkpoint does not reduce that scope.
+**Current resume:** complete the remaining P14 calibration and live evidence, external PR
+reviews, and supported consumer/release migration. Exact native usage, expired-Waiting factual
+recovery, heartbeat cancellation, heavy continuation, Jira refresh and result-scoped delivery
+are implemented and included in the green 1,129-test checkpoint and Linux CI above.
+
+Token-free preflights fit all three PRs at their recorded candidate revisions; their exact
+limits and evidence are in the [three-PR record](task-execution/pr-sequence.md). Those fits are
+not authentication, model usage or review verdicts, and a changed candidate needs a new render.
+The Document source-bound calibration preparation also passes its checks; its separate
+761,856-token proposal awaits approval. The performance pilot has a distinct unapproved budget.
+Continue P00–P14 in the approved three PRs; completed deterministic gates do not replace these
+remaining release requirements.
 
 ## P00 baseline evidence
 

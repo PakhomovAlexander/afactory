@@ -18,13 +18,23 @@ build caches made the unchanged tree pass. The Linux stdin fixture correction pr
 intended blocked pipe and passes original-versus-fixed Linux and macOS checks. See
 [ADR-0089](adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md).
 
-Fresh CI is required for these commits. Published `7bb8bbc` failed Check in CI `34720000638`
-on that Linux stdin fixture; container-probes passed. No requested external PR reviewer has
-run. The configured Claude personal profile still reports false/none; terminal comparison is
-pending. Local Docker stopped responding after disk exhaustion; exact owned-container cleanup
-is unconfirmed and restart approval is pending. Required live probes and P14 evidence remain.
+Published documentation head `5aa6bd52b5850ede200643f3dd1e5a3e526cd04a` passes both Check and
+container-probes in [CI run 34723107534](https://github.com/PakhomovAlexander/afactory/actions/runs/34723107534).
+This verifies the Provider-currentness checkpoint and its preceding usage, recording-recovery
+and heartbeat changes. The earlier Linux stdin fixture failure is retained in the checkpoint
+history; it is not an outstanding failure of this candidate.
+
+No requested external PR reviewer has run. Personal Claude authentication remains unresolved;
+the retained profile observation is false/none and terminal comparison is pending. Docker
+recovery and exact owned-container cleanup remain pending locally. Required live boundary
+probes, separately budgeted calibration/pilot runs and supported consumer release migration
+remain. Neither the local gate nor green container CI supplies live-model evidence.
 
 ## Earlier Task checkpoints
+
+These records retain the original checkpoint status. Their pending-CI and next-conformance
+notes are historical; the current gate and remaining work are stated above. Replaced current
+passages are retained in the [status archive](task-execution/status-archive-2026-09-13.txt).
 
 The installed Review CLI checkpoint `fdffb1c` matches frozen `32c0f4b`, tree `910d188d`, and
 passes **1,078 tests, zero failures, 15 ignored** across 127 suites plus formatting, Clippy,

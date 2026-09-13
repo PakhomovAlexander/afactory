@@ -100,5 +100,8 @@ result does not promote its status. It never overwrites a file.
 
 The real CLI tests cover successful capture, planning, execution, Markdown output and exact replay
 after live source/catalog edits. Failure cases cover missing sections, unsafe links, stale Document
-IDs, negative evaluation and a missing verifier. The document starter is one part of P12; the full
-starter pack, Jira revision adapter and release evidence remain on the increment checklist.
+IDs, negative evaluation and a missing verifier. The full starter pack and
+[Jira/local issue revision adapter](issues.md) are also implemented and tested. These flows are
+included in the 1,129-test checkpoint and green Linux CI recorded in the
+[increment status](../task-execution.md). Live semantic calibration and release evidence remain
+separate requirements; the credential-free starter makes no live-model authoring claim.

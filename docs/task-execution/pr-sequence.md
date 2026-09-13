@@ -25,6 +25,46 @@ GPT-5.6-Sol/high on `codex-personal` for bug bounty. These replace the previous 
 configuration for future PRs; the historical P01 Campaign is unchanged. Fix concrete Findings
 and run the deterministic gate without starting another Campaign to obtain a clean verdict.
 
+## Current delivery readiness, 2026-09-13
+
+The completed Product checkpoint passes 1,129 tests, zero failures and 15 ignored across
+132 suites, plus formatting, Clippy, documentation and byte-identical fixtures. Published
+`5aa6bd52` passes Check and container-probes in
+[CI run 34723107534](https://github.com/PakhomovAlexander/afactory/actions/runs/34723107534).
+Usage, heartbeat cancellation, expired factual recovery, heavy Review and Jira refresh are
+implemented. Required live evidence, external reviews and release remain open.
+
+All three PRs have successful token-free plans and first-input fit records. The estimates below
+are ordered correctness/architecture, performance, then bug bounty; no account admission,
+Campaign, Gate or model invocation occurred.
+
+| PR | Exact candidate | Subject | Estimated first-input tokens | Attempt cap |
+|---|---|---|---|---|
+| 1 | `c8015f16191d7152f70c831c5e8494ea987f47a8` | Diff | 310,746 / 310,637 / 310,610 | 400,000 |
+| 2 | `5aa6bd52b5850ede200643f3dd1e5a3e526cd04a` | WholeTree | 11,274 / 11,164 / 11,137 | 400,000 |
+| 3 | `73991c027e70a3288d6cc4a7578c3a8638188708` | WholeTree | 4,539 / 4,430 / 4,403 | 300,000 |
+
+Each fit applies only to its recorded candidate and policy; later changes require a new render.
+WholeTree focus retains all changed paths and baseline identities as provenance. It does not
+provide baseline file contents or prove that a Finding was introduced by the PR. First-input
+estimates exclude runtime-bound sections and are not native usage or context-window guarantees.
+The retained records are `task-pr1-final-preflight-20260913-01/verification.json` in PR1 scratch,
+`review-whole-tree-preflight-5aa6bd52b585/summary.json` in Product scratch, and
+`review-whole-tree-preflight-73991c027e70/summary.json` in Hub scratch.
+
+The Hub's Document source-bound prep03/readiness14 completes twenty CLI/compiler preparations,
+a 1,395-check independent audit, and focused/isolated Store proofs of 84 checks and 96 refusals.
+Its controls-first 761,856-token calibration proposal remains unapproved; no semantic judgment
+or live-model pilot result is claimed. Personal Claude authentication and local Docker recovery
+remain unresolved. Hub CI run `34729305238` could not start because of account billing; that is
+separate from the green Product CI and is not a source-test failure.
+
+## Historical checkpoint record
+
+The dated and sequential records below retain what was known at each checkpoint. Current
+readiness above supersedes their old next-step claims. Replaced current-status passages are
+preserved in the [2026-09-13 archive](status-archive-2026-09-13.txt).
+
 Baseline: `b8b8963`, the latest observed kernel main. Its change since the recorded P00
 baseline is documentation only. P01 fixes remain in `c286e18` and retain their test evidence.
 Default integration fixtures use command Workers. The live pilot requires its own bounded
@@ -479,9 +519,9 @@ The captured Review operation host at `eab8d29` passes the full local gate (**90
 failures, 15 ignored); exact-head CI is run `34693346220`. It executes captured Review on common
 Attempts and preserves canonical acceptance and restart recovery. The next accounting slice
 adds exact cumulative report receipts and typed reviewer provenance. See
-[Review compatibility](task-execution/review-compatibility.md),
-[ADR-0077](adr/0077-run-captured-review-operations-under-common-task-attempts.md) and
-[ADR-0078](adr/0078-bind-review-conclusions-to-exact-task-accounting.md).
+[Review compatibility](review-compatibility.md),
+[ADR-0077](../adr/0077-run-captured-review-operations-under-common-task-attempts.md) and
+[ADR-0078](../adr/0078-bind-review-conclusions-to-exact-task-accounting.md).
 
 The next slice follows [ADR-0079](../adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md):
 exact cumulative per-Attempt ledger/usage/sidecar records, shared exact Broker transport, and
@@ -521,9 +561,9 @@ The exact Review accounting/inspection checkpoint `1cd3008` passes the full loca
 It is pushed to PR 2 and passes CI `34695645865`. The preceding operation-host checkpoint `eab8d29`
 passes CI `34693346220`. The current slice retains cumulative charge above u64 within one
 Attempt, adds exact Broker transport and fills public schema gaps. See
-[Review compatibility](task-execution/review-compatibility.md),
-[ADR-0078](adr/0078-bind-review-conclusions-to-exact-task-accounting.md) and
-[ADR-0079](adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md).
+[Review compatibility](review-compatibility.md),
+[ADR-0078](../adr/0078-bind-review-conclusions-to-exact-task-accounting.md) and
+[ADR-0079](../adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md).
 
 Published `1aa111e` (frozen identical tree at `2e5c95b`) passes the complete gate: 939 tests,
 zero failures, 15 ignored across 122 suites, formatting, Clippy, documentation and byte-identical
@@ -592,9 +632,9 @@ The next local slice connects exact Broker operations to the original Task Attem
 late paid receipts, panic/CAS-outage usage and typed inspection. Focused Store, Runner,
 captured Review and common runtime checks pass. Brokered Provider admission needs its own
 captured probe policy and is being completed before legacy CLI cutover. See
-[Review compatibility](task-execution/review-compatibility.md),
-[ADR-0079](adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md) and
-[ADR-0080](adr/0080-bind-broker-evidence-to-the-original-task-attempt.md).
+[Review compatibility](review-compatibility.md),
+[ADR-0079](../adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md) and
+[ADR-0080](../adr/0080-bind-broker-evidence-to-the-original-task-attempt.md).
 
 ## Common Task Broker checkpoint verification
 
@@ -621,9 +661,9 @@ late paid receipts, panic/CAS-outage usage and typed inspection. Separate captur
 probe authority now passes compiler, Store, domain and end-to-end runtime checks: readiness
 and business work use distinct policies and Attempts, and failed readiness blocks work.
 The current full gate is still required before publishing this slice. See
-[Review compatibility](task-execution/review-compatibility.md),
-[ADR-0079](adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md) and
-[ADR-0080](adr/0080-bind-broker-evidence-to-the-original-task-attempt.md).
+[Review compatibility](review-compatibility.md),
+[ADR-0079](../adr/0079-retain-exact-cumulative-charge-within-one-task-attempt.md) and
+[ADR-0080](../adr/0080-bind-broker-evidence-to-the-original-task-attempt.md).
 
 ### Prior live workstream, preserved
 
@@ -823,9 +863,9 @@ correction is being verified without changing production deadlines. The next com
 retains exact native multi-field/multi-turn usage, refuses nonregular Codex final-message files
 and recovers already published selected outputs from expired Waiting without new work. Focused
 checks pass; the full combined gate and fresh Linux CI remain pending. See
-[ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md),
-[exact native usage](adr/0085-retain-exact-native-task-usage-across-multiple-turns.md) and
-[recording recovery](adr/0086-record-expired-review-publication-without-restarting-work.md).
+[ADR-0084](../adr/0084-route-new-review-commands-through-the-common-task.md),
+[exact native usage](../adr/0085-retain-exact-native-task-usage-across-multiple-turns.md) and
+[recording recovery](../adr/0086-record-expired-review-publication-without-restarting-work.md).
 
 ## 2026-09-12 native cancellation and billing completeness
 
@@ -871,11 +911,17 @@ build caches made the unchanged tree pass. The Linux stdin fixture correction pr
 intended blocked pipe and passes original-versus-fixed Linux and macOS checks. See
 [ADR-0089](../adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md).
 
-Fresh CI is required for these commits. Published `7bb8bbc` failed Check in CI `34720000638`
-on that Linux stdin fixture; container-probes passed. No requested external PR reviewer has
-run. The configured Claude personal profile still reports false/none; terminal comparison is
-pending. Local Docker stopped responding after disk exhaustion; exact owned-container cleanup
-is unconfirmed and restart approval is pending. Required live probes and P14 evidence remain.
+Published documentation head `5aa6bd52b5850ede200643f3dd1e5a3e526cd04a` passes both Check and
+container-probes in [CI run 34723107534](https://github.com/PakhomovAlexander/afactory/actions/runs/34723107534).
+This verifies the Provider-currentness checkpoint and its preceding usage, recording-recovery
+and heartbeat changes. The earlier Linux stdin fixture failure is retained in the checkpoint
+history; it is not an outstanding failure of this candidate.
+
+No requested external PR reviewer has run. Personal Claude authentication remains unresolved;
+the retained profile observation is false/none and terminal comparison is pending. Docker
+recovery and exact owned-container cleanup remain pending locally. Required live boundary
+probes, separately budgeted calibration/pilot runs and supported consumer release migration
+remain. Neither the local gate nor green container CI supplies live-model evidence.
 
 Previous live status, with relative links adjusted:
 
