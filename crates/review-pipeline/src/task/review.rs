@@ -187,7 +187,9 @@ struct ReviewMemo {
 }
 
 pub struct ReviewTaskDomain {
-    /// Process-local memo of validated immutable CAS identities under this exact domain.
+    /// Serializes only synchronous domain reductions, never Worker execution.
+    operation: std::sync::Mutex<()>,
+    /// Bounded scratch reused only within the current locked operation.
     memo: std::sync::Mutex<ReviewMemo>,
     review_task: bool,
     policy_id: String,
@@ -288,6 +290,7 @@ impl ReviewTaskDomain {
         }
         let code = CodeTaskDomain::captured(cas, &policy.check_policy_id, graph.clone())?;
         Ok(Self {
+            operation: std::sync::Mutex::new(()),
             memo: std::sync::Mutex::new(ReviewMemo::default()),
             review_task: true,
             policy_id: policy_id.into(),
@@ -300,6 +303,17 @@ impl ReviewTaskDomain {
     pub fn with_review_task(mut self, review: bool) -> Self {
         self.review_task = review;
         self
+    }
+
+    // Every external domain boundary starts fresh. Keeping the operation guard alive
+    // prevents another concurrent callback from sharing or clearing this operation's memo.
+    fn begin_operation(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        let guard = self
+            .operation
+            .lock()
+            .map_err(|_| "Review operation poisoned")?;
+        *self.memo.lock().map_err(|_| "Review memo poisoned")? = ReviewMemo::default();
+        Ok(guard)
     }
 
     fn operator(&self, input: &TaskInvocationV1) -> Result<&TaskOperatorV1, String> {
@@ -896,6 +910,7 @@ impl ReviewTaskDomain {
         state: &TaskProjection,
         report: &RunReport,
     ) -> Result<TaskResultV1, String> {
+        let _operation = self.begin_operation()?;
         let execution = state
             .execution
             .as_ref()
@@ -1082,6 +1097,23 @@ impl TaskOperatorHost for ReviewTaskDomain {
             );
         }
 
+        if !matches!(
+            self.operator(input),
+            Ok(TaskOperatorV1::ReviewBind {}
+                | TaskOperatorV1::ReviewReduce {}
+                | TaskOperatorV1::ReviewAccept {}
+                | TaskOperatorV1::AttestFixes {}
+                | TaskOperatorV1::RepairAccept {}
+                | TaskOperatorV1::ReviewContinue {})
+        ) {
+            return self
+                .code
+                .execute_controlled(cas, input, attempt, broker, cancellation);
+        }
+        let _operation = match self.begin_operation() {
+            Ok(guard) => guard,
+            Err(error) => return super::control::refused(error),
+        };
         let outputs = match self.operator(input) {
             Ok(TaskOperatorV1::ReviewBind {}) => self
                 .bind(cas, input)
@@ -1124,6 +1156,7 @@ impl TaskDomain for ReviewTaskDomain {
         feedback: &[String],
         id: &str,
     ) -> Result<(), String> {
+        let _operation = self.begin_operation()?;
         if matches!(self.operator(input), Ok(TaskOperatorV1::FixVerify { .. })) {
             return self.validate_fix_context(cas, input);
         }
@@ -1144,6 +1177,7 @@ impl TaskDomain for ReviewTaskDomain {
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
     ) -> Result<(), String> {
+        let _operation = self.begin_operation()?;
         let expected = match self.operator(input)? {
             TaskOperatorV1::ReviewBind {} => {
                 Some(BTreeMap::from([("subject".into(), self.bind(cas, input)?)]))
@@ -1187,6 +1221,7 @@ impl TaskDomain for ReviewTaskDomain {
         task: &TaskRevisionV1,
         result: &TaskResultV1,
     ) -> Result<(), String> {
+        let _operation = self.begin_operation()?;
         let mut expected = result.clone();
         self.assess(cas, task, &mut expected)?;
         if &expected != result {

@@ -2,6 +2,8 @@
 use serde_json::Value;
 use std::path::Path;
 use std::process::Command;
+#[path = "support/review_memo.rs"]
+mod review_memo;
 #[path = "support/task_cli.rs"]
 mod task_cli;
 
@@ -68,6 +70,11 @@ fn bounded_repair_preserves_one_round_and_delivers_verified_s2() {
     let (code, resumed) = run(&repo, &state, &["task", "run", "repair-cli"]);
     assert_eq!(code, 0, "{resumed:#}");
     assert_eq!(resumed, result);
+    review_memo::refuses_changed_history(
+        &state,
+        &context["payload"]["invocation"],
+        &result["review_rounds"][0],
+    );
     let worktree = directory.path().join("delivered");
     let output = Command::new(env!("CARGO_BIN_EXE_af"))
         .current_dir(&repo)

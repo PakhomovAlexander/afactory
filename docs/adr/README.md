@@ -168,3 +168,4 @@ options you rejected and why — that is the part future-you needs.
   replay](0096-revalidate-task-execution-evidence-on-cached-replay.md)
 - [0097 — Share validated source reads within one
   operation](0097-share-validated-source-reads-within-one-operation.md)
+- [0098 — Scope Review memos to one domain operation](0098-scope-review-memos-to-one-domain-operation.md)

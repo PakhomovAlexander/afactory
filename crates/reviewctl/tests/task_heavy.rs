@@ -2,6 +2,8 @@
 use review_core::task::pipeline::*;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path, process::Command};
+#[path = "support/review_memo.rs"]
+mod review_memo;
 #[path = "support/task_cli.rs"]
 mod task_cli;
 
@@ -249,6 +251,7 @@ fn full_s2_review_retains_original_round_and_consumes_independent_fix_receipts()
     let (code, replay) = run(&repo, &state, &["task", "run", "repair-cli"]);
     assert_eq!(code, 0);
     assert_eq!(replay, result);
+    review_memo::refuses_changed_history(&state, &rounds[1]["invocation"], &rounds[0]);
 }
 
 #[test]
