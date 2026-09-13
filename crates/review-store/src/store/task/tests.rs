@@ -1206,3 +1206,201 @@ fn late_usage_is_charged_after_task_finish_without_reopening_its_result() {
             .is_err()
     );
 }
+
+#[test]
+fn warm_and_cold_replay_reject_missing_or_corrupt_execution_evidence() {
+    use review_core::task::execution::*;
+    for succeeded in [false, true] {
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f.open();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        let invocation_id = f.record_execution_inputs(&lease);
+        let context = f.cas.put_json(&json!({"context":"exact inputs"})).unwrap();
+        let raw = f.cas.put(b"raw worker response").unwrap();
+        let usage = f.cas.put_json(&json!({"chargeable_tokens":7})).unwrap();
+        let diagnostic = f.cas.put_json(&json!({"reason":"worker failed"})).unwrap();
+        let feedback = f
+            .cas
+            .put_json(&json!({"feedback":"retry exact input"}))
+            .unwrap();
+        let attempt = f
+            .store
+            .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+            .unwrap();
+        f.store
+            .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+            .unwrap();
+        let output_id = f.execution_output(&invocation_id, attempt.id());
+        let result = if succeeded {
+            TaskAttemptResultV1::Succeeded {
+                output_id: output_id.clone(),
+            }
+        } else {
+            TaskAttemptResultV1::Failed {
+                diagnostic_id: diagnostic.clone(),
+                feedback_id: Some(feedback.clone()),
+            }
+        };
+        f.store
+            .settle_task_attempt(
+                &f.cas,
+                &lease,
+                TaskExecutionRecordV1::Settled {
+                    attempt_id: attempt.id().into(),
+                    charged_tokens: 7,
+                    result,
+                    raw_artifact_ids: vec![raw.clone()],
+                    usage_id: Some(usage.clone()),
+                },
+                &f.authority,
+            )
+            .unwrap();
+        if succeeded {
+            f.store
+                .publish_task_output(&f.cas, &lease, &output_id, Some(attempt.id()), &f.authority)
+                .unwrap();
+        } else {
+            // A finished failure still needs its original diagnostics and accounting evidence.
+            let result = TaskResultV1 {
+                task_revision_id: f.revision_id.clone(),
+                execution: task::TaskExecutionV1::Exhausted,
+                acceptance: TaskAcceptanceV1::Unsatisfied,
+                domain_conclusion: "missing output".into(),
+                outputs: BTreeMap::new(),
+                evidence: BTreeSet::new(),
+                missing_obligations: BTreeSet::from(["checked".into()]),
+            };
+            let result_id = f
+                .cas
+                .put_artifact(
+                    task::TASK_RESULT_V1,
+                    producer(),
+                    vec![f.revision_id.clone()],
+                    None,
+                    serde_json::to_value(result).unwrap(),
+                )
+                .unwrap()
+                .0;
+            f.store
+                .task_change(
+                    &f.cas,
+                    &lease,
+                    TaskChangeV1::Finished { result_id },
+                    now().unwrap(),
+                )
+                .unwrap();
+        }
+        let mut targets = vec![raw, usage, context, invocation_id];
+        if succeeded {
+            targets.push(output_id.clone());
+        } else {
+            targets.extend([diagnostic, feedback]);
+        }
+        for event in f.store.replay(&task_run_id("task-1").unwrap()).unwrap() {
+            let transition: TaskTransitionV1 = serde_json::from_value(event.payload).unwrap();
+            if let TaskChangeV1::ExecutionRecorded { record_id } = transition.change {
+                targets.push(record_id);
+            }
+        }
+        let healthy = f.state(); // Warm the exact prefix, including all settled evidence.
+        let sequence = healthy.next_sequence;
+        assert_eq!(
+            healthy
+                .execution
+                .as_ref()
+                .unwrap()
+                .budget
+                .committed_tokens(),
+            7
+        );
+        for id in targets {
+            let hex = id.strip_prefix("sha256:").unwrap();
+            let path = f
+                ._dir
+                .path()
+                .join("cas/objects")
+                .join(&hex[..2])
+                .join(&hex[2..]);
+            let bytes = std::fs::read(&path).unwrap();
+            for missing in [false, true] {
+                if missing {
+                    std::fs::remove_file(&path).unwrap();
+                } else {
+                    std::fs::write(&path, b"corrupt evidence").unwrap();
+                }
+                assert!(
+                    f.store.task_projection(&f.cas, "task-1").is_err(),
+                    "warm accepted {id}, missing={missing}"
+                );
+                let cold = EventStore::open_read_only(&f.path).unwrap();
+                assert!(
+                    cold.task_projection(&f.cas, "task-1").is_err(),
+                    "cold accepted {id}, missing={missing}"
+                );
+                std::fs::write(&path, &bytes).unwrap();
+                let restored = f.state();
+                assert_eq!(restored.next_sequence, sequence);
+                assert_eq!(restored.phase, healthy.phase);
+                let execution = restored.execution.unwrap();
+                assert_eq!(execution.budget.committed_tokens(), 7);
+                assert_eq!(execution.budget.begun_attempts(), 1);
+                assert_eq!(
+                    execution.outputs.contains_key("root.nodes.write"),
+                    succeeded
+                );
+                if succeeded {
+                    assert_eq!(execution.outputs["root.nodes.write"].0, output_id);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn task_listing_returns_sorted_validated_projections_and_refuses_corruption() {
+    let mut f = Fixture::new(false);
+    f.open();
+    let mut last_revision = String::new();
+    for label in ["z-task", "a-task"] {
+        let mut revision = f.revision.clone();
+        revision.task_id = label.into();
+        let id = f
+            .cas
+            .put_artifact(
+                task::TASK_REVISION_V1,
+                producer(),
+                vec![],
+                None,
+                serde_json::to_value(revision).unwrap(),
+            )
+            .unwrap()
+            .0;
+        f.store
+            .open_task(&f.cas, &id, "writer-1", 1_000_000)
+            .unwrap();
+        if label == "z-task" {
+            last_revision = id;
+        }
+    }
+    let labels = f
+        .store
+        .map_tasks(&f.cas, |task| {
+            assert_eq!(task.phase, TaskPhaseV1::Submitted {});
+            task.task_id
+        })
+        .unwrap();
+    assert_eq!(labels, vec!["a-task", "task-1", "z-task"]);
+    assert_eq!(labels, f.store.task_ids(&f.cas).unwrap());
+    let hex = last_revision.strip_prefix("sha256:").unwrap();
+    let path = f
+        ._dir
+        .path()
+        .join("cas/objects")
+        .join(&hex[..2])
+        .join(&hex[2..]);
+    std::fs::write(path, b"corrupt last Task revision").unwrap();
+    assert!(f.store.map_tasks(&f.cas, |task| task.task_id).is_err());
+}

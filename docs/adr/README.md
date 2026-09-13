@@ -113,3 +113,5 @@ options you rejected and why — that is the part future-you needs.
 - [0051 — Compile fixed implementation Tasks into the common
   runtime](0051-compile-fixed-implementation-tasks-into-the-common-runtime.md)
 - [0095 — Bind legacy Task context and retry output admission](0095-bind-legacy-task-context-and-retry-output-admission.md)
+- [0096 — Revalidate Task execution evidence on cached
+  replay](0096-revalidate-task-execution-evidence-on-cached-replay.md)

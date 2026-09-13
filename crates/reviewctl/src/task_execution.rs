@@ -866,18 +866,17 @@ pub(super) fn list_common(state: &Path) -> Result<Vec<serde_json::Value>, String
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let store =
         EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
-    store.task_ids(&cas).map_err(|e| e.to_string())?.into_iter().map(|id| {
-        let task = store.task_projection(&cas, &id).map_err(|e| e.to_string())?.ok_or("Unknown Task")?;
+    store.map_tasks(&cas, |task| {
         let result: Option<TaskResultV1> = match &task.phase {
             TaskPhaseV1::Finished { result_id } => Some(artifact(&cas, result_id, TASK_RESULT_V1)?),
             _ => None,
         };
-        Ok(json!({"task_id":id,"kind":task.revision.kind,"phase":task.phase,
+        Ok(json!({"task_id":task.task_id,"kind":task.revision.kind,"phase":task.phase,
             "outcome":result.as_ref().map(|r| &r.domain_conclusion),
             "chargeable_tokens":task.execution.as_ref().map_or(0,|e| e.budget.committed_tokens()),
             "derived_snapshot_id":result.as_ref().and_then(|r| r.outputs.get("snapshot")).and_then(|o| o.snapshot_id.as_ref()),
             "delivery":delivery_view(&cas, &task)?}))
-    }).collect()
+    }).map_err(|e| e.to_string())?.into_iter().collect()
 }
 
 fn present(
