@@ -949,6 +949,15 @@ fn registry_transaction_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+))]
 fn write_registry_transaction(
     path: &Path,
     stage: &Path,
