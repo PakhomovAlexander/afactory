@@ -314,13 +314,19 @@ pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String> 
         ));
     }
     let path = registry_path()?.ok_or("no provider registry path is available")?;
-    add_to_registry(&path, id, kind, &auth_dir)?;
+    let preserved = add_to_registry(&path, id, kind, &auth_dir)?;
     println!(
         "provider {id} registered in {} ({}, {})",
         path.display(),
         kind.name(),
         auth_dir.display()
     );
+    if let Some(previous) = preserved {
+        println!(
+            "previous provider registry preserved at {}",
+            previous.display()
+        );
+    }
     println!("next: af provider status");
     Ok(())
 }
@@ -357,7 +363,7 @@ fn add_to_registry(
     id: &str,
     kind: ProviderKind,
     auth_dir: &Path,
-) -> Result<(), String> {
+) -> Result<Option<PathBuf>, String> {
     let _lock = registry_lock(path)?;
     let existing = match fs::symlink_metadata(path) {
         Ok(metadata) => {
@@ -507,7 +513,11 @@ fn registry_lock(path: &Path) -> Result<File, String> {
     Ok(file)
 }
 
-fn write_registry(path: &Path, bytes: &[u8], expected: Option<&str>) -> Result<(), String> {
+fn write_registry(
+    path: &Path,
+    bytes: &[u8],
+    expected: Option<&str>,
+) -> Result<Option<PathBuf>, String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
@@ -533,7 +543,7 @@ fn write_registry(path: &Path, bytes: &[u8], expected: Option<&str>) -> Result<(
         .write_all(bytes)
         .and_then(|()| temporary.as_file().sync_all())
         .map_err(|error| format!("writing provider registry: {error}"))?;
-    match expected {
+    let preserved = match expected {
         None => {
             temporary.persist_noclobber(path).map_err(|error| {
                 format!(
@@ -542,11 +552,12 @@ fn write_registry(path: &Path, bytes: &[u8], expected: Option<&str>) -> Result<(
                     error.error
                 )
             })?;
+            None
         }
-        Some(expected) => replace_registry_if_unchanged(path, temporary, expected)?,
-    }
+        Some(expected) => Some(replace_registry_if_unchanged(path, temporary, expected)?),
+    };
     sync_directory(parent)?;
-    Ok(())
+    Ok(preserved)
 }
 
 fn create_dir_all_durable(path: &Path) -> Result<(), String> {
@@ -641,7 +652,7 @@ fn replace_registry_if_unchanged(
     path: &Path,
     mut temporary: tempfile::NamedTempFile,
     expected: &str,
-) -> Result<(), String> {
+) -> Result<PathBuf, String> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
 
     let temporary_path = temporary.path().to_path_buf();
@@ -694,9 +705,9 @@ fn replace_registry_if_unchanged(
     sync_directory(parent)?;
     // Move the displaced version behind an unlistable, randomly named directory before removing
     // it. A non-cooperating writer that replaces the stage pathname is moved into quarantine and
-    // preserved instead of being unlinked. Keep the marker until cleanup is durable; only marker
-    // removal publishes the validated candidate to readers.
-    quarantine_and_remove_displaced(
+    // preserved instead of being unlinked. Keep the marker until preservation is durable; only
+    // marker removal publishes the validated candidate to readers.
+    let preserved = quarantine_displaced(
         path,
         &temporary_path,
         displaced_file
@@ -712,7 +723,7 @@ fn replace_registry_if_unchanged(
         )
     })?;
     sync_directory(parent)?;
-    Ok(())
+    Ok(preserved)
 }
 
 #[cfg(any(
@@ -724,13 +735,13 @@ fn replace_registry_if_unchanged(
     target_os = "visionos",
     target_os = "watchos"
 ))]
-fn quarantine_and_remove_displaced(
+fn quarantine_displaced(
     path: &Path,
     stage: &Path,
     displaced: &File,
     expected: &str,
     transaction: &Path,
-) -> Result<(), String> {
+) -> Result<PathBuf, String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
@@ -779,25 +790,15 @@ fn quarantine_and_remove_displaced(
         ));
     }
 
-    fs::remove_file(&quarantined).map_err(|error| {
-        format!(
-            "removing quarantined prior provider registry {}: {error}",
-            quarantined.display()
-        )
-    })?;
+    // Do not unlink the displaced inode: a non-cooperating process may still hold it open and
+    // append after validation. Keeping the prior registry makes every such write recoverable.
+    fs::set_permissions(&quarantine, fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("making provider registry quarantine inspectable: {error}"))?;
     quarantine_file
         .sync_all()
-        .map_err(|error| format!("syncing provider registry quarantine cleanup: {error}"))?;
-    fs::set_permissions(&quarantine, fs::Permissions::from_mode(0o700))
-        .map_err(|error| format!("opening provider registry quarantine for cleanup: {error}"))?;
-    fs::remove_dir(&quarantine).map_err(|error| {
-        format!(
-            "removing provider registry quarantine {}: {error}",
-            quarantine.display()
-        )
-    })?;
+        .map_err(|error| format!("syncing preserved provider registry: {error}"))?;
     sync_directory(parent)?;
-    Ok(())
+    Ok(quarantined)
 }
 
 fn registry_transaction_path(path: &Path) -> PathBuf {
@@ -894,7 +895,7 @@ fn replace_registry_if_unchanged(
     path: &Path,
     _temporary: tempfile::NamedTempFile,
     _expected: &str,
-) -> Result<(), String> {
+) -> Result<PathBuf, String> {
     Err(format!(
         "provider registry {} already exists, but this platform has no conditional replacement primitive",
         path.display()
@@ -1017,15 +1018,29 @@ fn read_registry_with_hooks(
     before_read: impl FnOnce(),
     after_read: impl FnOnce(),
 ) -> Result<Option<String>, String> {
-    ensure_no_registry_transaction(path)?;
+    let Some(resolved) = resolve_registry(path)? else {
+        return Ok(None);
+    };
+    ensure_no_registry_transaction(&resolved)?;
     before_read();
-    let registry = read_registry_unchecked(path)?;
+    let registry = read_registry_resolved(path, &resolved)?;
     after_read();
     // A writer may have created the marker after the first check and exchanged the candidate
     // while this read was in flight. Rechecking makes such a tentative value fail closed; if the
     // marker has already disappeared, the candidate was durably committed.
-    ensure_no_registry_transaction(path)?;
-    Ok(registry)
+    ensure_no_registry_transaction(&resolved)?;
+    Ok(Some(registry))
+}
+
+fn resolve_registry(path: &Path) -> Result<Option<PathBuf>, String> {
+    match fs::canonicalize(path) {
+        Ok(path) => Ok(Some(path)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!(
+            "cannot resolve provider registry {}: {error}",
+            path.display()
+        )),
+    }
 }
 
 fn ensure_no_registry_transaction(path: &Path) -> Result<(), String> {
@@ -1050,17 +1065,14 @@ fn ensure_no_registry_transaction(path: &Path) -> Result<(), String> {
 }
 
 fn read_registry_unchecked(path: &Path) -> Result<Option<String>, String> {
-    let resolved = match fs::canonicalize(path) {
-        Ok(path) => path,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => {
-            return Err(format!(
-                "cannot resolve provider registry {}: {error}",
-                path.display()
-            ));
-        }
+    let Some(resolved) = resolve_registry(path)? else {
+        return Ok(None);
     };
-    let file = open_registry(&resolved)
+    read_registry_resolved(path, &resolved).map(Some)
+}
+
+fn read_registry_resolved(path: &Path, resolved: &Path) -> Result<String, String> {
+    let file = open_registry(resolved)
         .map_err(|error| format!("cannot read provider registry {}: {error}", path.display()))?;
     let metadata = file.metadata().map_err(|error| {
         format!(
@@ -1091,7 +1103,6 @@ fn read_registry_unchecked(path: &Path) -> Result<Option<String>, String> {
         ));
     }
     String::from_utf8(bytes)
-        .map(Some)
         .map_err(|_| format!("provider registry {} is not UTF-8", path.display()))
 }
 
@@ -3570,6 +3581,26 @@ mod tests {
         assert!(read_registry(&path).is_err());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn symlinked_registry_checks_the_marker_beside_the_resolved_target() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let alias = root.path().join("providers-alias.toml");
+        fs::write(&path, "version = 1\nproviders = []\n").unwrap();
+        symlink(&path, &alias).unwrap();
+        fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
+
+        let error = read_registry(&alias).unwrap_err();
+        assert!(
+            error.contains("unfinished publication transaction"),
+            "{error}"
+        );
+        assert!(error.contains(path.to_str().unwrap()), "{error}");
+    }
+
     #[cfg(any(
         target_os = "android",
         target_os = "linux",
@@ -3675,8 +3706,7 @@ mod tests {
         fs::rename(&second, &stage).unwrap();
 
         let error =
-            quarantine_and_remove_displaced(&path, &stage, &displaced, original, &transaction)
-                .unwrap_err();
+            quarantine_displaced(&path, &stage, &displaced, original, &transaction).unwrap_err();
         assert!(error.contains("changed during cleanup"), "{error}");
         let quarantine = fs::read_dir(root.path())
             .unwrap()
@@ -3695,6 +3725,42 @@ mod tests {
         );
         assert!(transaction.is_file());
         assert_eq!(fs::read_to_string(&path).unwrap(), "candidate\n");
+    }
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "visionos",
+        target_os = "watchos"
+    ))]
+    #[test]
+    fn successful_quarantine_preserves_late_writes_through_the_displaced_fd() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let stage = root.path().join("stage");
+        let transaction = registry_transaction_path(&path);
+        let original = "version = 1\nproviders = []\n";
+        fs::write(&path, "candidate\n").unwrap();
+        fs::write(&stage, original).unwrap();
+        fs::write(&transaction, "version = 1\n").unwrap();
+        let mut displaced = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&stage)
+            .unwrap();
+
+        let preserved =
+            quarantine_displaced(&path, &stage, &displaced, original, &transaction).unwrap();
+        displaced.write_all(b"# late concurrent write\n").unwrap();
+        displaced.sync_all().unwrap();
+
+        let contents = fs::read_to_string(&preserved).unwrap();
+        assert!(contents.starts_with(original));
+        assert!(contents.ends_with("# late concurrent write\n"));
+        assert!(transaction.is_file());
     }
 
     #[test]
