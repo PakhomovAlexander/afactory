@@ -37,6 +37,7 @@ pub(super) fn compact_subject(
         subject: bound.subject.clone(),
         snapshot_id: bound.snapshot_id.clone(),
         prior_history_id: bound.prior_history_id.clone(),
+        continuation_id: bound.continuation_id.clone(),
         round: bound.round,
         change_scope,
     };
@@ -66,6 +67,7 @@ pub(super) fn expand_subject(
         change_set: changes,
         snapshot_id: value.snapshot_id.clone(),
         prior_history_id: value.prior_history_id.clone(),
+        continuation_id: value.continuation_id.clone(),
         round: value.round,
     };
     bound.validate()?;

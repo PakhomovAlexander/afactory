@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-provider-context:2",
+  "title": "task-provider-context@2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invocation",
+    "capability",
+    "rendered_id",
+    "manifest"
+  ],
+  "properties": {
+    "invocation": {
+      "allOf": [
+        {
+          "$ref": "urn:af:schema:task-invocation:1"
+        },
+        {
+          "properties": {
+            "inputs": {
+              "maxProperties": 0
+            }
+          }
+        }
+      ]
+    },
+    "capability": {
+      "$ref": "urn:af:schema:task-provider-admission:2"
+    },
+    "rendered_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entries",
+        "rendered_bytes",
+        "estimated_tokens"
+      ],
+      "properties": {
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "required_by",
+              "artifact_id",
+              "rendered_bytes",
+              "estimated_tokens"
+            ],
+            "properties": {
+              "name": {
+                "const": "capability_probe"
+              },
+              "required_by": {
+                "const": "installed Provider admission"
+              },
+              "artifact_id": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              },
+              "rendered_bytes": {
+                "const": 23
+              },
+              "estimated_tokens": {
+                "const": 6
+              }
+            }
+          }
+        },
+        "rendered_bytes": {
+          "const": 23
+        },
+        "estimated_tokens": {
+          "const": 6
+        }
+      }
+    }
+  }
+}

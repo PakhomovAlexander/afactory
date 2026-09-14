@@ -1,0 +1,306 @@
+"schema" = "af.pipeline/1"
+"name" = "fixture/implementation"
+"version" = "1.0.0"
+"max_attempts" = 5
+"max_parallel" = 2
+
+["contract"]
+
+["contract"."inputs"]
+
+["contract"."inputs"."requirements"]
+"artifact_type" = "af/Requirements@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["contract"."inputs"."requirements"."affinity"]
+"kind" = "unbound"
+
+["contract"."inputs"."source"]
+"artifact_type" = "af/SourceTree@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["contract"."inputs"."source"."affinity"]
+"kind" = "unbound"
+
+["contract"."inputs"."history"]
+"artifact_type" = "af/ReviewHistory@1"
+"cardinality" = "one"
+"optional" = false
+"root_default" = "empty_review_history"
+"covers" = []
+
+["contract"."inputs"."history"."affinity"]
+"kind" = "unbound"
+
+["contract"."outputs"]
+
+["contract"."outputs"."snapshot"]
+"artifact_type" = "af/SourceTree@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["contract"."outputs"."snapshot"."affinity"]
+"kind" = "derived_from"
+"input" = "source"
+
+["contract"."outputs"."verification"]
+"artifact_type" = "af/ReviewedImplementation@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = ["verified"]
+
+["contract"."outputs"."verification"."affinity"]
+"kind" = "derived_from"
+"input" = "source"
+
+["contract"."outputs"."evaluation"]
+"artifact_type" = "af/VerificationResult@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = ["goal"]
+
+["contract"."outputs"."evaluation"."affinity"]
+"kind" = "derived_from"
+"input" = "source"
+
+["accepts"]
+"kinds" = ["implement"]
+
+["accepts"."required_facts"]
+
+["slots"]
+
+["slots"."implementer"]
+"worker" = "fixture/implementer"
+"role" = "implement"
+"input_type" = "af/ImplementationInput@1"
+"output_type" = "af/ImplementationReport@1"
+"min_attempts" = 1
+"max_attempts" = 1
+"allow_local_replacement" = true
+"independent_from" = []
+
+["slots"."bugs"]
+"worker" = "fixture/bugs"
+"role" = "review"
+"input_type" = "af/ReviewInput@1"
+"output_type" = "review.kernel/ReviewerResult@1"
+"min_attempts" = 1
+"max_attempts" = 1
+"allow_local_replacement" = false
+"independent_from" = ["implementer"]
+
+["slots"."correctness"]
+"worker" = "fixture/correctness"
+"role" = "review"
+"input_type" = "af/ReviewInput@1"
+"output_type" = "review.kernel/ReviewerResult@1"
+"min_attempts" = 1
+"max_attempts" = 1
+"allow_local_replacement" = false
+"independent_from" = ["implementer"]
+
+["slots"."evaluator"]
+"worker" = "fixture/evaluator"
+"role" = "evaluate"
+"input_type" = "af/EvaluationInput@1"
+"output_type" = "af/TaskEvaluation@1"
+"min_attempts" = 1
+"max_attempts" = 1
+"allow_local_replacement" = true
+"independent_from" = ["implementer"]
+
+[["nodes"]]
+"id" = "implement"
+
+["nodes"."operator"]
+"op" = "worker"
+"slot" = "implementer"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."requirements"]
+"kind" = "input"
+"port" = "requirements"
+
+["nodes"."inputs"."source"]
+"kind" = "input"
+"port" = "source"
+
+[["nodes"]]
+"id" = "seal"
+
+["nodes"."operator"]
+"op" = "seal"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."candidate"]
+"kind" = "node"
+"node" = "implement"
+"port" = "candidate"
+
+[["nodes"]]
+"id" = "review"
+
+["nodes"."operator"]
+"op" = "call"
+"pipeline" = "fixture/review"
+
+["nodes"."operator"."bindings"]
+"bugs" = "bugs"
+"correctness" = "correctness"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."source"]
+"kind" = "node"
+"node" = "seal"
+"port" = "snapshot"
+
+["nodes"."inputs"."base"]
+"kind" = "input"
+"port" = "source"
+
+["nodes"."inputs"."history"]
+"kind" = "input"
+"port" = "history"
+
+["nodes"."inputs"."requirements"]
+"kind" = "input"
+"port" = "requirements"
+
+[["nodes"]]
+"id" = "accept"
+
+["nodes"."operator"]
+"op" = "review_accept"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."source"]
+"kind" = "node"
+"node" = "seal"
+"port" = "snapshot"
+
+["nodes"."inputs"."review"]
+"kind" = "node"
+"node" = "review"
+"port" = "review"
+
+["nodes"."inputs"."checks"]
+"kind" = "node"
+"node" = "review"
+"port" = "checks"
+
+[["nodes"]]
+"id" = "final_checks"
+
+["nodes"."operator"]
+"op" = "select"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."condition"]
+"kind" = "node"
+"node" = "accept"
+"port" = "result"
+
+["nodes"."inputs"."passed"]
+"kind" = "node"
+"node" = "review"
+"port" = "checks"
+
+["nodes"."inputs"."failed"]
+"kind" = "node"
+"node" = "review"
+"port" = "checks"
+
+["nodes"."inputs"."inconclusive"]
+"kind" = "node"
+"node" = "review"
+"port" = "checks"
+
+[["nodes"]]
+"id" = "evaluate_goal"
+
+["nodes"."operator"]
+"op" = "verify"
+"slot" = "evaluator"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."source"]
+"kind" = "node"
+"node" = "accept"
+"port" = "snapshot"
+
+["nodes"."inputs"."requirements"]
+"kind" = "input"
+"port" = "requirements"
+
+["nodes"."inputs"."checks"]
+"kind" = "node"
+"node" = "final_checks"
+"port" = "output"
+
+["nodes"."when"]
+"node" = "final_checks"
+"outcome" = "passed"
+
+[["nodes"]]
+"id" = "accept_goal"
+
+["nodes"."operator"]
+"op" = "accept"
+
+["nodes"."inputs"]
+
+["nodes"."inputs"."source"]
+"kind" = "node"
+"node" = "accept"
+"port" = "snapshot"
+
+["nodes"."inputs"."checks"]
+"kind" = "node"
+"node" = "final_checks"
+"port" = "output"
+
+["nodes"."inputs"."evaluation"]
+"kind" = "node"
+"node" = "evaluate_goal"
+"port" = "result"
+
+["outputs"]
+
+["outputs"."snapshot"]
+"kind" = "node"
+"node" = "accept"
+"port" = "snapshot"
+
+["outputs"."verification"]
+"kind" = "node"
+"node" = "accept"
+"port" = "result"
+
+["outputs"."evaluation"]
+"kind" = "node"
+"node" = "accept_goal"
+"port" = "result"
+
+["coverage"]
+
+["coverage"."verified"]
+"kind" = "node"
+"node" = "accept"
+"port" = "result"
+
+["coverage"."goal"]
+"kind" = "node"
+"node" = "accept_goal"
+"port" = "result"

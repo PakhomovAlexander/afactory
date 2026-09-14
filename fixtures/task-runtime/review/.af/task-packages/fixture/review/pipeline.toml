@@ -23,6 +23,15 @@ covers = []
 [contract.inputs.source.affinity]
 kind = "unbound"
 
+[contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[contract.inputs.requirements.affinity]
+kind = "unbound"
+
 [contract.outputs.history]
 artifact_type = "af/ReviewHistory@1"
 cardinality = "one"
@@ -117,6 +126,10 @@ kind = "node"
 node = "bind"
 port = "subject"
 
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+
 [nodes.when]
 node = "check"
 outcome = "passed"
@@ -145,6 +158,10 @@ port = "source"
 kind = "node"
 node = "bind"
 port = "subject"
+
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
 
 [nodes.when]
 node = "check"

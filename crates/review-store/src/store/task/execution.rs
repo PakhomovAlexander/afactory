@@ -1,12 +1,20 @@
 //! Durable invocation/admission/settlement shared by every new Task kind. The scheduler and
 //! domain adapters call this boundary; no Worker output can bypass plan or lease admission.
 
+pub mod broker;
+mod encoding;
+pub mod owned;
+pub mod usage_observation;
+pub use encoding::{DecodedTaskExecutionRecord, read_execution_record};
+
 use review_attempt::task_budget::{TaskBudget, TaskReservation};
-use review_attempt::{AttemptId, AttemptLedger, Receipt, Selection};
+use review_attempt::{AttemptId, AttemptLedger, ExactReceipt, Selection};
 use review_core::task::execution::*;
 use review_graph::task::{CompiledOperator, CompiledTask, condition_input};
 
 use super::*;
+
+pub(in crate::store) mod review;
 
 #[derive(Debug, Clone)]
 pub struct TaskExecutionProjection {
@@ -16,21 +24,87 @@ pub struct TaskExecutionProjection {
     pub outputs: BTreeMap<String, (String, TaskOutputV1)>,
     ledger: AttemptLedger,
     attempts: BTreeMap<String, RecordedAttempt>,
+    brokers: BTreeMap<String, broker::RecordedBroker>,
+    pub(super) owned: BTreeMap<String, owned::RecordedChildren>,
+    pub(super) review_integrations:
+        BTreeMap<String, super::review_integration::RegisteredTaskReviewIntegration>,
+    pub(super) active_review_integration: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct RecordedAttempt {
     invocation_id: String,
+    plan_id: String,
     reservation: TaskReservation,
     prepared_epoch: u64,
+    context_id: Option<String>,
+    feedback_ids: Vec<String>,
     started: bool,
     released: bool,
     settlement: Option<TaskExecutionRecordV1>,
 }
 
+/// Read-only accounting from the common ledger. The effective charge includes observations
+/// received after settlement; the terminal result and original reservation stay unchanged.
+#[derive(Debug, Clone)]
+pub struct TaskAttemptAccounting {
+    pub attempt_id: String,
+    pub invocation_id: String,
+    pub plan_id: String,
+    pub reservation: TaskReservation,
+    pub started: bool,
+    pub released: bool,
+    pub charged_tokens: u128,
+    pub state: Option<review_attempt::AttemptState>,
+    pub result: Option<TaskAttemptResultV1>,
+}
+
+/// Unstarted reservation authority. Only the Store can construct this capability; a Worker
+/// cannot choose its identity, feedback, writer epoch or resource allowance.
+#[derive(Debug, Clone)]
+pub struct ReservedTaskAttempt {
+    task_id: String,
+    invocation_id: String,
+    plan_id: String,
+    writer_epoch: u64,
+    id: String,
+    node: String,
+    reservation: TaskReservation,
+    feedback_ids: Vec<String>,
+}
+
+impl ReservedTaskAttempt {
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+    pub fn plan_id(&self) -> &str {
+        &self.plan_id
+    }
+    pub fn writer_epoch(&self) -> u64 {
+        self.writer_epoch
+    }
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+    pub fn node(&self) -> &str {
+        &self.node
+    }
+    pub fn reservation(&self) -> &TaskReservation {
+        &self.reservation
+    }
+    pub fn invocation_id(&self) -> &str {
+        &self.invocation_id
+    }
+    pub fn feedback_ids(&self) -> &[String] {
+        &self.feedback_ids
+    }
+}
+
 /// The common Store returns this after publishing the reservation. It is not a wire type.
 #[derive(Debug, Clone)]
 pub struct PreparedTaskAttempt {
+    task_id: String,
+    writer_epoch: u64,
     id: String,
     node: String,
     reservation: TaskReservation,
@@ -45,6 +119,12 @@ pub enum TaskSettlement {
 }
 
 impl PreparedTaskAttempt {
+    pub fn task_id(&self) -> &str {
+        &self.task_id
+    }
+    pub fn writer_epoch(&self) -> u64 {
+        self.writer_epoch
+    }
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -59,13 +139,13 @@ impl PreparedTaskAttempt {
     }
 }
 
-fn invocation(cas: &Cas, id: &str) -> Result<TaskInvocationV1, StoreError> {
+pub(super) fn invocation(cas: &Cas, id: &str) -> Result<TaskInvocationV1, StoreError> {
     let value: TaskInvocationV1 = payload(cas, id, TASK_INVOCATION_V1)?;
     value.validate().map_err(conflict)?;
     Ok(value)
 }
 
-fn output(cas: &Cas, id: &str) -> Result<TaskOutputV1, StoreError> {
+pub(super) fn output(cas: &Cas, id: &str) -> Result<TaskOutputV1, StoreError> {
     let value: TaskOutputV1 = payload(cas, id, TASK_OUTPUT_V1)?;
     value.validate().map_err(conflict)?;
     Ok(value)
@@ -98,8 +178,7 @@ fn verify_attempt_producer(
 }
 
 pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError> {
-    let record: TaskExecutionRecordV1 = payload(cas, id, TASK_EXECUTION_RECORD_V1)?;
-    record.validate().map_err(conflict)?;
+    let record = read_execution_record(cas, id)?.record;
     let mut refs: BTreeSet<_> = record
         .artifact_refs()
         .into_iter()
@@ -109,10 +188,21 @@ pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError>
     let mut invocation_ids = Vec::new();
     match &record {
         TaskExecutionRecordV1::Invocation { invocation_id }
-        | TaskExecutionRecordV1::Prepared { invocation_id, .. } => {
+        | TaskExecutionRecordV1::Prepared { invocation_id, .. }
+        | TaskExecutionRecordV1::Reserved { invocation_id, .. } => {
             invocation_ids.push(invocation_id.clone())
         }
+        TaskExecutionRecordV1::OwnedChildrenRegistered { child_set_id } => {
+            refs.extend(
+                owned::read_task_owned_children(cas, child_set_id)?
+                    .artifact_refs()
+                    .into_iter()
+                    .map(str::to_owned),
+            );
+        }
         TaskExecutionRecordV1::Published { output_id, .. }
+        | TaskExecutionRecordV1::OwnedChildPublished { output_id, .. }
+        | TaskExecutionRecordV1::OwnedChildrenCompleted { output_id, .. }
         | TaskExecutionRecordV1::Settled {
             result: TaskAttemptResultV1::Succeeded { output_id },
             ..
@@ -124,6 +214,16 @@ pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError>
             }
         }
         _ => (),
+    }
+    if let TaskExecutionRecordV1::OwnedChildPublished { child_set_id, .. }
+    | TaskExecutionRecordV1::OwnedChildrenCompleted { child_set_id, .. } = &record
+    {
+        refs.extend(
+            owned::read_task_owned_children(cas, child_set_id)?
+                .artifact_refs()
+                .into_iter()
+                .map(str::to_owned),
+        );
     }
     for id in invocation_ids {
         let input = invocation(cas, &id)?;
@@ -137,11 +237,72 @@ pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError>
 }
 
 impl TaskExecutionProjection {
+    fn check_reservation(
+        &self,
+        lease: &TaskLease,
+        attempt: &ReservedTaskAttempt,
+    ) -> Result<&RecordedAttempt, StoreError> {
+        let recorded = self
+            .attempts
+            .get(&attempt.id)
+            .ok_or_else(|| conflict("Unknown Task reservation"))?;
+        if attempt.task_id != lease.task_id
+            || attempt.writer_epoch != lease.epoch
+            || recorded.prepared_epoch != lease.epoch
+            || recorded.invocation_id != attempt.invocation_id
+            || recorded.plan_id != attempt.plan_id
+            || recorded.reservation != attempt.reservation
+            || recorded.feedback_ids != attempt.feedback_ids
+            || recorded.started
+            || recorded.released
+            || recorded.settlement.is_some()
+            || self.invocations.get(&attempt.node).map(|(id, _)| id) != Some(&attempt.invocation_id)
+        {
+            return Err(conflict(
+                "Task reservation is stale or belongs to another authority",
+            ));
+        }
+        Ok(recorded)
+    }
+
+    pub(super) fn enter_execution(
+        &mut self,
+        graph: CompiledTask,
+        time: u64,
+    ) -> Result<(), StoreError> {
+        if !self.pending_attempts().is_empty() {
+            return Err(conflict("Planning handoff has pending Attempts"));
+        }
+        // Feasibility uses remaining capacity, while the existing ledger retains all spent
+        // reservations, late usage and the original deadline. Never create a second budget.
+        graph
+            .budget(self.budget.remaining_limits())
+            .map_err(conflict)?;
+        self.budget
+            .install_graph_with_owned_templates(
+                graph.execution_allowances().map_err(conflict)?,
+                graph
+                    .calls
+                    .iter()
+                    .map(|(name, call)| (name.clone(), call.max_attempts))
+                    .collect(),
+                graph.token_scopes.clone(),
+                owned::templates(&graph),
+                time,
+                false,
+            )
+            .map_err(conflict)?;
+        self.graph = graph;
+        self.invocations.clear();
+        self.outputs.clear();
+        Ok(())
+    }
     /// Settlement selects a result durably before the scheduler publishes its ports. A new
     /// writer may finish that publication without starting another paid Attempt.
     pub fn reusable_output(&self, node: &str) -> Option<(String, String)> {
         self.attempts.iter().find_map(|(id, attempt)| {
             if attempt.reservation.node != node
+                || self.invocations.get(node).map(|(_, i)| &i.plan_id) != Some(&attempt.plan_id)
                 || self.ledger.attempt(&AttemptId(id.clone()))?.state
                     != review_attempt::AttemptState::Selected
             {
@@ -160,7 +321,10 @@ impl TaskExecutionProjection {
     pub fn retry_feedback(&self, node: &str) -> Vec<String> {
         self.attempts
             .values()
-            .filter(|a| a.reservation.node == node)
+            .filter(|a| {
+                a.reservation.node == node
+                    && self.invocations.get(node).map(|(_, i)| &i.plan_id) == Some(&a.plan_id)
+            })
             .filter_map(|a| match &a.settlement {
                 Some(TaskExecutionRecordV1::Settled {
                     result:
@@ -177,7 +341,48 @@ impl TaskExecutionProjection {
             .collect()
     }
 
-    fn new(cas: &Cas, state: &TaskProjection) -> Result<Self, StoreError> {
+    fn validate_retry(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        node: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(), StoreError> {
+        let (invocation_id, input) = self
+            .invocations
+            .get(node)
+            .ok_or_else(|| conflict("Unknown Task invocation"))?;
+        let mut previous = BTreeMap::new();
+        for (id, attempt) in self
+            .attempts
+            .iter()
+            .filter(|(_, a)| &a.invocation_id == invocation_id && !a.released)
+        {
+            match &attempt.settlement {
+                Some(TaskExecutionRecordV1::Settled {
+                    result: TaskAttemptResultV1::Succeeded { .. },
+                    ..
+                }) => {
+                    return Err(conflict(
+                        "Task invocation already selected an output; recover its publication",
+                    ));
+                }
+                Some(TaskExecutionRecordV1::Settled { result, .. }) => {
+                    previous.insert(id.clone(), result.clone());
+                }
+                _ => return Err(conflict("Task invocation still has a pending Attempt")),
+            }
+        }
+        if !previous.is_empty() {
+            authority
+                .validate_retry(cas, task, plan, input, &previous)
+                .map_err(conflict)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn new(cas: &Cas, state: &TaskProjection) -> Result<Self, StoreError> {
         let plan = plan(
             cas,
             state
@@ -197,6 +402,11 @@ impl TaskExecutionProjection {
         let budget = graph
             .budget(state.revision.limits.clone())
             .map_err(conflict)?;
+        let budget = if plan.preparation.is_some() {
+            budget.with_deferred_verification().map_err(conflict)?
+        } else {
+            budget
+        };
         Ok(Self {
             graph,
             budget,
@@ -207,6 +417,10 @@ impl TaskExecutionProjection {
                 BTreeMap::new(),
             ),
             attempts: BTreeMap::new(),
+            brokers: BTreeMap::new(),
+            owned: BTreeMap::new(),
+            review_integrations: BTreeMap::new(),
+            active_review_integration: None,
         })
     }
 
@@ -218,12 +432,59 @@ impl TaskExecutionProjection {
             .collect()
     }
 
+    /// Includes unstarted reservations so inspection can explain released work without
+    /// counting it as an Attempt that began. Historical plans remain attached to each row.
+    pub fn attempt_accounting(&self) -> Vec<TaskAttemptAccounting> {
+        self.attempts
+            .iter()
+            .map(|(id, attempt)| {
+                let ledger = self.ledger.attempt(&AttemptId(id.clone()));
+                TaskAttemptAccounting {
+                    attempt_id: id.clone(),
+                    invocation_id: attempt.invocation_id.clone(),
+                    plan_id: attempt.plan_id.clone(),
+                    reservation: attempt.reservation.clone(),
+                    started: attempt.started,
+                    released: attempt.released,
+                    charged_tokens: ledger.map_or(0, |row| row.charged),
+                    state: ledger.map(|row| row.state),
+                    result: match &attempt.settlement {
+                        Some(TaskExecutionRecordV1::Settled { result, .. }) => Some(result.clone()),
+                        _ => None,
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// Immutable observations of settled Attempts, including failures. These references do
+    /// not grant output selection; a domain must verify its own typed facts and provenance.
+    pub fn settled_artifacts(&self) -> BTreeMap<String, (String, Vec<String>)> {
+        self.attempts
+            .iter()
+            .filter_map(|(id, attempt)| match &attempt.settlement {
+                Some(TaskExecutionRecordV1::Settled {
+                    raw_artifact_ids, ..
+                }) => Some((
+                    id.clone(),
+                    (attempt.reservation.node.clone(), raw_artifact_ids.clone()),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn verify_invocation(&self, cas: &Cas, input: &TaskInvocationV1) -> Result<(), StoreError> {
-        let node = self
-            .graph
-            .nodes
-            .get(&input.node)
-            .ok_or_else(|| conflict("Invocation names an unplanned node"))?;
+        self.check_owned_open(&input.node)?;
+        let resolved = self.resolve_node(&input.node)?;
+        if let Some(expected) = resolved.expected_inputs {
+            return if input.inputs == expected {
+                Ok(())
+            } else {
+                Err(conflict("Owned invocation changed its registered inputs"))
+            };
+        }
+        let node = &resolved.definition;
         let sources = node.inputs.clone();
         let mut expected = BTreeMap::new();
         for (name, source) in sources {
@@ -295,7 +556,8 @@ impl TaskExecutionProjection {
         if self.invocations.get(&input.node).map(|(id, _)| id) != Some(&receipt.invocation_id) {
             return Err(conflict("Output has no admitted invocation"));
         }
-        let node = &self.graph.nodes[&input.node];
+        let resolved = self.resolve_node(&input.node)?;
+        let node = &resolved.definition;
         if matches!(node.operator, CompiledOperator::RootInputs)
             && receipt.outputs != self.graph.inputs
         {
@@ -388,18 +650,44 @@ impl TaskExecutionProjection {
 }
 
 impl TaskProjection {
+    fn check_prepared_capability(
+        &self,
+        lease: &TaskLease,
+        attempt: &PreparedTaskAttempt,
+    ) -> Result<(), StoreError> {
+        let recorded = self
+            .execution
+            .as_ref()
+            .and_then(|e| e.attempts.get(&attempt.id))
+            .ok_or_else(|| conflict("Unknown prepared Task Attempt"))?;
+        if attempt.task_id != lease.task_id
+            || attempt.writer_epoch != lease.epoch
+            || recorded.prepared_epoch != lease.epoch
+            || recorded.context_id.as_deref() != Some(attempt.context_id.as_str())
+            || recorded.reservation != attempt.reservation
+            || recorded.reservation.node != attempt.node
+            || self.plan_id.as_ref() != Some(&recorded.plan_id)
+        {
+            return Err(conflict(
+                "Prepared Task capability differs from admitted context or authority",
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn apply_execution(
         &mut self,
         cas: &Cas,
         record_id: &str,
         time: u64,
     ) -> Result<(), StoreError> {
-        let record: TaskExecutionRecordV1 = payload(cas, record_id, TASK_EXECUTION_RECORD_V1)?;
-        record.validate().map_err(conflict)?;
+        let record = read_execution_record(cas, record_id)?.record;
         let dispatching = matches!(
             record,
             TaskExecutionRecordV1::Invocation { .. }
                 | TaskExecutionRecordV1::Prepared { .. }
+                | TaskExecutionRecordV1::Reserved { .. }
+                | TaskExecutionRecordV1::ContextBound { .. }
                 | TaskExecutionRecordV1::Started { .. }
                 | TaskExecutionRecordV1::Published { .. }
         );
@@ -409,26 +697,49 @@ impl TaskProjection {
             }
             self.check_approval(cas, time)?;
         }
+        if owned::is_owned_record(&record) {
+            if !self.admitted || self.phase != (TaskPhaseV1::Running {}) {
+                return Err(conflict(
+                    "Owned Task recording requires admitted running execution",
+                ));
+            }
+            self.check_plan_decision(cas, time)?;
+        }
         if self.execution.is_none() {
             self.execution = Some(TaskExecutionProjection::new(cas, self)?);
         }
         let execution = self.execution.as_mut().expect("execution initialized");
+        execution.check_review_integration_record(cas, &record)?;
         match &record {
+            TaskExecutionRecordV1::OwnedChildrenRegistered { .. }
+            | TaskExecutionRecordV1::OwnedChildPublished { .. }
+            | TaskExecutionRecordV1::OwnedChildrenCompleted { .. } => {
+                execution.apply_owned(cas, &self.task_id, &record)?;
+            }
             TaskExecutionRecordV1::UsageObserved {
                 attempt_id,
                 charged_tokens,
+                raw_artifact_ids,
                 ..
             } => {
                 let attempt = execution
                     .attempts
                     .get(attempt_id)
                     .ok_or_else(|| conflict("Unknown Task Attempt"))?;
-                if attempt.settlement.is_none() {
-                    return Err(conflict("Usage observation requires settled Task work"));
+                if !attempt.started || attempt.released {
+                    return Err(conflict("Usage observation requires started Task work"));
                 }
+                usage_observation::validate(
+                    cas,
+                    &self.task_id,
+                    attempt_id,
+                    attempt,
+                    *charged_tokens,
+                    raw_artifact_ids,
+                )?;
                 execution
                     .budget
-                    .observe_charge(&attempt.reservation.id, *charged_tokens)
+                    .observe_charge_exact(&attempt.reservation.id, *charged_tokens)
                     .map_err(conflict)?;
                 let id = AttemptId(attempt_id.clone());
                 let charged = execution
@@ -436,7 +747,10 @@ impl TaskProjection {
                     .attempt(&id)
                     .map_or(0, |a| a.charged)
                     .max(*charged_tokens);
-                execution.ledger.charge(&id, charged);
+                execution
+                    .ledger
+                    .charge_exact(&id, charged)
+                    .map_err(conflict)?;
             }
             TaskExecutionRecordV1::Invocation { invocation_id } => {
                 let input = invocation(cas, invocation_id)?;
@@ -447,6 +761,7 @@ impl TaskProjection {
                     return Err(conflict("Task invocation is duplicated"));
                 }
                 execution.verify_invocation(cas, &input)?;
+                execution.verify_owned_invocation_id(&input.node, invocation_id)?;
                 execution
                     .invocations
                     .insert(input.node.clone(), (invocation_id.clone(), input));
@@ -459,8 +774,17 @@ impl TaskProjection {
                 deadline_unix_ms,
                 feedback_ids,
                 ..
+            }
+            | TaskExecutionRecordV1::Reserved {
+                invocation_id,
+                attempt_id,
+                reservation_id,
+                reserved_tokens,
+                deadline_unix_ms,
+                feedback_ids,
             } => {
                 let input = invocation(cas, invocation_id)?;
+                execution.check_owned_open(&input.node)?;
                 if execution.invocations.get(&input.node).map(|(id, _)| id) != Some(invocation_id)
                     || execution.outputs.contains_key(&input.node)
                     || execution.reusable_output(&input.node).is_some()
@@ -515,20 +839,62 @@ impl TaskProjection {
                     attempt_id.clone(),
                     RecordedAttempt {
                         invocation_id: invocation_id.clone(),
+                        plan_id: input.plan_id.clone(),
                         reservation,
                         prepared_epoch: self.epoch,
+                        context_id: match &record {
+                            TaskExecutionRecordV1::Prepared { context_id, .. } => {
+                                Some(context_id.clone())
+                            }
+                            _ => None,
+                        },
+                        feedback_ids: feedback_ids.clone(),
                         started: false,
                         released: false,
                         settlement: None,
                     },
                 );
             }
-            TaskExecutionRecordV1::Started { attempt_id } => {
+            TaskExecutionRecordV1::ContextBound {
+                attempt_id,
+                context_id,
+            } => {
+                let node = &execution
+                    .attempts
+                    .get(attempt_id)
+                    .ok_or_else(|| conflict("Unknown Task Attempt"))?
+                    .reservation
+                    .node;
+                execution.check_owned_open(node)?;
                 let attempt = execution
                     .attempts
                     .get_mut(attempt_id)
                     .ok_or_else(|| conflict("Unknown Task Attempt"))?;
                 if attempt.started
+                    || attempt.released
+                    || attempt.settlement.is_some()
+                    || attempt.prepared_epoch != self.epoch
+                    || attempt.context_id.is_some()
+                    || self.plan_id.as_ref() != Some(&attempt.plan_id)
+                {
+                    return Err(conflict("Task context cannot bind this reservation"));
+                }
+                attempt.context_id = Some(context_id.clone());
+            }
+            TaskExecutionRecordV1::Started { attempt_id } => {
+                let node = &execution
+                    .attempts
+                    .get(attempt_id)
+                    .ok_or_else(|| conflict("Unknown Task Attempt"))?
+                    .reservation
+                    .node;
+                execution.check_owned_open(node)?;
+                let attempt = execution
+                    .attempts
+                    .get_mut(attempt_id)
+                    .ok_or_else(|| conflict("Unknown Task Attempt"))?;
+                if attempt.context_id.is_none()
+                    || attempt.started
                     || attempt.released
                     || attempt.settlement.is_some()
                     || attempt.prepared_epoch != self.epoch
@@ -559,6 +925,7 @@ impl TaskProjection {
                 attempt_id,
                 charged_tokens,
                 result,
+                raw_artifact_ids,
                 ..
             } => {
                 let attempt = execution
@@ -569,6 +936,14 @@ impl TaskProjection {
                 if !attempt.started || attempt.released || attempt.settlement.is_some() {
                     return Err(conflict("Task settlement has no unsettled started Attempt"));
                 }
+                usage_observation::validate(
+                    cas,
+                    &self.task_id,
+                    attempt_id,
+                    &attempt,
+                    *charged_tokens,
+                    raw_artifact_ids,
+                )?;
                 if let TaskAttemptResultV1::Succeeded { output_id } = result {
                     let out = output(cas, output_id)?;
                     verify_attempt_producer(
@@ -587,29 +962,41 @@ impl TaskProjection {
                     execution.verify_output(cas, &out)?;
                 }
                 if matches!(result, TaskAttemptResultV1::Abandoned { .. })
-                    && *charged_tokens < attempt.reservation.tokens
+                    && *charged_tokens < u128::from(attempt.reservation.tokens)
                 {
                     return Err(conflict(
                         "Abandoned Task work retains its full reserved charge",
                     ));
                 }
+                // Preserve the original terminal receipt for exact replay. The common
+                // accounting projection also retains every earlier cumulative usage floor.
+                let charge = execution
+                    .ledger
+                    .attempt(&AttemptId(attempt_id.clone()))
+                    .map_or(0, |a| a.charged)
+                    .max(*charged_tokens);
                 execution
                     .budget
-                    .settle(&attempt.reservation.id, *charged_tokens)
+                    .settle_exact(&attempt.reservation.id, charge)
                     .map_err(conflict)?;
                 execution
                     .ledger
-                    .charge(&AttemptId(attempt_id.clone()), *charged_tokens);
+                    .charge_exact(&AttemptId(attempt_id.clone()), charge)
+                    .map_err(conflict)?;
                 if !matches!(result, TaskAttemptResultV1::Succeeded { .. })
                     || attempt.prepared_epoch != self.epoch
                 {
                     execution.ledger.fence(&attempt.reservation.node);
                 } else if let TaskAttemptResultV1::Succeeded { output_id } = result {
-                    if execution.ledger.admit(&Receipt {
-                        attempt: AttemptId(attempt_id.clone()),
-                        output: output_id.clone(),
-                        cost: *charged_tokens,
-                    }) != Selection::Selected
+                    if execution
+                        .ledger
+                        .admit_exact(&ExactReceipt {
+                            attempt: AttemptId(attempt_id.clone()),
+                            output: output_id.clone(),
+                            cost: charge,
+                        })
+                        .map_err(conflict)?
+                        != Selection::Selected
                     {
                         return Err(conflict("Task settlement was quarantined"));
                     }
@@ -626,6 +1013,13 @@ impl TaskProjection {
             } => {
                 let out = output(cas, output_id)?;
                 let input = execution.verify_output(cas, &out)?;
+                if execution.resolve_node(&input.node)?.owned.is_some()
+                    || execution.graph.owned_children.contains_key(&input.node)
+                {
+                    return Err(conflict(
+                        "Owned child publication requires its registered ownership record",
+                    ));
+                }
                 if execution.outputs.contains_key(&input.node) {
                     return Err(conflict("Task output has already been published"));
                 }
@@ -652,7 +1046,7 @@ impl TaskProjection {
                     {
                         return Err(conflict("Task output is stale or fenced"));
                     }
-                } else if execution.graph.allowances.contains_key(&input.node) {
+                } else if execution.resolve_node(&input.node)?.allowance.is_some() {
                     return Err(conflict(
                         "A paid Task node needs a settled selected Attempt",
                     ));
@@ -702,7 +1096,7 @@ impl EventStore {
         {
             return Err(conflict("Current writer still owns a pending Task Attempt"));
         }
-        let walls = self.attempt_wall(&task_run_id(&lease.task_id)?)?;
+        let walls = self.task_attempt_wall(&task_run_id(&lease.task_id)?)?;
         for (id, attempt) in execution
             .attempts
             .iter()
@@ -715,16 +1109,66 @@ impl EventStore {
                 let observed = walls
                     .iter()
                     .filter(|w| &w.attempt_id == id)
-                    .filter_map(|w| w.usage.as_ref().map(|u| u.chargeable_tokens))
+                    .filter_map(|w| w.usage.as_ref().map(|u| u.chargeable_tokens.get()))
                     .max()
-                    .unwrap_or(0);
+                    .unwrap_or(0)
+                    .max(
+                        execution
+                            .ledger
+                            .attempt(&AttemptId(id.clone()))
+                            .map_or(0, |a| a.charged),
+                    );
                 let diagnostic_id = cas.put_json(&json!({"schema":"af.task-diagnostic/1", "reason":"previous Task writer disappeared", "attempt_id":id})).map_err(|e| StoreError::Artifact(e.to_string()))?;
+                let usage_id = walls
+                    .iter()
+                    .find(|wall| &wall.attempt_id == id)
+                    .and_then(|wall| wall.usage.as_ref())
+                    .map(|usage| {
+                        cas.put_artifact(
+                            if review_core::task::usage::TaskTokenUsageV2::try_from(usage).is_ok() {
+                                review_core::task::usage::TASK_TOKEN_USAGE_V2
+                            } else {
+                                review_core::task::usage::TASK_TOKEN_USAGE_V3
+                            },
+                            review_core::Producer::Attempt {
+                                run_id: task_run_id(&lease.task_id)?,
+                                node_id: attempt.reservation.node.clone(),
+                                attempt_id: id.clone(),
+                            },
+                            attempt.context_id.iter().cloned().collect(),
+                            None,
+                            serde_json::to_value(usage)?,
+                        )
+                        .map(|(id, _)| id)
+                        .map_err(|error| StoreError::Artifact(error.to_string()))
+                    })
+                    .transpose()?;
+                let raw_artifact_ids = self
+                    .task_attempt_usage_observation(&task_run_id(&lease.task_id)?, id)?
+                    .map(|observation| {
+                        usage_observation::capture_task_usage_observation(
+                            cas,
+                            review_core::Producer::Attempt {
+                                run_id: task_run_id(&lease.task_id)?,
+                                node_id: attempt.reservation.node.clone(),
+                                attempt_id: id.clone(),
+                            },
+                            attempt
+                                .context_id
+                                .as_deref()
+                                .ok_or_else(|| conflict("Started Task has no context"))?,
+                            &observation,
+                        )
+                    })
+                    .transpose()?
+                    .into_iter()
+                    .collect();
                 TaskExecutionRecordV1::Settled {
                     attempt_id: id.clone(),
-                    charged_tokens: observed.max(attempt.reservation.tokens),
+                    charged_tokens: observed.max(u128::from(attempt.reservation.tokens)),
                     result: TaskAttemptResultV1::Abandoned { diagnostic_id },
-                    raw_artifact_ids: vec![],
-                    usage_id: None,
+                    raw_artifact_ids,
+                    usage_id,
                 }
             } else {
                 TaskExecutionRecordV1::Released {
@@ -737,6 +1181,9 @@ impl EventStore {
         Ok(())
     }
 
+    /// Record a trusted cumulative usage floor, even after approval or Attempt authority ends.
+    /// The current Store writer must retain receipt identities; the observation grants no
+    /// execution authority and settlement cannot refund already recorded usage.
     pub fn observe_task_usage(
         &mut self,
         cas: &Cas,
@@ -744,7 +1191,7 @@ impl EventStore {
         observation: TaskExecutionRecordV1,
     ) -> Result<(), StoreError> {
         if !matches!(observation, TaskExecutionRecordV1::UsageObserved { .. }) {
-            return Err(conflict("Expected a late Task usage observation"));
+            return Err(conflict("Expected a Task usage observation"));
         }
         self.task_execution_record(cas, lease, observation, now()?)?;
         Ok(())
@@ -757,10 +1204,32 @@ impl EventStore {
         record: TaskExecutionRecordV1,
         time: u64,
     ) -> Result<RunEvent, StoreError> {
-        record.validate().map_err(conflict)?;
+        self.task_execution_record_inner(cas, lease, record, time, None)
+    }
+
+    fn task_execution_record_with_owned_prefix(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        record: TaskExecutionRecordV1,
+        time: u64,
+        prefix: (u64, Option<(String, u64)>),
+    ) -> Result<RunEvent, StoreError> {
+        self.task_execution_record_inner(cas, lease, record, time, Some(prefix))
+    }
+
+    fn task_execution_record_inner(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        record: TaskExecutionRecordV1,
+        time: u64,
+        prefix: Option<(u64, Option<(String, u64)>)>,
+    ) -> Result<RunEvent, StoreError> {
+        let (kind, payload) = encoding::encode_record(&record)?;
         let (id, _) = cas
             .put_artifact(
-                TASK_EXECUTION_RECORD_V1,
+                kind,
                 review_core::Producer::KernelOperation {
                     run_id: task_run_id(&lease.task_id)?,
                     node_id: None,
@@ -772,14 +1241,19 @@ impl EventStore {
                     .map(str::to_owned)
                     .collect(),
                 None,
-                serde_json::to_value(record)?,
+                payload,
             )
             .map_err(|e| StoreError::Artifact(e.to_string()))?;
-        self.task_change(
+        self.append_task_transition_with_owned_prefix(
             cas,
-            lease,
-            TaskChangeV1::ExecutionRecorded { record_id: id },
-            time,
+            &lease.task_id,
+            TaskTransitionV1 {
+                writer: lease.writer.clone(),
+                epoch: lease.epoch,
+                now_unix_ms: time,
+                change: TaskChangeV1::ExecutionRecorded { record_id: id },
+            },
+            prefix,
         )
     }
 
@@ -790,11 +1264,8 @@ impl EventStore {
         invocation_id: &str,
         authority: &dyn TaskAuthority,
     ) -> Result<(), StoreError> {
-        self.check_task_dispatch(cas, lease, authority)?;
+        let (state, _) = self.checked_task_dispatch(cas, lease, authority)?;
         let input = invocation(cas, invocation_id)?;
-        let state = self
-            .task_projection(cas, &lease.task_id)?
-            .ok_or_else(|| conflict("Unknown Task"))?;
         if let Some((old, _)) = state
             .execution
             .as_ref()
@@ -817,6 +1288,126 @@ impl EventStore {
         Ok(())
     }
 
+    /// Reserve before rendering, so exact context can include the real Attempt authority.
+    /// This does not start work or consume an Attempt; the reservation can still be released.
+    pub fn reserve_task_attempt(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        node: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<ReservedTaskAttempt, StoreError> {
+        let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
+        let mut execution = state
+            .execution
+            .ok_or_else(|| conflict("Task has no recorded invocation"))?;
+        execution.check_owned_open(node)?;
+        execution.validate_retry(cas, &state.revision, &plan, node, authority)?;
+        let (invocation_id, input) = execution
+            .invocations
+            .get(node)
+            .ok_or_else(|| conflict("Unknown Task invocation"))?;
+        let time = now()?;
+        let reservation = execution.budget.prepare(node, time).map_err(conflict)?;
+        let attempt = execution.ledger.dispatch(node);
+        let reserved = ReservedTaskAttempt {
+            task_id: lease.task_id.clone(),
+            invocation_id: invocation_id.clone(),
+            plan_id: input.plan_id.clone(),
+            writer_epoch: lease.epoch,
+            id: attempt.0,
+            node: node.into(),
+            reservation,
+            feedback_ids: execution.retry_feedback(node),
+        };
+        self.task_execution_record(
+            cas,
+            lease,
+            TaskExecutionRecordV1::Reserved {
+                invocation_id: reserved.invocation_id.clone(),
+                attempt_id: reserved.id.clone(),
+                reservation_id: reserved.reservation.id.clone(),
+                reserved_tokens: reserved.reservation.tokens,
+                deadline_unix_ms: reserved.reservation.deadline_unix_ms,
+                feedback_ids: reserved.feedback_ids.clone(),
+            },
+            time,
+        )?;
+        Ok(reserved)
+    }
+
+    /// Bind only the context admitted for this exact live reservation. A second binding is
+    /// rejected, including under the same writer; recovery releases unstarted reservations.
+    pub fn bind_task_attempt_context(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        attempt: &ReservedTaskAttempt,
+        context_id: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<PreparedTaskAttempt, StoreError> {
+        let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
+        let execution = state
+            .execution
+            .as_ref()
+            .ok_or_else(|| conflict("Task has no execution"))?;
+        execution.check_owned_open(&attempt.node)?;
+        let recorded = execution.check_reservation(lease, attempt)?;
+        if recorded.context_id.is_some() {
+            return Err(conflict("Task reservation already has a bound context"));
+        }
+        let input = invocation(cas, &attempt.invocation_id)?;
+        authority
+            .validate_context_for_attempt(cas, &state.revision, &plan, &input, attempt, context_id)
+            .map_err(conflict)?;
+        // Domain callbacks cannot leave stale plan, revocation or artifact authority admitted.
+        self.check_task_dispatch(cas, lease, authority)?;
+        self.task_execution_record(
+            cas,
+            lease,
+            TaskExecutionRecordV1::ContextBound {
+                attempt_id: attempt.id.clone(),
+                context_id: context_id.into(),
+            },
+            now()?,
+        )?;
+        Ok(PreparedTaskAttempt {
+            task_id: lease.task_id.clone(),
+            writer_epoch: lease.epoch,
+            id: attempt.id.clone(),
+            node: attempt.node.clone(),
+            reservation: attempt.reservation.clone(),
+            context_id: context_id.into(),
+        })
+    }
+
+    pub fn release_reserved_task_attempt(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        attempt: &ReservedTaskAttempt,
+        reason: &str,
+    ) -> Result<(), StoreError> {
+        let state = self
+            .task_projection(cas, lease.task_id())?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        state
+            .execution
+            .as_ref()
+            .ok_or_else(|| conflict("Task has no execution"))?
+            .check_reservation(lease, attempt)?;
+        self.task_execution_record(
+            cas,
+            lease,
+            TaskExecutionRecordV1::Released {
+                attempt_id: attempt.id.clone(),
+                reason: reason.into(),
+            },
+            now()?,
+        )?;
+        Ok(())
+    }
+
     pub fn prepare_task_attempt(
         &mut self,
         cas: &Cas,
@@ -825,13 +1416,12 @@ impl EventStore {
         context_id: &str,
         authority: &dyn TaskAuthority,
     ) -> Result<PreparedTaskAttempt, StoreError> {
-        let plan = self.check_task_dispatch(cas, lease, authority)?;
-        let state = self
-            .task_projection(cas, &lease.task_id)?
-            .ok_or_else(|| conflict("Unknown Task"))?;
+        let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
         let mut execution = state
             .execution
             .ok_or_else(|| conflict("Task has no recorded invocation"))?;
+        execution.check_owned_open(node)?;
+        execution.validate_retry(cas, &state.revision, &plan, node, authority)?;
         let (invocation_id, invocation) = execution
             .invocations
             .get(node)
@@ -882,6 +1472,8 @@ impl EventStore {
             time,
         )?;
         Ok(PreparedTaskAttempt {
+            task_id: lease.task_id.clone(),
+            writer_epoch: lease.epoch,
             id: attempt.0,
             node: node.into(),
             reservation,
@@ -896,7 +1488,8 @@ impl EventStore {
         attempt: &PreparedTaskAttempt,
         authority: &dyn TaskAuthority,
     ) -> Result<(), StoreError> {
-        self.check_task_dispatch(cas, lease, authority)?;
+        let (state, _) = self.checked_task_dispatch(cas, lease, authority)?;
+        state.check_prepared_capability(lease, attempt)?;
         self.task_execution_record(
             cas,
             lease,
@@ -908,6 +1501,46 @@ impl EventStore {
         Ok(())
     }
 
+    /// Recheck a domain-owned effect during the one common started Attempt. Broker adapters
+    /// can use this boundary without maintaining another Attempt ledger or accepting an ID alone.
+    pub fn check_task_attempt_current(
+        &self,
+        cas: &Cas,
+        lease: &TaskLease,
+        attempt: &PreparedTaskAttempt,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(), StoreError> {
+        let (state, _) = self.checked_task_dispatch(cas, lease, authority)?;
+        state.check_prepared_capability(lease, attempt)?;
+        state
+            .execution
+            .as_ref()
+            .expect("checked execution")
+            .check_owned_open(&attempt.node)?;
+        if state
+            .execution
+            .as_ref()
+            .is_some_and(|e| e.budget.breached())
+        {
+            return Err(conflict(
+                "Task Attempt cannot authorize another effect after a budget overrun",
+            ));
+        }
+        let recorded = &state
+            .execution
+            .as_ref()
+            .expect("checked prepared execution")
+            .attempts[attempt.id()];
+        if !recorded.started
+            || recorded.released
+            || recorded.settlement.is_some()
+            || now()? >= recorded.reservation.deadline_unix_ms
+        {
+            return Err(conflict("Task Attempt is not current started work"));
+        }
+        Ok(())
+    }
+
     pub fn release_task_attempt(
         &mut self,
         cas: &Cas,
@@ -915,6 +1548,10 @@ impl EventStore {
         attempt: &PreparedTaskAttempt,
         reason: &str,
     ) -> Result<(), StoreError> {
+        let state = self
+            .task_projection(cas, lease.task_id())?
+            .ok_or_else(|| conflict("Unknown Task"))?;
+        state.check_prepared_capability(lease, attempt)?;
         self.task_execution_record(
             cas,
             lease,
@@ -983,9 +1620,22 @@ impl EventStore {
             TaskExecutionRecordV1::Settled {
                 result: TaskAttemptResultV1::Succeeded { output_id },
                 ..
-            } => self
-                .validate_task_output(cas, lease, output_id, Some(attempt_id), authority)
-                .err(),
+            } => (|| {
+                let id = state
+                    .plan_id
+                    .as_ref()
+                    .ok_or_else(|| conflict("Task has no plan"))?;
+                let plan = self.authorized_plan(cas, &state, id, authority)?;
+                Self::validate_task_output(
+                    cas,
+                    &state,
+                    &plan,
+                    output_id,
+                    Some(attempt_id),
+                    authority,
+                )
+            })()
+            .err(),
             _ => None,
         };
         if let Some(error) = &failure {
@@ -1014,21 +1664,13 @@ impl EventStore {
     }
 
     fn validate_task_output(
-        &self,
         cas: &Cas,
-        lease: &TaskLease,
+        state: &TaskProjection,
+        plan: &ExecutionPlanV1,
         output_id: &str,
         attempt_id: Option<&str>,
         authority: &dyn TaskAuthority,
-    ) -> Result<(), StoreError> {
-        let state = self
-            .task_projection(cas, &lease.task_id)?
-            .ok_or_else(|| conflict("Unknown Task"))?;
-        let id = state
-            .plan_id
-            .as_ref()
-            .ok_or_else(|| conflict("Task has no plan"))?;
-        let plan = self.authorized_plan(cas, &state, id, authority)?;
+    ) -> Result<(TaskOutputV1, TaskInvocationV1), StoreError> {
         let out = output(cas, output_id)?;
         let input = invocation(cas, &out.invocation_id)?;
         if let Some(attempt_id) = attempt_id {
@@ -1055,8 +1697,9 @@ impl EventStore {
                 .map_err(|e| StoreError::Artifact(e.to_string()))?;
         }
         authority
-            .validate_output(cas, &state.revision, &plan, &input, &out)
-            .map_err(StoreError::TaskOutputRejected)
+            .validate_output(cas, &state.revision, plan, &input, &out)
+            .map_err(StoreError::TaskOutputRejected)?;
+        Ok((out, input))
     }
 
     pub fn publish_task_output(
@@ -1067,13 +1710,29 @@ impl EventStore {
         attempt_id: Option<&str>,
         authority: &dyn TaskAuthority,
     ) -> Result<(), StoreError> {
-        self.check_task_dispatch(cas, lease, authority)?;
-        self.validate_task_output(cas, lease, output_id, attempt_id, authority)?;
-        let out = output(cas, output_id)?;
-        let input = invocation(cas, &out.invocation_id)?;
-        let state = self
-            .task_projection(cas, &lease.task_id)?
-            .ok_or_else(|| conflict("Unknown Task"))?;
+        let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
+        let (_, input) =
+            Self::validate_task_output(cas, &state, &plan, output_id, attempt_id, authority)?;
+        if let Some(execution) = &state.execution
+            && (execution.resolve_node(&input.node)?.owned.is_some()
+                || execution.graph.owned_children.contains_key(&input.node))
+        {
+            return Err(conflict(
+                "Owned output requires its exact ownership publication API",
+            ));
+        }
+        // New publication revalidates after the domain callback at append_task_transition.
+        // Idempotent replay has no append, so retain that fresh read explicitly on this path.
+        let state = if state
+            .execution
+            .as_ref()
+            .is_some_and(|e| e.outputs.contains_key(&input.node))
+        {
+            self.task_projection(cas, &lease.task_id)?
+                .ok_or_else(|| conflict("Unknown Task"))?
+        } else {
+            state
+        };
         if let Some(execution) = &state.execution {
             if let Some((old, _)) = execution.outputs.get(&input.node) {
                 let same_attempt = match attempt_id {
@@ -1084,7 +1743,7 @@ impl EventStore {
                             a.node == input.node
                                 && a.state == review_attempt::AttemptState::Selected
                         }),
-                    None => !execution.graph.allowances.contains_key(&input.node),
+                    None => execution.resolve_node(&input.node)?.allowance.is_none(),
                 };
                 return if old == output_id && same_attempt {
                     Ok(())
@@ -1103,5 +1762,46 @@ impl EventStore {
             now()?,
         )?;
         Ok(())
+    }
+}
+
+impl TaskExecutionProjection {
+    fn check_review_integration_record(
+        &self,
+        cas: &Cas,
+        record: &TaskExecutionRecordV1,
+    ) -> Result<(), StoreError> {
+        let node = match record {
+            TaskExecutionRecordV1::Invocation { invocation_id }
+            | TaskExecutionRecordV1::Prepared { invocation_id, .. }
+            | TaskExecutionRecordV1::Reserved { invocation_id, .. } => {
+                invocation(cas, invocation_id)?.node
+            }
+            TaskExecutionRecordV1::ContextBound { attempt_id, .. }
+            | TaskExecutionRecordV1::Started { attempt_id } => self
+                .attempts
+                .get(attempt_id)
+                .ok_or_else(|| conflict("Unknown Task Attempt"))?
+                .reservation
+                .node
+                .clone(),
+            TaskExecutionRecordV1::Published { output_id, .. } => {
+                invocation(cas, &output(cas, output_id)?.invocation_id)?.node
+            }
+            TaskExecutionRecordV1::OwnedChildrenRegistered { .. }
+            | TaskExecutionRecordV1::OwnedChildPublished { .. }
+            | TaskExecutionRecordV1::OwnedChildrenCompleted { .. } => {
+                if self.active_review_integration.is_some() {
+                    return Err(conflict(
+                        "Integration cannot dispatch or publish an old Round owned node",
+                    ));
+                }
+                return Ok(());
+            }
+            TaskExecutionRecordV1::Released { .. }
+            | TaskExecutionRecordV1::Settled { .. }
+            | TaskExecutionRecordV1::UsageObserved { .. } => return Ok(()),
+        };
+        self.check_integration_node(&node)
     }
 }

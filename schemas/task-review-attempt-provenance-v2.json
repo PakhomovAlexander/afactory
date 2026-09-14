@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-review-attempt-provenance:2",
+  "title": "TaskReviewAttemptProvenance@2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["context_id", "task_invocation_id", "attempt_id", "review_node", "result_artifact_id", "mutations_artifact_id", "raw_artifact_id", "charged_tokens"],
+  "properties": {
+    "context_id": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"},
+    "task_invocation_id": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"},
+    "attempt_id": {"type": "string", "pattern": "^[a-z0-9]{26}$"},
+    "review_node": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "\\S"},
+    "result_artifact_id": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"},
+    "mutations_artifact_id": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"},
+    "raw_artifact_id": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"},
+    "charged_tokens": {"$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"},
+    "usage_id": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"}
+  }
+}

@@ -1,5 +1,8 @@
 //! `RunEvent@1` — the append-only source of truth.
 
+mod task_report;
+pub use task_report::{RunReportExecutionV6, RunReportPayloadV6, TaskReviewAccountingV1};
+
 use serde::{Deserialize, Serialize};
 
 /// The complete event vocabulary understood by this kernel build.
@@ -11,6 +14,16 @@ use serde::{Deserialize, Serialize};
 pub enum EventType {
     #[serde(rename = "TaskTransition@1")]
     TaskTransitionV1,
+    #[serde(rename = "TaskTransition@2")]
+    TaskTransitionV2,
+    #[serde(rename = "TaskTransition@3")]
+    TaskTransitionV3,
+    #[serde(rename = "TaskTransition@4")]
+    TaskTransitionV4,
+    #[serde(rename = "TaskBrokerTransition@1")]
+    TaskBrokerTransitionV1,
+    #[serde(rename = "TaskReviewResultSelected@1")]
+    TaskReviewResultSelectedV1,
     #[serde(rename = "BrokerOperationCompleted@1")]
     BrokerOperationCompletedV1,
     #[serde(rename = "AttemptAdmitted@1")]
@@ -99,6 +112,8 @@ pub enum EventType {
     RunReportV4,
     #[serde(rename = "RunReport@5")]
     RunReportV5,
+    #[serde(rename = "RunReport@6")]
+    RunReportV6,
     #[serde(rename = "RoundInputSuperseded@1")]
     RoundInputSupersededV1,
     #[serde(rename = "RoundStarted@1")]
@@ -114,8 +129,13 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 51] = [
+    pub const ALL: [Self; 57] = [
         Self::TaskTransitionV1,
+        Self::TaskTransitionV2,
+        Self::TaskTransitionV3,
+        Self::TaskTransitionV4,
+        Self::TaskBrokerTransitionV1,
+        Self::TaskReviewResultSelectedV1,
         Self::BrokerOperationCompletedV1,
         Self::AttemptAdmittedV1,
         Self::AttemptDispatchedV1,
@@ -160,6 +180,7 @@ impl EventType {
         Self::RunReportV3,
         Self::RunReportV4,
         Self::RunReportV5,
+        Self::RunReportV6,
         Self::RoundInputSupersededV1,
         Self::RoundStartedV1,
         Self::SourceCapturedV1,
@@ -171,6 +192,11 @@ impl EventType {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::TaskTransitionV1 => "TaskTransition@1",
+            Self::TaskTransitionV2 => "TaskTransition@2",
+            Self::TaskTransitionV3 => "TaskTransition@3",
+            Self::TaskTransitionV4 => "TaskTransition@4",
+            Self::TaskBrokerTransitionV1 => "TaskBrokerTransition@1",
+            Self::TaskReviewResultSelectedV1 => "TaskReviewResultSelected@1",
             Self::BrokerOperationCompletedV1 => "BrokerOperationCompleted@1",
             Self::AttemptAdmittedV1 => "AttemptAdmitted@1",
             Self::AttemptDispatchedV1 => "AttemptDispatched@1",
@@ -215,6 +241,7 @@ impl EventType {
             Self::RunReportV3 => "RunReport@3",
             Self::RunReportV4 => "RunReport@4",
             Self::RunReportV5 => "RunReport@5",
+            Self::RunReportV6 => "RunReport@6",
             Self::RoundInputSupersededV1 => "RoundInputSuperseded@1",
             Self::RoundStartedV1 => "RoundStarted@1",
             Self::SourceCapturedV1 => "SourceCaptured@1",
@@ -233,6 +260,7 @@ impl EventType {
                 | Self::RunReportV3
                 | Self::RunReportV4
                 | Self::RunReportV5
+                | Self::RunReportV6
         )
     }
 
@@ -240,13 +268,22 @@ impl EventType {
     pub const fn run_report_requires_receipts(self) -> bool {
         matches!(
             self,
-            Self::RunReportV2 | Self::RunReportV3 | Self::RunReportV4 | Self::RunReportV5
+            Self::RunReportV2
+                | Self::RunReportV3
+                | Self::RunReportV4
+                | Self::RunReportV5
+                | Self::RunReportV6
         )
     }
 
     pub const fn typed(self) -> (&'static str, u32) {
         match self {
             Self::TaskTransitionV1 => ("TaskTransition", 1),
+            Self::TaskTransitionV2 => ("TaskTransition", 2),
+            Self::TaskTransitionV3 => ("TaskTransition", 3),
+            Self::TaskTransitionV4 => ("TaskTransition", 4),
+            Self::TaskBrokerTransitionV1 => ("TaskBrokerTransition", 1),
+            Self::TaskReviewResultSelectedV1 => ("TaskReviewResultSelected", 1),
             Self::BrokerOperationCompletedV1 => ("BrokerOperationCompleted", 1),
             Self::AttemptAdmittedV1 => ("AttemptAdmitted", 1),
             Self::AttemptDispatchedV1 => ("AttemptDispatched", 1),
@@ -291,6 +328,7 @@ impl EventType {
             Self::RunReportV3 => ("RunReport", 3),
             Self::RunReportV4 => ("RunReport", 4),
             Self::RunReportV5 => ("RunReport", 5),
+            Self::RunReportV6 => ("RunReport", 6),
             Self::RoundInputSupersededV1 => ("RoundInputSuperseded", 1),
             Self::RoundStartedV1 => ("RoundStarted", 1),
             Self::SourceCapturedV1 => ("SourceCaptured", 1),
@@ -336,6 +374,11 @@ impl std::str::FromStr for EventType {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
             "TaskTransition@1" => Ok(Self::TaskTransitionV1),
+            "TaskTransition@2" => Ok(Self::TaskTransitionV2),
+            "TaskTransition@3" => Ok(Self::TaskTransitionV3),
+            "TaskTransition@4" => Ok(Self::TaskTransitionV4),
+            "TaskBrokerTransition@1" => Ok(Self::TaskBrokerTransitionV1),
+            "TaskReviewResultSelected@1" => Ok(Self::TaskReviewResultSelectedV1),
             "AttemptAdmitted@1" => Ok(Self::AttemptAdmittedV1),
             "AttemptDispatched@1" => Ok(Self::AttemptDispatchedV1),
             "AttemptFailed@1" => Ok(Self::AttemptFailedV1),
@@ -379,6 +422,7 @@ impl std::str::FromStr for EventType {
             "RunReport@3" => Ok(Self::RunReportV3),
             "RunReport@4" => Ok(Self::RunReportV4),
             "RunReport@5" => Ok(Self::RunReportV5),
+            "RunReport@6" => Ok(Self::RunReportV6),
             "RoundInputSuperseded@1" => Ok(Self::RoundInputSupersededV1),
             "RoundStarted@1" => Ok(Self::RoundStartedV1),
             "ReviewerExecutionBound@1" => Ok(Self::ReviewerExecutionBoundV1),
@@ -1371,9 +1415,34 @@ pub fn validate_event_payload(
     payload: &serde_json::Value,
 ) -> Result<(), String> {
     match event_type {
+        EventType::TaskReviewResultSelectedV1 => serde_json::from_value::<
+            crate::task::review_compat::TaskReviewResultSelectedV1,
+        >(payload.clone())
+        .map_err(|e| e.to_string())?
+        .validate(),
+        EventType::TaskTransitionV4 => {
+            serde_json::from_value::<crate::task::event::TaskTransitionV4>(payload.clone())
+                .map_err(|e| e.to_string())?
+                .validate()
+        }
+        EventType::TaskTransitionV3 => {
+            serde_json::from_value::<crate::task::event::TaskTransitionV3>(payload.clone())
+                .map_err(|e| e.to_string())?
+                .validate()
+        }
+        EventType::TaskTransitionV2 => {
+            serde_json::from_value::<crate::task::event::TaskTransitionV2>(payload.clone())
+                .map_err(|e| e.to_string())?
+                .validate()
+        }
         EventType::TaskTransitionV1 => {
             serde_json::from_value::<crate::task::event::TaskTransitionV1>(payload.clone())
                 .map_err(|e| e.to_string())?
+                .validate()
+        }
+        EventType::TaskBrokerTransitionV1 => {
+            serde_json::from_value::<crate::TaskBrokerTransitionV1>(payload.clone())
+                .map_err(|error| error.to_string())?
                 .validate()
         }
         EventType::BrokerOperationCompletedV1 => {
@@ -1641,6 +1710,13 @@ pub fn validate_event_payload(
             report
                 .validate()
                 .map_err(|error| format!("RunReport@5: {error}"))
+        }
+        EventType::RunReportV6 => {
+            let report = serde_json::from_value::<RunReportPayloadV6>(payload.clone())
+                .map_err(|error| format!("RunReport@6: {error}"))?;
+            report
+                .validate()
+                .map_err(|error| format!("RunReport@6: {error}"))
         }
         EventType::IntegrationPreparedV1 => {
             let value =
@@ -1964,6 +2040,16 @@ pub fn run_report_closes_round(event: &RunEvent) -> Result<Option<bool>, serde_j
         }
         EventType::RunReportV5 => {
             let report: RunReportPayloadV5 = serde_json::from_value(event.payload.clone())?;
+            report
+                .validate()
+                .map_err(<serde_json::Error as serde::de::Error>::custom)?;
+            Ok(Some(!matches!(
+                report.verdict,
+                RunVerdictV3::Incomplete { .. }
+            )))
+        }
+        EventType::RunReportV6 => {
+            let report: RunReportPayloadV6 = serde_json::from_value(event.payload.clone())?;
             report
                 .validate()
                 .map_err(<serde_json::Error as serde::de::Error>::custom)?;

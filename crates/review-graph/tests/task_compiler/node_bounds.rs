@@ -11,6 +11,7 @@ fn compile_with_limit(
         task,
         root,
         &CompileContext {
+            slot_workers: BTreeMap::new(),
             pipelines,
             signatures,
             max_nodes,

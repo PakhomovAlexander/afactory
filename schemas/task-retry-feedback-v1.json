@@ -24,8 +24,92 @@
         "process_failure",
         "provider_failure",
         "context_rejected",
-        "output_admission_rejected"
+        "output_admission_rejected",
+        "compiler_rejected"
       ]
+    },
+    "compiler": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "proposal_id",
+        "proposal",
+        "diagnostics"
+      ],
+      "properties": {
+        "proposal_id": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "proposal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "root",
+            "definitions"
+          ],
+          "properties": {
+            "schema": {
+              "const": "af.pipeline-proposal/1"
+            },
+            "root": {
+              "type": "string",
+              "pattern": "^generated/[A-Za-z0-9][A-Za-z0-9_/-]*$",
+              "maxLength": 256
+            },
+            "definitions": {
+              "type": "object",
+              "minProperties": 1,
+              "maxProperties": 16,
+              "propertyNames": {
+                "type": "string",
+                "pattern": "^generated/[A-Za-z0-9][A-Za-z0-9_/-]*$",
+                "maxLength": 256
+              },
+              "additionalProperties": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 262144
+              }
+            }
+          },
+          "$comment": "Semantic admission requires the root definition, valid package segments and a total UTF-8 TOML bound of 1 MiB; the compiler parses exact TOML, validates installed references and bounds expanded nodes."
+        },
+        "diagnostics": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 4,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 8192
+          }
+        }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "code": {
+            "const": "compiler_rejected"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "compiler"
+        ]
+      },
+      "else": {
+        "not": {
+          "required": [
+            "compiler"
+          ]
+        }
+      }
+    }
+  ]
 }

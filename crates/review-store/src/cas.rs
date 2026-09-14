@@ -504,6 +504,22 @@ impl Cas {
 
     /// Verify and read one object only when its authoritative stored length fits `max_bytes`.
     pub fn get_bounded(&self, digest: &str, max_bytes: u64) -> Result<Vec<u8>, CasError> {
+        let bytes = self.read_bounded_bytes(digest, max_bytes)?;
+        // Verify on read: a CAS that trusts its own filenames cannot detect corruption at all.
+        verify_object_bytes(digest, &bytes)?;
+        Ok(bytes)
+    }
+
+    /// Read and validate a typed envelope in one pass. Both domain-separated identities,
+    /// canonical stored bytes and the requested artifact ID are checked on every call.
+    /// Returning the decoded envelope avoids repeating this work at the caller boundary.
+    pub fn get_artifact(&self, digest: &str) -> Result<review_core::ArtifactEnvelope, CasError> {
+        let bytes = self.read_bounded_bytes(digest, MAX_ARTIFACT_ENVELOPE_BYTES)?;
+        decode_artifact_bytes(digest, &bytes)
+    }
+
+    /// Private unverified read; only the verifying public methods may expose its bytes.
+    fn read_bounded_bytes(&self, digest: &str, max_bytes: u64) -> Result<Vec<u8>, CasError> {
         if !valid_digest(digest) {
             return Err(CasError::InvalidDigest(digest.to_string()));
         }
@@ -537,8 +553,6 @@ impl Cas {
                 digest: digest.to_string(),
             });
         }
-        // Verify on read: a CAS that trusts its own filenames cannot detect corruption at all.
-        verify_object_bytes(digest, &bytes)?;
         Ok(bytes)
     }
 
@@ -721,6 +735,13 @@ fn verify_object_bytes(digest: &str, bytes: &[u8]) -> Result<(), CasError> {
     if canonical::blob_content_id(bytes) == digest {
         return Ok(());
     }
+    decode_artifact_bytes(digest, bytes).map(|_| ())
+}
+
+fn decode_artifact_bytes(
+    digest: &str,
+    bytes: &[u8],
+) -> Result<review_core::ArtifactEnvelope, CasError> {
     if bytes.len() as u64 > MAX_ARTIFACT_ENVELOPE_BYTES {
         return Err(CasError::Corrupt {
             digest: digest.to_string(),
@@ -743,7 +764,7 @@ fn verify_object_bytes(digest: &str, bytes: &[u8]) -> Result<(), CasError> {
             digest: digest.to_string(),
         });
     }
-    Ok(())
+    Ok(envelope)
 }
 
 fn artifact_envelope_too_large(size: u64) -> CasError {
@@ -824,6 +845,114 @@ fn sync_concurrently<'p>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn typed_read_retains_exact_identity_and_rechecks_replaced_bytes() {
+        let (dir, cas) = cas();
+        let (id, envelope) = cas
+            .put_artifact(
+                "af/ReadProbe@1",
+                review_core::Producer::KernelOperation {
+                    run_id: "read-probe".into(),
+                    node_id: None,
+                    operation_id: "capture@1".into(),
+                },
+                vec![],
+                None,
+                serde_json::json!({"value": "captured", "nested": [1, 2]}),
+            )
+            .unwrap();
+        assert_eq!(cas.get_artifact(&id).unwrap(), envelope);
+        cas.flush().unwrap();
+        let reopened = Cas::open_existing(dir.path()).unwrap();
+        assert_eq!(reopened.get_artifact(&id).unwrap(), envelope);
+        let bytes = cas.get(&id).unwrap();
+        let raw_id = cas.put(&bytes).unwrap();
+        assert_ne!(raw_id, id);
+        assert!(cas.get_json(&raw_id).is_ok(), "raw JSON remains readable");
+        assert!(
+            matches!(cas.get_artifact(&raw_id), Err(CasError::Corrupt { .. })),
+            "raw content identity cannot impersonate an artifact identity"
+        );
+        for replacement in [
+            serde_json::to_vec_pretty(&envelope).unwrap(),
+            br#"{"artifact_id":"forged"}"#.to_vec(),
+            bytes[..bytes.len() - 1].to_vec(),
+            [bytes.as_slice(), b"\n"].concat(),
+        ] {
+            fs::write(cas.path_for(&id), replacement).unwrap();
+            assert!(matches!(
+                cas.get_artifact(&id),
+                Err(CasError::Corrupt { .. })
+            ));
+            assert!(matches!(
+                reopened.get_artifact(&id),
+                Err(CasError::Corrupt { .. })
+            ));
+        }
+        fs::write(cas.path_for(&id), &bytes).unwrap();
+        assert_eq!(cas.get_artifact(&id).unwrap(), envelope);
+        fs::remove_file(cas.path_for(&id)).unwrap();
+        assert!(matches!(
+            cas.get_artifact(&id),
+            Err(CasError::NotFound { .. })
+        ));
+    }
+
+    #[test]
+    fn typed_read_validates_both_digests_and_rejects_duplicate_fields() {
+        let (_dir, cas) = cas();
+        let (id, envelope) = cas
+            .put_artifact(
+                "af/ReadProbe@1",
+                review_core::Producer::KernelOperation {
+                    run_id: "read-probe".into(),
+                    node_id: None,
+                    operation_id: "capture@1".into(),
+                },
+                vec![],
+                None,
+                serde_json::json!({"value": "captured"}),
+            )
+            .unwrap();
+        let mut forged = envelope.clone();
+        forged.payload = serde_json::json!({"value": "changed"});
+        // Even a recomputed provenance ID cannot hide an unchanged, false content ID.
+        forged.artifact_id = canonical::artifact_id(&forged).unwrap();
+        let path = cas.path_for(&forged.artifact_id);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            path,
+            canonical::canonicalize(&serde_json::to_value(&forged).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            cas.get_artifact(&forged.artifact_id),
+            Err(CasError::Corrupt { .. })
+        ));
+        forged.content_id = canonical::content_id(&forged.payload).unwrap();
+        forged.artifact_id = id.clone();
+        fs::write(
+            cas.path_for(&id),
+            canonical::canonicalize(&serde_json::to_value(&forged).unwrap()).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            cas.get_artifact(&id),
+            Err(CasError::Corrupt { .. })
+        ));
+        let bytes = canonical::canonicalize(&serde_json::to_value(&envelope).unwrap()).unwrap();
+        let duplicate = [b"{\"artifact_id\":\"ignored\",".as_slice(), &bytes[1..]].concat();
+        fs::write(cas.path_for(&id), duplicate).unwrap();
+        assert!(matches!(
+            cas.get_artifact(&id),
+            Err(CasError::Corrupt { .. })
+        ));
+        assert!(matches!(
+            cas.get_artifact("invalid"),
+            Err(CasError::InvalidDigest(_))
+        ));
+    }
 
     #[test]
     fn opening_an_existing_cas_never_creates_it() {

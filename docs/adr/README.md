@@ -112,12 +112,63 @@ options you rejected and why — that is the part future-you needs.
   Ledger](0050-reduce-review-tasks-with-the-canonical-domain-ledger.md)
 - [0051 — Compile fixed implementation Tasks into the common
   runtime](0051-compile-fixed-implementation-tasks-into-the-common-runtime.md)
+- [0052 — Capture local bindings and compose Review
+  acceptance](0052-capture-local-bindings-and-compose-review-acceptance.md)
+- [0053 — Resolve shared catalogs only during explicit
+  sync](0053-resolve-shared-catalogs-only-during-explicit-sync.md)
+
+- [0054 — Keep targeted repair distinct from complete Review](0054-keep-targeted-repair-distinct-from-complete-review.md)
+- [0055 — Select captured Pipelines before generation](0055-select-captured-pipelines-before-generation.md)
+- [0056 — Share planning accounting and authenticate generated plan decisions](0056-share-planning-accounting-and-authenticate-generated-plan-decisions.md)
+- [0057 — Export portable Task definitions without execution authority](0057-export-portable-task-definitions-without-execution-authority.md)
+- [0058 — Verify document artifacts through the common Task runtime](0058-verify-document-artifacts-through-the-common-task-runtime.md)
+- [0059 — Carry Task fix evidence into bounded heavy Review](0059-carry-task-fix-evidence-into-bounded-heavy-review.md)
+- [0060 — Generate working starters from supported contracts](0060-generate-working-starters-from-supported-contracts.md)
+- [0061 — Capture read-only issue sources outside execution authority](0061-capture-read-only-issue-sources-outside-execution-authority.md)
+- [0062 — Refresh issue revisions without resetting execution authority](0062-refresh-issue-revisions-without-resetting-execution-authority.md)
+- [0063 — Require goal acceptance alongside embedded Review](0063-require-goal-acceptance-alongside-embedded-review.md)
+- [0064 — Reuse structural validation with fresh authority checks](0064-reuse-structural-validation-with-fresh-authority-checks.md)
+- [0065 — Persist Task run diagnostics and recover domain publication](0065-persist-task-run-diagnostics-and-recover-domain-publication.md)
+- [0066 — Reserve Task Attempts before binding exact
+  context](0066-reserve-task-attempts-before-binding-exact-context.md)
+- [0067 — Project common Task selections into canonical
+  Review](0067-project-common-task-selections-into-canonical-review.md)
+- [0068 — Retain in-flight Task usage in the common
+  budget](0068-retain-inflight-task-usage-in-the-common-budget.md)
+- [0069 — Compile captured Review ports with explicit artifact
+  codecs](0069-compile-captured-review-ports-with-explicit-artifact-codecs.md)
+- [0070 — Separate Review domain operations and fence Task dispatch by Round](0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md)
+- [0071 — Share captured Review authority and Task token scopes](0071-share-captured-review-authority-and-task-token-scopes.md)
+- [0072 — Retain process output independently of transport status](0072-retain-process-output-independently-of-transport-status.md)
+- [0073 — Check Task retry eligibility before reservation](0073-check-task-retry-eligibility-before-reservation.md)
+- [0074 — Isolate concurrent process pipe creation on Apple](0074-isolate-concurrent-process-pipe-creation-on-apple.md)
+- [0075 — Retain exact Task usage with versioned decimal counters](0075-retain-exact-task-usage-with-versioned-decimal-counters.md)
+- [0076 — Decode and verify typed CAS reads
+  once](0076-decode-and-verify-typed-cas-reads-once.md)
+- [0077 — Run captured Review operations under common Task
+  Attempts](0077-run-captured-review-operations-under-common-task-attempts.md)
+- [0078 — Bind Review conclusions to exact Task accounting](0078-bind-review-conclusions-to-exact-task-accounting.md)
+- [0079 — Retain exact cumulative charge within one Task Attempt](0079-retain-exact-cumulative-charge-within-one-task-attempt.md)
+- [0080 — Bind Broker evidence to the original Task Attempt](0080-bind-broker-evidence-to-the-original-task-attempt.md)
+- [0081 — Register owned Review children in the common Task runtime](0081-register-owned-review-children-in-the-common-task-runtime.md)
+- [0082 — Continue captured Review Rounds within the original Task](0082-continue-captured-review-rounds-within-the-original-task.md)
+- [0083 — Run post-Round Integration within the original Task](0083-run-post-round-integration-within-the-original-task.md)
+- [0084 — Route new Review commands through the common Task](0084-route-new-review-commands-through-the-common-task.md)
+- [0085 — Retain exact native Task usage across multiple turns](0085-retain-exact-native-task-usage-across-multiple-turns.md)
+- [0086 — Record expired Review publication without restarting work](0086-record-expired-review-publication-without-restarting-work.md)
+- [0087 — Control native Task invocations through the shared supervisor](0087-control-native-task-invocations-through-the-shared-supervisor.md)
+- [0088 — Retain native billing completeness with Task usage](0088-retain-native-billing-completeness-with-task-usage.md)
+- [0089 — Interrupt Task work when its writer heartbeat fails](0089-interrupt-task-work-when-its-writer-heartbeat-fails.md)
+- [0090 — Recheck native Task Provider identity before private invocation](0090-recheck-native-task-provider-identity-before-private-invocation.md)
+- [0091 — Capture explicit Task Provider admission costs](0091-capture-explicit-task-provider-admission-costs.md)
+- [0092 — Capture common Review admission reservations](0092-capture-common-review-admission-reservations.md)
+- [0093 — Derive CodeTask acceptance from execution and evidence](0093-derive-code-task-acceptance-from-execution-and-evidence.md)
 - [0095 — Bind legacy Task context and retry output admission](0095-bind-legacy-task-context-and-retry-output-admission.md)
 - [0096 — Revalidate Task execution evidence on cached
   replay](0096-revalidate-task-execution-evidence-on-cached-replay.md)
-- [0093 — Derive CodeTask acceptance from execution and evidence](0093-derive-code-task-acceptance-from-execution-and-evidence.md)
 - [0097 — Share validated source reads within one
   operation](0097-share-validated-source-reads-within-one-operation.md)
+- [0098 — Scope Review memos to one domain operation](0098-scope-review-memos-to-one-domain-operation.md)
 - [0094 — Bind Task Review assignments and readable
   inputs](0094-bind-task-review-assignments-and-readable-inputs.md)
 - [0099 — Select Task Review generation independently of Provider

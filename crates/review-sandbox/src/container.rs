@@ -24,7 +24,7 @@
 //! the container genuinely runs work.
 
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use review_process::{SupervisedError, run_supervised};
 
@@ -128,7 +128,15 @@ impl ContainerProvider {
     /// Probe the host for a usable runtime.
     pub fn detect() -> ContainerProvider {
         ContainerProvider {
-            availability: Self::probe(),
+            availability: Self::probe(None),
+            image: DEFAULT_IMAGE.to_string(),
+        }
+    }
+
+    /// Every runtime probe consumes the caller's same absolute execution deadline.
+    pub fn detect_before(deadline: Instant) -> ContainerProvider {
+        ContainerProvider {
+            availability: Self::probe(Some(deadline)),
             image: DEFAULT_IMAGE.to_string(),
         }
     }
@@ -148,11 +156,28 @@ impl ContainerProvider {
         self
     }
 
-    fn probe() -> Availability {
+    fn probe(deadline: Option<Instant>) -> Availability {
+        Self::probe_paths(
+            RUNTIMES.into_iter().filter_map(|name| which(name).ok()),
+            deadline,
+        )
+    }
+
+    fn probe_paths(
+        paths: impl IntoIterator<Item = PathBuf>,
+        deadline: Option<Instant>,
+    ) -> Availability {
         let mut first_unusable = None;
-        for name in RUNTIMES {
-            let Ok(path) = which(name) else { continue };
-            match Self::probe_one(&path) {
+        for path in paths {
+            let timeout = deadline.map_or(PROBE_TIMEOUT, |deadline| {
+                deadline
+                    .saturating_duration_since(Instant::now())
+                    .min(PROBE_TIMEOUT)
+            });
+            if timeout.is_zero() {
+                break;
+            }
+            match Self::probe_one_with_timeout(&path, timeout) {
                 usable @ Availability::Usable { .. } => return usable,
                 unusable if first_unusable.is_none() => first_unusable = Some(unusable),
                 _ => {}
@@ -296,6 +321,25 @@ impl ContainerProvider {
         environment: &[(String, String)],
         timeout: Duration,
     ) -> Result<ContainerExecution, ContainerExecutionError> {
+        self.exec_evidenced_controlled(sandbox_root, program, args, environment, timeout, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn exec_evidenced_controlled(
+        &self,
+        sandbox_root: &Path,
+        program: &str,
+        args: &[String],
+        environment: &[(String, String)],
+        timeout: Duration,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<ContainerExecution, ContainerExecutionError> {
+        if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+            return Err(ContainerExecutionError::before_launch(
+                "container execution cancelled before launch",
+            ));
+        }
+
         let Availability::Usable { runtime } = &self.availability else {
             return Err(ContainerExecutionError::before_launch(format!(
                 "refusing to run outside a container: {}",
@@ -319,7 +363,7 @@ impl ContainerProvider {
                     "container execution identity is not portable UTF-8",
                 )
             })?;
-        self.exec_evidenced_named(
+        self.exec_evidenced_named_controlled(
             runtime,
             sandbox_root,
             program,
@@ -327,10 +371,12 @@ impl ContainerProvider {
             environment,
             timeout,
             execution_name,
+            cancellation,
         )
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     fn exec_evidenced_named(
         &self,
         runtime: &Path,
@@ -341,9 +387,54 @@ impl ContainerProvider {
         timeout: Duration,
         execution_name: &str,
     ) -> Result<ContainerExecution, ContainerExecutionError> {
+        self.exec_evidenced_named_controlled(
+            runtime,
+            sandbox_root,
+            program,
+            args,
+            environment,
+            timeout,
+            execution_name,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn exec_evidenced_named_controlled(
+        &self,
+        runtime: &Path,
+        sandbox_root: &Path,
+        program: &str,
+        args: &[String],
+        environment: &[(String, String)],
+        timeout: Duration,
+        execution_name: &str,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> Result<ContainerExecution, ContainerExecutionError> {
         let mut command = std::process::Command::new(runtime);
         command.args(self.invocation(sandbox_root, program, args, environment, execution_name));
-        match run_bounded_evidenced(command, timeout, "container command") {
+        let executed = match cancellation {
+            None => run_bounded_evidenced(command, timeout, "container command"),
+            Some(flag) => review_process::run_supervised_captured_cancellable(
+                &mut command,
+                None,
+                timeout,
+                flag,
+            )
+            .into_result()
+            .map(|output| ContainerExecution {
+                output: std::process::Output {
+                    status: output.status,
+                    stdout: output.stdout,
+                    stderr: output.stderr,
+                },
+                stderr_held: output.stderr_held,
+            })
+            .map_err(std::io::Error::other),
+        };
+        // Cancellation stops the foreground runtime; the existing bounded rm confirms the
+        // daemon no longer owns this writable bind. Never cancel the cleanup itself.
+        match executed {
             Ok(execution) => Ok(execution),
             Err(error) => match remove_container(runtime, execution_name) {
                 Ok(()) => Err(ContainerExecutionError::after_launch(
@@ -432,6 +523,29 @@ mod tests {
     use super::*;
     use std::time::Instant;
 
+    fn write_runtime(path: &Path, script: &str) {
+        // Linux CI observed ETXTBSY while probing a freshly written fixture. A concurrent
+        // child's inherited writable descriptor is a possible cause. Keep that descriptor
+        // out of this multithreaded parent; reaping this single-threaded writer establishes
+        // that its writable descriptor is closed before probing the executable.
+        let mut writer = std::process::Command::new("/bin/sh");
+        writer
+            .args(["-c", "printf '%s' \"$2\" > \"$1\"", "runtime-fixture"])
+            .arg(path)
+            .arg(script);
+        let output = run_supervised(&mut writer, None, Duration::from_secs(5)).unwrap();
+        assert!(
+            output.status.success(),
+            "writing runtime fixture: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
     /// The real host, whatever it is. Both outcomes are correct; what matters is that the
     /// provider never claims containment it has not verified.
     #[test]
@@ -456,16 +570,10 @@ mod tests {
     fn an_installed_but_broken_runtime_is_unusable_not_usable() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("broken-runtime");
-        std::fs::write(
+        write_runtime(
             &fake,
             "#!/bin/sh\necho 'Cannot connect to the daemon' >&2\nexit 1\n",
-        )
-        .unwrap();
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        );
 
         let provider = ContainerProvider::with_runtime(&fake);
         assert!(matches!(
@@ -492,12 +600,40 @@ mod tests {
 
     #[test]
     #[cfg(unix)]
+    fn runtime_detection_stops_at_the_callers_deadline() {
+        let directory = tempfile::tempdir().unwrap();
+        let paths: Vec<_> = (0..3)
+            .map(|n| {
+                let path = directory.path().join(format!("runtime{n}"));
+                write_runtime(&path, "#!/bin/sh\nprintf x > \"$0.marker\"\nsleep 60\n");
+                path
+            })
+            .collect();
+        let start = Instant::now();
+        let unavailable =
+            ContainerProvider::probe_paths(paths.clone(), Some(start + Duration::from_millis(500)));
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert!(!unavailable.usable());
+        // A busy host may time out before the first script reaches its body. The observed
+        // attempted runtime and deadline failure are authoritative; a script marker is not.
+        assert!(
+            matches!(&unavailable, Availability::Unusable { runtime, reason }
+            if runtime == &paths[0] && reason.contains("did not finish")),
+            "{unavailable:?}"
+        );
+        assert!(!directory.path().join("runtime1.marker").exists());
+        assert!(!directory.path().join("runtime2.marker").exists());
+        let expired = ContainerProvider::probe_paths([paths[1].clone()], Some(start));
+        assert!(!expired.usable());
+        assert!(!directory.path().join("runtime1.marker").exists());
+    }
+
+    #[test]
+    #[cfg(unix)]
     fn a_wedged_runtime_is_bounded_and_unusable() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("wedged-runtime");
-        std::fs::write(&fake, "#!/bin/sh\nsleep 60\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_runtime(&fake, "#!/bin/sh\nsleep 60\n");
 
         let started = Instant::now();
         let availability =
@@ -513,13 +649,10 @@ mod tests {
     fn a_wedged_container_execution_is_bounded() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("runtime");
-        std::fs::write(
+        write_runtime(
             &fake,
             "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then printf '%s\\n' \"$@\" > \"$0.cleanup\"; exit 0; fi\nsleep 60\n",
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let provider = ContainerProvider::with_runtime(&fake);
 
         let started = Instant::now();
@@ -541,13 +674,10 @@ mod tests {
     fn a_failed_reap_is_distinct_from_a_safely_stopped_timeout() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("runtime");
-        std::fs::write(
+        write_runtime(
             &fake,
             "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then echo 'daemon lost' >&2; exit 1; fi\nsleep 60\n",
-        )
-        .unwrap();
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&fake, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let provider = ContainerProvider::with_runtime(&fake);
 
         let error = provider
@@ -561,6 +691,53 @@ mod tests {
             .unwrap_err();
         assert!(!error.cleanup_confirmed(), "{error}");
         assert!(error.to_string().contains("was not confirmed"), "{error}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn cancellation_still_confirms_container_removal_without_cancelling_cleanup() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        for cleanup_ok in [true, false] {
+            let dir = tempfile::tempdir().unwrap();
+            let fake = dir.path().join("runtime");
+            write_runtime(
+                &fake,
+                &format!(
+                    "#!/bin/sh\nif [ \"$1\" = info ]; then exit 0; fi\nif [ \"$1\" = rm ]; then printf '%s\\n' \"$@\" > \"$0.cleanup\"; exit {}; fi\nprintf ready > \"$0.ready\"\nsleep 30\n",
+                    if cleanup_ok { 0 } else { 1 }
+                ),
+            );
+            let provider = ContainerProvider::with_runtime(&fake);
+            let flag = AtomicBool::new(false);
+            let started = Instant::now();
+            let error = std::thread::scope(|scope| {
+                let cancel = scope.spawn(|| {
+                    while !fake.with_extension("ready").is_file() {
+                        if started.elapsed() > Duration::from_secs(3) {
+                            flag.store(true, Ordering::Release);
+                            panic!("container never began");
+                        }
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    flag.store(true, Ordering::Release);
+                });
+                let result = provider.exec_evidenced_controlled(
+                    dir.path(),
+                    "/bin/true",
+                    &[],
+                    &[],
+                    Duration::from_secs(20),
+                    Some(&flag),
+                );
+                cancel.join().unwrap();
+                result.unwrap_err()
+            });
+            assert!(started.elapsed() < Duration::from_secs(3));
+            assert_eq!(error.cleanup_confirmed(), cleanup_ok);
+            assert!(error.to_string().contains("cancel"), "{error}");
+            let cleanup = std::fs::read_to_string(fake.with_extension("cleanup")).unwrap();
+            assert!(cleanup.starts_with("rm\n-f\naf-gate-"), "{cleanup}");
+        }
     }
 
     #[test]

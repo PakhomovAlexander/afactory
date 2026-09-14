@@ -19,6 +19,9 @@ use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, NewEvent, 
 
 use crate::{CampaignMode, Options, campaign_run_id};
 
+mod task_round;
+pub(crate) use task_round::{prepare_next_round, prepare_recorded_round};
+
 pub(super) fn requested_git_timeout(configured: Option<Duration>) -> Duration {
     configured.unwrap_or(Duration::from_secs(
         review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS,
@@ -379,7 +382,7 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
             })
         })
         .collect::<Vec<_>>();
-    let convergence = selected_convergence(options.mode, loaded.convergence());
+    let convergence = options.mode.convergence(loaded.convergence());
     let input_sizes = &plan.input_sizes;
     let reservations = crate::project::static_reservations(loaded)
         .into_iter()
@@ -418,6 +421,7 @@ pub(super) fn plan(options: &Options, cas: &Cas, repo: &Repo) -> Result<serde_js
                 "gate": format!("{:?}", convergence.gate).to_lowercase(),
             },
         },
+        "provider_admission": crate::review_task::initial_provider_admission(options),
         "providers": providers,
         "external_effects": token_free_effects(),
     }))
@@ -811,7 +815,7 @@ pub(super) fn prepare(
         .manifest
         .git_timeout_seconds
         .unwrap_or(review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS);
-    let convergence = selected_convergence(options.mode, campaign.loaded.convergence());
+    let convergence = options.mode.convergence(campaign.loaded.convergence());
     Ok(PreparedRun {
         loaded: campaign.loaded,
         snapshot: round.snapshot,
@@ -1057,7 +1061,7 @@ fn open_new(
             .iter()
             .map(|reviewer| reviewer.package_artifact_id.clone()),
     );
-    let convergence = selected_convergence(options.mode, loaded.convergence());
+    let convergence = options.mode.convergence(loaded.convergence());
     let budgets = loaded.budgets().map(|budget| CampaignBudgetV1 {
         attempt_tokens: budget.attempt,
         run_tokens: budget.run,
@@ -1197,74 +1201,8 @@ fn resume(
         return Err("Git capture timeout differs from the pinned Campaign manifest".into());
     }
 
-    let pipeline = cas
-        .get(&manifest.pipeline.artifact_id)
-        .map_err(|error| error.to_string())?;
-    let lock = cas
-        .get(&manifest.reviewer_lock.artifact_id)
-        .map_err(|error| error.to_string())?;
-    let pipeline = std::str::from_utf8(&pipeline).map_err(|error| error.to_string())?;
-    let lockfile =
-        Lockfile::from_toml(std::str::from_utf8(&lock).map_err(|error| error.to_string())?)
-            .map_err(|error| error.to_string())?;
-    let mut packages: BTreeMap<String, BTreeMap<String, Vec<u8>>> = BTreeMap::new();
-    let mut captured: BTreeMap<String, (ReviewerPackageV1, BTreeMap<String, Vec<u8>>)> =
-        BTreeMap::new();
-    for binding in &manifest.reviewers {
-        if !captured.contains_key(&binding.package_artifact_id) {
-            let package: ReviewerPackageV1 = serde_json::from_value(
-                cas.get_json(&binding.package_artifact_id)
-                    .map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string())?;
-            package.validate()?;
-            let mut files = BTreeMap::new();
-            for (path, artifact_id) in &package.files {
-                files.insert(
-                    path.clone(),
-                    cas.get(artifact_id).map_err(|error| error.to_string())?,
-                );
-            }
-            let recomputed = review_config::lock::package_digest_from_files(&files);
-            if recomputed != package.digest {
-                return Err(format!(
-                    "captured reviewer package `{}` claims digest {} but contains {recomputed}",
-                    package.name, package.digest
-                ));
-            }
-            captured.insert(binding.package_artifact_id.clone(), (package, files));
-        }
-        let (package, files) = captured
-            .get(&binding.package_artifact_id)
-            .expect("captured package inserted");
-        if package.name != binding.name
-            || package.version != binding.version
-            || package.digest != binding.digest
-        {
-            return Err(format!(
-                "captured reviewer package for node `{}` disagrees with CampaignManifest@1",
-                binding.node
-            ));
-        }
-        if packages
-            .insert(package.name.clone(), files.clone())
-            .is_some_and(|prior| &prior != files)
-        {
-            return Err(format!(
-                "CampaignManifest@1 binds package `{}` to inconsistent bytes",
-                package.name
-            ));
-        }
-    }
-    let registry = Registry::captured(packages);
-    let loaded = Definition::from_toml(pipeline)
-        .map_err(|error| error.to_string())?
-        .load_with(&lockfile, &registry)
-        .map_err(|error| error.to_string())?;
-    if loaded.subject_kind() != manifest.subject_kind {
-        return Err("captured pipeline disagrees with CampaignManifest Subject kind".into());
-    }
-    validate_manifest_authority(cas, &manifest, &loaded, &captured, options.mode)?;
+    let loaded =
+        review_config::captured_review::load_captured_review(cas, &manifest, options.mode)?;
     super::run_progress(
         options,
         format_args!("authority {} (pinned)", manifest.authority_snapshot_id),
@@ -1279,141 +1217,6 @@ fn resume(
         manifest_id: payload.campaign_manifest_id,
         opened_event_id: event.event_id.clone(),
     })
-}
-
-fn validate_manifest_authority(
-    cas: &Cas,
-    manifest: &CampaignManifestV1,
-    loaded: &review_config::Loaded,
-    captured: &BTreeMap<String, (ReviewerPackageV1, BTreeMap<String, Vec<u8>>)>,
-    mode: CampaignMode,
-) -> Result<(), String> {
-    let convergence = selected_convergence(mode, loaded.convergence());
-    if manifest.convergence.clean_rounds != convergence.clean_rounds
-        || manifest.convergence.max_rounds != convergence.max_rounds
-        || manifest.convergence.gate != format!("{:?}", convergence.gate).to_lowercase()
-    {
-        return Err(format!(
-            "CampaignManifest convergence differs from requested {} mode; resume with the mode that opened this Campaign",
-            mode.as_str()
-        ));
-    }
-    let budgets = loaded.budgets().map(|budget| CampaignBudgetV1 {
-        attempt_tokens: budget.attempt,
-        run_tokens: budget.run,
-    });
-    if manifest.budgets != budgets {
-        return Err("CampaignManifest budgets differ from captured pipeline authority".into());
-    }
-    if manifest
-        .check_timeout_seconds
-        .unwrap_or(loaded.check_timeout_seconds())
-        != loaded.check_timeout_seconds()
-    {
-        return Err(
-            "CampaignManifest check timeout differs from captured pipeline authority".into(),
-        );
-    }
-    if manifest.reviewers.len() != loaded.packages().len() {
-        return Err("CampaignManifest reviewer bindings are incomplete".into());
-    }
-    for (node, package) in loaded.packages() {
-        let binding = manifest
-            .reviewers
-            .iter()
-            .find(|binding| binding.node == *node)
-            .ok_or_else(|| format!("CampaignManifest has no reviewer binding for `{node}`"))?;
-        if binding.name != package.name
-            || binding.version != package.version
-            || binding.digest != package.digest
-        {
-            return Err(format!(
-                "CampaignManifest reviewer binding for `{node}` differs from resolved authority"
-            ));
-        }
-    }
-    let expected_execution: BTreeSet<String> =
-        std::iter::once(manifest.pipeline.artifact_id.clone())
-            .chain(
-                manifest
-                    .reviewers
-                    .iter()
-                    .map(|binding| binding.package_artifact_id.clone()),
-            )
-            .collect();
-    if manifest
-        .execution_policy_ids
-        .iter()
-        .cloned()
-        .collect::<BTreeSet<_>>()
-        != expected_execution
-    {
-        return Err("CampaignManifest execution policy IDs are not the resolved authority".into());
-    }
-    for policy in &manifest.project_policy_ids {
-        cas.get(policy).map_err(|error| error.to_string())?;
-    }
-    for (id, kind) in [
-        (&manifest.finding_genesis_id, "finding-set-genesis@1"),
-        (&manifest.demand_genesis_id, "demand-set-genesis@1"),
-    ] {
-        let root = cas.get_json(id).map_err(|error| error.to_string())?;
-        if root["kind"] != kind || root["authority_snapshot_id"] != manifest.authority_snapshot_id {
-            return Err(format!("CampaignManifest has an invalid `{kind}` root"));
-        }
-    }
-
-    let authority: SourceSnapshot = serde_json::from_value(
-        cas.get_json(&manifest.authority_snapshot_id)
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    let authority_manifest_id = authority
-        .artifact_manifest
-        .ok_or("Authority Snapshot has no artifact manifest")?;
-    let tree: Manifest = serde_json::from_value(
-        cas.get_json(&authority_manifest_id)
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    if tree.content_digest() != authority.content_digest
-        || tree
-            .get(&manifest.pipeline.path)
-            .map(|entry| &entry.content)
-            != Some(&manifest.pipeline.artifact_id)
-        || tree
-            .get(&manifest.reviewer_lock.path)
-            .map(|entry| &entry.content)
-            != Some(&manifest.reviewer_lock.artifact_id)
-    {
-        return Err("CampaignManifest authority files are not reachable from its Snapshot".into());
-    }
-    let layout = authority_layout(&manifest.pipeline.path, true)?;
-    for (package, _) in captured.values() {
-        for (path, artifact_id) in &package.files {
-            let authority_path = format!("{}/{}/{path}", layout.registry, package.name);
-            if tree.get(&authority_path).map(|entry| &entry.content) != Some(artifact_id) {
-                return Err(format!(
-                    "captured reviewer file `{authority_path}` is not authority Snapshot content"
-                ));
-            }
-        }
-    }
-    Ok(())
-}
-
-fn selected_convergence(
-    mode: CampaignMode,
-    configured: &review_store::ConvergencePolicy,
-) -> review_store::ConvergencePolicy {
-    match mode {
-        CampaignMode::Light => review_store::ConvergencePolicy {
-            clean_rounds: 1,
-            max_rounds: 1,
-            gate: configured.gate,
-        },
-        CampaignMode::Heavy => *configured,
-    }
 }
 
 fn require_demand_set_output(
@@ -1812,156 +1615,12 @@ fn capture_round(
     } else {
         Vec::new()
     };
-    let capture = Capture::new(repo, cas);
-    let candidate_ref = options.candidate.as_deref().unwrap_or("HEAD");
-    let mut snapshot = if options.uncommitted {
-        capture
-            .dirty()
-            .map_err(|error| format!("capturing revalidated worktree: {error}"))?
-    } else {
-        capture
-            .committed(candidate_ref)
-            .map_err(|error| format!("capturing candidate `{candidate_ref}`: {error}"))?
-    };
-    let authority_snapshot: SourceSnapshot = serde_json::from_value(
-        cas.get_json(&campaign.manifest.authority_snapshot_id)
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    if snapshot.repository_id != authority_snapshot.repository_id {
-        return Err(
-            "candidate HEAD belongs to a different repository than the Campaign authority".into(),
-        );
-    }
-    let base_snapshot = if campaign.loaded.subject_kind() == SubjectKind::Diff {
-        Some(
-            serde_json::from_value::<SourceSnapshot>(
-                cas.get_json(
-                    campaign
-                        .manifest
-                        .base_snapshot_id
-                        .as_deref()
-                        .ok_or("diff Campaign has no pinned Base Snapshot")?,
-                )
-                .map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string())?,
-        )
-    } else {
-        None
-    };
-    if let Some(base_snapshot) = &base_snapshot
-        && snapshot.submodules != base_snapshot.submodules
-    {
-        let mut paths: Vec<String> = snapshot
-            .submodules
-            .iter()
-            .chain(&base_snapshot.submodules)
-            .map(|submodule| submodule.path.clone())
-            .collect();
-        paths.sort();
-        paths.dedup();
-        return Err(format!(
-            "diff capture refuses changed gitlinks until submodule sandbox policy is explicit: {}",
-            paths.join(", ")
-        ));
-    }
-    let tree_diff = if campaign.loaded.subject_kind() == SubjectKind::Diff {
-        let base_snapshot = base_snapshot.as_ref().expect("diff Base was loaded");
-        let base_manifest_id = base_snapshot
-            .artifact_manifest
-            .as_deref()
-            .ok_or("Campaign Base Snapshot has no artifact manifest")?;
-        let base_manifest: Manifest = serde_json::from_value(
-            cas.get_json(base_manifest_id)
-                .map_err(|error| error.to_string())?,
-        )
-        .map_err(|error| error.to_string())?;
-        let base_tree = capture
-            .rehydrate_committed(base_snapshot, &base_manifest)
-            .map_err(|error| format!("rehydrating pinned Base: {error}"))?;
-        if snapshot.dirty {
-            let (head_tree, diff) = repo
-                .tree_diff_synthetic_head(&base_tree, &snapshot.manifest, cas)
-                .map_err(|error| error.to_string())?;
-            snapshot.tree_id = Some(head_tree);
-            Some(diff)
-        } else {
-            Some(
-                repo.tree_diff(
-                    &base_tree,
-                    snapshot
-                        .tree_id
-                        .as_ref()
-                        .ok_or("committed head has no tree authority")?,
-                )
-                .map_err(|error| error.to_string())?,
-            )
-        }
-    } else {
-        if snapshot.dirty {
-            snapshot.tree_id = Some(
-                repo.synthetic_tree(&snapshot.manifest, cas)
-                    .map_err(|error| error.to_string())?,
-            );
-        }
-        None
-    };
-    if tree_diff
-        .as_ref()
-        .is_some_and(|diff| diff.changes.is_empty())
-    {
-        return Err(
-            "refusing empty Diff before Gates, Provider admission, or Worker dispatch; select a different Base/candidate or a whole-tree pipeline"
-                .into(),
-        );
-    }
-    match &tree_diff {
-        Some(diff) => super::run_progress(
-            options,
-            format_args!(
-                "subject   Diff ({} changed records, {} patch bytes)",
-                diff.changes.len(),
-                diff.patch().len()
-            ),
-        ),
-        None => super::run_progress(options, format_args!("subject   WholeTree")),
-    }
-    let (head_snapshot_id, manifest_id) = publish_snapshot(&snapshot, cas)?;
-    let change_set_id = match tree_diff {
-        Some(diff) => {
-            // Base64 alone expands every three raw bytes to four encoded bytes. Refuse before
-            // building path arrays, base64, serde Values, and canonical JSON when the patch
-            // already cannot fit the authoritative encoded Change Set bound below.
-            let raw_patch_limit = maximum_raw_patch_bytes();
-            if raw_patch_exceeds_change_set_bound(diff.patch().len()) {
-                return Err(format!(
-                    "exact Change Set patch is {} raw bytes; maximum encodable patch is {} raw bytes and partitioning is required",
-                    diff.patch().len(),
-                    raw_patch_limit
-                ));
-            }
-            let base_snapshot_id = campaign
-                .manifest
-                .base_snapshot_id
-                .as_deref()
-                .ok_or("diff Campaign has no pinned Base Snapshot")?;
-            let change_set = diff.change_set(base_snapshot_id, &head_snapshot_id)?;
-            let value = serde_json::to_value(&change_set).map_err(|error| error.to_string())?;
-            review_core::json::admit(&value).map_err(|error| error.to_string())?;
-            let encoded =
-                review_store::canonical::canonicalize(&value).map_err(|error| error.to_string())?;
-            if encoded.len() > MAX_CHANGE_SET_BYTES {
-                return Err(format!(
-                    "exact Change Set is {} bytes; maximum is {} bytes and partitioning is required",
-                    encoded.len(),
-                    MAX_CHANGE_SET_BYTES
-                ));
-            }
-            Some(cas.put(&encoded).map_err(|error| error.to_string())?)
-        }
-        None => None,
-    };
+    let task_round::CapturedRoundSource {
+        snapshot,
+        head_snapshot_id,
+        manifest_id,
+        change_set_id,
+    } = task_round::capture_source(options, cas, repo, campaign)?;
     let mut source_refs = vec![
         campaign.manifest.authority_snapshot_id.clone(),
         campaign.manifest_id.clone(),
@@ -2181,6 +1840,26 @@ fn load_round(
     repository_id: &str,
     ledger_projection: LedgerProjection,
 ) -> Result<RoundInput, String> {
+    let prior_subject_id = payload.subject_id.clone();
+    load_round_with_prior_subject(
+        options,
+        cas,
+        event_id,
+        payload,
+        (repository_id, &prior_subject_id),
+        ledger_projection,
+    )
+}
+
+fn load_round_with_prior_subject(
+    options: &Options,
+    cas: &Cas,
+    event_id: String,
+    payload: RoundStartedPayloadV1,
+    source_authority: (&str, &str),
+    ledger_projection: LedgerProjection,
+) -> Result<RoundInput, String> {
+    let (repository_id, prior_subject_id) = source_authority;
     payload.validate()?;
     let subject: SubjectV1 = serde_json::from_value(
         cas.get_json(&payload.subject_id)
@@ -2228,14 +1907,14 @@ fn load_round(
     let prior_count = validate_round_set(
         cas,
         &payload.prior_finding_set_id,
-        &payload.subject_id,
+        prior_subject_id,
         payload.round,
         "prior_findings",
     )?;
     validate_round_set(
         cas,
         &payload.prior_demand_set_id,
-        &payload.subject_id,
+        prior_subject_id,
         payload.round,
         "demands",
     )?;

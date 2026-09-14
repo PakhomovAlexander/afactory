@@ -6,6 +6,50 @@ use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
 #[test]
+fn native_task_adapter_declares_trusted_unsafe_credentials() {
+    let adapter = ClaudeTaskAdapter::new(&Command::new("claude", vec![])).unwrap();
+    assert_eq!(
+        adapter.credential_mode(),
+        review_core::BrokerCredentialModeV1::TrustedUnsafe
+    );
+}
+
+#[test]
+fn review_role_keeps_the_legacy_read_only_tool_grant() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let program = temp.path().join("fake-claude");
+    std::fs::write(&program, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$@\" >&2\nprintf '%s' '{\"is_error\":false,\"result\":\"OK\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}'\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = ClaudeTaskAdapter::new(&Command::new(program.to_str().unwrap(), vec![])).unwrap();
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"review".to_vec(),
+        Duration::from_secs(5),
+        false,
+    );
+    assert_eq!(returned.message.unwrap(), b"OK");
+    let flags = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
+    let flags: Vec<_> = flags.lines().collect();
+    for required in ["--safe-mode", "--restricted", "--strict-mcp-config"] {
+        assert!(flags.contains(&required), "{flags:?}");
+    }
+    for (flag, expected) in [
+        ("--permission-mode", "dontAsk"),
+        ("--tools", "Read,Glob,Grep"),
+        ("--allowedTools", "Read,Glob,Grep"),
+    ] {
+        let index = flags.iter().position(|value| *value == flag).unwrap();
+        assert_eq!(flags[index + 1], expected);
+    }
+    assert!(!flags.iter().any(|flag| {
+        flag.split(',')
+            .any(|tool| matches!(tool, "Edit" | "Write" | "Bash"))
+    }));
+}
+
+#[test]
 fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_message() {
     for timed_out in [true, false] {
         let temp = tempfile::tempdir().unwrap();
@@ -62,7 +106,10 @@ fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_messa
                 .map(|id| cas.get(id))
                 .collect::<Vec<_>>()
         );
-        assert_eq!(returned.usage.unwrap().chargeable_tokens, u64::MAX);
+        assert_eq!(
+            returned.usage.unwrap().chargeable_tokens.get(),
+            u128::from(u64::MAX) + 20
+        );
         if timed_out {
             assert_eq!(returned.raw_artifact_ids.len(), 2);
             assert_eq!(
@@ -124,14 +171,80 @@ fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage
             Duration::from_secs(5),
             false,
         );
-        assert_eq!(returned.usage.as_ref().unwrap().chargeable_tokens, 106);
+        assert_eq!(
+            returned.usage.as_ref().unwrap().chargeable_tokens.get(),
+            106
+        );
         assert_eq!(
             cas.get(&returned.raw_artifact_ids[0]).unwrap(),
             output.as_bytes()
+        );
+        assert!(
+            returned.usage_observation.is_none(),
+            "valid usage retains the frozen path, including failed calls"
         );
         let admitted = returned
             .message
             .and_then(|bytes| contract.validate_reply(&bytes));
         assert_eq!(admitted.is_ok(), valid);
+    }
+}
+
+#[test]
+fn malformed_native_usage_refuses_message_and_survives_raw_capture_outage() {
+    for (billing_invalid, outage) in [(true, false), (false, false), (true, true)] {
+        let temp = tempfile::tempdir().unwrap();
+        let cas_path = temp.path().join("cas");
+        let cas = Cas::open(&cas_path).unwrap();
+        let mut usage = serde_json::json!({"input_tokens":11,"output_tokens":7});
+        usage[if billing_invalid {
+            "input_tokens"
+        } else {
+            "cache_read_input_tokens"
+        }] = serde_json::Value::Null;
+        let output = serde_json::json!({"is_error":false,"result":"OK","usage":usage}).to_string();
+        let script = temp.path().join("provider");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{}'\nprintf '%s' 'usage fixture' >&2\n",
+                output.replace('\'', "'\\''")
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        if outage {
+            std::fs::remove_dir_all(&cas_path).unwrap();
+            std::fs::write(&cas_path, b"outage").unwrap();
+        }
+        let adapter =
+            ClaudeTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            temp.path(),
+            b"input".to_vec(),
+            Duration::from_secs(5),
+            false,
+        );
+        assert!(returned.message.is_err());
+        let observation = returned.usage_observation.unwrap();
+        assert_eq!(observation.charge_complete, !billing_invalid);
+        assert_eq!(observation.reported_usage, returned.usage);
+        assert_eq!(
+            returned.usage.unwrap().chargeable_tokens.get(),
+            if billing_invalid { 7 } else { 18 }
+        );
+        if outage {
+            assert!(returned.raw_artifact_ids.is_empty());
+        } else {
+            assert_eq!(
+                cas.get(&returned.raw_artifact_ids[0]).unwrap(),
+                output.as_bytes()
+            );
+            assert_eq!(
+                cas.get(&returned.raw_artifact_ids[1]).unwrap(),
+                b"usage fixture"
+            );
+        }
     }
 }

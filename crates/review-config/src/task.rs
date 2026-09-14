@@ -7,6 +7,10 @@ use serde_json::{Value, json};
 use crate::ConfigError;
 
 pub mod catalog;
+pub mod kind;
+pub mod legacy_review;
+pub mod selection;
+pub mod shared;
 
 pub fn parse_task_pipeline(text: &str) -> Result<PipelineDefinitionV1, ConfigError> {
     let toml: toml::Value = toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))?;

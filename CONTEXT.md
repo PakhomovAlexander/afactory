@@ -8,6 +8,61 @@ defines only the terms.
 
 ## Language
 
+### Task execution
+
+**Task**:
+The durable business request, with immutable revisions, typed inputs and required outputs,
+acceptance obligations, captured authority and bounded resources. Review is one Task kind.
+
+**Execution Plan**:
+The exact compiled Pipeline closure for one Task revision, including expanded child calls,
+effective Workers, input identities, allowed effects, acceptance coverage and resource limits.
+A Pipeline is the reusable public input/output definition from which a plan is compiled.
+
+**Preparation Plan**:
+An engine-installed fixed plan that runs the captured Planner Worker on the same Task ledger.
+It protects future verification reserves and cannot satisfy business acceptance.
+
+**Pipeline Proposal**:
+A Planner's bounded generated Pipeline TOML. Compiler admission and durable selection establish
+its provenance; the proposal itself grants no execution or developer authority.
+
+**Developer Plan Decision**:
+An authenticated approval or rejection of an exact Task revision, Execution Plan and captured
+policy. Generated dependencies require approval before dispatch. A model response, writer label
+or unsigned decision object cannot supply this authority.
+
+**Shared Task Catalog**:
+A Git-pinned set of Pipeline, Worker and Task-kind packages. Export uses typed public inputs as
+parameters, shared defaults and separate contract fixtures; it carries no Task execution approval.
+
+**Catalog Contract Fixture**:
+An exact expectation for public interfaces, applicability, coverage and bounds. Passing it checks
+package compatibility; independent Task acceptance still requires execution.
+
+**Document**:
+A rendered data artifact bound to an exact structured draft and captured sources. Document
+acceptance requires current source/content checks and an independent evaluation; it carries no
+code Snapshot identity. Captured source text supplies requirements and evidence, never execution
+authority.
+
+**Implementation acceptance**:
+The conjunction of independent verification against exact Task Requirements and the configured
+Review or repair guarantee on the final Snapshot. Passing Review cannot cover a missing or
+negative requirements verdict; every verifier retains the requirements it consumed.
+
+**Task Review Continuation**:
+Exact independently verified repair evidence projected into the next admitted discovery Round.
+It retains the original Round and claim identities, grants no complete-Review coverage and does
+not create legacy Resolution authority. Later discovery can reopen a previously fixed claim.
+
+**Captured Issue Source**:
+An exact read-only observation of ticket fields, with raw source, per-field value and normalized
+text identities. A source revision label alone is not immutable identity. It supplies Task
+requirements and never execution authority; resume reads captured input without fetching again.
+An explicit source refresh creates a new Task revision when selected fields change, invalidates
+its affected plan approval and retains the original execution allowance and all prior spend.
+
 ### What is reviewed
 
 **Snapshot**:

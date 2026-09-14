@@ -163,6 +163,28 @@ fn publish_source_tree(
     })
 }
 
+/// Follow only captured same-origin Snapshot ancestry; never recapture a live worktree.
+pub fn descends_from(cas: &Cas, child: &str, ancestor: &str) -> Result<bool, String> {
+    let (root, _) = read_snapshot(cas, ancestor)?;
+    let mut current = child.to_owned();
+    let mut seen = std::collections::BTreeSet::new();
+    for _ in 0..64 {
+        if !seen.insert(current.clone()) {
+            return Err("Cyclic Task Snapshot ancestry".into());
+        }
+        let (snapshot, _) = read_snapshot(cas, &current)?;
+        if snapshot.origin_id != root.origin_id {
+            return Err("Task Snapshot ancestry changed origin".into());
+        }
+        match snapshot.parent_snapshot_id {
+            Some(parent) if parent == ancestor => return Ok(true),
+            Some(parent) => current = parent,
+            None => return Ok(false),
+        }
+    }
+    Err("Task Snapshot ancestry exceeds graph bound".into())
+}
+
 /// Seal one candidate against its captured parent in a single trusted operation. Both trees
 /// are freshly verified; publishing their derived metadata does not reread those same trees.
 /// No verified state escapes this call or authorizes a later operation without fresh reads.

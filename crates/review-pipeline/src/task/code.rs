@@ -297,6 +297,7 @@ impl CodeTaskDomain {
         input: &TaskInvocationV1,
         attempt: &PreparedTaskAttempt,
         names: &BTreeSet<String>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> Result<ArtifactInputV1, String> {
         let source = input.inputs.get("source").ok_or("Check needs source")?;
         let (snapshot_id, _, manifest) = source_snapshot(cas, source)?;
@@ -321,6 +322,7 @@ impl CodeTaskDomain {
                 .check_process_wall_ms
                 .map_or(remaining, |limit| limit.min(remaining));
             let runner = CheckRunner::new(cas, sandbox.root())
+                .with_cancellation(cancellation)
                 .with_timeout(Duration::from_millis(remaining))
                 .with_env("HOME", runtime.path().display().to_string())
                 .with_env(
@@ -577,7 +579,7 @@ impl CodeTaskDomain {
         Ok(result)
     }
 
-    fn assess(
+    pub(super) fn assess(
         &self,
         cas: &Cas,
         task: &TaskRevisionV1,
@@ -586,9 +588,24 @@ impl CodeTaskDomain {
         let mut missing = BTreeSet::new();
         let mut failed = false;
         for (name, obligation) in &task.acceptance {
+            let address = self
+                .graph
+                .coverage
+                .get(name)
+                .ok_or("Code Task lacks named acceptance coverage")?;
+            let origins = self.graph.evidence_origins(address)?;
+            let mut found = false;
             let mut passed = false;
             for id in &result.evidence {
                 let artifact = envelope(cas, id)?;
+                if !matches!(&artifact.producer, review_core::Producer::KernelOperation {node_id:Some(node),..} if origins.iter().any(|a| &a.node == node))
+                {
+                    continue;
+                }
+                if found {
+                    return Err("Ambiguous named code acceptance evidence".into());
+                }
+                found = true;
                 if artifact.artifact_type != obligation.evidence_type {
                     continue;
                 }
@@ -703,6 +720,21 @@ impl CodeTaskDomain {
             .chain(receipt.evaluation_id.iter().map(|id| (id, true)))
         {
             let evidence = envelope(cas, id)?;
+            if evaluator {
+                let requirements = task
+                    .inputs
+                    .get("requirements")
+                    .ok_or("Evaluation lacks the exact Task Requirements")?;
+                if requirements.artifact_type != "af/Requirements@1"
+                    || requirements.artifact_ids.is_empty()
+                    || requirements
+                        .artifact_ids
+                        .iter()
+                        .any(|id| !evidence.input_artifacts.contains(id))
+                {
+                    return Err("Evaluation did not retain the exact Task Requirements".into());
+                }
+            }
             let upstream = match &evidence.producer {
                 review_core::Producer::Attempt {
                     run_id: recorded,
@@ -782,6 +814,25 @@ impl TaskOperatorHost for CodeTaskDomain {
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput {
+        self.execute_controlled(cas, input, attempt, None, None)
+    }
+    fn execute_controlled(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> TaskWorkOutput {
+        if let Err(error) = super::control::check(cancellation) {
+            return super::control::refused(error);
+        }
+        if broker.is_some() {
+            return super::control::refused(
+                "Pure domain operation does not consume Broker Handles",
+            );
+        }
+
         let outputs = (|| match self.operator(input)? {
             TaskOperatorV1::Seal {} => Ok(BTreeMap::from([(
                 "snapshot".into(),
@@ -794,12 +845,15 @@ impl TaskOperatorHost for CodeTaskDomain {
                     input,
                     attempt.ok_or("Check has no started Attempt")?,
                     checks,
+                    cancellation,
                 )?,
             )])),
             TaskOperatorV1::Accept {} => self.accept(cas, input),
             _ => Err("Code operator requires its captured Worker or domain adapter".into()),
         })();
         TaskWorkOutput {
+            usage_observation: None,
+            usage: None,
             outputs,
             charged_tokens: Some(0),
             raw_artifact_ids: vec![],

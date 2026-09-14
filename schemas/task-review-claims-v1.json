@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-review-claims:1",
+  "title": "task-review-claims@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "round_report_id",
+    "snapshot_id",
+    "claims"
+  ],
+  "properties": {
+    "round_report_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "claims": {
+      "type": "object",
+      "minProperties": 0,
+      "maxProperties": 4096,
+      "propertyNames": {
+        "type": "string",
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "view_id",
+          "title",
+          "body",
+          "remedy",
+          "file"
+        ],
+        "properties": {
+          "view_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "title": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "remedy": {
+            "type": "string"
+          },
+          "file": {
+            "type": "string"
+          },
+          "line": {
+            "type": "integer"
+          }
+        }
+      }
+    }
+  }
+}

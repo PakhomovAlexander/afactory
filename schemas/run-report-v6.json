@@ -1,0 +1,234 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:run-report:6",
+  "title": "RunReport@6 payload",
+  "description": "Task-backed Review conclusion with exact cumulative accounting and captured Gate execution facts.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "outcomes",
+    "blocked_gates",
+    "verdict",
+    "spent_tokens",
+    "task_accounting",
+    "execution"
+  ],
+  "properties": {
+    "outcomes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "node",
+          "outcome"
+        ],
+        "properties": {
+          "node": {
+            "type": "string",
+            "minLength": 1
+          },
+          "outcome": {
+            "$ref": "urn:review-kernel:schema:run-report:5#/$defs/outcome"
+          }
+        }
+      }
+    },
+    "blocked_gates": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "verdict": {
+      "$ref": "urn:review-kernel:schema:run-report:5#/$defs/verdict"
+    },
+    "spent_tokens": {
+      "$ref": "urn:af:schema:task-review-accounting:1#/$defs/decimalU128"
+    },
+    "task_accounting": {
+      "$ref": "urn:af:schema:task-review-accounting:1"
+    },
+    "execution": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "unbound"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "execution_bindings"
+          ],
+          "properties": {
+            "kind": {
+              "const": "bound"
+            },
+            "execution_bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "urn:review-kernel:schema:run-report:5#/$defs/execution_binding"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "execution_bindings",
+            "cache_snapshots",
+            "cache_failures"
+          ],
+          "properties": {
+            "kind": {
+              "const": "cached"
+            },
+            "execution_bindings": {
+              "type": "array",
+              "items": {
+                "$ref": "urn:review-kernel:schema:run-report:5#/$defs/execution_binding"
+              }
+            },
+            "cache_snapshots": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "node",
+                  "kind",
+                  "source_digest",
+                  "bytes",
+                  "files",
+                  "materialization"
+                ],
+                "properties": {
+                  "node": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "const": "cargo"
+                  },
+                  "source_digest": {
+                    "$ref": "urn:review-kernel:schema:run-report:5#/$defs/artifact_id"
+                  },
+                  "bytes": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 9007199254740991
+                  },
+                  "files": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 9007199254740991
+                  },
+                  "materialization": {
+                    "enum": [
+                      "reflink",
+                      "copy"
+                    ]
+                  }
+                }
+              }
+            },
+            "cache_failures": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "node",
+                  "kind",
+                  "reason"
+                ],
+                "properties": {
+                  "node": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "kind": {
+                    "const": "cargo"
+                  },
+                  "reason": {
+                    "enum": [
+                      "gate_setup_failed",
+                      "policy_unavailable",
+                      "source_unavailable",
+                      "unsafe_content",
+                      "limit_exceeded",
+                      "copy_limit_exceeded",
+                      "concurrent_change",
+                      "materialization_failed"
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  "if": {
+    "properties": {
+      "verdict": {
+        "properties": {
+          "kind": {
+            "const": "incomplete"
+          }
+        }
+      }
+    }
+  },
+  "else": {
+    "properties": {
+      "execution": {
+        "properties": {
+          "execution_bindings": {
+            "minItems": 1
+          }
+        },
+        "if": {
+          "properties": {
+            "kind": {
+              "const": "cached"
+            }
+          }
+        },
+        "then": {
+          "anyOf": [
+            {
+              "properties": {
+                "cache_snapshots": {
+                  "minItems": 1
+                }
+              }
+            },
+            {
+              "properties": {
+                "cache_failures": {
+                  "minItems": 1
+                }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -223,6 +223,13 @@ pub struct ReviewerRunnerSettings {
 pub fn reviewer_runner_settings(text: &str) -> Result<ReviewerRunnerSettings, LockError> {
     let manifest: PackageManifest =
         toml::from_str(text).map_err(|error| LockError::Parse(error.to_string()))?;
+    reviewer_runner_settings_from_manifest(&manifest)
+}
+
+/// Inspect an already captured typed runner without serializing and reparsing TOML.
+pub fn reviewer_runner_settings_from_manifest(
+    manifest: &PackageManifest,
+) -> Result<ReviewerRunnerSettings, LockError> {
     let basename = Path::new(&manifest.runner.program)
         .file_name()
         .and_then(|name| name.to_str())

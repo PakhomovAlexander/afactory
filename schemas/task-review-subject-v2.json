@@ -31,6 +31,9 @@
     },
     "change_scope": {
       "$ref": "#/$defs/scope"
+    },
+    "continuation_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
     }
   },
   "allOf": [
@@ -56,6 +59,20 @@
           "required": [
             "change_scope"
           ]
+        }
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "continuation_id"
+        ]
+      },
+      "then": {
+        "properties": {
+          "round": {
+            "minimum": 2
+          }
         }
       }
     }

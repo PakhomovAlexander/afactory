@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:document-context:1",
+  "title": "document-context@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invocation",
+    "feedback_ids"
+  ],
+  "properties": {
+    "invocation": {
+      "$ref": "urn:af:schema:task-invocation:1"
+    },
+    "feedback_ids": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      }
+    }
+  },
+  "$comment": "Existing af/DocumentContext@1 payload for common document built-ins. It has no copied policy or rendered Worker request. Feedback bounds come from common Prepared/Reserved admission; installed document validation and the captured graph rederive exact invocation and envelope bytes."
+}

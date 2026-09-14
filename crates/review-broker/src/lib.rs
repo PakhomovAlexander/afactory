@@ -13,7 +13,7 @@ use base64::Engine;
 use base64::engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD};
 use review_core::{
     BrokerFailureReasonV1, BrokerLeaseV1, BrokerOperationOutcomeV1, BrokerOperationPolicyV1,
-    BrokerOperationReceiptV1,
+    BrokerOperationReceiptV1, BrokerOperationReceiptV2,
 };
 use sha2::{Digest, Sha256};
 
@@ -144,9 +144,87 @@ pub trait ReceiptSink: Send + Sync {
     fn record(&self, receipt: &BrokerOperationReceiptV1) -> Result<(), ReceiptError>;
 }
 
-pub struct BrokerResponse {
+pub struct BrokerResponse<R = BrokerOperationReceiptV1> {
     pub body: Vec<u8>,
-    pub receipt: BrokerOperationReceiptV1,
+    pub receipt: R,
+}
+
+/// The common Task owner persists full-width connector observations before releasing a body.
+pub trait ExactReceiptSink: Send + Sync {
+    fn record(&self, receipt: &BrokerOperationReceiptV2) -> Result<(), ReceiptError>;
+}
+
+enum ReceiptRecorder<'a> {
+    Legacy(&'a dyn ReceiptSink),
+    Exact(&'a dyn ExactReceiptSink),
+}
+
+impl ReceiptRecorder<'_> {
+    fn record(&self, receipt: &BrokerOperationReceiptV1) -> Result<(), ReceiptError> {
+        match self {
+            Self::Legacy(sink) => sink.record(receipt),
+            Self::Exact(sink) => sink.record(&receipt.clone().into()),
+        }
+    }
+}
+
+/// Opaque Worker capability with the same operations and exact per-operation receipts.
+pub trait ExactBrokerClient {
+    fn handle(&self) -> &BrokerHandle;
+    fn call(
+        &self,
+        operation: &str,
+        request: &[u8],
+        reserved_usage: u64,
+    ) -> Result<BrokerResponse<BrokerOperationReceiptV2>, BrokerError>;
+}
+
+/// Common Task transport; shares all revocation, containment and ordering mechanics with Broker.
+pub struct ExactBroker<'a>(Broker<'a>);
+
+impl<'a> ExactBroker<'a> {
+    pub fn issue(
+        lease: BrokerLeaseV1,
+        policies: Vec<BrokerOperationPolicyV1>,
+        credential: Credential,
+        authority: &'a dyn LeaseAuthority,
+        connector: &'a dyn Connector,
+        receipts: &'a dyn ExactReceiptSink,
+    ) -> Result<Self, BrokerError> {
+        Broker::issue_inner(
+            lease,
+            policies,
+            credential,
+            authority,
+            connector,
+            ReceiptRecorder::Exact(receipts),
+        )
+        .map(Self)
+    }
+
+    pub fn revoke(&self) {
+        self.0.revoke();
+    }
+    pub fn is_revoked(&self) -> bool {
+        self.0.is_revoked()
+    }
+    pub fn charged_usage(&self) -> u128 {
+        self.0.charged_usage_exact()
+    }
+}
+
+impl ExactBrokerClient for ExactBroker<'_> {
+    fn handle(&self) -> &BrokerHandle {
+        &self.0.handle
+    }
+    fn call(
+        &self,
+        operation: &str,
+        request: &[u8],
+        reserved_usage: u64,
+    ) -> Result<BrokerResponse<BrokerOperationReceiptV2>, BrokerError> {
+        self.0.call_exact(operation, request, reserved_usage)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -200,7 +278,7 @@ struct OperationState {
     calls: u32,
     in_flight_usage: u64,
     charged_usage: u64,
-    observed_usage: u64,
+    observed_usage: u128,
 }
 
 struct State {
@@ -223,7 +301,7 @@ pub struct Broker<'a> {
     credential: Credential,
     authority: &'a dyn LeaseAuthority,
     connector: &'a dyn Connector,
-    receipts: &'a dyn ReceiptSink,
+    receipts: ReceiptRecorder<'a>,
     /// Completion receipts are globally ordinal, so authorized calls complete in that same
     /// order. Replay is therefore independent of connector timing.
     call_gate: Mutex<()>,
@@ -238,6 +316,24 @@ impl<'a> Broker<'a> {
         authority: &'a dyn LeaseAuthority,
         connector: &'a dyn Connector,
         receipts: &'a dyn ReceiptSink,
+    ) -> Result<Self, BrokerError> {
+        Self::issue_inner(
+            lease,
+            policies,
+            credential,
+            authority,
+            connector,
+            ReceiptRecorder::Legacy(receipts),
+        )
+    }
+
+    fn issue_inner(
+        lease: BrokerLeaseV1,
+        policies: Vec<BrokerOperationPolicyV1>,
+        credential: Credential,
+        authority: &'a dyn LeaseAuthority,
+        connector: &'a dyn Connector,
+        receipts: ReceiptRecorder<'a>,
     ) -> Result<Self, BrokerError> {
         lease
             .validate()
@@ -295,13 +391,18 @@ impl<'a> Broker<'a> {
 
     /// Actual normalized connector usage observed by this Attempt, including post-call failures.
     pub fn charged_usage(&self) -> u64 {
+        // Historical API retains its bounded numeric view. Common Tasks use ExactBroker.
+        self.charged_usage_exact().min(u128::from(u64::MAX)) as u64
+    }
+
+    fn charged_usage_exact(&self) -> u128 {
         self.state
             .lock()
             .expect("broker state")
             .operations
             .values()
             .map(|operation| operation.observed_usage)
-            .fold(0, u64::saturating_add)
+            .sum()
     }
 
     fn next_ordinal(&self) -> Result<u32, BrokerError> {
@@ -343,13 +444,16 @@ impl<'a> Broker<'a> {
         &self,
         receipt: BrokerOperationReceiptV1,
         error: BrokerError,
-    ) -> Result<BrokerResponse, BrokerError> {
+    ) -> Result<BrokerResponse<BrokerOperationReceiptV2>, BrokerError> {
         self.persist(&receipt)?;
         Err(error)
     }
 
     fn persist(&self, receipt: &BrokerOperationReceiptV1) -> Result<(), BrokerError> {
-        if receipt.validate().is_err() {
+        if BrokerOperationReceiptV2::from(receipt.clone())
+            .validate()
+            .is_err()
+        {
             self.revoke_state();
             return Err(BrokerError::ReceiptFailed);
         }
@@ -359,7 +463,11 @@ impl<'a> Broker<'a> {
                 let mut revoked = receipt.clone();
                 revoked.outcome = BrokerOperationOutcomeV1::Revoked;
                 revoked.failure_reason = Some(BrokerFailureReasonV1::AuthorityRevoked);
-                if revoked.validate().is_err() || self.receipts.record(&revoked).is_err() {
+                if BrokerOperationReceiptV2::from(revoked.clone())
+                    .validate()
+                    .is_err()
+                    || self.receipts.record(&revoked).is_err()
+                {
                     self.revoke_state();
                     return Err(BrokerError::ReceiptFailed);
                 }
@@ -374,17 +482,13 @@ impl<'a> Broker<'a> {
     }
 }
 
-impl BrokerClient for Broker<'_> {
-    fn handle(&self) -> &BrokerHandle {
-        &self.handle
-    }
-
-    fn call(
+impl Broker<'_> {
+    fn call_exact(
         &self,
         operation: &str,
         request: &[u8],
         reserved_usage: u64,
-    ) -> Result<BrokerResponse, BrokerError> {
+    ) -> Result<BrokerResponse<BrokerOperationReceiptV2>, BrokerError> {
         let policy = self
             .policies
             .get(operation)
@@ -479,7 +583,11 @@ impl BrokerClient for Broker<'_> {
         let (response, charged_usage, connector_failed) = match invoked {
             Ok(Ok(reply)) => {
                 let (response, charged_usage) = reply.into_parts();
-                (Some(response), charged_usage.min(JSON_SAFE_INTEGER), false)
+                let charge = match self.receipts {
+                    ReceiptRecorder::Legacy(_) => charged_usage.min(JSON_SAFE_INTEGER),
+                    ReceiptRecorder::Exact(_) => charged_usage,
+                };
+                (Some(response), charge, false)
             }
             Ok(Err(_)) | Err(_) => (None, reserved_usage, true),
         };
@@ -493,7 +601,8 @@ impl BrokerClient for Broker<'_> {
             operation.charged_usage = operation
                 .charged_usage
                 .saturating_add(charged_usage.min(reserved_usage));
-            operation.observed_usage = operation.observed_usage.saturating_add(charged_usage);
+            // One handle has at most u32::MAX globally ordered calls, each charging u64.
+            operation.observed_usage += u128::from(charged_usage);
         }
 
         if connector_failed {
@@ -596,7 +705,28 @@ impl BrokerClient for Broker<'_> {
         self.persist(&receipt)?;
         Ok(BrokerResponse {
             body: response,
-            receipt,
+            receipt: receipt.into(),
+        })
+    }
+}
+
+impl BrokerClient for Broker<'_> {
+    fn handle(&self) -> &BrokerHandle {
+        &self.handle
+    }
+    fn call(
+        &self,
+        operation: &str,
+        request: &[u8],
+        reserved_usage: u64,
+    ) -> Result<BrokerResponse, BrokerError> {
+        let response = self.call_exact(operation, request, reserved_usage)?;
+        Ok(BrokerResponse {
+            body: response.body,
+            receipt: response
+                .receipt
+                .try_into_legacy()
+                .map_err(|_| BrokerError::ReceiptFailed)?,
         })
     }
 }

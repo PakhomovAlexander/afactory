@@ -24,6 +24,9 @@ use super::code::CodeTaskDomain;
 use super::host::TaskDomain;
 use super::source::{invocation_producer, source_input};
 use super::{TaskOperatorHost, TaskWorkOutput, envelope};
+mod continuation;
+mod implementation;
+mod repair;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +38,8 @@ pub struct ReviewTaskPolicy {
     pub gate: Severity,
     pub clean_rounds: u32,
     pub max_rounds: u32,
+    #[serde(default)]
+    pub allow_targeted_repairs: bool,
 }
 impl ReviewTaskPolicy {
     pub fn generation_two(&self) -> bool {
@@ -140,6 +145,14 @@ pub fn review_signatures(
                 port(SOURCE_TREE_V1, PortAffinityV1::Unbound {}, true),
             ),
             ("history".into(), history.clone()),
+            (
+                "continuation".into(),
+                port(
+                    review_core::task::repair::TASK_REVIEW_CONTINUATION_V1,
+                    same(),
+                    true,
+                ),
+            ),
         ]),
         bind_outputs,
         BTreeMap::new(),
@@ -165,6 +178,14 @@ pub fn review_signatures(
         BTreeMap::from([
             ("result".into(), port(TASK_REVIEW_ROUND_V1, same(), false)),
             (
+                "findings".into(),
+                port(
+                    review_core::task::repair::TASK_REVIEW_CLAIMS_V1,
+                    same(),
+                    false,
+                ),
+            ),
+            (
                 "history".into(),
                 port(REVIEW_HISTORY_V1, PortAffinityV1::Unbound {}, false),
             ),
@@ -173,13 +194,31 @@ pub fn review_signatures(
         BTreeMap::from([("result".into(), retained)]),
         Some("result".into()),
     );
-    Ok(BTreeMap::from([
+    let mut installed = BTreeMap::from([
         ("operator/review-bind".into(), bind),
         ("operator/review-reduce".into(), reduce),
-    ]))
+        (
+            "operator/review-accept".into(),
+            implementation::signature(policy_id, policy.allow_targeted_repairs),
+        ),
+    ]);
+    installed.extend(repair::signatures(policy_id, policy.allow_targeted_repairs));
+    installed.insert("operator/review-continue".into(), continuation::signature());
+    Ok(installed)
+}
+
+#[derive(Default)]
+struct ReviewMemo {
+    rounds: BTreeMap<String, (Ledger, TaskReviewRoundV1)>,
+    repairs: BTreeMap<String, review_core::task::repair::TaskRepairContextV1>,
 }
 
 pub struct ReviewTaskDomain {
+    /// Serializes only synchronous domain reductions, never Worker execution.
+    operation: std::sync::Mutex<()>,
+    /// Bounded scratch reused only within the current locked operation.
+    memo: std::sync::Mutex<ReviewMemo>,
+    review_task: bool,
     policy_id: String,
     policy: ReviewTaskPolicy,
     graph: CompiledTask,
@@ -199,7 +238,12 @@ impl ReviewTaskDomain {
             } = &node.operator
                 && matches!(
                     operator,
-                    TaskOperatorV1::ReviewBind {} | TaskOperatorV1::ReviewReduce {}
+                    TaskOperatorV1::ReviewBind {}
+                        | TaskOperatorV1::ReviewReduce {}
+                        | TaskOperatorV1::ReviewAccept {}
+                        | TaskOperatorV1::AttestFixes {}
+                        | TaskOperatorV1::RepairAccept {}
+                        | TaskOperatorV1::ReviewContinue {}
                 )
                 && installed
                     .get(signature)
@@ -272,13 +316,65 @@ impl ReviewTaskDomain {
                 }
             }
         }
+        for node in graph.nodes.values() {
+            if matches!(
+                node.operator,
+                CompiledOperator::Primitive {
+                    operator: TaskOperatorV1::RepairAccept {} | TaskOperatorV1::ReviewContinue {},
+                    ..
+                }
+            ) {
+                let address = node
+                    .inputs
+                    .get("verification")
+                    .ok_or("Repair acceptance must bind a reserved fix verifier")?;
+                let verifier = graph
+                    .nodes
+                    .get(&address.node)
+                    .ok_or("Unknown repair verifier")?;
+                if !matches!(
+                    verifier.operator,
+                    CompiledOperator::Primitive {
+                        operator: TaskOperatorV1::FixVerify { .. },
+                        ..
+                    }
+                ) || ["source", "repair", "checks"]
+                    .iter()
+                    .any(|name| verifier.inputs.get(*name) != node.inputs.get(*name))
+                {
+                    return Err(
+                        "Repair acceptance requires a reserved verifier with exact current inputs"
+                            .into(),
+                    );
+                }
+            }
+        }
         let code = CodeTaskDomain::captured(cas, &policy.check_policy_id, graph.clone())?;
         Ok(Self {
+            operation: std::sync::Mutex::new(()),
+            memo: std::sync::Mutex::new(ReviewMemo::default()),
+            review_task: true,
             policy_id: policy_id.into(),
             policy,
             graph,
             code,
         })
+    }
+    /// Chosen by the captured Task-kind profile, never by a Worker response or display name.
+    pub fn with_review_task(mut self, review: bool) -> Self {
+        self.review_task = review;
+        self
+    }
+
+    // Every external domain boundary starts fresh. Keeping the operation guard alive
+    // prevents another concurrent callback from sharing or clearing this operation's memo.
+    fn begin_operation(&self) -> Result<std::sync::MutexGuard<'_, ()>, String> {
+        let guard = self
+            .operation
+            .lock()
+            .map_err(|_| "Review operation poisoned")?;
+        *self.memo.lock().map_err(|_| "Review memo poisoned")? = ReviewMemo::default();
+        Ok(guard)
     }
 
     fn operator(&self, input: &TaskInvocationV1) -> Result<&TaskOperatorV1, String> {
@@ -422,9 +518,16 @@ impl ReviewTaskDomain {
             change_set,
             snapshot_id: snapshot.clone(),
             prior_history_id: history_id,
+            continuation_id: input
+                .inputs
+                .get("continuation")
+                .map(|p| p.artifact_ids[0].clone()),
             round,
         };
         bound.validate()?;
+        if let Some(id) = &bound.continuation_id {
+            self.restore_continuation(cas, id, &bound, input)?;
+        }
         Ok(bound)
     }
 
@@ -470,6 +573,9 @@ impl ReviewTaskDomain {
         {
             return Err("Review context changed its captured Subject or Change Set bytes".into());
         }
+        if let Some(id) = &subject.continuation_id {
+            self.restore_continuation(cas, id, &subject, input)?;
+        }
         Ok(subject)
     }
 
@@ -502,6 +608,20 @@ impl ReviewTaskDomain {
                     return Err("Review history changed its original closed Round and views".into());
                 }
                 ledger
+                    .bind_task_subject(cas, &subject.subject_id, prior.round)
+                    .map_err(|e| e.to_string())?;
+                if let Some(id) = &subject.continuation_id {
+                    let continuation = self.restore_continuation(cas, id, subject, input)?;
+                    // A failed or unavailable current check cannot promote any positive claim.
+                    if self.code.review_checks(cas, &continuation.invocation)?
+                        == ReceiptOutcomeV1::Passed
+                    {
+                        ledger
+                            .project_task_fixes(cas, &continuation.assessment)
+                            .map_err(|e| e.to_string())?;
+                    }
+                }
+                ledger
                     .bind_task_subject(cas, &subject.subject_id, subject.round)
                     .map_err(|e| e.to_string())?;
                 Ok(ledger)
@@ -518,6 +638,16 @@ impl ReviewTaskDomain {
     ) -> Result<(Ledger, TaskReviewRoundV1), String> {
         if depth >= 16 {
             return Err("Review history exceeds bounded Round depth".into());
+        }
+        if let Some(value) = self
+            .memo
+            .lock()
+            .map_err(|_| "Review memo poisoned")?
+            .rounds
+            .get(id)
+            .cloned()
+        {
+            return Ok(value);
         }
         let artifact = envelope(cas, id)?;
         let receipt: TaskReviewRoundV1 =
@@ -538,10 +668,15 @@ impl ReviewTaskDomain {
         if expected != receipt {
             return Err("Review Round differs from its exact canonical reduction".into());
         }
-        Ok((
+        let value = (
             ledger.ok_or("Incomplete Review has no authoritative Ledger")?,
             receipt,
-        ))
+        );
+        let mut memo = self.memo.lock().map_err(|_| "Review memo poisoned")?;
+        if memo.rounds.len() < 64 {
+            memo.rounds.insert(id.into(), value.clone());
+        }
+        Ok(value)
     }
 
     fn reduce(
@@ -598,6 +733,19 @@ impl ReviewTaskDomain {
                 return Err(
                     "Review result changed its Task, Subject, Snapshot or declared Worker".into(),
                 );
+            }
+            if self
+                .graph
+                .inputs
+                .get("requirements")
+                .is_some_and(|requirements| {
+                    requirements
+                        .artifact_ids
+                        .iter()
+                        .any(|id| !artifact.input_artifacts.contains(id))
+                })
+            {
+                return Err("Review result lost the exact Task Requirements".into());
             }
             selected.insert(name.clone(), id.clone());
             results.push((
@@ -742,7 +890,7 @@ impl ReviewTaskDomain {
         cas: &Cas,
         input: &TaskInvocationV1,
     ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
-        let (receipt, _) = self.reduce(cas, input, 0)?;
+        let (receipt, ledger) = self.reduce(cas, input, 0)?;
         let refs = receipt
             .finding_set_id
             .iter()
@@ -756,6 +904,43 @@ impl ReviewTaskDomain {
             Some(&receipt.snapshot_id),
             &receipt,
             refs,
+        )?;
+        let mut claims = BTreeMap::new();
+        if let Some(ledger) = ledger {
+            for finding in ledger
+                .finding_views()
+                .into_iter()
+                .filter(|f| f.status.is_active())
+            {
+                let view_id = cas
+                    .put_json(&serde_json::to_value(&finding).map_err(|e| e.to_string())?)
+                    .map_err(|e| e.to_string())?;
+                claims.insert(
+                    finding.key,
+                    review_core::task::repair::TaskReviewClaimV1 {
+                        view_id,
+                        file: finding.file,
+                        line: finding.line,
+                        title: finding.title,
+                        body: finding.body,
+                        remedy: finding.fix.unwrap_or_default(),
+                    },
+                );
+            }
+        }
+        let claim_context = review_core::task::repair::TaskReviewClaimsV1 {
+            round_report_id: result.artifact_ids[0].clone(),
+            snapshot_id: receipt.snapshot_id.clone(),
+            claims,
+        };
+        claim_context.validate()?;
+        let findings = self.put(
+            cas,
+            input,
+            review_core::task::repair::TASK_REVIEW_CLAIMS_V1,
+            Some(&receipt.snapshot_id),
+            &claim_context,
+            result.artifact_ids.clone(),
         )?;
         let (_, prior): (_, ReviewHistoryV1) =
             self.value(cas, input, "history", REVIEW_HISTORY_V1)?;
@@ -783,6 +968,7 @@ impl ReviewTaskDomain {
         Ok(BTreeMap::from([
             ("result".into(), result),
             ("history".into(), history),
+            ("findings".into(), findings),
         ]))
     }
 
@@ -792,6 +978,7 @@ impl ReviewTaskDomain {
         state: &TaskProjection,
         report: &RunReport,
     ) -> Result<TaskResultV1, String> {
+        let _operation = self.begin_operation()?;
         let execution = state
             .execution
             .as_ref()
@@ -848,8 +1035,8 @@ impl ReviewTaskDomain {
         task: &TaskRevisionV1,
         result: &mut TaskResultV1,
     ) -> Result<(), String> {
-        if task.kind != "review" {
-            return self.code.validate_result(cas, task, result);
+        if !self.review_task {
+            return self.assess_implementation(cas, task, result);
         }
         let mut conclusions = Vec::new();
         let mut missing = BTreeSet::new();
@@ -961,12 +1148,58 @@ impl TaskOperatorHost for ReviewTaskDomain {
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput {
+        self.execute_controlled(cas, input, attempt, None, None)
+    }
+    fn execute_controlled(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> TaskWorkOutput {
+        if let Err(error) = super::control::check(cancellation) {
+            return super::control::refused(error);
+        }
+        if broker.is_some() {
+            return super::control::refused(
+                "Pure domain operation does not consume Broker Handles",
+            );
+        }
+
+        if !matches!(
+            self.operator(input),
+            Ok(TaskOperatorV1::ReviewBind {}
+                | TaskOperatorV1::ReviewReduce {}
+                | TaskOperatorV1::ReviewAccept {}
+                | TaskOperatorV1::AttestFixes {}
+                | TaskOperatorV1::RepairAccept {}
+                | TaskOperatorV1::ReviewContinue {})
+        ) {
+            return self
+                .code
+                .execute_controlled(cas, input, attempt, broker, cancellation);
+        }
+        let _operation = match self.begin_operation() {
+            Ok(guard) => guard,
+            Err(error) => return super::control::refused(error),
+        };
         let outputs = match self.operator(input) {
             Ok(TaskOperatorV1::ReviewBind {}) => self.bind_outputs(cas, input),
             Ok(TaskOperatorV1::ReviewReduce {}) => self.reduce_outputs(cas, input),
-            _ => return self.code.execute(cas, input, attempt),
+            Ok(TaskOperatorV1::ReviewAccept {}) => self.accept_implementation(cas, input),
+            Ok(TaskOperatorV1::AttestFixes {}) => self.attest_fixes(cas, input),
+            Ok(TaskOperatorV1::RepairAccept {}) => self.accept_repair(cas, input),
+            Ok(TaskOperatorV1::ReviewContinue {}) => self.continue_review(cas, input),
+            _ => {
+                return self
+                    .code
+                    .execute_controlled(cas, input, attempt, broker, cancellation);
+            }
         };
         TaskWorkOutput {
+            usage_observation: None,
+            usage: None,
             outputs,
             charged_tokens: Some(0),
             raw_artifact_ids: vec![],
@@ -991,6 +1224,10 @@ impl TaskDomain for ReviewTaskDomain {
         feedback: &[String],
         id: &str,
     ) -> Result<(), String> {
+        let _operation = self.begin_operation()?;
+        if matches!(self.operator(input), Ok(TaskOperatorV1::FixVerify { .. })) {
+            return self.validate_fix_context(cas, input);
+        }
         if self.reviewer(input) {
             let subject = self.current_subject(cas, input)?;
             if self.policy.generation_two() {
@@ -1032,9 +1269,14 @@ impl TaskDomain for ReviewTaskDomain {
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
     ) -> Result<(), String> {
+        let _operation = self.begin_operation()?;
         let expected = match self.operator(input)? {
             TaskOperatorV1::ReviewBind {} => Some(self.bind_outputs(cas, input)?),
             TaskOperatorV1::ReviewReduce {} => Some(self.reduce_outputs(cas, input)?),
+            TaskOperatorV1::ReviewAccept {} => Some(self.accept_implementation(cas, input)?),
+            TaskOperatorV1::AttestFixes {} => Some(self.attest_fixes(cas, input)?),
+            TaskOperatorV1::RepairAccept {} => Some(self.accept_repair(cas, input)?),
+            TaskOperatorV1::ReviewContinue {} => Some(self.continue_review(cas, input)?),
             _ => None,
         };
         if let Some(expected) = expected {
@@ -1042,6 +1284,9 @@ impl TaskDomain for ReviewTaskDomain {
                 return Err("Review output differs from its exact domain reduction".into());
             }
             return Ok(());
+        }
+        if matches!(self.operator(input), Ok(TaskOperatorV1::FixVerify { .. })) {
+            return self.validate_fix_output(cas, input, output);
         }
         if self.reviewer(input) {
             let subject = self.current_subject(cas, input)?;
@@ -1075,6 +1320,7 @@ impl TaskDomain for ReviewTaskDomain {
         task: &TaskRevisionV1,
         result: &TaskResultV1,
     ) -> Result<(), String> {
+        let _operation = self.begin_operation()?;
         let mut expected = result.clone();
         self.assess(cas, task, &mut expected)?;
         if &expected != result {

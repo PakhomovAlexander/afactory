@@ -195,6 +195,7 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
         "failed",
         "inconclusive",
         "process_timeout",
+        "named_failure",
         "independent_failed",
         "failed_with_independent",
     ] {
@@ -202,7 +203,7 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
         let cas = Cas::open(dir.path().join("cas")).unwrap();
         let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
         let command: review_core::Command = match case {
-            "passed" | "independent_failed" => serde_json::from_value(json!({"program":"/usr/bin/python3","args":[{"value":"-B","provenance":"literal"},{"value":"-c","provenance":"literal"},{"value":"import pagination; assert pagination.paginate(list(range(7)),2,3) == [2,3,4]","provenance":"literal"}]})).unwrap(),
+            "passed" | "named_failure" | "independent_failed" => serde_json::from_value(json!({"program":"/usr/bin/python3","args":[{"value":"-B","provenance":"literal"},{"value":"-c","provenance":"literal"},{"value":"import pagination; assert pagination.paginate(list(range(7)),2,3) == [2,3,4]","provenance":"literal"}]})).unwrap(),
             "failed" | "failed_with_independent" => review_core::Command::new("/usr/bin/false",vec![]),
             "process_timeout" => review_core::Command::new("/bin/sh",vec![review_core::Arg::literal("-c"),review_core::Arg::literal("sleep 1; exit 0")]),
             _ => review_core::Command::new("/no-such-af-check",vec![]),
@@ -302,7 +303,61 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
         evaluate.worker_input_type = Some("af/EvaluationInput@1".into());
         evaluate.worker_output_type = Some(TASK_EVALUATION_V1.into());
         evaluate.outcome_port = Some("result".into());
+        evaluate.retains = BTreeMap::from([(
+            "result".into(),
+            BTreeSet::from(["requirements".into(), "checks".into()]),
+        )]);
         let mut pipeline = pipeline(&implement, &evaluate);
+        if case == "named_failure" {
+            task.acceptance
+                .insert("second".into(), task.acceptance["verified"].clone());
+            task.required_outputs.insert(
+                "second_verification".into(),
+                task.required_outputs["verification"].clone(),
+            );
+            task.limits.max_attempts = 4;
+            task.limits.verification.attempts = 3;
+            task.limits.verification.wall_ms = 15000;
+            pipeline.max_attempts = 4;
+            let mut slot = pipeline.slots["evaluator"].clone();
+            slot.worker = "fixture/negative".into();
+            pipeline.slots.insert("negative".into(), slot);
+            let mut verifier = pipeline
+                .nodes
+                .iter()
+                .find(|n| n.id == "evaluate")
+                .unwrap()
+                .clone();
+            verifier.id = "evaluate_negative".into();
+            verifier.operator = TaskOperatorV1::Verify {
+                slot: "negative".into(),
+            };
+            pipeline.nodes.push(verifier);
+            let mut accept = pipeline
+                .nodes
+                .iter()
+                .find(|n| n.id == "accept")
+                .unwrap()
+                .clone();
+            accept.id = "accept_negative".into();
+            accept
+                .inputs
+                .insert("evaluation".into(), from("evaluate_negative", "result"));
+            pipeline.nodes.push(accept);
+            let mut port = pipeline.contract.outputs["verification"].clone();
+            port.covers = BTreeSet::from(["second".into()]);
+            pipeline
+                .contract
+                .outputs
+                .insert("second_verification".into(), port);
+            pipeline.outputs.insert(
+                "second_verification".into(),
+                from("accept_negative", "result"),
+            );
+            pipeline
+                .coverage
+                .insert("second".into(), from("accept_negative", "result"));
+        }
         if matches!(case, "independent_failed" | "failed_with_independent") {
             // A separate, declared Worker is outside the successful acceptance chain.
             // Give this new four-Attempt fixture its exact bound; existing cases stay unchanged.
@@ -323,7 +378,10 @@ fn implementation_seals_s1_and_negative_or_unavailable_checks_skip_the_evaluator
             policy_id.clone(),
             policy_id.clone(),
             code_signatures(&policy_id, &policy).unwrap(),
-            BTreeMap::from([("verified".into(), "snapshot".into())]),
+            task.acceptance
+                .keys()
+                .map(|name| (name.clone(), "snapshot".into()))
+                .collect(),
             IndependencePolicyV1::default(),
         )
         .unwrap();
@@ -387,6 +445,26 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
                     ("worker.py".into(), script.as_bytes().to_vec()),
                 ]),
             ));
+        }
+        if case == "named_failure" {
+            let mut files = packages
+                .iter()
+                .find(|(name, _)| name == "fixture/evaluator")
+                .unwrap()
+                .1
+                .clone();
+            let mut worker: TaskWorkerManifest =
+                toml::from_str(std::str::from_utf8(&files["worker.toml"]).unwrap()).unwrap();
+            worker.name = "fixture/negative".into();
+            files.insert(
+                "worker.toml".into(),
+                toml::to_string(&worker).unwrap().into_bytes(),
+            );
+            let script = String::from_utf8(files["worker.py"].clone())
+                .unwrap()
+                .replace("'outcome':'passed'", "'outcome':'failed'");
+            files.insert("worker.py".into(), script.into_bytes());
+            packages.push(("fixture/negative".into(), files));
         }
         if matches!(case, "independent_failed" | "failed_with_independent") {
             let mut files = packages
@@ -473,11 +551,7 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
         let host =
             CommandTaskHost::capture(&cas, &compiler, &task, &plan, graph, &environment, &domain)
                 .unwrap();
-        let authority = CapturedTaskAuthority {
-            compiler: &compiler,
-            domain: &host,
-            developer: &NoTaskDeveloper,
-        };
+        let authority = CapturedTaskAuthority::new(&compiler, &host, &NoTaskDeveloper);
         let lease = store
             .open_task(&cas, &revision, "test-writer", 60_000)
             .unwrap();
@@ -497,7 +571,7 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
             execution.budget.begun_attempts(),
             match case {
                 "passed" => 3,
-                "independent_failed" => 4,
+                "independent_failed" | "named_failure" => 4,
                 "failed_with_independent" => 3,
                 _ => 2,
             },
@@ -505,17 +579,29 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
         );
         assert_eq!(
             execution.outputs.contains_key("root.nodes.evaluate"),
-            matches!(case, "passed" | "independent_failed")
+            matches!(case, "passed" | "named_failure" | "independent_failed")
         );
         let result = domain.result(&cas, &state, &report).unwrap();
         assert_eq!(
             result.acceptance,
             match case {
                 "passed" => TaskAcceptanceV1::Satisfied,
-                "failed" | "failed_with_independent" => TaskAcceptanceV1::Unsatisfied,
+                "failed" | "named_failure" | "failed_with_independent" =>
+                    TaskAcceptanceV1::Unsatisfied,
                 _ => TaskAcceptanceV1::Inconclusive,
             }
         );
+        if case == "named_failure" {
+            assert_eq!(
+                result.missing_obligations,
+                BTreeSet::from(["second".into()])
+            );
+            assert_eq!(
+                result.evidence.len(),
+                2,
+                "The unrelated passing receipt cannot mask the named failed obligation"
+            );
+        }
         if matches!(case, "independent_failed" | "failed_with_independent") {
             assert_eq!(result.execution, TaskExecutionV1::Exhausted);
             if case == "independent_failed" {
@@ -576,6 +662,67 @@ print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'outcome':'
                     domain.validate_result(&cas, &task, &forged).is_err(),
                     "forged {field} accepted"
                 );
+            }
+        }
+        if case == "passed" {
+            // Reconstruct a valid envelope chain with unchanged positive payloads but replace
+            // the exact requirements provenance. Domain validation must reject this proof.
+            for stale in [false, true] {
+                let original_id = result.evidence.iter().next().unwrap();
+                let mut receipt: review_core::ArtifactEnvelope =
+                    serde_json::from_value(cas.get_json(original_id).unwrap()).unwrap();
+                let evaluation_id = receipt.payload["evaluation_id"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned();
+                let mut evaluation: review_core::ArtifactEnvelope =
+                    serde_json::from_value(cas.get_json(&evaluation_id).unwrap()).unwrap();
+                evaluation
+                    .input_artifacts
+                    .retain(|id| !task.inputs["requirements"].artifact_ids.contains(id));
+                if stale {
+                    let other = cas
+                        .put_artifact(
+                            "af/Requirements@1",
+                            producer(),
+                            vec![],
+                            None,
+                            json!({"text":"Another ticket"}),
+                        )
+                        .unwrap()
+                        .0;
+                    evaluation.input_artifacts.push(other);
+                }
+                let forged_evaluation = cas
+                    .put_artifact(
+                        &evaluation.artifact_type,
+                        evaluation.producer,
+                        evaluation.input_artifacts,
+                        evaluation.subject_snapshot_id,
+                        evaluation.payload,
+                    )
+                    .unwrap()
+                    .0;
+                receipt.payload["evaluation_id"] = json!(forged_evaluation);
+                for id in &mut receipt.input_artifacts {
+                    if id == &evaluation_id {
+                        *id = forged_evaluation.clone();
+                    }
+                }
+                let forged_id = cas
+                    .put_artifact(
+                        &receipt.artifact_type,
+                        receipt.producer,
+                        receipt.input_artifacts,
+                        receipt.subject_snapshot_id,
+                        receipt.payload,
+                    )
+                    .unwrap()
+                    .0;
+                let mut forged = result.clone();
+                forged.evidence = BTreeSet::from([forged_id]);
+                let error = domain.validate_result(&cas, &task, &forged).unwrap_err();
+                assert!(error.contains("exact Task Requirements"), "{error}");
             }
         }
         let result_id = cas

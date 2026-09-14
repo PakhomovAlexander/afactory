@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use review_attempt::task_budget::{NodeAllowance, TaskBudget};
+use review_attempt::task_budget::{NodeAllowance, OwnedNodeAllowance, TaskBudget};
 use review_core::task::pipeline::{
     PipelineContractV1, PipelineDefinitionV1, PipelinePortV1, PortAffinityV1, ReceiptOutcomeV1,
     TaskOperatorV1, ValueRefV1, WorkerSlotV1,
@@ -77,16 +77,42 @@ impl Address {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum CompiledOperator {
     RootInputs,
+    /// Installed captured post-Round operation; never constructible by a Pipeline.
+    ReviewIntegrationChecks {
+        sequence_policy_id: String,
+    },
     Select,
     /// Installed host bootstrap, never a Pipeline-supplied operation. All listed slots use
     /// the same captured Provider capability and share this admission Attempt.
     ProviderAdmission {
         bindings: BTreeSet<String>,
     },
+    ProviderAdmissionBrokered {
+        bindings: BTreeSet<String>,
+        probe_policy_id: String,
+    },
+    /// Installed compatibility frontend only. A reusable Pipeline cannot invent canonical
+    /// Review operations or make these declarations through TaskOperatorV1.
+    ReviewDomain {
+        review_node: String,
+        operation: ReviewOperation,
+    },
     Primitive {
         operator: TaskOperatorV1,
         signature: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ReviewOperation {
+    Generation,
+    Gate,
+    Reviewer { slot: String },
+    Gather,
+    Ledger,
+    Slicer,
+    Scatter { slot: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,8 +137,25 @@ pub struct CompiledCall {
     pub pipeline: String,
     pub inputs: BTreeMap<String, Address>,
     pub outputs: BTreeMap<String, Address>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub coverage: BTreeMap<String, Address>,
     pub max_attempts: u32,
     pub max_parallel: u32,
+}
+
+/// Installed, captured authority for bounded data expansion. The owner coordinates without
+/// an Attempt; registered children inherit this one operator, contract and allowance.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OwnedChildTemplateV1 {
+    pub operator: CompiledOperator,
+    pub contract: PipelineContractV1,
+    pub allowance: NodeAllowance,
+    pub max_children: u32,
+    pub source_input: String,
+    pub item_input: String,
+    /// Child port to the exact already admitted parent port.
+    pub inherited_inputs: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,53 +169,146 @@ pub struct CompiledTask {
     pub coverage: BTreeMap<String, Address>,
     pub calls: BTreeMap<String, CompiledCall>,
     pub slots: BTreeMap<String, WorkerSlotV1>,
+    /// Every default whose contract constrained a replacement, including mapped child slots.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub replaced_workers: BTreeMap<String, BTreeSet<String>>,
     pub max_parallel: u32,
     pub allowances: BTreeMap<String, NodeAllowance>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub owned_children: BTreeMap<String, OwnedChildTemplateV1>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "review_core::task::present_option"
+    )]
+    pub review_integration: Option<CompiledReviewIntegrationV1>,
+    /// Aggregate caps for exact nodes or bounded child groups, charged by the common ledger.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub token_scopes: BTreeMap<String, review_attempt::task_budget::TaskTokenScope>,
+}
+
+/// Authenticated probe bytes supplied by the trusted compiler, not a Pipeline declaration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CapturedProviderProbe {
+    pub policy_id: String,
+    pub policy: review_core::task::provider::TaskProviderProbePolicyV1,
 }
 
 impl CompiledTask {
+    /// Review requires a complete predecessor barrier, including optional input producers.
+    /// Ordinary Task operators retain conditional/optional-input recovery semantics.
+    pub fn requires_successful_predecessors(&self, node: &str) -> bool {
+        self.nodes
+            .get(node)
+            .is_some_and(|node| matches!(node.operator, CompiledOperator::ReviewDomain { .. }))
+    }
+
     pub fn require_provider_admission(
         &mut self,
         bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV1>,
         cost: &OperatorAttemptCost,
         limits: &review_core::task::TaskLimitsV1,
     ) -> Result<(), String> {
+        self.install_provider_admission(bindings, cost)?;
+        self.budget(limits.clone())?;
+        Ok(())
+    }
+
+    /// Structural admission expansion, without conflating capacity refusal with an invalid DAG.
+    pub fn install_provider_admission(
+        &mut self,
+        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV1>,
+        cost: &OperatorAttemptCost,
+    ) -> Result<(), String> {
+        self.install_provider_admission_with_probes(bindings, cost, &BTreeMap::new())
+    }
+
+    pub fn install_provider_admission_with_probes(
+        &mut self,
+        bindings: &BTreeMap<String, review_core::task::plan::EffectiveWorkerBindingV1>,
+        cost: &OperatorAttemptCost,
+        probes: &BTreeMap<String, CapturedProviderProbe>,
+    ) -> Result<(), String> {
         use review_core::task::plan::WorkerExecutionV1;
         if cost.tokens == 0 || cost.wall_ms == 0 {
             return Err("Provider admission requires a bounded paid reservation".into());
         }
-        if self
-            .nodes
-            .values()
-            .any(|node| matches!(node.operator, CompiledOperator::ProviderAdmission { .. }))
-        {
+        if self.nodes.values().any(|node| {
+            matches!(
+                node.operator,
+                CompiledOperator::ProviderAdmission { .. }
+                    | CompiledOperator::ProviderAdmissionBrokered { .. }
+            )
+        }) {
             return Err("Provider admission can be compiled only once".into());
         }
-        let mut capabilities: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
-        for (slot, binding) in bindings {
-            if matches!(binding.execution, WorkerExecutionV1::Model { .. }) {
-                let key =
-                    serde_json::to_string(&(&binding.execution, &binding.invocation_policy_id))
-                        .map_err(|e| e.to_string())?;
-                capabilities.entry(key).or_default().insert(slot.clone());
+        let mut policies = BTreeMap::new();
+        for (slot, probe) in probes {
+            probe.policy.validate()?;
+            if policies
+                .insert(&probe.policy_id, &probe.policy)
+                .is_some_and(|old| old != &probe.policy)
+            {
+                return Err(
+                    "One captured Provider probe identity cannot describe different policies"
+                        .into(),
+                );
+            }
+            if !review_core::is_digest(&probe.policy_id)
+                || bindings
+                    .get(slot)
+                    .is_none_or(|binding| binding.execution != probe.policy.execution)
+                || review_core::broker_authority_usage(&probe.policy.operations)? > cost.tokens
+            {
+                return Err("Provider probe must match its exact Model binding and original admission reservation".into());
             }
         }
-        for (index, slots) in capabilities.into_values().enumerate() {
+        let mut capabilities: BTreeMap<String, (BTreeSet<String>, Option<String>)> =
+            BTreeMap::new();
+        for (slot, binding) in bindings {
+            if matches!(binding.execution, WorkerExecutionV1::Model { .. }) {
+                // Preserve the frozen no-probe grouping key and resulting node order.
+                let probe_id = probes.get(slot).map(|probe| probe.policy_id.clone());
+                let key = if let Some(probe_id) = &probe_id {
+                    serde_json::to_string(&(
+                        &binding.execution,
+                        &binding.invocation_policy_id,
+                        probe_id,
+                    ))
+                } else {
+                    serde_json::to_string(&(&binding.execution, &binding.invocation_policy_id))
+                }
+                .map_err(|e| e.to_string())?;
+                capabilities
+                    .entry(key)
+                    .or_insert_with(|| (BTreeSet::new(), probe_id))
+                    .0
+                    .insert(slot.clone());
+            }
+        }
+        for (index, (slots, probe_policy_id)) in capabilities.into_values().enumerate() {
             let name = format!("root.providers.admit{index}");
             if self.nodes.contains_key(&name) || self.nodes.len() >= 64 {
                 return Err("Provider admission exceeds the installed graph bound".into());
             }
             let mut protected = false;
             for (id, node) in &mut self.nodes {
-                if let CompiledOperator::Primitive {
-                    operator:
-                        TaskOperatorV1::Worker { slot }
-                        | TaskOperatorV1::Verify { slot }
-                        | TaskOperatorV1::FixVerify { slot },
-                    ..
-                } = &node.operator
-                    && slots.contains(slot)
-                {
+                let slot = match &node.operator {
+                    CompiledOperator::Primitive {
+                        operator:
+                            TaskOperatorV1::Worker { slot }
+                            | TaskOperatorV1::Verify { slot }
+                            | TaskOperatorV1::FixVerify { slot },
+                        ..
+                    }
+                    | CompiledOperator::ReviewDomain {
+                        operation:
+                            ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot },
+                        ..
+                    } => Some(slot),
+                    _ => None,
+                };
+                if slot.is_some_and(|slot| slots.contains(slot)) {
                     node.conditions.push(CompiledCondition {
                         source: Address {
                             node: name.clone(),
@@ -186,16 +322,29 @@ impl CompiledTask {
                         .is_some_and(|a| a.verification_attempts > 0);
                 }
             }
+            let (operator, artifact_type) = match probe_policy_id {
+                Some(probe_policy_id) => (
+                    CompiledOperator::ProviderAdmissionBrokered {
+                        bindings: slots,
+                        probe_policy_id,
+                    },
+                    "af/TaskProviderAdmission@2",
+                ),
+                None => (
+                    CompiledOperator::ProviderAdmission { bindings: slots },
+                    "af/TaskProviderAdmission@1",
+                ),
+            };
             self.nodes.insert(
                 name.clone(),
                 CompiledNode {
-                    operator: CompiledOperator::ProviderAdmission { bindings: slots },
+                    operator,
                     contract: PipelineContractV1 {
                         inputs: BTreeMap::new(),
                         outputs: BTreeMap::from([(
                             "result".into(),
                             PipelinePortV1 {
-                                artifact_type: "af/TaskProviderAdmission@1".into(),
+                                artifact_type: artifact_type.into(),
                                 cardinality: review_core::PortCardinality::One,
                                 optional: false,
                                 affinity: PortAffinityV1::Unbound {},
@@ -220,17 +369,152 @@ impl CompiledTask {
             self.order.insert(index, name);
         }
         self.order = self.scheduler_plan()?.order;
-        self.budget(limits.clone())?;
         Ok(())
     }
 
+    /// Select transports original receipts without rewriting their producers. The Store
+    /// separately checks that the actual selected value is the admitted coverage value.
+    pub fn evidence_origins(&self, address: &Address) -> Result<BTreeSet<Address>, String> {
+        let mut pending = vec![address.clone()];
+        let mut seen = BTreeSet::new();
+        let mut leaves = BTreeSet::new();
+        while let Some(address) = pending.pop() {
+            if !seen.insert(address.clone()) {
+                continue;
+            }
+            let node = self
+                .nodes
+                .get(&address.node)
+                .ok_or("Unknown evidence producer")?;
+            if matches!(node.operator, CompiledOperator::Select) {
+                for arm in ["passed", "failed", "inconclusive"] {
+                    pending.push(
+                        node.inputs
+                            .get(arm)
+                            .ok_or("Missing evidence branch")?
+                            .clone(),
+                    );
+                }
+            } else {
+                leaves.insert(address);
+            }
+        }
+        Ok(leaves)
+    }
+
     pub fn budget(&self, limits: review_core::task::TaskLimitsV1) -> Result<TaskBudget, String> {
-        TaskBudget::new(limits, self.allowances.clone())?.with_call_limits(
-            self.calls
+        let templates = self.owned_template_allowances()?;
+        // Before dispatch, protect the declared verifier reserve and one Attempt for every
+        // unconditional non-verifier. Provider admission guards cannot hide mandatory work.
+        let mut minimum_tokens = limits.verification.tokens;
+        let mut minimum_attempts = u64::from(limits.verification.attempts);
+        let mut scope_minimum: BTreeMap<String, u64> = self
+            .token_scopes
+            .keys()
+            .map(|name| (name.clone(), 0))
+            .collect();
+        let mut root_attempts = self
+            .allowances
+            .values()
+            .map(|a| u64::from(a.verification_attempts))
+            .sum::<u64>();
+        // An unconditional owner protects one initial child, never a phantom parent or the
+        // maximum fanout. Each real child competes for the common reservation when admitted.
+        for (name, allowance) in self.allowances.iter().chain(
+            self.owned_children
                 .iter()
-                .map(|(scope, call)| (scope.clone(), call.max_attempts))
-                .collect(),
-        )
+                .map(|(name, template)| (name, &template.allowance)),
+        ) {
+            let node = self
+                .nodes
+                .get(name)
+                .ok_or("Allowance has no compiled node")?;
+            let protected = allowance
+                .tokens_per_attempt
+                .checked_mul(u64::from(allowance.verification_attempts))
+                .ok_or("Task scope verifier token overflow")?;
+            for (scope, minimum) in &mut scope_minimum {
+                if self.token_scopes[scope].contains(name) {
+                    *minimum = minimum
+                        .checked_add(protected)
+                        .ok_or("Task scope token total overflow")?;
+                }
+            }
+            if allowance.verification_attempts == 0
+                && node.conditions.iter().all(|condition| {
+                    self.nodes
+                        .get(&condition.source.node)
+                        .is_some_and(|source| {
+                            matches!(
+                                source.operator,
+                                CompiledOperator::ProviderAdmission { .. }
+                                    | CompiledOperator::ProviderAdmissionBrokered { .. }
+                            )
+                        })
+                })
+            {
+                minimum_tokens = minimum_tokens
+                    .checked_add(allowance.tokens_per_attempt)
+                    .ok_or("Task resource total overflow")?;
+                minimum_attempts += 1;
+                root_attempts += 1;
+                for (scope, minimum) in &mut scope_minimum {
+                    if self.token_scopes[scope].contains(name) {
+                        *minimum = minimum
+                            .checked_add(allowance.tokens_per_attempt)
+                            .ok_or("Task scope token total overflow")?;
+                    }
+                }
+            }
+        }
+        for (scope, minimum) in scope_minimum {
+            if minimum > self.token_scopes[&scope].tokens {
+                return Err(format!(
+                    "Task token scope {scope} cannot retain verification and mandatory work"
+                ));
+            }
+        }
+        if minimum_tokens > limits.tokens || minimum_attempts > u64::from(limits.max_attempts) {
+            return Err("Task cannot retain verification reserves and mandatory work within its token and Attempt allowance".into());
+        }
+        if self
+            .calls
+            .get("root")
+            .is_some_and(|call| root_attempts > u64::from(call.max_attempts))
+        {
+            return Err("Root Pipeline cannot retain verification and mandatory Provider admission within its Attempt bound".into());
+        }
+        TaskBudget::new(limits, self.execution_allowances()?)?
+            .with_call_limits(
+                self.calls
+                    .iter()
+                    .map(|(scope, call)| (scope.clone(), call.max_attempts))
+                    .collect(),
+            )?
+            .with_owned_templates(templates)?
+            .with_token_scopes(self.token_scopes.clone())
+    }
+
+    pub fn owned_template_allowances(
+        &self,
+    ) -> Result<BTreeMap<String, OwnedNodeAllowance>, String> {
+        self.owned_children.iter().map(|(owner, template)| {
+            let parent = self.nodes.get(owner).ok_or("Owned template has no static owner")?;
+            if self.allowances.contains_key(owner) || template.max_children == 0
+                || template.allowance.verification_attempts != 0
+                || !parent.contract.inputs.contains_key(&template.source_input)
+                || !template.contract.inputs.contains_key(&template.item_input)
+                || template.inherited_inputs.contains_key(&template.item_input)
+                || template.contract.inputs.len() != template.inherited_inputs.len() + 1
+                || template.inherited_inputs.iter().any(|(child, parent_port)| {
+                    template.contract.inputs.get(child) != parent.contract.inputs.get(parent_port)
+                        || !parent.contract.inputs.contains_key(parent_port)
+                })
+            {
+                return Err("Owned template must inherit an exact bounded contract without a parent Attempt".into());
+            }
+            Ok((owner.clone(), OwnedNodeAllowance { allowance: template.allowance.clone(), max_children: template.max_children }))
+        }).collect()
     }
 
     pub fn run(&self, dispatch: &(dyn crate::Dispatch + Sync)) -> Result<crate::RunReport, String> {
@@ -364,6 +648,8 @@ impl CompiledTask {
 pub struct CompileContext<'a> {
     pub pipelines: &'a BTreeMap<String, PipelineDefinitionV1>,
     pub signatures: &'a BTreeMap<String, OperatorSignature>,
+    /// Explicit captured local settings keyed by physical qualified slot, never model input.
+    pub slot_workers: BTreeMap<String, String>,
     /// Trusted Task-kind policy: each obligation identifies the public final output whose
     /// Snapshot its evidence must judge. Pipeline authors cannot redirect this obligation.
     pub acceptance_outputs: BTreeMap<String, String>,
@@ -400,6 +686,7 @@ struct Compiler<'a> {
     availability: BTreeMap<Address, Vec<CompiledCondition>>,
     outcomes: BTreeSet<Address>,
     retained: BTreeMap<Address, BTreeSet<Address>>,
+    resource_refusals: Vec<String>,
 }
 
 pub fn compile_task(
@@ -407,6 +694,41 @@ pub fn compile_task(
     root: &str,
     context: &CompileContext<'_>,
 ) -> Result<CompiledTask, String> {
+    let (graph, refusals) = compile_task_structure(task, root, context)?;
+    if !refusals.is_empty() {
+        return Err(refusals.join("; "));
+    }
+    graph.budget(task.limits.clone())?;
+    Ok(graph)
+}
+
+/// Token-free selection separates structural validity from resource feasibility. This does
+/// not admit execution: the Store always revalidates through the full compiler above.
+pub fn compile_task_structure(
+    task: &TaskRevisionV1,
+    root: &str,
+    context: &CompileContext<'_>,
+) -> Result<(CompiledTask, Vec<String>), String> {
+    compile_structure_mode(task, root, context, false)
+}
+
+/// Only the installed bootstrap compiler may use this mode. It proves a proposal's public
+/// port and structure without pretending that preparing a plan fulfills business acceptance.
+/// The common Store separately requires a fixed preparation plan and deferred verification.
+pub fn compile_task_preparation(
+    task: &TaskRevisionV1,
+    root: &str,
+    context: &CompileContext<'_>,
+) -> Result<(CompiledTask, Vec<String>), String> {
+    compile_structure_mode(task, root, context, true)
+}
+
+fn compile_structure_mode(
+    task: &TaskRevisionV1,
+    root: &str,
+    context: &CompileContext<'_>,
+    preparation: bool,
+) -> Result<(CompiledTask, Vec<String>), String> {
     task.validate()?;
     if context.max_nodes == 0
         || context.max_nodes > 64
@@ -438,6 +760,7 @@ pub fn compile_task(
         availability: BTreeMap::new(),
         outcomes: BTreeSet::new(),
         retained: BTreeMap::new(),
+        resource_refusals: Vec::new(),
         graph: CompiledTask {
             schema: "af.compiled-task/1".into(),
             nodes: BTreeMap::new(),
@@ -447,8 +770,12 @@ pub fn compile_task(
             coverage: BTreeMap::new(),
             calls: BTreeMap::new(),
             slots: BTreeMap::new(),
+            replaced_workers: BTreeMap::new(),
             max_parallel: definition.max_parallel,
             allowances: BTreeMap::new(),
+            owned_children: BTreeMap::new(),
+            review_integration: None,
+            token_scopes: BTreeMap::new(),
         },
     };
     let mut root_inputs = BTreeMap::new();
@@ -507,56 +834,89 @@ pub fn compile_task(
         },
     );
     let (outputs, coverage) = compiler.expand(root, "root", &root_inputs, &BTreeMap::new(), &[])?;
-    for (name, required) in &task.required_outputs {
-        let address = outputs
-            .get(name)
-            .ok_or_else(|| format!("Pipeline lacks required output {name}"))?;
-        let produced = compiler.port(address)?;
-        if produced.optional
-            || !compiler.available(address, &[])
-            || produced.artifact_type != required.artifact_type
-            || produced.cardinality != required.cardinality
-        {
-            return Err(format!(
-                "Pipeline output {name} cannot satisfy the Task contract"
-            ));
-        }
+    if context
+        .slot_workers
+        .keys()
+        .any(|slot| !compiler.graph.slots.contains_key(slot))
+    {
+        return Err("Local Worker binding names an unknown physical slot".into());
     }
-    for (name, obligation) in &task.acceptance {
-        let address = coverage
-            .get(name)
-            .ok_or_else(|| format!("Pipeline lacks acceptance coverage {name}"))?;
-        let produced = compiler.port(address)?;
-        if produced.optional
-            || !compiler.available(address, &[])
-            || produced.artifact_type != obligation.evidence_type
-            || !compiler
-                .evidence
-                .get(address)
-                .is_some_and(|ids| ids.contains(&obligation.verifier_policy))
-        {
-            return Err(format!("Coverage {name} lacks a trusted evidence producer"));
+    if preparation {
+        if !coverage.is_empty() || outputs.len() != 1 {
+            return Err(
+                "Planning bootstrap must expose only its proposal and no business coverage".into(),
+            );
         }
-        let target_name = context
-            .acceptance_outputs
-            .get(name)
-            .ok_or_else(|| format!("Task-kind policy has no final output for {name}"))?;
-        let target = outputs
-            .get(target_name)
-            .ok_or_else(|| format!("Task-kind acceptance target {target_name} is unavailable"))?;
-        if !task.required_outputs.contains_key(target_name)
-            || compiler.lineage.get(address) != compiler.lineage.get(target)
+        let address = outputs
+            .get("proposal")
+            .ok_or("Planning bootstrap has no proposal output")?;
+        let port = compiler.port(address)?;
+        if port.optional
+            || !compiler.available(address, &[])
+            || port.cardinality != review_core::PortCardinality::One
+            || port.artifact_type != review_core::task::planning::PIPELINE_PROPOSAL_V1
         {
-            return Err(format!(
-                "Coverage {name} does not judge the required final output {target_name}"
-            ));
+            return Err("Planning bootstrap requires one guaranteed typed proposal".into());
+        }
+        if compiler
+            .graph
+            .allowances
+            .values()
+            .any(|a| a.verification_attempts != 0)
+        {
+            return Err("Planner cannot consume business verifier credit".into());
+        }
+    } else {
+        for (name, required) in &task.required_outputs {
+            let address = outputs
+                .get(name)
+                .ok_or_else(|| format!("Pipeline lacks required output {name}"))?;
+            let produced = compiler.port(address)?;
+            if produced.optional
+                || !compiler.available(address, &[])
+                || produced.artifact_type != required.artifact_type
+                || produced.cardinality != required.cardinality
+            {
+                return Err(format!(
+                    "Pipeline output {name} cannot satisfy the Task contract"
+                ));
+            }
+        }
+        for (name, obligation) in &task.acceptance {
+            let address = coverage
+                .get(name)
+                .ok_or_else(|| format!("Pipeline lacks acceptance coverage {name}"))?;
+            let produced = compiler.port(address)?;
+            if produced.optional
+                || !compiler.available(address, &[])
+                || produced.artifact_type != obligation.evidence_type
+                || !compiler
+                    .evidence
+                    .get(address)
+                    .is_some_and(|ids| ids.contains(&obligation.verifier_policy))
+            {
+                return Err(format!("Coverage {name} lacks a trusted evidence producer"));
+            }
+            let target_name = context
+                .acceptance_outputs
+                .get(name)
+                .ok_or_else(|| format!("Task-kind policy has no final output for {name}"))?;
+            let target = outputs.get(target_name).ok_or_else(|| {
+                format!("Task-kind acceptance target {target_name} is unavailable")
+            })?;
+            if !task.required_outputs.contains_key(target_name)
+                || compiler.lineage.get(address) != compiler.lineage.get(target)
+            {
+                return Err(format!(
+                    "Coverage {name} does not judge the required final output {target_name}"
+                ));
+            }
         }
     }
     compiler.graph.outputs = outputs;
     compiler.graph.coverage = coverage;
     compiler.graph.order = compiler.graph.scheduler_plan()?.order;
-    compiler.graph.budget(task.limits.clone())?;
-    Ok(compiler.graph)
+    Ok((compiler.graph, compiler.resource_refusals))
 }
 
 type Boundary = (BTreeMap<String, Address>, BTreeMap<String, Address>);
@@ -806,8 +1166,50 @@ impl Compiler<'_> {
                 }
             } else {
                 let mut resolved = slot.clone();
+                if let Some(worker) = self.context.slot_workers.get(&qualified) {
+                    resolved.worker = worker.clone();
+                }
                 resolved.independent_from.clear();
                 self.graph.slots.insert(qualified.clone(), resolved);
+            }
+            let effective = &self.graph.slots[&qualified].worker;
+            if effective != &slot.worker {
+                if !slot.allow_local_replacement {
+                    return Err(format!("Slot {qualified} forbids Worker replacement"));
+                }
+                let original = self
+                    .context
+                    .signatures
+                    .get(&format!("worker/{}", slot.worker))
+                    .ok_or("Default Worker signature is missing")?;
+                let replacement = self
+                    .context
+                    .signatures
+                    .get(&format!("worker/{effective}"))
+                    .ok_or("Replacement Worker signature is missing")?;
+                if original.contract != replacement.contract
+                    || original.worker_input_type != replacement.worker_input_type
+                    || original.worker_output_type != replacement.worker_output_type
+                    || original.outcome_port != replacement.outcome_port
+                    || !replacement.roles.contains(&slot.role)
+                    || !replacement.effects.is_subset(&original.effects)
+                    || original.evidence.iter().any(|(port, policies)| {
+                        !policies
+                            .is_subset(replacement.evidence.get(port).unwrap_or(&BTreeSet::new()))
+                    })
+                    || original.retains.iter().any(|(port, inputs)| {
+                        !inputs.is_subset(replacement.retains.get(port).unwrap_or(&BTreeSet::new()))
+                    })
+                {
+                    return Err(format!(
+                        "Replacement Worker violates slot {qualified}'s public contract or authority"
+                    ));
+                }
+                self.graph
+                    .replaced_workers
+                    .entry(qualified.clone())
+                    .or_default()
+                    .insert(slot.worker.clone());
             }
             slots.insert(local.clone(), qualified);
         }
@@ -1021,12 +1423,32 @@ impl Compiler<'_> {
                         {
                             return Err(format!("{qualified} binds an unknown operator input"));
                         }
+                        if matches!(
+                            operator,
+                            TaskOperatorV1::RepairAccept {} | TaskOperatorV1::ReviewContinue {}
+                        ) && !bound.contains_key("verification")
+                        {
+                            return Err(
+                                "Repair acceptance must bind its reserved fix verifier".into()
+                            );
+                        }
                         if matches!(operator, TaskOperatorV1::ReviewReduce {})
                             && !bound.keys().eq(signature.contract.inputs.keys())
                         {
                             return Err(format!(
                                 "{qualified} must bind every configured reviewer and check; missing runtime results remain typed incomplete evidence"
                             ));
+                        }
+                        if matches!(operator, TaskOperatorV1::ReviewAccept {})
+                            && !self.graph.calls.values().any(|call| {
+                                call.coverage.get("reviewed") == bound.get("review")
+                                    && call
+                                        .outputs
+                                        .values()
+                                        .any(|address| Some(address) == bound.get("review"))
+                            })
+                        {
+                            return Err("Implementation requires a child Pipeline's public reviewed coverage".into());
                         }
                         self.require_node_capacity()?;
                         let paid = matches!(
@@ -1035,6 +1457,7 @@ impl Compiler<'_> {
                                 | TaskOperatorV1::Verify { .. }
                                 | TaskOperatorV1::FixVerify { .. }
                                 | TaskOperatorV1::Check { .. }
+                                | TaskOperatorV1::DocumentCheck {}
                         );
                         if paid && signature.attempt.is_none() {
                             return Err(format!("{signature_name} has no bounded Attempt cost"));
@@ -1071,6 +1494,7 @@ impl Compiler<'_> {
                                         TaskOperatorV1::Verify { .. }
                                             | TaskOperatorV1::FixVerify { .. }
                                             | TaskOperatorV1::Check { .. }
+                                            | TaskOperatorV1::DocumentCheck {}
                                     ) || signature
                                         .evidence
                                         .values()
@@ -1167,6 +1591,27 @@ impl Compiler<'_> {
                 return Err(format!("Pipeline {name} contains a dependency cycle"));
             }
         }
+        // A call must retain all verification reservations plus its unconditional paid work.
+        // A declared child limit cannot make repair itself consume the protected verifier slot.
+        let prefix = format!("{scope}.nodes.");
+        let required_attempts = self
+            .graph
+            .allowances
+            .iter()
+            .filter(|(node, _)| node.starts_with(&prefix))
+            .try_fold(0u32, |total, (node, allowance)| {
+                let mandatory = if allowance.verification_attempts > 0 {
+                    allowance.verification_attempts
+                } else {
+                    u32::from(self.graph.nodes[node].conditions == inherited)
+                };
+                total
+                    .checked_add(mandatory)
+                    .ok_or("Pipeline minimum Attempt count overflow")
+            })?;
+        if required_attempts > definition.max_attempts {
+            self.resource_refusals.push(format!("Pipeline {name} cannot retain its verification reserves and mandatory work within {} Attempts",definition.max_attempts));
+        }
         let mut outputs = BTreeMap::new();
         let mut coverage = BTreeMap::new();
         for (public, reference) in &definition.outputs {
@@ -1205,6 +1650,7 @@ impl Compiler<'_> {
                 pipeline: name.into(),
                 inputs: inputs.clone(),
                 outputs: outputs.clone(),
+                coverage: coverage.clone(),
                 max_attempts: definition.max_attempts,
                 max_parallel: definition.max_parallel,
             },
@@ -1227,12 +1673,19 @@ fn resolve(
 
 fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
     match operator {
+        TaskOperatorV1::PlanningContext {} => Ok("planning-context"),
+        TaskOperatorV1::DocumentSeal {} => Ok("document-seal"),
+        TaskOperatorV1::DocumentCheck {} => Ok("document-check"),
+        TaskOperatorV1::DocumentAccept {} => Ok("document-accept"),
         TaskOperatorV1::Seal {} => Ok("seal"),
         TaskOperatorV1::Accept {} => Ok("accept"),
         TaskOperatorV1::Check { .. } => Ok("check"),
         TaskOperatorV1::ReviewBind {} => Ok("review-bind"),
         TaskOperatorV1::ReviewReduce {} => Ok("review-reduce"),
+        TaskOperatorV1::ReviewAccept {} => Ok("review-accept"),
         TaskOperatorV1::AttestFixes {} => Ok("attest-fixes"),
+        TaskOperatorV1::RepairAccept {} => Ok("repair-accept"),
+        TaskOperatorV1::ReviewContinue {} => Ok("review-continue"),
         _ => Err("Operator requires package expansion".into()),
     }
 }
@@ -1246,5 +1699,82 @@ fn outcome_name(outcome: ReceiptOutcomeV1) -> &'static str {
         ReceiptOutcomeV1::Passed => "passed",
         ReceiptOutcomeV1::Failed => "failed",
         ReceiptOutcomeV1::Inconclusive => "inconclusive",
+    }
+}
+
+/// One immutable installed sequence outside the Round DAG. Its allowance exists before
+/// activation; a protected Store phase supplies the only admissible invocation input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompiledReviewIntegrationV1 {
+    pub node: String,
+    pub sequence_policy_id: String,
+    pub allowance: NodeAllowance,
+}
+impl CompiledReviewIntegrationV1 {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.node.len() > 4096
+            || !self.node.split('.').all(review_core::task::is_name)
+            || !review_core::is_digest(&self.sequence_policy_id)
+            || self.allowance.tokens_per_attempt != 0
+            || self.allowance.max_attempts != 1
+            || self.allowance.verification_attempts != 0
+            || self.allowance.wall_ms_per_attempt == 0
+        {
+            return Err("Integration sequence requires an exact node, policy and one zero-token bounded Attempt".into());
+        }
+        Ok(())
+    }
+    pub fn definition(&self) -> CompiledNode {
+        let port = |kind: &str, affinity| PipelinePortV1 {
+            artifact_type: kind.into(),
+            cardinality: review_core::PortCardinality::One,
+            optional: false,
+            affinity,
+            root_default: None,
+            covers: BTreeSet::new(),
+        };
+        CompiledNode {
+            operator: CompiledOperator::ReviewIntegrationChecks {
+                sequence_policy_id: self.sequence_policy_id.clone(),
+            },
+            contract: PipelineContractV1 {
+                inputs: BTreeMap::from([(
+                    "phase".into(),
+                    port(
+                        review_core::task::review_integration::TASK_REVIEW_INTEGRATION_PHASE_V1,
+                        PortAffinityV1::Unbound {},
+                    ),
+                )]),
+                outputs: BTreeMap::from([(
+                    "checks".into(),
+                    port(
+                        review_core::contract::INTEGRATION_CHECKS_V1,
+                        PortAffinityV1::SameAs {
+                            input: "phase".into(),
+                        },
+                    ),
+                )]),
+            },
+            inputs: BTreeMap::new(),
+            conditions: Vec::new(),
+        }
+    }
+}
+impl CompiledTask {
+    pub fn execution_allowances(&self) -> Result<BTreeMap<String, NodeAllowance>, String> {
+        let mut allowances = self.allowances.clone();
+        if let Some(phase) = &self.review_integration {
+            phase.validate()?;
+            if self.nodes.contains_key(&phase.node)
+                || self.owned_children.contains_key(&phase.node)
+                || allowances
+                    .insert(phase.node.clone(), phase.allowance.clone())
+                    .is_some()
+            {
+                return Err("Dormant Integration node collides with the Round graph".into());
+            }
+        }
+        Ok(allowances)
     }
 }

@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:legacy-review-task-policy:1",
+  "title": "legacy-review-task-policy@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "engine_id",
+    "campaign_manifest_id",
+    "settings"
+  ],
+  "properties": {
+    "engine_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "campaign_manifest_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "settings": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "resources",
+        "outputs",
+        "executions",
+        "provider_admission",
+        "allowed_effects"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "light",
+            "heavy"
+          ]
+        },
+        "resources": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "uncapped_attempt_tokens"
+          ],
+          "properties": {
+            "uncapped_attempt_tokens": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "outputs": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "node",
+              "port"
+            ],
+            "properties": {
+              "node": {
+                "type": "string",
+                "minLength": 1
+              },
+              "port": {
+                "type": "string",
+                "minLength": 1
+              }
+            }
+          }
+        },
+        "executions": {
+          "type": "object",
+          "propertyNames": {
+            "type": "string",
+            "minLength": 1
+          },
+          "additionalProperties": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/workerExecution"
+          }
+        },
+        "provider_admission": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "tokens",
+            "wall_ms"
+          ],
+          "properties": {
+            "tokens": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "wall_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        },
+        "allowed_effects": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+          },
+          "$comment": "Canonical ascending order is checked by captured-policy admission."
+        }
+      }
+    }
+  }
+}

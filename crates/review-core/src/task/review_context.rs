@@ -47,6 +47,12 @@ pub struct TaskReviewSubjectV2 {
     pub subject: crate::SubjectV1,
     pub snapshot_id: String,
     pub prior_history_id: String,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub continuation_id: Option<String>,
     pub round: u32,
     #[serde(
         default,
@@ -88,6 +94,7 @@ impl TaskReviewSubjectV2 {
             change_set: changes,
             snapshot_id: self.snapshot_id.clone(),
             prior_history_id: self.prior_history_id.clone(),
+            continuation_id: self.continuation_id.clone(),
             round: self.round,
         }
         .validate()

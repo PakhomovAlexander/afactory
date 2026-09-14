@@ -25,6 +25,7 @@ review-runner = { path = "../review-runner" }
 review-runner-claude = { path = "../review-runner-claude" }
 review-runner-codex = { path = "../review-runner-codex" }
 review-source-git = { path = "../review-source-git" }
+review-source-task = { path = "../review-source-task" }
 review-store = { path = "../review-store" }
 review-sandbox = { path = "../review-sandbox" }
 rusqlite = { version = "0.37.0", features = ["bundled"] }
@@ -47,6 +48,7 @@ nix = { version = "0.30.1", default-features = false, features = ["fs", "signal"
 portable-pty = { version = "0.9.0", default-features = false }
 
 [dev-dependencies]
+jsonschema = { version = "0.26.1", default-features = false }
 # Signs test releases the way the release job signs real ones, so signature verification is
 # exercised end to end without a key on disk.
 minisign = "0.9.1"

@@ -1180,6 +1180,19 @@ fn probe_codex_request(
     cancelled: &AtomicBool,
     request: &serde_json::Value,
 ) -> Result<serde_json::Value, String> {
+    probe_codex_request_before(program, spec, probe_path, cancelled, request, None)
+}
+
+#[cfg(unix)]
+fn probe_codex_request_before(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    request: &serde_json::Value,
+    attempt_deadline: Option<Instant>,
+) -> Result<serde_json::Value, String> {
+    check_task_probe_control(attempt_deadline, cancelled)?;
     let mut command = Command::new(program);
     command.args(["app-server", "--stdio"]);
     configure_probe_environment(&mut command, spec, probe_path);
@@ -1209,6 +1222,7 @@ fn probe_codex_request(
     }
 
     let deadline = Instant::now() + PROBE_TIMEOUT;
+    let deadline = attempt_deadline.map_or(deadline, |limit| deadline.min(limit));
     let mut captured = Vec::with_capacity(MAX_PROBE_OUTPUT.min(4096));
     let mut exceeded = false;
     let mut requested_limits = false;
@@ -2423,6 +2437,18 @@ fn run_probe(
     probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
 ) -> Result<ProbeOutput, String> {
+    run_probe_before(program, spec, probe_path, cancelled, None)
+}
+
+#[cfg(unix)]
+fn run_probe_before(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    attempt_deadline: Option<Instant>,
+) -> Result<ProbeOutput, String> {
+    check_task_probe_control(attempt_deadline, cancelled)?;
     let mut command = Command::new(program);
     match spec.kind {
         ProviderKind::Claude => {
@@ -2455,6 +2481,7 @@ fn run_probe(
         ProviderKind::Codex => PROBE_TIMEOUT,
     };
     let deadline = Instant::now() + timeout;
+    let deadline = attempt_deadline.map_or(deadline, |limit| deadline.min(limit));
     let status = loop {
         if let Err(error) = drain_probe_streams(
             spec.kind,
@@ -2512,6 +2539,23 @@ fn run_probe(
     let stdout = String::from_utf8(captured)
         .map_err(|_| "provider status output is not UTF-8".to_string())?;
     Ok(ProbeOutput { status, stdout })
+}
+
+// The optional limit is the original native Attempt deadline. Historical inventory probes retain
+// their own timeout and cancellation behavior; a Task recheck never receives a fresh wall budget.
+fn check_task_probe_control(
+    deadline: Option<Instant>,
+    cancelled: &AtomicBool,
+) -> Result<(), String> {
+    if let Some(deadline) = deadline {
+        if cancelled.load(Ordering::Acquire) {
+            return Err("Task Provider identity check cancelled".into());
+        }
+        if Instant::now() >= deadline {
+            return Err("Task Provider identity check deadline elapsed".into());
+        }
+    }
+    Ok(())
 }
 
 fn drain_probe_streams(
@@ -2752,7 +2796,7 @@ fn normalize_codex_auth(value: &str) -> &'static str {
     }
 }
 
-fn resolve_program(program: &str) -> Option<PathBuf> {
+pub(crate) fn resolve_program(program: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")
         .into_iter()
         .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())

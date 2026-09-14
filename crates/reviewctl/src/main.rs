@@ -29,7 +29,8 @@ use std::time::Duration;
 use review_attempt::{Budget, BudgetLedger, Scope};
 use review_core::{
     EventType, RunFailureReasonV2, RunFailureReasonV3, RunReportPayloadV2, RunReportPayloadV3,
-    RunReportPayloadV4, RunReportPayloadV5, RunVerdictV2, RunVerdictV3, Severity,
+    RunReportPayloadV4, RunReportPayloadV5, RunReportPayloadV6, RunVerdictV2, RunVerdictV3,
+    Severity,
 };
 use review_graph::NodeOutcome;
 use review_pipeline::{Kernel, RoundAuthority, RunVerdict};
@@ -45,26 +46,15 @@ mod config;
 mod onboard;
 mod project;
 mod providers;
+mod report_tasks;
+mod review_task;
 mod selfmgmt;
 mod task;
 mod task_execution;
 mod topics;
 mod tui;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CampaignMode {
-    Light,
-    Heavy,
-}
-
-impl CampaignMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Light => "light",
-            Self::Heavy => "heavy",
-        }
-    }
-}
+use review_config::captured_review::ReviewMode as CampaignMode;
 
 #[derive(Clone)]
 struct Options {
@@ -87,6 +77,7 @@ struct Options {
     git_timeout: Option<Duration>,
     provider_bindings: BTreeMap<String, String>,
     provider_resumes: BTreeMap<String, u64>,
+    provider_admission: Option<review_graph::task::OperatorAttemptCost>,
     json: bool,
     /// `af review render`: the Worker whose exact input to compose.
     node: Option<String>,
@@ -577,6 +568,24 @@ fn run_options(args: cli::RunArgs, command: &str) -> Options {
             );
         }
     }
+    let provider_admission = match (
+        args.provider_admission_tokens,
+        args.provider_admission_wall_ms,
+    ) {
+        (None, None) => None,
+        (Some(tokens), Some(wall_ms))
+            if tokens > 0
+                && wall_ms > 0
+                && tokens <= review_core::json::SAFE_INTEGER_MAX as u64
+                && wall_ms <= review_core::json::SAFE_INTEGER_MAX as u64 =>
+        {
+            Some(review_graph::task::OperatorAttemptCost { tokens, wall_ms })
+        }
+        _ => usage_error(
+            command,
+            "Provider admission requires both positive, finite token and millisecond bounds",
+        ),
+    };
     Options {
         repo: args.repo,
         // Routing never overrides an explicit selection; the default is the project's.
@@ -603,6 +612,7 @@ fn run_options(args: cli::RunArgs, command: &str) -> Options {
         git_timeout: args.git_timeout_secs.map(Duration::from_secs),
         provider_bindings,
         provider_resumes,
+        provider_admission,
         json: args.json,
     }
 }
@@ -792,6 +802,8 @@ pub(crate) fn campaign_names_for_completion() -> Vec<String> {
 fn task_review_options(args: cli::RunArgs, plan_only: bool) -> task_execution::StartOptions {
     task_execution::StartOptions {
         file: args.task_file.expect("Task file path was checked"),
+        bindings: args.bindings,
+        source_bindings: None,
         repo: args.repo,
         state: args.state,
         authority: args
@@ -1163,12 +1175,71 @@ fn main() {
                                 .into(),
                         )
                     } else {
-                        provider_doctor(&run_options(args, "provider doctor")).map(|()| 0)
+                        provider_doctor(&run_options(args, "provider doctor"))
                     }
                 }
             },
         ),
         cli::Command::Onboard(args) => ("af onboard", onboard::run_cli(args).map(|()| 0)),
+        cli::Command::Catalog {
+            command:
+                cli::CatalogCommand::Init {
+                    profile,
+                    developer_public_key,
+                    repo,
+                    destination,
+                    json,
+                },
+        } => (
+            "af catalog init",
+            task_execution::starter::init(
+                &repo,
+                &destination,
+                &profile,
+                developer_public_key.as_deref(),
+                json,
+            )
+            .map(|()| 0),
+        ),
+        cli::Command::Catalog {
+            command:
+                cli::CatalogCommand::Test {
+                    source,
+                    revision,
+                    manifest,
+                    fixtures,
+                    pipeline,
+                    worker,
+                    json,
+                },
+        } => (
+            "af catalog test",
+            task_execution::catalog::test(
+                &source,
+                &revision,
+                &manifest,
+                fixtures.as_deref(),
+                pipeline.as_deref(),
+                worker.as_deref(),
+                json,
+            )
+            .map(|()| 0),
+        ),
+        cli::Command::Catalog {
+            command:
+                cli::CatalogCommand::Sync {
+                    source,
+                    revision,
+                    manifest,
+                    repo,
+                    destination,
+                    json,
+                },
+        } => (
+            "af catalog sync",
+            task_execution::catalog::sync(&source, &revision, &manifest, &repo, &destination, json)
+                .map(|()| 0),
+        ),
         cli::Command::Task { command } => (
             "af task",
             match command {
@@ -1176,6 +1247,8 @@ fn main() {
                     kind: _,
                     goal,
                     file,
+                    bindings,
+                    source_bindings,
                     repo,
                     pipeline,
                     state,
@@ -1187,6 +1260,8 @@ fn main() {
                     if let Some(file) = file {
                         task_execution::start(task_execution::StartOptions {
                             file,
+                            bindings,
+                            source_bindings,
                             repo,
                             state,
                             authority,
@@ -1214,6 +1289,8 @@ fn main() {
                 }
                 cli::TaskCommand::Plan {
                     file,
+                    bindings,
+                    source_bindings,
                     repo,
                     state,
                     authority,
@@ -1221,6 +1298,8 @@ fn main() {
                     json,
                 } => task_execution::start(task_execution::StartOptions {
                     file,
+                    bindings,
+                    source_bindings,
                     repo,
                     state,
                     authority,
@@ -1229,17 +1308,104 @@ fn main() {
                     plan_only: true,
                     timeout_secs: None,
                 }),
+                cli::TaskCommand::DecisionPayload {
+                    task_id,
+                    developer,
+                    decision,
+                    reason,
+                    output,
+                    inspect,
+                } => task_execution::developer::payload_file(
+                    &task_id,
+                    &developer,
+                    if decision == "approved" {
+                        review_core::task::plan::PlanDecisionKindV1::Approved
+                    } else {
+                        review_core::task::plan::PlanDecisionKindV1::Rejected
+                    },
+                    &reason,
+                    &output,
+                    &inspect,
+                ),
+                cli::TaskCommand::Approve {
+                    task_id,
+                    payload,
+                    signature,
+                    inspect,
+                } => task_execution::developer::apply(
+                    &task_id,
+                    review_core::task::plan::PlanDecisionKindV1::Approved,
+                    &payload,
+                    &signature,
+                    &inspect,
+                ),
+                cli::TaskCommand::Reject {
+                    task_id,
+                    payload,
+                    signature,
+                    inspect,
+                } => task_execution::developer::apply(
+                    &task_id,
+                    review_core::task::plan::PlanDecisionKindV1::Rejected,
+                    &payload,
+                    &signature,
+                    &inspect,
+                ),
+                cli::TaskCommand::Refresh {
+                    task_id,
+                    source_file,
+                    source_bindings,
+                    inspect,
+                } => task_execution::refresh::refresh(
+                    &task_id,
+                    source_file.as_deref(),
+                    source_bindings.as_deref(),
+                    &inspect,
+                ),
                 cli::TaskCommand::Run { task_id, inspect } => task_execution::run(
                     &task_id,
                     &inspect.repo,
                     inspect.state.as_deref(),
                     inspect.json,
                 ),
-                cli::TaskCommand::Explain { task_id, inspect } => task_execution::explain(
+                cli::TaskCommand::Output {
+                    task_id,
+                    port,
+                    format,
+                    output,
+                    inspect,
+                } => task_execution::domain::write_output(
+                    &task_id,
+                    &port,
+                    &format,
+                    &output,
+                    &inspect.repo,
+                    inspect.state.as_deref(),
+                    inspect.json,
+                ),
+                cli::TaskCommand::Export {
+                    task_id,
+                    name,
+                    destination,
+                    inspect,
+                } => task_execution::export::run(
+                    &task_id,
+                    &name,
+                    &destination,
+                    &inspect.repo,
+                    inspect.state.as_deref(),
+                    inspect.json,
+                ),
+                cli::TaskCommand::Explain {
+                    task_id,
+                    plan,
+                    inspect,
+                } => task_execution::explain(
                     &task_id,
                     &inspect.repo,
                     inspect.state.as_deref(),
                     inspect.json,
+                    plan.as_deref(),
                 ),
                 cli::TaskCommand::Deliver {
                     task_id,
@@ -1561,6 +1727,10 @@ fn print_plan(options: &Options) -> Result<(), String> {
             );
         }
     }
+    println!(
+        "provider admission  {} tokens, {} ms per capability (new capture; resume retains captured cost)",
+        plan["provider_admission"]["tokens"], plan["provider_admission"]["wall_ms"]
+    );
     for provider in plan["providers"].as_array().into_iter().flatten() {
         println!(
             "provider {} -> {}",
@@ -1610,8 +1780,8 @@ fn open_campaign_store_read_only(state: &Path) -> Result<EventStore, String> {
 
 fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let store = open_campaign_store(&state)?;
-    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
+    let store = open_campaign_store_read_only(&state)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let ledger = LedgerProjection::rebuild(&store, &cas, &campaign_run_id(&options.campaign))
         .map_err(|e| e.to_string())?
         .into_ledger();
@@ -1688,11 +1858,17 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
         })
         .count();
     let summary = findings_summary(&findings);
-    let wall = wall_span_ms(
+    let task_accounting =
+        report_tasks::read(&store, &cas, &campaign_run_id(&options.campaign), &events)?;
+    let wall = task_accounting.wall_ms(
         &store
             .attempt_wall(&campaign_run_id(&options.campaign))
             .map_err(|e| e.to_string())?,
     );
+    let task_summary = report_tasks::summary(&task_accounting.tasks);
+    if !task_summary.is_empty() {
+        eprintln!("{task_summary}");
+    }
     eprintln!(
         "round {}; {} findings: {}; {} required demands open/stale{}",
         ledger.round,
@@ -2019,6 +2195,8 @@ struct CampaignView {
     rounds: Vec<ReportRoundView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wall_ms: Option<u64>,
+    #[serde(skip)]
+    task_accounting: Vec<report_tasks::TaskAccountingView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     findings: Option<FindingsSummaryView>,
     /// The state directory's name beneath the root, and — when asked for — what it holds.
@@ -2363,7 +2541,8 @@ fn read_campaign_view(
         .collect::<Vec<_>>();
     let rounds = report_rounds(&reports, &round_authority)?;
     let last = rounds.last();
-    let wall_ms = wall_span_ms(
+    let task_accounting = report_tasks::read(store, &cas, run_id, &events)?;
+    let wall_ms = task_accounting.wall_ms(
         &store
             .attempt_wall(run_id)
             .map_err(|error| error.to_string())?,
@@ -2386,6 +2565,7 @@ fn read_campaign_view(
         verdict: last.map(|round| round.verdict.clone()),
         rounds,
         wall_ms,
+        task_accounting: task_accounting.tasks,
         findings,
         state_dir: state
             .file_name()
@@ -2440,6 +2620,9 @@ fn print_campaigns_text(view: &CampaignListView) {
         if let Some(wall) = campaign.wall_ms {
             println!("  wall: {}", human_duration(wall));
         }
+        for summary in report_tasks::summary(&campaign.task_accounting).lines() {
+            println!("  {summary}");
+        }
         if let Some(findings) = &campaign.findings {
             println!("  findings: {}", findings_summary_line(findings));
         }
@@ -2449,12 +2632,12 @@ fn print_campaigns_text(view: &CampaignListView) {
         }
         for round in &campaign.rounds {
             println!(
-                "    run {}: round {} epoch {}; {}; reported tokens {}",
+                "    run {}: round {} epoch {}; {}; {}",
                 round.run,
                 optional_number(round.round),
                 optional_number(round.epoch),
                 round.verdict,
-                optional_tokens(round.reported_tokens)
+                round.tokens_label()
             );
         }
     }
@@ -2477,6 +2660,8 @@ struct ReviewReportView {
     final_verdict: Option<String>,
     rounds: Vec<ReportRoundView>,
     spend: Vec<RoundSpendView>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    task_accounting: Vec<report_tasks::TaskAccountingView>,
     demands: Vec<review_core::DemandSetEntryV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     recorded_not_gathered: Option<LatestRoundEvidence>,
@@ -2496,6 +2681,26 @@ struct ReportRoundView {
     verdict: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     reported_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_chargeable_tokens_at_report: Option<review_core::task::usage::DecimalU128>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    task_accounting: Option<review_core::TaskReviewAccountingV1>,
+}
+
+impl ReportRoundView {
+    fn tokens_label(&self) -> String {
+        self.task_chargeable_tokens_at_report.map_or_else(
+            || format!("reported tokens {}", optional_tokens(self.reported_tokens)),
+            |tokens| format!("Task cumulative charge at report {}", tokens.get()),
+        )
+    }
+
+    fn tokens_cell(&self) -> String {
+        self.task_chargeable_tokens_at_report.map_or_else(
+            || optional_tokens(self.reported_tokens),
+            |tokens| format!("{} (Task cumulative at report)", tokens.get()),
+        )
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -2582,17 +2787,26 @@ fn findings_summary_line(summary: &FindingsSummaryView) -> String {
 
 /// Wall-clock a set of Rounds took: per (round, epoch), first Attempt start to last Attempt end,
 /// summed across Rounds. `None` when nothing was recorded.
-fn wall_span_ms(rows: &[review_store::AttemptWall]) -> Option<u64> {
+fn wall_span_ms<U>(rows: &[review_store::AttemptWall<U>]) -> Option<u64> {
+    wall_spans_ms(rows.iter().map(|row| {
+        (
+            (row.round, row.epoch),
+            (row.started_unix_ms, row.elapsed_ms),
+        )
+    }))
+}
+
+fn wall_spans_ms(rows: impl IntoIterator<Item = ((u32, u32), (u64, u64))>) -> Option<u64> {
     let mut spans: BTreeMap<(u32, u32), (u64, u64)> = BTreeMap::new();
-    for row in rows {
-        let end = row.started_unix_ms.saturating_add(row.elapsed_ms);
+    for (round, (started, elapsed)) in rows {
+        let end = started.saturating_add(elapsed);
         spans
-            .entry((row.round, row.epoch))
+            .entry(round)
             .and_modify(|(start, finish)| {
-                *start = (*start).min(row.started_unix_ms);
+                *start = (*start).min(started);
                 *finish = (*finish).max(end);
             })
-            .or_insert((row.started_unix_ms, end));
+            .or_insert((started, end));
     }
     if spans.is_empty() {
         return None;
@@ -2719,10 +2933,27 @@ struct ProviderSpendAccumulator {
 
 fn print_report(options: &ReportOptions) -> Result<(), String> {
     let state = campaign_state(&options.state, &options.campaign)?;
-    let store = open_campaign_store(&state)?;
-    let cas = Cas::open(state.join("cas")).map_err(|e| e.to_string())?;
-    let run_id = campaign_run_id(&options.campaign);
-    let ledger = LedgerProjection::rebuild(&store, &cas, &run_id)
+    let store = open_campaign_store_read_only(&state)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let view = read_report_view(&store, &cas, &options.campaign)?;
+    match options.format {
+        ReportFormat::Markdown => print_report_markdown(&view),
+        ReportFormat::Text => print_report_text(&view),
+        ReportFormat::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
+        ),
+    }
+    Ok(())
+}
+
+fn read_report_view(
+    store: &EventStore,
+    cas: &Cas,
+    campaign: &str,
+) -> Result<ReviewReportView, String> {
+    let run_id = campaign_run_id(campaign);
+    let ledger = LedgerProjection::rebuild(store, cas, &run_id)
         .map_err(|e| e.to_string())?
         .into_ledger();
     print_scope_authority_warnings(&ledger);
@@ -2733,16 +2964,28 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
         .collect();
     let round_authority = report_round_authority(&events)?;
     let rounds = report_rounds(&reports, &round_authority)?;
-    let recorded_not_gathered = latest_round_evidence(&events, &cas)?.filter(|evidence| {
+    let recorded_not_gathered = latest_round_evidence(&events, cas)?.filter(|evidence| {
         evidence.ledger_was_not_produced() && !evidence.available_node_results.is_empty()
     });
     let mut spend = report_spend(&events, &round_authority)?;
+    let task_accounting = report_tasks::read(store, cas, &run_id, &events)?;
+    // An empty legacy accumulator says nothing about common Task work in that Round.
+    spend.retain(|round| {
+        !round.reviewers.is_empty() || !task_accounting.rounds.contains(&(round.round, round.epoch))
+    });
     let wall_rows = store.attempt_wall(&run_id).map_err(|e| e.to_string())?;
-    let wall_ms = attach_attempt_wall(&mut spend, &wall_rows);
+    attach_attempt_wall(&mut spend, &wall_rows);
+    let wall_ms = task_accounting.wall_ms(&wall_rows);
     let findings = ledger.finding_views();
-    let view = ReviewReportView {
-        schema: "af/review-report@1",
-        campaign: options.campaign.clone(),
+    Ok(ReviewReportView {
+        schema: if task_accounting.tasks.is_empty() {
+            "af/review-report@1"
+        } else if task_accounting.has_wide_usage() {
+            "af/review-report@4"
+        } else {
+            "af/review-report@3"
+        },
+        campaign: campaign.into(),
         runs_recorded: reports.len(),
         ledger_round: ledger.round,
         final_verdict: reports
@@ -2751,22 +2994,13 @@ fn print_report(options: &ReportOptions) -> Result<(), String> {
             .transpose()?,
         rounds,
         spend,
+        task_accounting: task_accounting.tasks,
         demands: ledger.demand_views(),
         recorded_not_gathered,
         wall_ms,
         findings_summary: findings_summary(&findings),
         findings,
-    };
-
-    match options.format {
-        ReportFormat::Markdown => print_report_markdown(&view),
-        ReportFormat::Text => print_report_text(&view),
-        ReportFormat::Json => println!(
-            "{}",
-            serde_json::to_string_pretty(&view).map_err(|error| error.to_string())?
-        ),
-    }
-    Ok(())
+    })
 }
 
 fn report_rounds(
@@ -2781,12 +3015,20 @@ fn report_rounds(
                 .causation_id
                 .as_deref()
                 .and_then(|causation| round_authority.get(causation));
+            let task_report = (event.event_type == EventType::RunReportV6)
+                .then(|| serde_json::from_value::<RunReportPayloadV6>(event.payload.clone()))
+                .transpose()
+                .map_err(|error| error.to_string())?;
             Ok(ReportRoundView {
                 run: index + 1,
                 round: authority.map(|(round, _)| *round),
                 epoch: authority.map(|(_, epoch)| *epoch),
                 verdict: report_verdict(event)?,
                 reported_tokens: event.payload.get("spent_tokens").and_then(|v| v.as_u64()),
+                task_chargeable_tokens_at_report: task_report
+                    .as_ref()
+                    .map(|report| report.spent_tokens),
+                task_accounting: task_report.map(|report| report.task_accounting),
             })
         })
         .collect()
@@ -3099,12 +3341,12 @@ fn print_report_text(report: &ReviewReportView) {
     }
     for round in &report.rounds {
         println!(
-            "  run {} (round {} epoch {}): {}; reported tokens {}",
+            "  run {} (round {} epoch {}): {}; {}",
             round.run,
             optional_number(round.round),
             optional_number(round.epoch),
             round.verdict,
-            optional_tokens(round.reported_tokens)
+            round.tokens_label()
         );
     }
     println!("Spend:");
@@ -3147,6 +3389,7 @@ fn print_report_text(report: &ReviewReportView) {
             }
         }
     }
+    print!("{}", report_tasks::render(&report.task_accounting, false));
     println!("Demands:");
     if report.demands.is_empty() {
         println!("  none");
@@ -3237,7 +3480,7 @@ fn print_report_markdown(report: &ReviewReportView) {
             optional_number(round.round),
             optional_number(round.epoch),
             round.verdict,
-            optional_tokens(round.reported_tokens)
+            round.tokens_cell()
         );
     }
     println!();
@@ -3298,6 +3541,7 @@ fn print_report_markdown(report: &ReviewReportView) {
         }
     }
     println!();
+    print!("{}", report_tasks::render(&report.task_accounting, true));
     println!("## Demands");
     if report.demands.is_empty() {
         println!();
@@ -3588,6 +3832,11 @@ fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
         }
         EventType::RunReportV5 => {
             let report: RunReportPayloadV5 =
+                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
+            Ok(render_verdict_v3(report.verdict))
+        }
+        EventType::RunReportV6 => {
+            let report: RunReportPayloadV6 =
                 serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
             Ok(render_verdict_v3(report.verdict))
         }
@@ -4065,6 +4314,11 @@ fn run_report_outcomes(
                 .map_err(|error| error.to_string())?
                 .outcomes,
         )),
+        EventType::RunReportV6 => Ok(Some(
+            serde_json::from_value::<RunReportPayloadV6>(event.payload.clone())
+                .map_err(|error| error.to_string())?
+                .outcomes,
+        )),
         EventType::RunReportV1 => Ok(None),
         _ => Err(format!("{} is not a Run Report", event.event_type)),
     }
@@ -4359,7 +4613,7 @@ fn admit_review_providers(
     Ok(admissions)
 }
 
-fn provider_doctor(options: &Options) -> Result<(), String> {
+fn provider_doctor(options: &Options) -> Result<i32, String> {
     if options.campaign.is_none() {
         return Err("provider doctor requires `--campaign NAME` so admission evidence can be reused by review run".into());
     }
@@ -4372,6 +4626,11 @@ fn provider_doctor(options: &Options) -> Result<(), String> {
     std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
     let repo = Repo::open(&options.repo, &git_home)
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
+    let campaign = campaign_run_id(options.campaign.as_deref().unwrap_or("local"));
+    if review_task::uses_common(&cas, &store, &campaign)? {
+        return review_task::doctor(options, &cas, &mut store, &repo, &campaign);
+    }
+    review_task::refuse_legacy_admission_override(options)?;
     let authority::PreparedRun {
         loaded,
         run_id,
@@ -4406,7 +4665,7 @@ fn provider_doctor(options: &Options) -> Result<(), String> {
         }
         println!("  committed {spent} tokens; no Gates or Workers ran");
     }
-    Ok(())
+    Ok(0)
 }
 
 fn run(options: &Options) -> Result<RunVerdict, String> {
@@ -4420,6 +4679,12 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
     std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
     let repo = Repo::open(&options.repo, &git_home)
         .with_timeout(authority::requested_git_timeout(options.git_timeout));
+
+    let campaign = campaign_run_id(options.campaign.as_deref().unwrap_or("local"));
+    if review_task::uses_common(&cas, &store, &campaign)? {
+        return review_task::run(options, &cas, &mut store, &repo, &campaign);
+    }
+    review_task::refuse_legacy_admission_override(options)?;
 
     let authority::PreparedRun {
         loaded,
@@ -4642,7 +4907,11 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
             open_or_stale_demand_ids.len()
         ),
     );
-    let spent_tokens = kernel.spent();
+    let spent_tokens = kernel
+        .spent()
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| "Legacy Review output cannot represent the exact token total")?;
     if let Some(spent) = spent_tokens {
         run_progress(options, format_args!("spent    {spent} tokens"));
     }
@@ -5342,6 +5611,7 @@ mod option_tests {
             git_timeout: None,
             provider_bindings: std::collections::BTreeMap::new(),
             provider_resumes: std::collections::BTreeMap::new(),
+            provider_admission: None,
             json: false,
             node: None,
         };

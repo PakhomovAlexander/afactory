@@ -168,6 +168,11 @@ pub enum TaskOperatorV1 {
     Worker {
         slot: String,
     },
+    /// Fixed bootstrap context constructed from captured Task and installed signatures.
+    PlanningContext {},
+    DocumentSeal {},
+    DocumentCheck {},
+    DocumentAccept {},
     Seal {},
     /// Kernel receipt assembly: preserves negative/inconclusive checks without invoking a
     /// conditional evaluator, and admits success only from current independent evidence.
@@ -186,7 +191,11 @@ pub enum TaskOperatorV1 {
     ReviewBind {},
     /// One atomic gather/reducer barrier over the captured set of required reviewers.
     ReviewReduce {},
+    /// Accept implementation only from the embedded current-Snapshot Review and its checks.
+    ReviewAccept {},
     AttestFixes {},
+    RepairAccept {},
+    ReviewContinue {},
     FixVerify {
         slot: String,
     },

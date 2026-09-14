@@ -461,7 +461,8 @@
               "enum": [
                 "needs_input",
                 "needs_human",
-                "needs_plan_review"
+                "needs_plan_review",
+                "needs_resources"
               ]
             }
           }
@@ -991,6 +992,90 @@
               "const": "review_reduce"
             }
           }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "review_accept"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "repair_accept"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "planning_context"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "document_seal"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "document_check"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "document_accept"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "review_continue"
+            }
+          }
         }
       ]
     },
@@ -1381,9 +1466,47 @@
             "minItems": 1,
             "$comment": "Canonical ascending order is required by semantic admission."
           },
-          "minProperties": 1
+          "minProperties": 0
+        },
+        "preparation": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "planning"
+            }
+          }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "preparation"
+            ]
+          },
+          "then": {
+            "properties": {
+              "acceptance": {
+                "maxProperties": 0
+              },
+              "generated_origins": {
+                "maxItems": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "acceptance": {
+                "minProperties": 1
+              }
+            }
+          }
+        }
+      ]
     },
     "planDecision": {
       "type": "object",

@@ -119,6 +119,7 @@ fn run_case(case: &str, v2: bool) {
         };
         let code_id = cas.put_json(&serde_json::to_value(&code).unwrap()).unwrap();
         let policy = ReviewTaskPolicy {
+            allow_targeted_repairs: false,
             schema: format!("af.review-task-policy/{}", if v2 { 2 } else { 1 }),
             check_policy_id: code_id.clone(),
             reviewers: BTreeMap::from([
@@ -629,11 +630,7 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
         let host =
             CapturedTaskHost::capture(&cas, &compiler, &task, &plan, graph, &environment, &domain)
                 .unwrap();
-        let authority = CapturedTaskAuthority {
-            compiler: &compiler,
-            domain: &host,
-            developer: &NoTaskDeveloper,
-        };
+        let authority = CapturedTaskAuthority::new(&compiler, &host, &NoTaskDeveloper);
         let lease = store
             .open_task(&cas, &revision, "test-writer", 60000)
             .unwrap();
@@ -735,11 +732,11 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
                 if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
                     transition.change
                 {
-                    let record: review_core::task::execution::TaskExecutionRecordV1 =
-                        serde_json::from_value(
-                            cas.get_json(&record_id).unwrap()["payload"].clone(),
-                        )
-                        .unwrap();
+                    let record = review_store::store::task::execution::read_execution_record(
+                        &cas, &record_id,
+                    )
+                    .unwrap()
+                    .record;
                     if let review_core::task::execution::TaskExecutionRecordV1::Settled {
                         raw_artifact_ids,
                         ..

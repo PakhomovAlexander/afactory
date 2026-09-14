@@ -26,6 +26,7 @@ and journaled.
 Namespaces:
   review     plan, run, and work a review Campaign
   task       start, inspect, and deliver an implement Task
+  catalog    capture shared Pipeline, Worker and Task-kind packages from Git
   provider   inspect and preflight the configured model providers
   onboard    generate or validate `.af/` review authority for a repository
   config     show the effective configuration and where each value came from
@@ -69,6 +70,11 @@ pub(crate) struct Af {
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum Command {
+    /// Capture shared Pipeline, Worker and Task-kind packages from an exact Git revision
+    Catalog {
+        #[command(subcommand)]
+        command: CatalogCommand,
+    },
     /// Plan, run, and work a review Campaign
     #[command(
         long_about = "Plan, run, and work a review Campaign.\n\n\
@@ -220,8 +226,16 @@ pub(crate) struct ReviewNamespace {
 #[command(group = ArgGroup::new("mode").args(["light", "heavy"]))]
 pub(crate) struct RunArgs {
     /// Versioned Review Task file, executed through the shared Task runtime
-    #[arg(long = "file", value_name = "FILE", help_heading = "Selector", conflicts_with_all = ["pipeline", "campaign", "base", "candidate", "focus", "node", "light", "heavy", "restart_round", "provider", "resume_provider", "git_timeout_secs"])]
+    #[arg(long = "file", value_name = "FILE", help_heading = "Selector", conflicts_with_all = ["pipeline", "campaign", "base", "candidate", "focus", "node", "light", "heavy", "restart_round", "provider", "resume_provider", "provider_admission_tokens", "provider_admission_wall_ms", "git_timeout_secs"])]
     pub(crate) task_file: Option<PathBuf>,
+    /// Explicit local Worker packages, slot replacements and Provider aliases
+    #[arg(
+        long,
+        value_name = "FILE",
+        requires = "task_file",
+        help_heading = "Selector"
+    )]
+    pub(crate) bindings: Option<PathBuf>,
     /// Repository to review
     #[arg(
         long,
@@ -288,6 +302,22 @@ pub(crate) struct RunArgs {
     /// Bind a pipeline node to a provider from the registry
     #[arg(long, value_name = "NODE=PROVIDER_ID", action = ArgAction::Append, help_heading = "Providers")]
     pub(crate) provider: Vec<String>,
+    /// Tokens reserved for each new common Review Provider admission [new capture: 32768]
+    #[arg(
+        long,
+        value_name = "N",
+        requires = "provider_admission_wall_ms",
+        help_heading = "Budget"
+    )]
+    pub(crate) provider_admission_tokens: Option<u64>,
+    /// Milliseconds reserved per admission; supply both bounds, or omit both on resume
+    #[arg(
+        long,
+        value_name = "N",
+        requires = "provider_admission_tokens",
+        help_heading = "Budget"
+    )]
+    pub(crate) provider_admission_wall_ms: Option<u64>,
     /// Resume a fenced provider operation at the given epoch
     #[arg(long, value_name = "OPERATION_ID:EPOCH", action = ArgAction::Append, help_heading = "Providers")]
     pub(crate) resume_provider: Vec<String>,
@@ -762,6 +792,58 @@ pub(crate) enum RunnerArg {
 }
 
 #[derive(Debug, Subcommand)]
+pub(crate) enum CatalogCommand {
+    /// Create supported Task and Worker starters in an absent directory
+    Init {
+        #[arg(long, default_value="document", value_parser=["document", "software", "planning", "all"])]
+        profile: String,
+        /// Existing minisign public key assigned to developer owner; enables the Planner
+        #[arg(long)]
+        developer_public_key: Option<PathBuf>,
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        destination: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check exact Pipeline/Worker contract fixtures from a local Git revision without dispatch
+    Test {
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long, default_value = "HEAD")]
+        revision: String,
+        #[arg(long, default_value = "catalog.toml")]
+        manifest: String,
+        /// Fixture path in the same Git commit (defaults beside the manifest)
+        #[arg(long)]
+        fixtures: Option<String>,
+        #[arg(long, conflicts_with = "worker")]
+        pipeline: Option<String>,
+        #[arg(long)]
+        worker: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Explicitly sync a Git catalog into an absent directory; runs no Workers or installers
+    Sync {
+        /// Local Git checkout or public HTTPS Git URL
+        #[arg(long)]
+        source: String,
+        #[arg(long, default_value = "HEAD")]
+        revision: String,
+        #[arg(long, default_value = "catalog.toml")]
+        manifest: String,
+        #[arg(long, default_value = ".")]
+        repo: PathBuf,
+        #[arg(long)]
+        destination: String,
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 pub(crate) enum TaskCommand {
     /// Start an implement Task from a goal
     #[command(
@@ -786,6 +868,12 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
         /// Versioned Task JSON/TOML file, processed by the common Task runtime
         #[arg(long, value_name = "FILE")]
         file: Option<PathBuf>,
+        /// Capture local Worker tuning for this Task
+        #[arg(long, value_name = "FILE", requires = "file")]
+        bindings: Option<PathBuf>,
+        /// Explicit machine-local read-only issue source accounts
+        #[arg(long, value_name = "FILE", requires = "file")]
+        source_bindings: Option<PathBuf>,
         /// Repository to work in
         #[arg(
             long,
@@ -823,6 +911,11 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
     Plan {
         #[arg(long, value_name = "FILE")]
         file: PathBuf,
+        #[arg(long, value_name = "FILE")]
+        bindings: Option<PathBuf>,
+        /// Explicit machine-local read-only issue source accounts
+        #[arg(long, value_name = "FILE", requires = "file")]
+        source_bindings: Option<PathBuf>,
         #[arg(long, value_name = "DIR", default_value = ".")]
         repo: PathBuf,
         #[arg(long, value_name = "DIR")]
@@ -834,6 +927,64 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
         #[arg(long)]
         json: bool,
     },
+    /// Capture an updated issue and replace its plan without executing Workers
+    Refresh {
+        task_id: String,
+        /// Read a fresh local JSON/TOML issue (defaults to the captured project path)
+        #[arg(long, value_name = "FILE", conflicts_with = "source_bindings")]
+        source_file: Option<PathBuf>,
+        /// Explicit machine-local account for the captured Jira selector
+        #[arg(long, value_name = "FILE")]
+        source_bindings: Option<PathBuf>,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Write exact bytes for an external developer signature; this does not approve execution
+    DecisionPayload {
+        task_id: String,
+        #[arg(long)]
+        developer: String,
+        #[arg(long, value_parser = ["approved", "rejected"])]
+        decision: String,
+        #[arg(long)]
+        reason: String,
+        #[arg(long, value_name = "ABSENT_FILE")]
+        output: PathBuf,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Write one recorded Task output to an absent file (Markdown for a Document, or JSON)
+    Output {
+        task_id: String,
+        #[arg(long)]
+        port: String,
+        #[arg(long, default_value="json", value_parser=["json","markdown"])]
+        format: String,
+        #[arg(long)]
+        output: PathBuf,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Record an exact plan approval signed by a captured developer key
+    Approve {
+        task_id: String,
+        #[arg(long)]
+        payload: PathBuf,
+        #[arg(long)]
+        signature: PathBuf,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Record an exact plan rejection signed by a captured developer key
+    Reject {
+        task_id: String,
+        #[arg(long)]
+        payload: PathBuf,
+        #[arg(long)]
+        signature: PathBuf,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
     /// Run or resume a captured Task using its exact recorded plan and authority
     Run {
         task_id: String,
@@ -843,6 +994,19 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
     /// Explain a captured Task's ports, hierarchy, bindings, coverage and budgets
     Explain {
         task_id: String,
+        /// Inspect an exact recorded plan, including an earlier revision's plan
+        #[arg(long, value_name = "PLAN_ID")]
+        plan: Option<String>,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Export reusable definitions and contract fixtures into an absent directory
+    Export {
+        task_id: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        destination: String,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },

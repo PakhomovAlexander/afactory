@@ -25,5 +25,6 @@ pub use plan::{
     SnapshotAffinity,
 };
 pub use schedule::{
-    ArtifactMap, Dispatch, NodeFailureClass, NodeOutcome, RunReport, Scheduler, SuppressionReason,
+    ArtifactMap, Dispatch, NodeFailureClass, NodeOutcome, OwnedChildDispatch, RunReport, Scheduler,
+    SuppressionReason,
 };

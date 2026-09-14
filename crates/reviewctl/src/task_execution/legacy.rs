@@ -194,14 +194,22 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
     }
     let catalog = TaskCatalog {
         schema: "af.task-catalog/1".into(),
-        code_policy: ".af/task-compat/code-policy.toml".into(),
+        provider_admission: None,
+        selection: BTreeMap::new(),
+        no_match: review_config::task::selection::NoMatchPolicy::Refuse,
+        developers: None,
+        planner: None,
+        code_policy: Some(".af/task-compat/code-policy.toml".into()),
+        document_policy: None,
         review: None,
         packages: pins,
+        kinds: BTreeMap::new(),
+        imports: BTreeSet::new(),
         independence: IndependencePolicyV1::default(),
         providers: BTreeMap::new(),
     };
     virtual_files.insert(
-        catalog.code_policy.clone(),
+        catalog.code_policy.clone().expect("legacy code policy"),
         toml::to_string(&code_policy)
             .map_err(|e| e.to_string())?
             .into_bytes(),
@@ -222,7 +230,7 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         });
     }
     let authority_manifest = Manifest::new(entries).map_err(|e| e.to_string())?;
-    let authority = capture_authority(&cas, &authority_manifest)?;
+    let authority = capture_authority(&cas, &authority_manifest, None, "implement")?;
     let source = if options.uncommitted {
         Capture::new(&source_repo, &cas)
             .dirty()
@@ -231,14 +239,18 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         policy_source
     };
     let file = TaskFile {
+        issue: None,
+        requirements: None,
+        document_sources: None,
         schema: "af.task-file/1".into(),
         task_id: crate::task::task_id(&repo, &source.content_digest, &loaded.pipeline_artifact_id),
         kind: "implement".into(),
+        verification: Some(FileVerification::Evaluation),
         goal: options.goal,
-        pipeline: PipelineChoiceV1 {
+        pipeline: Some(PipelineChoiceV1 {
             name: pipeline.name,
             fallback: PipelineFallbackV1::Refuse,
-        },
+        }),
         strategy: "light".into(),
         facts: BTreeMap::new(),
         limits: FileLimits {
@@ -262,7 +274,9 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
     };
     let bytes = serde_json::to_vec(&file).map_err(|e| e.to_string())?;
     let options = StartOptions {
+        source_bindings: None,
         file: PathBuf::new(),
+        bindings: None,
         repo,
         state: Some(state),
         authority: options.authority,

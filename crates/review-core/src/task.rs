@@ -3,15 +3,26 @@
 //! Validation here establishes shape and local invariants. Compilation establishes graph
 //! compatibility; the Store establishes identity, authority and legal transitions.
 
+pub mod broker;
 pub mod delivery;
+pub mod document;
 pub mod event;
 pub mod execution;
 pub mod feedback;
+pub mod owned_children;
 pub mod pipeline;
 pub mod plan;
+pub mod planning;
 pub mod provider;
+pub mod repair;
+pub mod report;
 pub mod review;
+pub mod review_compat;
 pub mod review_context;
+pub mod review_handoff;
+pub mod review_integration;
+pub mod source;
+pub mod usage;
 pub mod verification;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -363,6 +374,7 @@ pub enum TaskAcceptanceV1 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskWaitingReasonV1 {
+    NeedsResources,
     NeedsInput,
     NeedsHuman,
     NeedsPlanReview,

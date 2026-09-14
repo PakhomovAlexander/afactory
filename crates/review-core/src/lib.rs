@@ -34,10 +34,15 @@ pub mod snapshot;
 pub mod subject;
 pub mod task;
 
+pub use task::broker::{
+    TASK_BROKER_BINDING_V1, TASK_BROKER_OPERATION_V1, TaskBrokerBindingV1, TaskBrokerOperationV1,
+    TaskBrokerTargetV1, TaskBrokerTransitionV1,
+};
+
 pub use broker::{
     BrokerCredentialModeV1, BrokerFailureReasonV1, BrokerLeaseV1, BrokerOperationOutcomeV1,
-    BrokerOperationPolicyV1, BrokerOperationReceiptV1, ReviewerExecutionBindingV1,
-    broker_authority_usage,
+    BrokerOperationPolicyV1, BrokerOperationReceiptV1, BrokerOperationReceiptV2,
+    ReviewerExecutionBindingV1, broker_authority_usage,
 };
 pub use cache::{
     CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1, MAX_CACHE_BYTES_V1,
@@ -63,9 +68,10 @@ pub use event::{
     ProviderOperationTransitionPayloadV1, RunCacheFailureReasonV5, RunCacheFailureV5,
     RunCacheKindV5, RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
     RunExecutionProviderV4, RunFailureReasonV2, RunFailureReasonV3, RunIsolationV4,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3, RunReportPayloadV4,
-    RunReportPayloadV5, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3,
-    SnapshotAffinity, UnknownEventType, is_artifact_type, run_report_closes_round,
+    RunNodeOutcomeV2, RunNodeReportV2, RunReportExecutionV6, RunReportPayloadV2,
+    RunReportPayloadV3, RunReportPayloadV4, RunReportPayloadV5, RunReportPayloadV6,
+    RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity,
+    TaskReviewAccountingV1, UnknownEventType, is_artifact_type, run_report_closes_round,
 };
 pub use exec::{Arg, ArgError, Command, Provenance};
 pub use finding::{FindingReport, Location, Relation, RelationKind, Severity};

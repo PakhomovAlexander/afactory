@@ -24,9 +24,26 @@ part of the exact binding. Bare model-family aliases and `-latest` selectors are
 
 Planning performs no model inference. The compiler adds a visible internal capability node
 for each distinct effective Model binding and invocation policy. Slots with the same capability
-share that node. Each reserves **4,096 tokens, one Attempt and 45 seconds** inside the Task's
+share that node. Catalog V1 reserves **4,096 tokens, one Attempt and 45 seconds** inside the Task's
 limits. Admission serving a required verifier is protected alongside that verifier. Pipeline
 and Task limits must have room for these Attempts; children do not create another allowance.
+
+Catalog V2 requires an explicit finite admission cost:
+
+```toml
+schema = "af.task-catalog/2"
+# Keep the catalog's other package, policy and binding declarations.
+[provider_admission]
+tokens = 32768
+wall_ms = 45000
+```
+
+Both values must be integers from 1 through 9,007,199,254,740,991 and fit the Task's original
+resources. Each distinct capability still has one Attempt. This example is a project choice,
+not a default: size the whole Task for this cost, business work and protected verification.
+V1 forbids this field and retains its original allowance. The captured V2 authority records the
+cost and original catalog bytes; changing local files after planning cannot change either.
+See [ADR-0091](../adr/0091-capture-explicit-task-provider-admission-costs.md).
 
 ```text
 account identity probe       planning: no model call
@@ -48,9 +65,51 @@ same native adapter as downstream Workers. Failure retains reported usage and bl
 dispatch. Unknown usage is conservatively charged under the common runtime's existing rule.
 Successful receipts survive replay without another paid probe.
 
+A short probe prompt does not bound the native client's complete context. One observed probe
+charged 5,712 tokens after a cache discount; its 16,331 input tokens and five output tokens
+would charge 16,336 without that discount. Neither figure guarantees a future upper bound.
+Any individual reservation overrun retains exact usage and blocks further dispatch, even if
+the acknowledgement passed and the wider Task has tokens left. Raising a Task total cannot
+clear that fence or change a completed Task.
+
 Before a planned Task resumes, the adapter checks the current account and recompiles against
 the recorded binding. Account, model, package or policy changes cannot silently alter an
 admitted plan. Finished Tasks remain inspectable without Provider calls.
+
+Every native invocation also rechecks that exact local account, executable path and
+authentication context before sending private input. The token-free check shares the remaining
+Attempt deadline and cancellation control. Unavailable or changed identity refuses with zero
+new charge while preserving earlier admission and spend. Credentials can still change between
+the check and their consumption by the native client; this is not an atomic session guarantee.
+See [ADR-0090](../adr/0090-recheck-native-task-provider-identity-before-private-invocation.md).
+
+Native Task usage retains exact cumulative components and charge across multiple turns, even
+when their totals exceed u64. Output decoding, timeout, unavailable CAS or a refused final-message
+file cannot erase observed usage. The original Task budget still applies; an overrun never
+authorizes another call. Wider values use additive usage/provenance and Review presentation
+contracts, while representable values retain their previous encoding. See
+[ADR-0085](../adr/0085-retain-exact-native-task-usage-across-multiple-turns.md).
+
+Malformed native usage preserves known contributions in `TaskUsageObservation@1`. Its billing
+completeness is separate from optional metadata validity. Incomplete billing refuses business
+output and retains at least the original reservation and known charge floor; a fully reported
+failure retains its exact charge. The sidecar preserves both facts before CAS publication and
+through recovery. Valid native calls retain their previous artifact identities. See
+[ADR-0088](../adr/0088-retain-native-billing-completeness-with-task-usage.md).
+
+The native adapter's controlled invocation boundary can stop an owned process group and retain
+cancelled usage through bounded output draining. Unsupported adapters refuse a supplied control.
+Common CLI Task, planning, Review and doctor execution share that control with their writer
+heartbeat. A failed exact-writer lease check interrupts supervised Workers, commands, Gates and
+Integration checks; the runtime retains paid observations and blocks later work and selection.
+This does not install CLI signal handlers or a domain-level Task cancellation command. See
+[ADR-0087](../adr/0087-control-native-task-invocations-through-the-shared-supervisor.md) and
+[ADR-0089](../adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md).
+
+Codex final-message capture reads a bounded regular file through the held private output
+directory. Symlinks, FIFOs and other nonregular files refuse without blocking or falling back
+to a different message; an absent or empty regular file retains the existing event-message
+fallback. These checks preserve observed usage on refusal.
 
 Deterministic native-CLI fixtures prove token-free planning, shared admission, account-change
 refusal, typed output and replay. One fixture reports 36 synthetic usage tokens across a probe

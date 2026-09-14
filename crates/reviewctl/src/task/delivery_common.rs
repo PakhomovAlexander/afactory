@@ -52,6 +52,14 @@ impl CommonDelivery {
                 15_000,
             )
             .map_err(|e| e.to_string())?;
+        let current = store
+            .task_projection(&cas, &task.task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Unknown Task")?;
+        if current.revision_id != task.revision_id || current.phase != task.phase {
+            let _ = store.release_task_lease(&cas, &lease);
+            return Err("Task result changed before delivery acquired its lease".into());
+        }
         let store = Arc::new(Mutex::new(store));
         let heartbeat_store = Arc::clone(&store);
         let heartbeat_lease = lease.clone();
@@ -173,8 +181,12 @@ pub(super) fn projection(
 }
 
 pub(super) fn events(task: &TaskProjection) -> Vec<TaskEvent> {
+    let TaskPhaseV1::Finished { result_id } = &task.phase else {
+        return vec![];
+    };
     task.deliveries
         .iter()
+        .filter(|(_, value)| &value.result_id == result_id)
         .enumerate()
         .map(|(index, (_, value))| TaskEvent {
             sequence: index as u64 + 1,
@@ -222,7 +234,7 @@ pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets,
         review_source_git::task::read_snapshot(cas, &derived_snapshot_id)?;
     if source.parent_snapshot_id.is_some()
         || derived.origin_id != source.origin_id
-        || derived.parent_snapshot_id.as_ref() != Some(&source_snapshot_id)
+        || !review_source_git::task::descends_from(cas, &derived_snapshot_id, &source_snapshot_id)?
     {
         return Err("Task delivery requires exact source ancestry".into());
     }

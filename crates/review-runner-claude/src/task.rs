@@ -26,6 +26,10 @@ impl ClaudeTaskAdapter {
 }
 
 impl WorkerModelAdapter for ClaudeTaskAdapter {
+    fn credential_mode(&self) -> review_core::BrokerCredentialModeV1 {
+        review_core::BrokerCredentialModeV1::TrustedUnsafe
+    }
+
     fn provider_kind(&self) -> &'static str {
         "claude"
     }
@@ -46,6 +50,44 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         timeout: Duration,
         writable: bool,
     ) -> ModelWorkerReturn {
+        self.invoke_inner(cas, workdir, input, timeout, writable, None)
+    }
+
+    fn invoke_controlled(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+        broker: Option<&dyn review_runner::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ModelWorkerReturn {
+        if broker.is_some() {
+            return self.invoke_with_broker(cas, workdir, input, timeout, writable, broker);
+        }
+        self.invoke_inner(cas, workdir, input, timeout, writable, cancellation)
+    }
+}
+
+impl ClaudeTaskAdapter {
+    fn invoke_inner(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ModelWorkerReturn {
+        if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
+            return ModelWorkerReturn {
+                usage_observation: None,
+                message: Err("Worker invocation was cancelled before starting".into()),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
+                raw_artifact_ids: vec![],
+            };
+        }
         let mut command = claude_command(&self.program, &self.model_flags);
         if writable {
             // The same restricted root and customization isolation as review. The write role
@@ -60,32 +102,12 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         for (name, value) in &self.grants {
             runner = runner.with_env(name, value);
         }
-        let capture = runner.capture_settled_with_stdin(cas, &command, input);
+        let capture =
+            runner.capture_settled_with_stdin_controlled(cas, &command, input, cancellation);
         let parsed = serde_json::from_slice::<serde_json::Value>(&capture.stdout).ok();
-        let usage = parsed
-            .as_ref()
-            .and_then(|value| value.get("usage"))
-            .filter(|u| u.is_object());
-        let count = |key| {
-            usage
-                .and_then(|u| u.get(key))
-                .and_then(serde_json::Value::as_u64)
-        };
-        let input = count("input_tokens");
-        let output = count("output_tokens");
-        let cache_write = count("cache_creation_input_tokens");
-        let charge = input
-            .zip(output)
-            .map(|(i, o)| i.saturating_add(o).saturating_add(cache_write.unwrap_or(0)));
-        let usage = charge.map(|chargeable_tokens| TokenUsage {
-            input_tokens: input,
-            output_tokens: output,
-            cache_read_tokens: count("cache_read_input_tokens"),
-            cache_write_tokens: cache_write,
-            reasoning_tokens: None,
-            chargeable_tokens,
-        });
-        let success = capture.status.as_ref().is_ok_and(|status| status.success())
+        let (usage, usage_observation) = parse_usage(parsed.as_ref());
+        let success = usage_observation.is_none()
+            && capture.status.as_ref().is_ok_and(|status| status.success())
             && parsed.as_ref().is_some_and(|v| {
                 v.get("is_error").and_then(serde_json::Value::as_bool) == Some(false)
             });
@@ -101,9 +123,61 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
             Err(format!("Claude Worker failed with {:?}", capture.status))
         };
         ModelWorkerReturn {
+            usage_observation,
             message,
             usage,
             raw_artifact_ids: capture.raw_artifact_ids,
         }
     }
 }
+
+fn parse_usage(
+    value: Option<&serde_json::Value>,
+) -> (
+    Option<review_core::task::usage::TaskTokenUsageV3>,
+    Option<review_core::task::usage::TaskUsageObservationV1>,
+) {
+    use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
+    use review_runner::task::usage::NativeCounter;
+    let Some(value) = value else {
+        return (None, None);
+    };
+    let Some(usage) = value.get("usage").filter(|value| value.is_object()) else {
+        return (
+            None,
+            Some(TaskUsageObservationV1 {
+                reported_usage: None,
+                charge_complete: false,
+            }),
+        );
+    };
+    let input = NativeCounter::read(usage, "input_tokens").value();
+    let output = NativeCounter::read(usage, "output_tokens").value();
+    let write = NativeCounter::read(usage, "cache_creation_input_tokens");
+    let read = NativeCounter::read(usage, "cache_read_input_tokens");
+    let complete = input.is_some() && output.is_some() && write.optional_zero().is_some();
+    let malformed = !complete || read == NativeCounter::Invalid;
+    let reported =
+        (input.is_some() || output.is_some() || write.value().is_some() || read.value().is_some())
+            .then(|| TaskTokenUsageV3 {
+                input_tokens: input.map(|n| u128::from(n).into()),
+                output_tokens: output.map(|n| u128::from(n).into()),
+                cache_read_tokens: read.value().map(|n| u128::from(n).into()),
+                cache_write_tokens: write.value().map(|n| u128::from(n).into()),
+                reasoning_tokens: None,
+                // Claude input excludes cache reads; cache creation is an additional billed
+                // component. Keep each independently valid contribution when another is malformed.
+                chargeable_tokens: (u128::from(input.unwrap_or(0))
+                    + u128::from(output.unwrap_or(0))
+                    + u128::from(write.value().unwrap_or(0)))
+                .into(),
+            });
+    let observation = malformed.then(|| TaskUsageObservationV1 {
+        reported_usage: reported.clone(),
+        charge_complete: complete,
+    });
+    (reported, observation)
+}
+
+#[cfg(test)]
+mod usage_tests;

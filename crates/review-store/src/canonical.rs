@@ -88,6 +88,9 @@ fn write_value(value: &Value, out: &mut Vec<u8>) -> Result<(), CanonicalError> {
 }
 
 fn utf16_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    if a.is_ascii() && b.is_ascii() {
+        return a.cmp(b);
+    }
     a.encode_utf16().cmp(b.encode_utf16())
 }
 
@@ -124,24 +127,38 @@ fn write_number(n: &serde_json::Number, out: &mut Vec<u8>) -> Result<(), Canonic
 
 fn write_string(s: &str, out: &mut Vec<u8>) {
     out.push(b'"');
-    for ch in s.chars() {
-        match ch {
-            '"' => out.extend_from_slice(b"\\\""),
-            '\\' => out.extend_from_slice(b"\\\\"),
-            '\u{08}' => out.extend_from_slice(b"\\b"),
-            '\u{0c}' => out.extend_from_slice(b"\\f"),
-            '\n' => out.extend_from_slice(b"\\n"),
-            '\r' => out.extend_from_slice(b"\\r"),
-            '\t' => out.extend_from_slice(b"\\t"),
-            c if (c as u32) < 0x20 => {
-                out.extend_from_slice(format!("\\u{:04x}", c as u32).as_bytes());
-            }
-            c => {
-                let mut buf = [0u8; 4];
-                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+    // JSON escapes only these ASCII bytes. Preserve whole intervening UTF-8 spans instead
+    // of decoding, encoding and extending the output separately for every scalar value.
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    for (index, &byte) in bytes.iter().enumerate() {
+        if byte >= 0x20 && byte != b'"' && byte != b'\\' {
+            continue;
+        }
+        out.extend_from_slice(&bytes[start..index]);
+        match byte {
+            b'"' => out.extend_from_slice(b"\\\""),
+            b'\\' => out.extend_from_slice(b"\\\\"),
+            0x08 => out.extend_from_slice(b"\\b"),
+            0x0c => out.extend_from_slice(b"\\f"),
+            b'\n' => out.extend_from_slice(b"\\n"),
+            b'\r' => out.extend_from_slice(b"\\r"),
+            b'\t' => out.extend_from_slice(b"\\t"),
+            control => {
+                const HEX: &[u8; 16] = b"0123456789abcdef";
+                out.extend_from_slice(&[
+                    b'\\',
+                    b'u',
+                    b'0',
+                    b'0',
+                    HEX[usize::from(control >> 4)],
+                    HEX[usize::from(control & 0x0f)],
+                ]);
             }
         }
+        start = index + 1;
     }
+    out.extend_from_slice(&bytes[start..]);
     out.push(b'"');
 }
 
@@ -226,6 +243,21 @@ pub fn validate_envelope(envelope: &review_core::ArtifactEnvelope) -> Result<(),
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn every_unicode_scalar_retains_the_json_string_encoding() {
+        let all: String = (0..=0x10ffff).filter_map(char::from_u32).collect();
+        let value = Value::String(all);
+        assert_eq!(
+            canonicalize(&value).unwrap(),
+            serde_json::to_vec(&value).unwrap()
+        );
+        let mixed = Value::String("é\n𐀀\u{0}中文\\\"\u{2028}\u{2029}/\tend".into());
+        assert_eq!(
+            canonicalize(&mixed).unwrap(),
+            serde_json::to_vec(&mixed).unwrap()
+        );
+    }
 
     #[test]
     fn streaming_blob_identity_matches_the_in_memory_form() {

@@ -51,6 +51,7 @@ input = "source"
 result = ["sha256:a0877ccfdf4f68c9c104e4c1cb900702a3a61dd391c4cabf5c7f14d21beb5318"]
 
 [signature.retains]
+result = ["requirements", "checks"]
 
 [signature.attempt]
 tokens = 0

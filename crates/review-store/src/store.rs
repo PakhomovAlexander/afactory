@@ -19,6 +19,7 @@ use serde_json::Value;
 
 use crate::cas::{Cas, CasError};
 
+mod attempt_wall;
 pub mod task;
 pub mod task_legacy;
 
@@ -212,13 +213,14 @@ pub struct AttemptUsage {
 
 /// Wall-clock and provider usage for one reviewer Attempt.
 ///
-/// This is a **sidecar**, not an event: it carries no identity, and nothing in replay, the
-/// Ledger, or convergence reads it — the event stream stays byte-for-byte deterministic. It
-/// exists so a person can see how long a review took and what it consumed, through
+/// This is a **sidecar**, not an event: Review replay, the Finding Ledger and convergence
+/// do not read it. Common Task recovery may raise an abandoned Attempt's canonical charge
+/// from its durable usage floor before permitting further work. It also lets a person see
+/// how long a review took and what it consumed, through
 /// `af review report`, `af review campaigns`, and `af review ledger`. An absent row means "not
 /// recorded", never "zero".
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct AttemptWall {
+pub struct AttemptWall<U = AttemptUsage> {
     pub run_id: String,
     pub attempt_id: String,
     pub node_id: String,
@@ -227,8 +229,11 @@ pub struct AttemptWall {
     pub started_unix_ms: u64,
     pub elapsed_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub usage: Option<AttemptUsage>,
+    pub usage: Option<U>,
 }
+
+/// Common Task usage may aggregate several native Provider counters in one Attempt.
+pub type TaskAttemptWall = AttemptWall<review_core::task::usage::TaskTokenUsageV3>;
 
 impl EventStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
@@ -293,6 +298,7 @@ impl EventStore {
                  PRIMARY KEY (run_id, attempt_id)
              );",
         )?;
+        attempt_wall::migrate(&conn)?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),
@@ -342,7 +348,7 @@ impl EventStore {
         cas: &Cas,
         events: &[NewEvent],
     ) -> Result<Vec<RunEvent>, StoreError> {
-        self.append_batch_inner(run_id, cas, events, None)
+        self.append_batch_inner(run_id, cas, events, None, None)
     }
 
     fn append_batch_inner(
@@ -351,19 +357,97 @@ impl EventStore {
         cas: &Cas,
         events: &[NewEvent],
         task_permit: Option<&task::WritePermit>,
+        review_permit: Option<&task::execution::review::WritePermit>,
     ) -> Result<Vec<RunEvent>, StoreError> {
         if events.is_empty() {
             return Ok(Vec::new());
         }
-        if events
-            .iter()
-            .any(|e| e.event_type == EventType::TaskTransitionV1)
-            && task_permit.is_none()
+        if events.iter().any(|e| {
+            matches!(
+                e.event_type,
+                EventType::TaskReviewResultSelectedV1 | EventType::RunReportV6
+            )
+        }) && review_permit.is_none()
+        {
+            return Err(StoreError::Conflict(
+                "Task Review selection requires the trusted Task publication entry point".into(),
+            ));
+        }
+        if events.iter().any(|e| {
+            matches!(
+                e.event_type,
+                EventType::TaskTransitionV1
+                    | EventType::TaskTransitionV2
+                    | EventType::TaskTransitionV3
+                    | EventType::TaskTransitionV4
+                    | EventType::TaskBrokerTransitionV1
+            )
+        }) && task_permit.is_none()
         {
             return Err(StoreError::Conflict(
                 "Task events require the trusted Task entry point".into(),
             ));
         }
+        let prepared = self.prepare_event_artifacts(cas, events)?;
+
+        // Acquire the writer lock before reading aggregate state. A deferred transaction lets
+        // two openers both observe an empty Campaign and only races at INSERT; IMMEDIATE makes
+        // the compare-and-append decision itself serial.
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let first: i64 = tx
+            .query_row(
+                "SELECT COALESCE(MAX(sequence) + 1, 0) FROM events WHERE run_id = ?1",
+                params![run_id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .unwrap_or(0);
+        if let Some(permit) = review_permit {
+            permit.validate(&tx, run_id, first, events)?;
+        }
+        if let Some(permit) = task_permit {
+            permit.validate(&tx, run_id, first, events)?;
+        } else {
+            let task_log: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE run_id = ?1 AND type = 'TaskTransition@1')",
+                [run_id], |row| row.get(0),
+            )?;
+            if task_log {
+                return Err(StoreError::Conflict(
+                    "Task log cannot accept Campaign or generic append authority".into(),
+                ));
+            }
+            if events.iter().any(|event| {
+                matches!(
+                    event.event_type,
+                    EventType::IntegrationPreparedV1
+                        | EventType::IntegrationConflictV1
+                        | EventType::IntegrationChecksCompletedV1
+                        | EventType::IntegrationCommittedV1
+                )
+            }) {
+                let task_round: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM events WHERE run_id=?1 AND type='RunReport@6' AND causation_id=(SELECT event_id FROM events WHERE run_id=?1 AND type='RoundStarted@1' ORDER BY sequence DESC LIMIT 1))", [run_id], |r|r.get(0))?;
+                if task_round {
+                    return Err(StoreError::Conflict(
+                        "Task-backed Integration requires its protected phase publication".into(),
+                    ));
+                }
+            }
+            validate_campaign_transition(&tx, cas, run_id, events, first, &prepared)?;
+        }
+        let appended = insert_events(&tx, run_id, events, first)?;
+        tx.commit()?;
+        Ok(appended)
+    }
+
+    fn prepare_event_artifacts(
+        &mut self,
+        cas: &Cas,
+        events: &[NewEvent],
+    ) -> Result<PreparedArtifacts, StoreError> {
         for event in events {
             review_core::json::admit(&event.payload)
                 .map_err(|error| StoreError::Conflict(format!("invalid event payload: {error}")))?;
@@ -431,87 +515,7 @@ impl EventStore {
                 .map_err(|e| StoreError::Durability(e.to_string()))?;
         }
 
-        // Acquire the writer lock before reading aggregate state. A deferred transaction lets
-        // two openers both observe an empty Campaign and only races at INSERT; IMMEDIATE makes
-        // the compare-and-append decision itself serial.
-        let tx = self
-            .conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-        let first: i64 = tx
-            .query_row(
-                "SELECT COALESCE(MAX(sequence) + 1, 0) FROM events WHERE run_id = ?1",
-                params![run_id],
-                |row| row.get(0),
-            )
-            .optional()?
-            .unwrap_or(0);
-        if let Some(permit) = task_permit {
-            permit.validate(run_id, first, events)?;
-        } else {
-            let task_log: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM events WHERE run_id = ?1 AND type = 'TaskTransition@1')",
-                [run_id], |row| row.get(0),
-            )?;
-            if task_log {
-                return Err(StoreError::Conflict(
-                    "Task log cannot accept Campaign or generic append authority".into(),
-                ));
-            }
-            validate_campaign_transition(&tx, cas, run_id, events, first, &prepared)?;
-        }
-        let mut appended = Vec::with_capacity(events.len());
-        for (offset, event) in events.iter().enumerate() {
-            let offset = i64::try_from(offset)
-                .map_err(|_| StoreError::Conflict("event batch is too large".into()))?;
-            let next = first
-                .checked_add(offset)
-                .ok_or_else(|| StoreError::Conflict("event sequence overflow".into()))?;
-            let event_id = derive_event_id(run_id, next);
-            let refs = serde_json::to_string(&event.artifact_refs)?;
-            let payload = serde_json::to_string(&event.payload)?;
-            tx.execute(
-                "INSERT INTO events
-                   (run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
-                    causation_id, correlation_id, artifact_refs, payload)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                params![
-                    run_id,
-                    next,
-                    event_id,
-                    event.event_type.as_str(),
-                    event.occurred_at,
-                    event.node_id,
-                    event.attempt_id,
-                    event.causation_id,
-                    event.correlation_id,
-                    refs,
-                    payload,
-                ],
-            )
-            .map_err(|e| match e {
-                rusqlite::Error::SqliteFailure(err, _)
-                    if err.code == rusqlite::ErrorCode::ConstraintViolation =>
-                {
-                    StoreError::Conflict(format!("sequence {next} already taken for run {run_id}"))
-                }
-                other => StoreError::Sqlite(other),
-            })?;
-            appended.push(RunEvent {
-                event_id,
-                run_id: run_id.to_string(),
-                sequence: next as u64,
-                event_type: event.event_type,
-                occurred_at: event.occurred_at.clone(),
-                node_id: event.node_id.clone(),
-                attempt_id: event.attempt_id.clone(),
-                causation_id: event.causation_id.clone(),
-                correlation_id: event.correlation_id.clone(),
-                artifact_refs: event.artifact_refs.clone(),
-                payload: event.payload.clone(),
-            });
-        }
-        tx.commit()?;
-        Ok(appended)
+        Ok(prepared)
     }
 
     /// Ordered transitions for one provider operation. The correlation index keeps admission
@@ -738,97 +742,6 @@ impl EventStore {
             .conn
             .prepare("SELECT DISTINCT run_id FROM events ORDER BY run_id")?;
         let rows = stmt.query_map([], |row| row.get(0))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::Sqlite)
-    }
-
-    /// Records the wall-clock sidecar for one Attempt. A second write for the same Attempt
-    /// replaces the first, so a retried write cannot double-count.
-    pub fn record_attempt_wall(&self, wall: &AttemptWall) -> Result<(), StoreError> {
-        fn bounded(value: u64, what: &str) -> Result<i64, StoreError> {
-            i64::try_from(value).map_err(|_| {
-                StoreError::Conflict(format!("attempt wall {what} exceeds SQLite range"))
-            })
-        }
-        fn optional(value: Option<u64>, what: &str) -> Result<Option<i64>, StoreError> {
-            value.map(|value| bounded(value, what)).transpose()
-        }
-        let (input, output, cache_read, cache_write, reasoning, chargeable) = match &wall.usage {
-            Some(usage) => (
-                optional(usage.input_tokens, "input tokens")?,
-                optional(usage.output_tokens, "output tokens")?,
-                optional(usage.cache_read_tokens, "cache-read tokens")?,
-                optional(usage.cache_write_tokens, "cache-write tokens")?,
-                optional(usage.reasoning_tokens, "reasoning tokens")?,
-                Some(bounded(usage.chargeable_tokens, "chargeable tokens")?),
-            ),
-            None => (None, None, None, None, None, None),
-        };
-        self.conn.execute(
-            "INSERT OR REPLACE INTO attempt_wall (
-                 run_id, attempt_id, node_id, round, epoch, started_unix_ms, elapsed_ms,
-                 input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                 reasoning_tokens, chargeable_tokens
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
-            rusqlite::params![
-                wall.run_id,
-                wall.attempt_id,
-                wall.node_id,
-                i64::from(wall.round),
-                i64::from(wall.epoch),
-                bounded(wall.started_unix_ms, "start")?,
-                bounded(wall.elapsed_ms, "elapsed")?,
-                input,
-                output,
-                cache_read,
-                cache_write,
-                reasoning,
-                chargeable,
-            ],
-        )?;
-        Ok(())
-    }
-
-    /// The recorded wall-clock rows of a run, oldest first. A store written before the sidecar
-    /// existed has no table; that reads as no rows, not as an error.
-    pub fn attempt_wall(&self, run_id: &str) -> Result<Vec<AttemptWall>, StoreError> {
-        let present: i64 = self.conn.query_row(
-            "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = 'attempt_wall'",
-            [],
-            |row| row.get(0),
-        )?;
-        if present == 0 {
-            return Ok(Vec::new());
-        }
-        let mut stmt = self.conn.prepare(
-            "SELECT attempt_id, node_id, round, epoch, started_unix_ms, elapsed_ms,
-                    input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                    reasoning_tokens, chargeable_tokens
-             FROM attempt_wall WHERE run_id = ?1
-             ORDER BY started_unix_ms, attempt_id",
-        )?;
-        let rows = stmt.query_map([run_id], |row| {
-            let unsigned = |value: i64| u64::try_from(value).unwrap_or(0);
-            let optional = |value: Option<i64>| value.map(unsigned);
-            let chargeable: Option<i64> = row.get(11)?;
-            Ok(AttemptWall {
-                run_id: run_id.to_string(),
-                attempt_id: row.get(0)?,
-                node_id: row.get(1)?,
-                round: u32::try_from(row.get::<_, i64>(2)?).unwrap_or(u32::MAX),
-                epoch: u32::try_from(row.get::<_, i64>(3)?).unwrap_or(u32::MAX),
-                started_unix_ms: unsigned(row.get(4)?),
-                elapsed_ms: unsigned(row.get(5)?),
-                usage: chargeable.map(|chargeable| AttemptUsage {
-                    input_tokens: optional(row.get(6).ok().flatten()),
-                    output_tokens: optional(row.get(7).ok().flatten()),
-                    cache_read_tokens: optional(row.get(8).ok().flatten()),
-                    cache_write_tokens: optional(row.get(9).ok().flatten()),
-                    reasoning_tokens: optional(row.get(10).ok().flatten()),
-                    chargeable_tokens: unsigned(chargeable),
-                }),
-            })
-        })?;
         rows.collect::<Result<Vec<_>, _>>()
             .map_err(StoreError::Sqlite)
     }
@@ -1492,6 +1405,23 @@ fn typed_json_artifacts(
                 )?;
                 continue;
             }
+            EventType::RunReportV6 => {
+                let report: review_core::RunReportPayloadV6 =
+                    serde_json::from_value(event.payload.clone())?;
+                if let review_core::RunReportExecutionV6::Cached {
+                    cache_snapshots, ..
+                } = report.execution
+                {
+                    for snapshot in cache_snapshots {
+                        insert_artifact_type(
+                            &mut artifacts,
+                            snapshot.source_digest,
+                            review_core::contract::CACHE_MANIFEST_V1.into(),
+                        )?;
+                    }
+                }
+                continue;
+            }
             EventType::RunReportV5 => {
                 let report: review_core::RunReportPayloadV5 =
                     serde_json::from_value(event.payload.clone())?;
@@ -2059,6 +1989,31 @@ fn is_digest(value: &str) -> bool {
         .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
+fn task_report_execution(payload: &Value) -> Result<(EventType, Value), StoreError> {
+    let report: review_core::RunReportPayloadV6 = serde_json::from_value(payload.clone())?;
+    report.validate().map_err(StoreError::Conflict)?;
+    let mut facts = serde_json::json!({"outcomes": report.outcomes,
+        "blocked_gates": report.blocked_gates, "verdict": report.verdict});
+    let event_type = match report.execution {
+        review_core::RunReportExecutionV6::Unbound {} => EventType::RunReportV3,
+        review_core::RunReportExecutionV6::Bound { execution_bindings } => {
+            facts["execution_bindings"] = serde_json::to_value(execution_bindings)?;
+            EventType::RunReportV4
+        }
+        review_core::RunReportExecutionV6::Cached {
+            execution_bindings,
+            cache_snapshots,
+            cache_failures,
+        } => {
+            facts["execution_bindings"] = serde_json::to_value(execution_bindings)?;
+            facts["cache_snapshots"] = serde_json::to_value(cache_snapshots)?;
+            facts["cache_failures"] = serde_json::to_value(cache_failures)?;
+            EventType::RunReportV5
+        }
+    };
+    Ok((event_type, facts))
+}
+
 fn report_outcomes(
     event_type: EventType,
     payload: &Value,
@@ -2080,6 +2035,10 @@ fn report_outcomes(
             payload.clone(),
         )?
         .outcomes),
+        EventType::RunReportV6 => Ok(serde_json::from_value::<review_core::RunReportPayloadV6>(
+            payload.clone(),
+        )?
+        .outcomes),
         _ => Err(StoreError::Conflict(format!(
             "{event_type} has no structural run-report outcomes"
         ))),
@@ -2091,7 +2050,36 @@ fn validate_report_plan(
     event_type: EventType,
     payload: &Value,
 ) -> Result<(), StoreError> {
+    if event_type == EventType::RunReportV6 {
+        let (kind, facts) = task_report_execution(payload)?;
+        let incomplete = facts["verdict"]["kind"] == "incomplete";
+        return validate_report_plan_facts(plan, kind, &facts, incomplete);
+    }
+    validate_report_plan_facts(plan, event_type, payload, false)
+}
+
+fn validate_report_plan_facts(
+    plan: &AuthorityPlan,
+    event_type: EventType,
+    payload: &Value,
+    incomplete_task: bool,
+) -> Result<(), StoreError> {
     let outcomes = report_outcomes(event_type, payload)?;
+    let required_gates: std::collections::BTreeSet<String> = plan
+        .gate_nodes
+        .iter()
+        .filter(|node| {
+            !incomplete_task
+                || outcomes.iter().any(|entry| {
+                    &entry.node == *node
+                        && matches!(
+                            entry.outcome,
+                            review_core::RunNodeOutcomeV2::Completed { .. }
+                        )
+                })
+        })
+        .cloned()
+        .collect();
     let expected: std::collections::BTreeSet<&str> =
         plan.nodes.keys().map(String::as_str).collect();
     let actual: std::collections::BTreeSet<&str> = outcomes
@@ -2129,7 +2117,7 @@ fn validate_report_plan(
         };
         let binding_nodes: std::collections::BTreeSet<String> =
             bindings.into_iter().map(|binding| binding.node).collect();
-        if binding_nodes != plan.gate_nodes {
+        if !required_gates.is_subset(&binding_nodes) || !binding_nodes.is_subset(&plan.gate_nodes) {
             return Err(StoreError::Conflict(
                 "RunReport@4 does not cover exactly the pinned Gate nodes".into(),
             ));
@@ -2162,7 +2150,12 @@ fn validate_report_plan(
                     .map(move |kind| (node.clone(), kind.clone()))
             })
             .collect();
-        if actual != expected {
+        let required: std::collections::BTreeSet<_> = expected
+            .iter()
+            .filter(|(node, _)| required_gates.contains(node))
+            .cloned()
+            .collect();
+        if !required.is_subset(&actual) || !actual.is_subset(&expected) {
             return Err(StoreError::Conflict(
                 "RunReport@5 does not cover exactly the pinned Gate cache requests".into(),
             ));
@@ -2585,6 +2578,68 @@ fn validate_campaign_transition(
                         )));
                     }
                     match event_type {
+                        EventType::TaskReviewResultSelectedV1 => {
+                            task::execution::review::validate_selection(
+                                tx,
+                                cas,
+                                run_id,
+                                active_id,
+                                active_payload,
+                                event,
+                            )?;
+                            let node = event.node_id.as_deref().expect("validated Review node");
+                            let plan = plan.ok_or_else(|| {
+                                StoreError::Conflict(
+                                    "Task Review selection needs pinned Review authority".into(),
+                                )
+                            })?;
+                            let outputs = if let Some(expected) = plan.nodes.get(node) {
+                                if expected.kind != "reviewer" {
+                                    return Err(StoreError::Conflict(
+                                        "Task Review selection belongs to a non-reviewer node"
+                                            .into(),
+                                    ));
+                                }
+                                expected.outputs.clone()
+                            } else {
+                                dynamic_node_authority(tx, cas, run_id, active_id, plan, node)?
+                                    .ok_or_else(|| {
+                                        StoreError::Conflict(
+                                            "Task Review selection has no declared reviewer".into(),
+                                        )
+                                    })?
+                                    .outputs
+                            };
+                            let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
+                                serde_json::from_value(event.payload.clone())?;
+                            let result: review_core::ArtifactEnvelope = serde_json::from_value(
+                                cas.get_json(&selected.result_envelope_id)
+                                    .map_err(|e| StoreError::Artifact(e.to_string()))?,
+                            )?;
+                            // Historical name-only Reviewer ports carry exactly the v1 flat
+                            // result. The Task frontend makes that existing contract explicit;
+                            // this does not authorize another result generation or shape.
+                            let result_type =
+                                outputs.first().map(|port| match port.artifact_type() {
+                                    review_core::contract::OPAQUE_V1 => {
+                                        review_core::contract::REVIEWER_RESULT_V1
+                                    }
+                                    ty => ty,
+                                });
+                            if outputs.len() != 1
+                                || result_type != Some(result.artifact_type.as_str())
+                                || outputs[0].cardinality() != "one"
+                                || outputs[0].optional()
+                            {
+                                return Err(StoreError::Conflict(
+                                    "Selected Task result differs from the pinned Review output contract".into(),
+                                ));
+                            }
+                            batch_selected.insert(
+                                event.attempt_id.clone().expect("validated Review Attempt"),
+                                (node.into(), selected.result_artifact_id),
+                            );
+                        }
                         EventType::ReviewerExecutionBoundV1 => {
                             let node = event.node_id.as_deref().ok_or_else(|| {
                                 StoreError::Conflict(
@@ -3553,45 +3608,23 @@ fn validate_campaign_transition(
                                 )));
                             }
                             if let Some(attempt) = event.attempt_id.as_deref() {
-                                let selected: Option<(String, String)> = tx
-                                    .query_row(
-                                        "SELECT node_id, payload FROM events
-                                         WHERE run_id = ?1 AND causation_id = ?2
-                                           AND attempt_id = ?3 AND type = 'AttemptAdmitted@1'
-                                         LIMIT 1",
-                                        params![run_id, active_id, attempt],
-                                        |row| {
-                                            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-                                        },
-                                    )
-                                    .optional()?
-                                    .and_then(|(node, raw)| {
-                                        serde_json::from_str::<
-                                            review_core::event::AttemptAdmittedPayloadV1,
-                                        >(&raw)
-                                        .ok()
-                                        .and_then(|payload| {
-                                            (payload.selection == "selected")
-                                                .then_some(payload.result_artifact)
-                                                .flatten()
-                                                .map(|result| (node, result))
-                                        })
-                                    })
-                                    .or_else(|| batch_selected.get(attempt).cloned());
-                                let Some((selected_node, result)) = selected else {
-                                    return Err(StoreError::Conflict(
-                                        "reviewer receipt has no selected admitted attempt".into(),
-                                    ));
-                                };
+                                task::execution::owned::check_canonical_child_receipt(
+                                    tx, cas, run_id, active_id, node, attempt,
+                                )?;
+                                let result = selected_attempt_result(
+                                    tx,
+                                    run_id,
+                                    active_id,
+                                    &batch_selected,
+                                    node,
+                                    attempt,
+                                )?;
                                 let outputs: Vec<&String> = receipt
                                     .outputs
                                     .iter()
                                     .flat_map(|port| &port.artifact_ids)
                                     .collect();
-                                if selected_node != node
-                                    || outputs.len() != 1
-                                    || outputs[0] != &result
-                                {
+                                if outputs.len() != 1 || outputs[0] != &result {
                                     return Err(StoreError::Conflict(
                                         "reviewer receipt contradicts its selected admitted result"
                                             .into(),
@@ -3600,6 +3633,9 @@ fn validate_campaign_transition(
                             }
                         }
                         EventType::ProposalPreparedV1 | EventType::ProposalRefusedV1 => {
+                            task::execution::review::validate_proposal(
+                                tx, cas, run_id, active_id, event,
+                            )?;
                             let node = event.node_id.as_deref().ok_or_else(|| {
                                 StoreError::Conflict(format!("{event_type} has no node ID"))
                             })?;
@@ -3995,27 +4031,43 @@ fn validate_campaign_transition(
                         // when it keeps the Round open; frozen report versions retain their
                         // existing closing-report admission behavior.
                         if event_type.run_report_requires_receipts()
-                            && (closes || event_type == EventType::RunReportV5)
+                            && (closes
+                                || matches!(
+                                    event_type,
+                                    EventType::RunReportV5 | EventType::RunReportV6
+                                ))
                         {
                             if let Some(plan) = plan {
                                 validate_report_plan(plan, event_type, &event.payload)?;
                             }
-                            if matches!(event_type, EventType::RunReportV4 | EventType::RunReportV5)
-                            {
+                            let task_execution = if event_type == EventType::RunReportV6 {
+                                Some(task_report_execution(&event.payload)?)
+                            } else {
+                                None
+                            };
+                            let (execution_type, execution_payload) = task_execution
+                                .as_ref()
+                                .map_or((event_type, &event.payload), |(kind, facts)| {
+                                    (*kind, facts)
+                                });
+                            if matches!(
+                                execution_type,
+                                EventType::RunReportV4 | EventType::RunReportV5
+                            ) {
                                 validate_report_gate_bindings(
                                     tx,
                                     run_id,
                                     active_id,
-                                    event_type,
-                                    &event.payload,
+                                    execution_type,
+                                    execution_payload,
                                 )?;
                             }
-                            if event_type == EventType::RunReportV5 {
+                            if execution_type == EventType::RunReportV5 {
                                 validate_report_cache_snapshots(
                                     tx,
                                     run_id,
                                     active_id,
-                                    &event.payload,
+                                    execution_payload,
                                     &event.artifact_refs,
                                     prepared,
                                 )?;
@@ -4919,19 +4971,25 @@ fn selected_attempt_result(
     }
     let rows = tx
         .prepare(
-            "SELECT payload FROM events
+            "SELECT type, payload FROM events
              WHERE run_id = ?1 AND causation_id = ?2 AND node_id = ?3 AND attempt_id = ?4
-               AND type = 'AttemptAdmitted@1' ORDER BY sequence",
+               AND type IN ('AttemptAdmitted@1', 'TaskReviewResultSelected@1') ORDER BY sequence",
         )?
         .query_map(params![run_id, round_event_id, node, attempt], |row| {
-            row.get::<_, String>(0)
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    let [raw] = rows.as_slice() else {
+    let [(kind, raw)] = rows.as_slice() else {
         return Err(StoreError::Conflict(
             "Proposal has no unique selected Attempt admission".into(),
         ));
     };
+    if kind == "TaskReviewResultSelected@1" {
+        let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
+            serde_json::from_str(raw)?;
+        selected.validate().map_err(StoreError::Conflict)?;
+        return Ok(selected.result_artifact_id);
+    }
     let admitted: review_core::event::AttemptAdmittedPayloadV1 = serde_json::from_str(raw)?;
     if admitted.selection != "selected" {
         return Err(StoreError::Conflict(
@@ -5204,6 +5262,7 @@ fn round_runtime_event(event_type: EventType) -> bool {
         || matches!(
             event_type,
             EventType::BrokerOperationCompletedV1
+                | EventType::TaskReviewResultSelectedV1
                 | EventType::ReviewerExecutionBoundV1
                 | EventType::AttemptAdmittedV1
                 | EventType::AttemptDispatchedV1
@@ -5236,6 +5295,7 @@ fn event_uses_authority_plan(event_type: EventType) -> bool {
         || matches!(
             event_type,
             EventType::BrokerOperationCompletedV1
+                | EventType::TaskReviewResultSelectedV1
                 | EventType::ReviewerExecutionBoundV1
                 | EventType::AttemptAdmittedV1
                 | EventType::AttemptFailedV1
@@ -5282,7 +5342,7 @@ fn broker_receipt_terminates_handle(receipt: &review_core::BrokerOperationReceip
 }
 
 fn latest_round(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &rusqlite::Connection,
     run_id: &str,
 ) -> Result<Option<(String, review_core::RoundStartedPayloadV1)>, StoreError> {
     let row: Option<(String, String)> = tx
@@ -5304,7 +5364,7 @@ const ROUND_TERMINAL_REPORT_SQL: &str = "SELECT type, payload FROM events
      ORDER BY sequence";
 
 fn round_has_terminal_report(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &rusqlite::Connection,
     run_id: &str,
     round_event_id: &str,
 ) -> Result<bool, StoreError> {
@@ -5776,6 +5836,16 @@ fn validate_integration_commit_authority(
             }
         }
     }
+    let task_report:Option<String>=tx.query_row(
+        "SELECT payload FROM events WHERE run_id=?1 AND type='RunReport@6' AND causation_id=(SELECT event_id FROM events WHERE run_id=?1 AND type='RoundStarted@1' ORDER BY sequence DESC LIMIT 1) ORDER BY sequence DESC LIMIT 1", [run_id],|r|r.get(0)).optional()?;
+    if let Some(raw) = task_report {
+        let report: review_core::RunReportPayloadV6 = serde_json::from_str(&raw)?;
+        report.validate().map_err(StoreError::Conflict)?;
+        let (findings, demands) =
+            task::review_integration::canonical_task_integration_views(cas, &report)?;
+        finding_set = Some(findings);
+        demand_set = Some(demands);
+    }
     if finding_set.as_deref() != Some(committed.expected_finding_set_id.as_str())
         || demand_set.as_deref() != Some(committed.expected_demand_set_id.as_str())
     {
@@ -6041,6 +6111,70 @@ fn derive_event_id(run_id: &str, sequence: i64) -> String {
     hasher.update(b"\0");
     hasher.update(sequence.to_string().as_bytes());
     format!("{:x}", hasher.finalize())[..26].to_string()
+}
+
+fn insert_events(
+    tx: &rusqlite::Transaction<'_>,
+    run_id: &str,
+    events: &[NewEvent],
+    first: i64,
+) -> Result<Vec<RunEvent>, StoreError> {
+    let mut appended = Vec::with_capacity(events.len());
+    for (offset, event) in events.iter().enumerate() {
+        let offset = i64::try_from(offset)
+            .map_err(|_| StoreError::Conflict("event batch is too large".into()))?;
+        let next = first
+            .checked_add(offset)
+            .ok_or_else(|| StoreError::Conflict("event sequence overflow".into()))?;
+        let event_id = derive_event_id(run_id, next);
+        let refs = serde_json::to_string(&event.artifact_refs)?;
+        let payload = serde_json::to_string(&event.payload)?;
+        tx.execute(
+            "INSERT INTO events
+                   (run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
+                    causation_id, correlation_id, artifact_refs, payload)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![
+                run_id,
+                next,
+                event_id,
+                event.event_type.as_str(),
+                event.occurred_at,
+                event.node_id,
+                event.attempt_id,
+                event.causation_id,
+                event.correlation_id,
+                refs,
+                payload,
+            ],
+        )
+        .map_err(|e| match e {
+            rusqlite::Error::SqliteFailure(err, _)
+                if matches!(
+                    err.extended_code,
+                    rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                        | rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                ) =>
+            {
+                StoreError::Conflict(format!("sequence {next} already taken for run {run_id}"))
+            }
+            other => StoreError::Sqlite(other),
+        })?;
+        appended.push(RunEvent {
+            event_id,
+            run_id: run_id.to_string(),
+            sequence: next as u64,
+            event_type: event.event_type,
+            occurred_at: event.occurred_at.clone(),
+            node_id: event.node_id.clone(),
+            attempt_id: event.attempt_id.clone(),
+            causation_id: event.causation_id.clone(),
+            correlation_id: event.correlation_id.clone(),
+            artifact_refs: event.artifact_refs.clone(),
+            payload: event.payload.clone(),
+        });
+    }
+    Ok(appended)
 }
 
 #[cfg(test)]

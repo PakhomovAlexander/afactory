@@ -1499,3 +1499,25 @@ run still refuses before admission when that one does not fit either. `af onboar
 validates every route target; `validate_af_project` accepts every declared candidate; input sizing
 skips Scatter nodes and closeout reviewers, which have no first-Attempt input to measure. Plan
 JSON carries `route`; open prints `route    …`.
+
+## 2026-09-12: active Task checkpoint text before captured frontend verification
+
+**Active increment:** [Task execution](task-execution.md), P00–P14. The owner approved
+implementation on 2026-09-10. Contracts, common execution, sharing, embedding, bounded repair,
+selection and generated-plan approval are implemented in the stacked PRs. Portable export and
+contract tests, the software/document starter pack and heavy repair-history continuation pass the
+full gate. Read-only issue capture and source conformance also pass. Ticket revision refresh
+and result-scoped delivery pass the full gate. Requirements acceptance now composes with
+embedded Review on the final Snapshot. The shared-Store/domain extraction checkpoint passes
+805 local tests, zero failures, 15 ignored. Its performance correction passes 807 local tests,
+documentation tests and frozen reproduction, with unchanged deadlines and verifier reserves.
+Linux CI passes at `facbfb4`. Durable scheduler reports and recoverable domain publication
+pass 811 local tests, documentation tests and frozen reproduction at `d0d4ad0`; Linux CI
+passes at `c45a55b`. Actual reservation followed by exact-context binding passes 814 tests,
+documentation tests and frozen reproduction at `7ba2338` (stacked as `2d8421e`). One-invocation
+Review operation extraction, typed side metadata and common Attempt currentness pass the full
+gate at `d63d8b2`: 816 tests, zero failures, 15 ignored; CI passes at `63aa222`. Canonical Review
+selection from the common Task ledger passes the complete gate at `2445f8f` (stacked as
+`f54d16a`): 819 tests, zero failures, 15 ignored. The legacy entry-point cutover and P14 release
+evidence remain required. The completed
+M0–M9 record below remains the compatibility foundation.

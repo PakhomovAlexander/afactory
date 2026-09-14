@@ -1,0 +1,86 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-provider-context:1",
+  "title": "task-provider-context@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invocation",
+    "capability",
+    "rendered_id",
+    "manifest"
+  ],
+  "properties": {
+    "invocation": {
+      "allOf": [
+        {
+          "$ref": "urn:af:schema:task-invocation:1"
+        },
+        {
+          "properties": {
+            "inputs": {
+              "maxProperties": 0
+            }
+          }
+        }
+      ]
+    },
+    "capability": {
+      "$ref": "urn:af:schema:task-provider-admission:1"
+    },
+    "rendered_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entries",
+        "rendered_bytes",
+        "estimated_tokens"
+      ],
+      "properties": {
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "required_by",
+              "artifact_id",
+              "rendered_bytes",
+              "estimated_tokens"
+            ],
+            "properties": {
+              "name": {
+                "const": "capability_probe"
+              },
+              "required_by": {
+                "const": "installed Provider admission"
+              },
+              "artifact_id": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              },
+              "rendered_bytes": {
+                "const": 23
+              },
+              "estimated_tokens": {
+                "const": 6
+              }
+            }
+          }
+        },
+        "rendered_bytes": {
+          "const": 23
+        },
+        "estimated_tokens": {
+          "const": 6
+        }
+      }
+    }
+  },
+  "$comment": "Existing af/TaskProviderContext@1 readiness payload. The fixed request and manifest are rederived by Provider admission; Rust/domain checks require matching plan IDs and rendered digest/manifest artifact identity. Business inputs, feedback and ambient credentials are absent. Version 1 retains its invocation policy identity; version 2 uses independent probe policy authority."
+}

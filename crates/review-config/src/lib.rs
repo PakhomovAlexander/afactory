@@ -14,6 +14,7 @@
 //! Every struct denies unknown fields. A typo in a pipeline must be an error, not a setting that
 //! silently does nothing — the same rule the contracts use, for the same reason.
 
+pub mod captured_review;
 pub mod lock;
 pub mod pipeline_edit;
 pub mod task;
@@ -1081,6 +1082,12 @@ impl Loaded {
 
     pub fn plan_order(&self) -> &[String] {
         &self.plan.order
+    }
+
+    /// Borrow the validated topology for installed compatibility compilation. This does not
+    /// dispatch it, expose mutable authority, or bypass captured package/manifest admission.
+    pub fn planned(&self) -> &review_graph::Planned {
+        &self.plan
     }
 
     pub fn node_is_gated(&self, node: &str) -> bool {

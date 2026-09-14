@@ -1,8 +1,81 @@
 # Afactory Review Kernel - capability work (M0-M9)
 
-**Active increment:** [Task execution](task-execution.md), P00–P14. The owner approved
-implementation on 2026-09-10; baseline checks pass and contract work is next. The completed
-M0–M9 record below remains the compatibility foundation.
+**Active increment:** [Task execution](task-execution.md), P00–P14, authorized as three PRs.
+
+WS5 source corrections are integrated in PR1 `c2207ca` and PR2 `10c5302`. Explicit Review
+generation2 now supplies exact per-reviewer prior-Finding assignments, complete dispositions,
+readable bounded patch transport and selected Attempt provenance. Old captured generations
+remain readable. Current PR2 starters select generation2 independently of Provider catalog
+version. Failed execution cannot become Satisfied merely because public obligations passed;
+real negative receipts remain Unsatisfied. Warm Store evidence is freshly verified, source
+reads share validation within one operation, and PR2 Review memos are cleared at each external
+operation. The [implementation review record](task-execution/implementation-review.md) maps
+all specialist reports to corrections, remaining limits and exact focused receipts.
+
+PR1's final read-only full Gate at `c2207ca` passes **759 tests, zero failures, 15 ignored**
+across 98 suites, formatting, Clippy and byte-identical fixtures in 297,311ms, with all 567
+source files and directory modes unchanged. PR2 `10c5302` passes its final readonly
+full Gate: **1,168 tests, zero failures, 15 ignored**, 134 suites, formatting, Clippy and
+byte-identical fixtures in 752,255 ms; all 996 source files and directory modes remain
+unchanged. Earlier Provider-currentness `bc1799f`
+(tree `e3e153e0`, 1,129 tests/132 suites) and heartbeat `3d74329` (1,123 tests) remain included
+historical checkpoints. Their exact native identity/cancellation guarantees and the residual
+check-to-client credential race remain in
+[ADR-0089](adr/0089-interrupt-task-work-when-its-writer-heartbeat-fails.md) and
+[ADR-0090](adr/0090-recheck-native-task-provider-identity-before-private-invocation.md).
+Published `5aa6bd52` passed historical
+[CI run 34723107534](https://github.com/PakhomovAlexander/afactory/actions/runs/34723107534).
+The owner has instructed working without CI today; no retry or billing action is queued.
+
+Personal Claude authentication and Docker restart/owned cleanup are complete. PR1 Fable and
+Opus returned selected partial results; the original Campaign lacks Sol/Gather/Ledger and
+remains Incomplete. A separately authorized Sol WholeTree recovery closed Fail(exhausted)
+with seven Findings on the same candidate. Combined PR1 spend is 1,655,355 tokens, 255,355
+over the 1,400,000 approval; further paid review calls are stopped. The original claims remain
+open or partial, with no canonical fixed/rejected/wontfix transition invented by local fixes.
+PR2/PR3 specialist reviews and remaining supported-environment, benchmark, calibration/pilot
+and consumer-release evidence remain. Deterministic Gates supply no live-model performance
+claim. Previous current-status passages are preserved verbatim in the
+[pre-WS5 status archive](task-execution/status-before-ws5-review-2026-09-14.txt).
+
+## Earlier Task checkpoints
+
+These records retain the original checkpoint status. Their pending-CI and next-conformance
+notes are historical; the current gate and remaining work are stated above. Replaced current
+passages are retained in the [status archive](task-execution/status-archive-2026-09-13.txt).
+
+The installed Review CLI checkpoint `fdffb1c` matches frozen `32c0f4b`, tree `910d188d`, and
+passes **1,078 tests, zero failures, 15 ignored** across 127 suites plus formatting, Clippy,
+documentation and byte-identical fixtures. New Review and Provider doctor share the original
+Task, resources and recovery. Exact native cumulative usage and expired-Waiting factual
+publication are the next separate conformance corrections. CI for the CLI checkpoint is pending.
+Captured Review continuation checkpoint `faeb933` (frozen identical tree `cff20f3`) passes
+the complete local gate: **1,018 tests, zero failures, 15 ignored** across 125 suites, plus
+formatting, Clippy, documentation tests and frozen reproduction. Multiple Review Rounds retain
+one Task, its original budget, late paid usage and exact handoff history. Fresh CLI inspection
+can explain an earlier recorded plan without changing either log. Owned slices and separately
+captured Provider probes already use the common scheduler and ledger. Automatic Integration
+passes the full local gate at `6fe82f0` (frozen `d2df0ec`, tree `a53e534f`): **1,044 tests,
+zero failures, 15 ignored**, formatting, Clippy, documentation and byte-identical fixtures.
+Published `f453da1` passes Check and container-probes in CI `34711466871`. The common Review
+CLI and Provider doctor cutover now passes its full local gate. Actual CLI fixtures
+cover charged probe reuse, original Task resources across Rounds and SIGKILL recovery after
+the original lease expires. See [ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md).
+The debug-profile correction `97bb1c7` passes the same full gate. It addresses the earlier
+CI recovery deadline failure without changing Task limits; published `2cae97c` passes both
+checks in CI `34708574515`.
+
+Common Task workflows, shared packages, embedding, repair, selection/generation, exact-plan
+approval, export, starters and issue/document Tasks are implemented on the PR branches.
+The shared Review operations and Round-fencing checkpoint passes the complete local gate:
+**839 tests, zero failures, 15 ignored**, documentation tests and byte-identical frozen
+reproduction at `9a81fbe` (stacked as `5b1461e`). It shares canonical operations and recovers
+input publication before context capture. The preceding captured frontend passes CI at
+`50e9e29`. External PR reviews, remaining conformance and
+P14 pilot/release evidence are still required. The [three-PR checkpoint record](task-execution/pr-sequence.md)
+retains implementation and verification details; [Review compatibility](task-execution/review-compatibility.md)
+records the versioned domain/runtime connections. The completed M0–M9 record below remains
+the compatibility foundation.
 
 **Status:** M0–M9 are complete and shipped in private release `v0.6.0` from exact `main` commit
 `fb462ba`. M7 adds base-bound, seal-checked Proposal

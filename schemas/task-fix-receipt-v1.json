@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-fix-receipt:1",
+  "title": "task-fix-receipt@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invocation",
+    "finding_id",
+    "continuation_id",
+    "subject_id",
+    "decision",
+    "verifier_output_id"
+  ],
+  "properties": {
+    "invocation": {
+      "$ref": "urn:af:schema:task-invocation:1"
+    },
+    "finding_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "continuation_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "subject_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "decision": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "expected_view_id",
+        "attestation_id",
+        "outcome",
+        "reason"
+      ],
+      "properties": {
+        "expected_view_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "attestation_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "outcome": {
+          "enum": [
+            "positive",
+            "negative",
+            "inconclusive"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 65536
+        }
+      }
+    },
+    "verifier_output_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  }
+}

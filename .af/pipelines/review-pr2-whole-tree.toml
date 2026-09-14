@@ -1,0 +1,121 @@
+# Explicit whole-tree review of the exact PR2 resulting implementation.
+# No canonical Diff or Base is claimed; baseline and complete path index travel in captured focus.
+# Task increment PR review: Fable 5.1/high correctness and architecture;
+# Opus 5/xhigh performance; GPT-5.6-Sol/high bug bounty.
+# Bind correctness=claude-personal, performance=claude-personal, bugs=codex-personal.
+# Owner-authorized specialist policy; one light Round per PR, then fixes and project Gates.
+
+version = 2
+check_timeout_seconds = 3600
+
+[subject]
+kind = "whole-tree"
+
+[[checks]]
+name = "markdownlint"
+program = "npx"
+args = [{ value = "--yes" }, { value = "markdownlint-cli2@0.22.1" }, { value = "**/*.md" }]
+
+[[checks]]
+name = "kernel-verify"
+program = "bash"
+args = [{ value = "scripts/verify.sh" }]
+
+[[nodes]]
+id = "gate"
+kind = "gate"
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+[[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+
+[[nodes]]
+id = "correctness"
+kind = "reviewer"
+inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }, { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+gated_by = "gate"
+package = "correctness"
+demands = "required"
+
+[[nodes]]
+id = "bugs"
+kind = "reviewer"
+inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }, { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+gated_by = "gate"
+package = "bugs"
+demands = "required"
+
+[[nodes]]
+id = "performance"
+kind = "reviewer"
+inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }, { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+gated_by = "gate"
+package = "performance"
+demands = "required"
+
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = [{ name = "correctness", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }, { name = "bugs", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }, { name = "performance", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }, { name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "correctness", port = "prior_findings" }
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "bugs", port = "prior_findings" }
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "performance", port = "prior_findings" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "correctness", port = "gate" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "bugs", port = "gate" }
+
+[[edges]]
+from = { node = "gate", port = "decision" }
+to = { node = "performance", port = "gate" }
+
+[[edges]]
+from = { node = "correctness", port = "result" }
+to = { node = "gather", port = "correctness" }
+
+[[edges]]
+from = { node = "bugs", port = "result" }
+to = { node = "gather", port = "bugs" }
+
+[[edges]]
+from = { node = "performance", port = "result" }
+to = { node = "gather", port = "performance" }
+
+[[edges]]
+from = { node = "gather", port = "reports" }
+to = { node = "ledger", port = "reports" }
+
+[budgets]
+unit = "tokens"
+attempt = 400000
+run = 1400000
+
+[convergence]
+clean_rounds = 1
+max_rounds = 2
+gate = "major"

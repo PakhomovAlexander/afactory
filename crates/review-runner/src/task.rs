@@ -5,15 +5,18 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
+use review_broker::ExactBrokerClient;
 use review_core::task::execution::TaskInvocationV1;
 use review_core::task::feedback::TaskFeedbackCodeV1;
-use review_core::{ArtifactEnvelope, Command, Producer};
+use review_core::{ArtifactEnvelope, BrokerCredentialModeV1, Command, Producer};
 use review_store::{Cas, validate_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ContextManifest, ModelRunner, RunnerError, TokenUsage};
+use crate::{ContextManifest, ModelRunner, RunnerError};
 pub mod legacy;
+pub mod provider;
+pub mod usage;
 use legacy::LegacyTaskProtocol;
 
 pub const TASK_CONTEXT_V1: &str = "af/TaskContext@1";
@@ -69,6 +72,56 @@ pub struct TaskContext {
         deserialize_with = "review_core::task::present_option"
     )]
     pub legacy: Option<legacy::LegacyTaskContext>,
+}
+
+impl TaskContext {
+    /// Structural checks for the existing captured payload. The installed host separately
+    /// rederives exact inputs, instructions, contracts and feedback before context admission.
+    pub fn validate(&self) -> Result<(), String> {
+        self.invocation.validate()?;
+        if !review_core::is_digest(&self.rendered_id)
+            || !review_core::is_digest(&self.contract_id)
+            || self.feedback_ids.len() > 16
+            || self
+                .feedback_ids
+                .iter()
+                .any(|id| !review_core::is_digest(id))
+            || self
+                .feedback_ids
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.feedback_ids.len()
+        {
+            return Err("Task context needs exact identities and bounded distinct feedback".into());
+        }
+        let safe = review_core::json::SAFE_INTEGER_MAX as u64;
+        if self.manifest.entries.len() < 3
+            || self.manifest.rendered_bytes > MAX_WORKER_BYTES as u64
+            || self.manifest.estimated_tokens != self.manifest.rendered_bytes.div_ceil(4)
+            || self.manifest.entries.iter().any(|entry| {
+                entry.name.is_empty()
+                    || entry.required_by.is_empty()
+                    || entry
+                        .artifact_id
+                        .as_deref()
+                        .is_some_and(|id| !review_core::is_digest(id))
+                    || entry.artifact_type.as_deref().is_some_and(|ty| {
+                        !review_core::is_artifact_type(ty)
+                            && !matches!(ty, "af/implement-input@1" | "af/evaluate-input@1")
+                    })
+                    || entry.rendered_bytes > safe
+                    || entry.estimated_tokens > safe
+                    || entry.estimated_tokens != entry.rendered_bytes.div_ceil(4)
+            })
+        {
+            return Err(
+                "Task context manifest exceeds captured counter bounds or changes its estimate"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
 }
 
 pub struct WorkerContract {
@@ -346,6 +399,7 @@ impl WorkerContract {
             manifest,
             legacy: legacy.clone(),
         };
+        context.validate()?;
         let refs = invocation
             .inputs
             .values()
@@ -391,6 +445,7 @@ impl WorkerContract {
         let explicit_legacy = envelope.artifact_type == TASK_CONTEXT_V2;
         let context: TaskContext =
             serde_json::from_value(envelope.payload).map_err(|e| e.to_string())?;
+        context.validate()?;
         if context.contract_id != self.id {
             return Err("Worker context uses another contract".into());
         }
@@ -445,8 +500,9 @@ fn worker_value(cas: &Cas, id: &str) -> Result<WorkerValue, String> {
 
 /// Usage and raw evidence survive both nonzero process exits and output-schema refusal.
 pub struct WorkerReturn {
+    pub usage_observation: Option<review_core::task::usage::TaskUsageObservationV1>,
     pub reply: Result<WorkerReply, String>,
-    pub usage: Option<TokenUsage>,
+    pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
     pub raw_artifact_ids: Vec<String>,
     pub feedback_code: Option<TaskFeedbackCodeV1>,
 }
@@ -455,12 +511,21 @@ pub struct WorkerReturn {
 /// final-message bytes even when they are not a Reviewer Result; the captured Worker schema
 /// performs admission afterwards. Every failure retains raw evidence and any known usage.
 pub struct ModelWorkerReturn {
+    /// Explicit native billing completeness when reporting was malformed or partial. None
+    /// preserves the existing complete-known / wholly-unavailable usage convention.
+    pub usage_observation: Option<review_core::task::usage::TaskUsageObservationV1>,
     pub message: Result<Vec<u8>, String>,
-    pub usage: Option<TokenUsage>,
+    pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
     pub raw_artifact_ids: Vec<String>,
 }
 
 pub trait WorkerModelAdapter: Send + Sync {
+    /// Credential boundary this adapter actually provides. Existing model transports retain
+    /// trusted execution; accepting an optional capability does not itself establish Brokered.
+    fn credential_mode(&self) -> BrokerCredentialModeV1 {
+        BrokerCredentialModeV1::TrustedUnsafe
+    }
+
     fn provider_kind(&self) -> &'static str;
     /// Exact model and effort encoded by the adapter's command builder. None cannot satisfy
     /// a plan binding; provider defaults or aliases must be resolved during host admission.
@@ -475,6 +540,55 @@ pub trait WorkerModelAdapter: Send + Sync {
         timeout: Duration,
         writable: bool,
     ) -> ModelWorkerReturn;
+
+    /// The execution owner binds this capability to the already-started common Attempt and
+    /// retains its exact charge independently of the adapter's native usage or final message.
+    /// A Brokered adapter must override this method and consume only the opaque client.
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_with_broker(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+        broker: Option<&dyn ExactBrokerClient>,
+    ) -> ModelWorkerReturn {
+        if broker.is_some() {
+            return ModelWorkerReturn {
+                usage_observation: None,
+                message: Err("Worker model adapter does not consume Broker Handles".into()),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
+                raw_artifact_ids: vec![],
+            };
+        }
+        self.invoke(cas, workdir, input, timeout, writable)
+    }
+
+    /// Optional cooperative cancellation is an installed transport capability. An adapter
+    /// must implement in-flight cancellation before accepting Some; a preflight flag check
+    /// alone cannot establish support. None preserves the existing Broker/native hook.
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_controlled(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+        broker: Option<&dyn ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> ModelWorkerReturn {
+        if cancellation.is_some() {
+            return ModelWorkerReturn {
+                usage_observation: None,
+                message: Err("Worker model adapter does not support controlled invocation".into()),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
+                raw_artifact_ids: vec![],
+            };
+        }
+        self.invoke_with_broker(cas, workdir, input, timeout, writable, broker)
+    }
 }
 
 impl ModelWorkerReturn {
@@ -485,6 +599,7 @@ impl ModelWorkerReturn {
             _ => vec![],
         };
         Self {
+            usage_observation: None,
             message: Err(error.to_string()),
             usage: None,
             raw_artifact_ids,
@@ -501,18 +616,56 @@ pub fn invoke_model(
     timeout: Duration,
     writable: bool,
 ) -> WorkerReturn {
+    invoke_model_with_broker(
+        cas, workdir, adapter, contract, context_id, timeout, writable, None,
+    )
+}
+
+/// Typed context and output admission are identical with and without a Broker capability.
+/// Only the execution owner may supply the client after binding the current Task Attempt.
+#[allow(clippy::too_many_arguments)]
+pub fn invoke_model_with_broker(
+    cas: &Cas,
+    workdir: &Path,
+    adapter: &dyn WorkerModelAdapter,
+    contract: &WorkerContract,
+    context_id: &str,
+    timeout: Duration,
+    writable: bool,
+    broker: Option<&dyn ExactBrokerClient>,
+) -> WorkerReturn {
+    invoke_model_controlled(
+        cas, workdir, adapter, contract, context_id, timeout, writable, broker, None,
+    )
+}
+
+/// Same captured context/output validation with explicit optional transport cancellation.
+#[allow(clippy::too_many_arguments)]
+pub fn invoke_model_controlled(
+    cas: &Cas,
+    workdir: &Path,
+    adapter: &dyn WorkerModelAdapter,
+    contract: &WorkerContract,
+    context_id: &str,
+    timeout: Duration,
+    writable: bool,
+    broker: Option<&dyn ExactBrokerClient>,
+    cancellation: Option<&std::sync::atomic::AtomicBool>,
+) -> WorkerReturn {
     let bytes = match contract.read_context(cas, context_id) {
         Ok((_, bytes)) => bytes,
         Err(error) => {
             return WorkerReturn {
+                usage_observation: None,
                 reply: Err(error),
-                usage: Some(TokenUsage::charge_only(0)),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 raw_artifact_ids: vec![],
                 feedback_code: Some(TaskFeedbackCodeV1::ContextRejected),
             };
         }
     };
-    let returned = adapter.invoke(cas, workdir, bytes, timeout, writable);
+    let returned =
+        adapter.invoke_controlled(cas, workdir, bytes, timeout, writable, broker, cancellation);
     let (reply, feedback_code) = match returned.message {
         Ok(bytes) => {
             let reply = contract.validate_reply(&bytes);
@@ -524,6 +677,7 @@ pub fn invoke_model(
         Err(error) => (Err(error), Some(TaskFeedbackCodeV1::ProviderFailure)),
     };
     WorkerReturn {
+        usage_observation: returned.usage_observation,
         reply,
         usage: returned.usage,
         raw_artifact_ids: returned.raw_artifact_ids,
@@ -544,24 +698,7 @@ pub fn invoke_command(
         .read_context(cas, context_id)
         .map_err(RunnerError::Refused);
     let result = prepared.and_then(|(_, bytes)| {
-        let mut runner = ModelRunner::new(workdir, timeout);
-        for (key, directory) in [
-            ("HOME", "home"),
-            ("XDG_CONFIG_HOME", "config"),
-            ("XDG_CACHE_HOME", "cache"),
-            ("XDG_STATE_HOME", "state"),
-            ("TMPDIR", "tmp"),
-        ] {
-            let path = runtime_root.join(directory);
-            std::fs::create_dir_all(&path).map_err(|e| RunnerError::Unavailable(e.to_string()))?;
-            runner = runner.with_env(
-                key,
-                path.to_str().ok_or_else(|| {
-                    RunnerError::Refused("Worker runtime path is not UTF-8".into())
-                })?,
-            );
-        }
-        runner.capture_with_stdin(cas, command, bytes)
+        capture_command(cas, workdir, runtime_root, command, bytes, timeout)
     });
     match result {
         Ok(raw) => {
@@ -576,13 +713,15 @@ pub fn invoke_command(
                 TaskFeedbackCodeV1::ProcessFailure
             });
             WorkerReturn {
+                usage_observation: None,
                 reply,
-                usage: Some(TokenUsage::charge_only(0)),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
                 raw_artifact_ids: vec![raw.raw_artifact],
                 feedback_code,
             }
         }
         Err(error) => WorkerReturn {
+            usage_observation: None,
             raw_artifact_ids: match &error {
                 RunnerError::TimedOut { raw_artifact, .. } => {
                     raw_artifact.iter().cloned().collect()
@@ -590,8 +729,90 @@ pub fn invoke_command(
                 _ => vec![],
             },
             reply: Err(error.to_string()),
-            usage: Some(TokenUsage::charge_only(0)),
+            usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
             feedback_code: Some(TaskFeedbackCodeV1::ProcessFailure),
         },
     }
 }
+
+/// The same isolated command transport with an independently installed business parser.
+/// No scheduler or retry loop; the caller supplies an already-started Attempt's remaining time.
+pub fn invoke_command_bytes(
+    cas: &Cas,
+    workdir: &Path,
+    runtime_root: &Path,
+    command: &Command,
+    bytes: Vec<u8>,
+    timeout: Duration,
+) -> ModelWorkerReturn {
+    match capture_command(cas, workdir, runtime_root, command, bytes, timeout) {
+        Ok(raw) => ModelWorkerReturn {
+            usage_observation: None,
+            message: if raw.status.success() {
+                Ok(raw.stdout)
+            } else {
+                Err(format!("Command Worker exited with {}", raw.status))
+            },
+            usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
+            raw_artifact_ids: vec![raw.raw_artifact],
+        },
+        Err(error) => {
+            let mut result = ModelWorkerReturn::failed(error);
+            result.usage = Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0));
+            result
+        }
+    }
+}
+
+fn capture_command(
+    cas: &Cas,
+    workdir: &Path,
+    runtime_root: &Path,
+    command: &Command,
+    bytes: Vec<u8>,
+    timeout: Duration,
+) -> Result<crate::RawCapture, RunnerError> {
+    command_runner(workdir, runtime_root, timeout)?.capture_with_stdin(cas, command, bytes)
+}
+
+fn command_runner(
+    workdir: &Path,
+    runtime_root: &Path,
+    timeout: Duration,
+) -> Result<ModelRunner, RunnerError> {
+    let deadline = std::time::Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| RunnerError::Refused("Command deadline overflow".into()))?;
+    let mut environment = Vec::new();
+    for (key, directory) in [
+        ("HOME", "home"),
+        ("XDG_CONFIG_HOME", "config"),
+        ("XDG_CACHE_HOME", "cache"),
+        ("XDG_STATE_HOME", "state"),
+        ("TMPDIR", "tmp"),
+    ] {
+        let path = runtime_root.join(directory);
+        std::fs::create_dir_all(&path).map_err(|e| RunnerError::Unavailable(e.to_string()))?;
+        environment.push((
+            key,
+            path.to_str()
+                .ok_or_else(|| RunnerError::Refused("Worker runtime path is not UTF-8".into()))?
+                .to_owned(),
+        ));
+    }
+    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+    if remaining.is_zero() {
+        return Err(RunnerError::TimedOut {
+            after_ms: timeout.as_millis().try_into().unwrap_or(u64::MAX),
+            raw_artifact: None,
+        });
+    }
+    let mut runner = ModelRunner::new(workdir, remaining);
+    for (key, value) in environment {
+        runner = runner.with_env(key, value);
+    }
+    Ok(runner)
+}
+
+mod command_control;
+pub use command_control::{invoke_command_bytes_controlled, invoke_command_controlled};

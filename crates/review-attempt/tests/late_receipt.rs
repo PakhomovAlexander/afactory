@@ -24,7 +24,7 @@ enum Step {
 }
 
 /// Play a sequence and return what a downstream node would see, plus what it all cost.
-fn play(steps: &[Step]) -> (Vec<(String, String)>, u64, usize) {
+fn play(steps: &[Step]) -> (Vec<(String, String)>, u128, usize) {
     let mut attempts = AttemptLedger::default();
     let mut budget = BudgetLedger::default().with_limit(Scope::Run, Budget::of(1000));
     let mut a1 = None;
@@ -224,4 +224,17 @@ fn fenced_attempts_consume_the_cap_that_bounds_retries() {
     );
     assert_eq!(attempts.quarantined().len(), 2);
     assert_eq!(budget.committed(&Scope::Node("deep".into())), 200);
+}
+
+#[test]
+fn late_native_usage_does_not_overflow_the_total_of_distinct_attempts() {
+    let mut ledger = AttemptLedger::default();
+    let first = ledger.dispatch("review");
+    ledger.charge(&first, 7);
+    ledger.fence("review");
+    let second = ledger.dispatch("review");
+    ledger.charge(&second, u64::MAX);
+    assert_eq!(ledger.total_charged(), 18_446_744_073_709_551_622_u128);
+    ledger.charge(&second, u64::MAX);
+    assert_eq!(ledger.total_charged(), 18_446_744_073_709_551_622_u128);
 }

@@ -164,6 +164,10 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 65536
+            },
+            "revocation_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
             }
           }
         },
@@ -199,7 +203,8 @@
               "enum": [
                 "needs_input",
                 "needs_human",
-                "needs_plan_review"
+                "needs_plan_review",
+                "needs_resources"
               ]
             }
           }
@@ -265,6 +270,103 @@
               "const": "delivery_recorded"
             },
             "record_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "bootstrap_plan_id",
+            "proposal_id",
+            "revision_id",
+            "plan_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "planning_completed"
+            },
+            "bootstrap_plan_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "proposal_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "revision_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            },
+            "plan_id": {
+              "type": "string",
+              "pattern": "^sha256:[0-9a-f]{64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "revision_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "source_refreshed"
+            },
+            "revision_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "plan_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "waiting": {
+              "enum": [
+                "needs_input",
+                "needs_human",
+                "needs_resources"
+              ]
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "plan_id"
+              ],
+              "not": {
+                "required": [
+                  "waiting"
+                ]
+              }
+            },
+            {
+              "required": [
+                "waiting"
+              ],
+              "not": {
+                "required": [
+                  "plan_id"
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "report_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "run_reported"
+            },
+            "report_id": {
               "type": "string",
               "pattern": "^sha256:[0-9a-f]{64}$"
             }

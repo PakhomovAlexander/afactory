@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/review-core", "crates/review-broker", "crates/review-parallel", "crates/review-process", "crates/review-store", "crates/review-source-git", "crates/review-check", "crates/review-runner", "crates/review-sandbox", "crates/review-graph", "crates/review-pipeline", "crates/review-config", "crates/review-attempt", "crates/review-runner-codex", "crates/review-runner-claude", "crates/reviewctl"]
+members = ["crates/review-core", "crates/review-broker", "crates/review-parallel", "crates/review-process", "crates/review-store", "crates/review-source-git", "crates/review-source-task", "crates/review-check", "crates/review-runner", "crates/review-sandbox", "crates/review-graph", "crates/review-pipeline", "crates/review-config", "crates/review-attempt", "crates/review-runner-codex", "crates/review-runner-claude", "crates/reviewctl"]
 
 [workspace.package]
 version = "0.8.0"
@@ -18,4 +18,13 @@ all = "warn"
 # Capture hashes the running executable and every exact package. Keep the audited SHA-2
 # implementation at production speed in debug/CI too; Task deadlines still include capture.
 [profile.dev.package.sha2]
+opt-level = 3
+
+# Durable Task replay repeatedly validates typed envelopes and canonical JSON. Keep these
+# hot paths optimized in developer/CI builds, with debug assertions and overflow checks intact.
+# Crash-recovery tests retain the same Task deadline, lease wait and verification reserve.
+[profile.dev.package.review-store]
+opt-level = 2
+
+[profile.dev.package.serde_json]
 opt-level = 3

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-broker-transition:1",
+  "title": "TaskBrokerTransition@1 payload",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "now_unix_ms",
+    "record_id"
+  ],
+  "properties": {
+    "now_unix_ms": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
+    "record_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$",
+      "minLength": 71,
+      "maxLength": 71
+    }
+  },
+  "description": "The record is a typed TaskBrokerBinding or TaskBrokerOperation artifact. Late paid operation evidence grants no dispatch or output authority."
+}

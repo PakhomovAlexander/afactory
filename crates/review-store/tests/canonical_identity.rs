@@ -248,6 +248,123 @@ fn task_and_campaign_use_identical_pure_canonical_reduction_without_another_stor
 }
 
 #[test]
+fn task_fix_projection_rejects_stale_views_and_reopens_on_a_changed_subject() {
+    use review_core::task::{execution::TaskInvocationV1, repair::*, review::*};
+    use std::collections::BTreeMap;
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let run_id = "task-fix-projection";
+    let authority = opened_round(&mut store, &cas, run_id);
+    let output = stage();
+    let result = cas
+        .put_json(&serde_json::to_value(&output).unwrap())
+        .unwrap();
+    let ledger = review_store::Ledger::for_task_subject(&cas, &authority.subject, 1).unwrap();
+    let stages = [CanonicalStage {
+        source: "correctness",
+        demand_requirement: review_core::DemandRequirement::Required,
+        stage: &output,
+        attempt_id: "01aaaaaaaaaaaaaaaaaaaaaaaa",
+        result_artifact_id: &result,
+        input_artifacts: &[],
+        subject_snapshot_id: &authority.head,
+        subject_id: &authority.subject,
+        result_contract: review_core::ReviewerResultContract::V1,
+    }];
+    let mut ledger = review_store::prepare_canonical_review(&cas, run_id, &ledger, &stages)
+        .unwrap()
+        .ledger;
+    let original = ledger.finding_views()[0].clone();
+    let new_head = cas.put(b"sealed repaired snapshot").unwrap();
+    let new_subject = cas
+        .put_json(&serde_json::to_value(SubjectV1::whole_tree(&new_head)).unwrap())
+        .unwrap();
+    ledger.bind_task_subject(&cas, &new_subject, 1).unwrap();
+    let current_view = ledger.finding_view_id(&original.key).unwrap();
+    let receipt = TaskFixReceiptV1 {
+        invocation: TaskInvocationV1 {
+            plan_id: result.clone(),
+            node: "root.continue".into(),
+            inputs: BTreeMap::new(),
+        },
+        finding_id: original.key.clone(),
+        continuation_id: result.clone(),
+        subject_id: new_subject.clone(),
+        decision: TaskFixDecisionV1 {
+            expected_view_id: current_view.clone(),
+            attestation_id: result.clone(),
+            outcome: VerificationOutcomeV1::Positive,
+            reason: "Independent selected Task verification".into(),
+        },
+        verifier_output_id: Some(result.clone()),
+    };
+    let receipt_id = cas
+        .put_artifact(
+            TASK_FIX_RECEIPT_V1,
+            Producer::KernelOperation {
+                run_id: run_id.into(),
+                node_id: Some("root.continue".into()),
+                operation_id: "test-projection-input".into(),
+            },
+            vec![result.clone()],
+            Some(new_head.clone()),
+            serde_json::to_value(&receipt).unwrap(),
+        )
+        .unwrap()
+        .0;
+    let mut assessment = RepairAssessmentV1 {
+        continuation_id: result.clone(),
+        current_subject_id: new_subject.clone(),
+        current_snapshot_id: new_head,
+        check_receipt_id: result.clone(),
+        scope: RepairScopeV1::TargetedFixes,
+        claims: BTreeMap::from([(
+            original.key.clone(),
+            ClaimVerificationV1 {
+                expected_view_id: result.clone(),
+                attestation_id: result.clone(),
+                receipt_id,
+                outcome: VerificationOutcomeV1::Positive,
+            },
+        )]),
+    };
+    let before = ledger.finding_views();
+    assert!(ledger.project_task_fixes(&cas, &assessment).is_err());
+    assert_eq!(ledger.finding_views(), before);
+    assessment
+        .claims
+        .get_mut(&original.key)
+        .unwrap()
+        .expected_view_id = current_view;
+    ledger.project_task_fixes(&cas, &assessment).unwrap();
+    assert_eq!(
+        ledger.finding_view(&original.key).unwrap().status,
+        review_store::Status::Fixed
+    );
+    assert_eq!(ledger.round, 1);
+    ledger.bind_task_subject(&cas, &new_subject, 2).unwrap();
+    assert_eq!(
+        ledger.finding_view(&original.key).unwrap().status,
+        review_store::Status::Fixed
+    );
+    let changed_head = cas.put(b"later source changes").unwrap();
+    let changed_subject = cas
+        .put_json(&serde_json::to_value(SubjectV1::whole_tree(&changed_head)).unwrap())
+        .unwrap();
+    ledger.bind_task_subject(&cas, &changed_subject, 3).unwrap();
+    assert_eq!(
+        ledger.finding_view(&original.key).unwrap().status,
+        review_store::Status::Open
+    );
+    assert!(ledger.project_task_fixes(&cas, &assessment).is_err());
+    assert!(
+        ledger.resolution(&original.key).is_none(),
+        "Task receipts cannot impersonate legacy resolutions"
+    );
+}
+
+#[test]
 fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();

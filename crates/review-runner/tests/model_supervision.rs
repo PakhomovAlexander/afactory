@@ -21,6 +21,48 @@ fn sh(script: &str) -> Command {
     )
 }
 
+#[test]
+fn controlled_capture_preserves_redacted_evidence_after_cancellation() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (dir, cas) = workdir();
+    let flag = AtomicBool::new(false);
+    let runner = ModelRunner::new(dir.path(), Duration::from_secs(10))
+        .with_grant("AF_FIXTURE_SECRET", "secret-cancellation-material");
+    let capture = std::thread::scope(|scope| {
+        let cancel = scope.spawn(|| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while !dir.path().join("ready").exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            flag.store(true, Ordering::Release);
+            assert!(dir.path().join("ready").exists());
+        });
+        let capture = runner.capture_settled_with_stdin_controlled(&cas,
+            &sh("cat >/dev/null; printf 'prefix:%s' \"$AF_FIXTURE_SECRET\"; printf 'diagnostic:%s' \"$AF_FIXTURE_SECRET\" >&2; touch ready; sleep 30"),
+            b"captured input".to_vec(), Some(&flag));
+        cancel.join().unwrap();
+        capture
+    });
+    assert!(
+        capture
+            .status
+            .unwrap_err()
+            .to_string()
+            .contains("cancelled")
+    );
+    assert_eq!(capture.stdout, b"prefix:[redacted]");
+    assert_eq!(capture.stderr, b"diagnostic:[redacted]");
+    assert_eq!(capture.raw_artifact_ids.len(), 2);
+    assert_eq!(
+        cas.get(&capture.raw_artifact_ids[0]).unwrap(),
+        capture.stdout
+    );
+    assert_eq!(
+        cas.get(&capture.raw_artifact_ids[1]).unwrap(),
+        capture.stderr
+    );
+}
+
 /// A reviewer that hangs is killed at the deadline and reported as such — not waited on, and
 /// not mistaken for a reviewer that found nothing.
 #[test]
@@ -193,4 +235,26 @@ fn an_untrusted_option_is_refused_before_the_model_starts() {
         runner.capture(&cas, &command).unwrap_err(),
         RunnerError::Refused(_)
     ));
+}
+
+#[test]
+fn settled_held_output_retains_redacted_bytes_without_admitting_a_message() {
+    let (dir, cas) = workdir();
+    let runner = ModelRunner::new(dir.path(), Duration::from_secs(1))
+        .with_grant("FIXTURE_SECRET", "sensitive-fixture-value");
+    let capture = runner.capture_settled_with_stdin(
+        &cas,
+        &sh("printf '%s' \"$FIXTURE_SECRET\"; printf '%s' \"$FIXTURE_SECRET\" >&2; sleep 30 &"),
+        vec![],
+    );
+    assert!(matches!(
+        capture.status,
+        Err(RunnerError::Failed { exit_code: -1, .. })
+    ));
+    assert_eq!(capture.stdout, b"[redacted]");
+    assert_eq!(capture.stderr, b"[redacted]");
+    assert_eq!(capture.raw_artifact_ids.len(), 2);
+    for id in capture.raw_artifact_ids {
+        assert_eq!(cas.get(&id).unwrap(), b"[redacted]");
+    }
 }

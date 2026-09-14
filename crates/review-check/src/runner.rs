@@ -97,6 +97,7 @@ pub struct CheckRunner<'a> {
     /// `not_run`, exactly as an unstartable one is. Generous by default (an engine build+test
     /// is legitimately long); a pipeline may tighten it.
     timeout: std::time::Duration,
+    cancellation: Option<&'a std::sync::atomic::AtomicBool>,
 }
 
 impl<'a> CheckRunner<'a> {
@@ -117,6 +118,7 @@ impl<'a> CheckRunner<'a> {
                 ("TZ".to_string(), "UTC".to_string()),
             ],
             timeout: std::time::Duration::from_secs(3600),
+            cancellation: None,
         }
     }
 
@@ -147,6 +149,14 @@ impl<'a> CheckRunner<'a> {
         self
     }
 
+    pub fn with_cancellation(
+        mut self,
+        cancellation: Option<&'a std::sync::atomic::AtomicBool>,
+    ) -> Self {
+        self.cancellation = cancellation;
+        self
+    }
+
     /// Run one check. Never panics and never propagates a spawn failure as an error: a check
     /// that could not start is a *result*, because losing it would be the same as passing it.
     pub fn run(&self, definition: &CheckDefinition) -> CheckResult {
@@ -168,6 +178,18 @@ impl<'a> CheckRunner<'a> {
                 output,
                 stderr_held,
             } => (output, stderr_held),
+            RunResult::Interrupted {
+                reason,
+                stdout,
+                stderr,
+            } => {
+                return CheckResult {
+                    reason: Some(reason),
+                    stdout: self.cas.put(&stdout).ok(),
+                    stderr: self.cas.put(&stderr).ok(),
+                    ..base
+                };
+            }
             RunResult::TimedOut => {
                 return CheckResult {
                     reason: Some(format!(
@@ -204,6 +226,16 @@ impl<'a> CheckRunner<'a> {
         ) -> Result<(std::process::Output, bool), String>,
     {
         let base = base_result(definition);
+        if self
+            .cancellation
+            .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire))
+        {
+            return CheckResult {
+                reason: Some("check cancelled before execution".into()),
+                ..base
+            };
+        }
+
         let argv = match resolved_args(definition, &base) {
             Ok(argv) => argv,
             Err(result) => return *result,
@@ -348,6 +380,11 @@ pub fn check_event(result: &CheckResult, node_id: &str) -> NewEvent {
 }
 
 enum RunResult {
+    Interrupted {
+        reason: String,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    },
     Completed {
         output: std::process::Output,
         stderr_held: bool,
@@ -361,6 +398,31 @@ impl CheckRunner<'_> {
     /// is over when its leader exits, so background descendants are reaped immediately rather
     /// than being allowed to hold evidence pipes open.
     fn run_with_deadline(&self, cmd: &mut std::process::Command) -> RunResult {
+        if let Some(flag) = self.cancellation {
+            let captured = review_process::run_supervised_captured_cancellable_with_policy(
+                cmd,
+                None,
+                self.timeout,
+                ExitPolicy::KillProcessGroup,
+                flag,
+            );
+            return match captured.status {
+                Ok(status) => RunResult::Completed {
+                    output: std::process::Output {
+                        status,
+                        stdout: captured.stdout,
+                        stderr: captured.stderr,
+                    },
+                    stderr_held: captured.stderr_held,
+                },
+                Err(error) => RunResult::Interrupted {
+                    reason: error.to_string(),
+                    stdout: captured.stdout,
+                    stderr: captured.stderr,
+                },
+            };
+        }
+
         match run_supervised_with_policy(cmd, None, self.timeout, ExitPolicy::KillProcessGroup) {
             Ok(output) => RunResult::Completed {
                 stderr_held: output.stderr_held,

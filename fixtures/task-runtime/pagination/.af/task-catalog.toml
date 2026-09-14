@@ -3,7 +3,7 @@ code_policy = ".af/code-policy.toml"
 
 [packages."fixture/evaluator"]
 version = "1.0.0"
-digest = "sha256:e64d1f2dc9111721fb21964fdddec353b2ed103dacb917d2869d447358cf203d"
+digest = "sha256:a54961152ee0e267c42fea39bb2bbbdac7812a2d505d9ccffd4d5f305f980202"
 path = ".af/task-packages/fixture/evaluator"
 
 [packages."fixture/implementation"]

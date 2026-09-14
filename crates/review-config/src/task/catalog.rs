@@ -13,14 +13,20 @@ use review_core::{ArtifactEnvelope, Producer};
 use review_graph::task::{
     CompileContext, CompiledOperator, CompiledTask, OperatorSignature, compile_task,
 };
-use review_store::{Cas, validate_envelope};
+use review_store::Cas;
 use serde::{Deserialize, Serialize};
 
+use super::kind::TaskKindManifest;
 use crate::{CommandSpec, lock::package_digest_from_files};
 
 pub const TASK_PACKAGE_V1: &str = "af/TaskPackage@1";
 pub const COMPILED_TASK_V1: &str = "af/CompiledTask@1";
 
+pub mod export;
+pub mod planning;
+mod requirements;
+mod validation;
+pub use validation::CapturedTaskPlanValidator;
 #[cfg(test)]
 mod tests;
 
@@ -84,6 +90,12 @@ struct Package {
     dependency: PlanDependencyV1,
 }
 
+enum ParsedPackage {
+    Pipeline(PipelineDefinitionV1),
+    Worker(TaskWorkerManifest),
+    TaskKind(TaskKindManifest),
+}
+
 /// Resolved by the host's Provider and invocation-policy admission, never by a Worker or a
 /// plan declaration. The principal in Model execution must come from Provider identity proof.
 #[derive(Debug, Clone)]
@@ -102,12 +114,19 @@ pub struct TaskPlanCompiler {
     packages: BTreeMap<String, Package>,
     pipelines: BTreeMap<String, PipelineDefinitionV1>,
     workers: BTreeMap<String, TaskWorkerManifest>,
+    kinds: BTreeMap<String, TaskKindManifest>,
+    active_kind: Option<String>,
     signatures: BTreeMap<String, OperatorSignature>,
     settings: BTreeMap<String, AdmittedWorkerSettings>,
+    slot_workers: BTreeMap<String, String>,
     generated: BTreeMap<String, GeneratedOriginV1>,
     acceptance_outputs: BTreeMap<String, String>,
     independence: IndependencePolicyV1,
     provider_admission: Option<review_graph::task::OperatorAttemptCost>,
+    preparation_roots: BTreeSet<String>,
+    /// Installed domain artifact types that establish authorship independently of a
+    /// Worker's removable role/effect declarations (for example a data-only document draft).
+    authored_artifacts: BTreeSet<String>,
 }
 
 fn safe_path(path: &str) -> bool {
@@ -136,10 +155,7 @@ fn capture_producer() -> Producer {
 }
 
 fn read_envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope, String> {
-    let envelope: ArtifactEnvelope =
-        serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
-            .map_err(|e| e.to_string())?;
-    validate_envelope(&envelope)?;
+    let envelope = cas.get_artifact(id).map_err(|e| e.to_string())?;
     if envelope.artifact_id != id || envelope.artifact_type != expected {
         return Err(format!("Expected exact {expected} envelope"));
     }
@@ -147,6 +163,13 @@ fn read_envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope
 }
 
 impl TaskPlanCompiler {
+    pub fn with_authored_artifacts(mut self, types: BTreeSet<String>) -> Result<Self, String> {
+        if types.len() > 32 || types.iter().any(|ty| !review_core::is_artifact_type(ty)) {
+            return Err("Domain authorship requires bounded versioned artifact types".into());
+        }
+        self.authored_artifacts = types;
+        Ok(self)
+    }
     /// A production host enables this when a fresh paid capability probe is required.
     /// Identity-only probes occur before planning; these model calls belong to Task execution.
     pub fn with_provider_admission(
@@ -229,12 +252,17 @@ impl TaskPlanCompiler {
             packages: BTreeMap::new(),
             pipelines: BTreeMap::new(),
             workers: BTreeMap::new(),
+            kinds: BTreeMap::new(),
+            active_kind: None,
             signatures: installed,
             settings: BTreeMap::new(),
+            slot_workers: BTreeMap::new(),
             generated: BTreeMap::new(),
             acceptance_outputs,
             independence,
             provider_admission: None,
+            preparation_roots: BTreeSet::new(),
+            authored_artifacts: BTreeSet::new(),
         })
     }
 
@@ -283,11 +311,13 @@ impl TaskPlanCompiler {
             files,
         };
         // Validate before publishing even an unreachable captured artifact.
-        let (_, worker) = Self::parse_package(&bytes)?;
         if matches!(
-            worker.as_ref().map(|worker| &worker.runner),
-            Some(TaskWorkerRunner::LegacyTaskCommand {
-                legacy_budget_tokens: None,
+            Self::parse_package(&bytes)?,
+            ParsedPackage::Worker(TaskWorkerManifest {
+                runner: TaskWorkerRunner::LegacyTaskCommand {
+                    legacy_budget_tokens: None,
+                    ..
+                },
                 ..
             })
         ) {
@@ -326,20 +356,25 @@ impl TaskPlanCompiler {
         {
             return Err("Captured Task package does not match trusted authority".into());
         }
-        let (pipeline, worker) = Self::parse_package(&bytes)?;
+        let parsed = Self::parse_package(&bytes)?;
         if let Some(old) = self.packages.get(name) {
             if old.dependency.artifact_id == artifact_id {
                 return Ok(());
             }
             return Err("Task package cannot change inside captured authority".into());
         }
-        if let Some(pipeline) = pipeline {
-            self.pipelines.insert(name.into(), pipeline);
-        }
-        if let Some(worker) = worker {
-            self.signatures
-                .insert(format!("worker/{name}"), worker.signature.clone());
-            self.workers.insert(name.into(), worker);
+        match parsed {
+            ParsedPackage::Pipeline(pipeline) => {
+                self.pipelines.insert(name.into(), pipeline);
+            }
+            ParsedPackage::Worker(worker) => {
+                self.signatures
+                    .insert(format!("worker/{name}"), worker.signature.clone());
+                self.workers.insert(name.into(), worker);
+            }
+            ParsedPackage::TaskKind(kind) => {
+                self.kinds.insert(name.into(), kind);
+            }
         }
         self.packages.insert(
             name.into(),
@@ -355,9 +390,7 @@ impl TaskPlanCompiler {
         Ok(())
     }
 
-    fn parse_package(
-        bytes: &PackageBytes,
-    ) -> Result<(Option<PipelineDefinitionV1>, Option<TaskWorkerManifest>), String> {
+    fn parse_package(bytes: &PackageBytes) -> Result<ParsedPackage, String> {
         if bytes.schema != "af.task-package/1"
             || !is_package_name(&bytes.name)
             || !exact_version(&bytes.version)
@@ -375,8 +408,9 @@ impl TaskPlanCompiler {
         match (
             bytes.files.get("pipeline.toml"),
             bytes.files.get("worker.toml"),
+            bytes.files.get("kind.toml"),
         ) {
-            (Some(source), None) => {
+            (Some(source), None, None) => {
                 let pipeline = super::parse_task_pipeline(
                     std::str::from_utf8(source).map_err(|e| e.to_string())?,
                 )
@@ -384,9 +418,9 @@ impl TaskPlanCompiler {
                 if pipeline.name != bytes.name || pipeline.version != bytes.version {
                     return Err("Pipeline manifest disagrees with its pin".into());
                 }
-                Ok((Some(pipeline), None))
+                Ok(ParsedPackage::Pipeline(pipeline))
             }
-            (None, Some(source)) => {
+            (None, Some(source), None) => {
                 let worker: TaskWorkerManifest =
                     toml::from_str(std::str::from_utf8(source).map_err(|e| e.to_string())?)
                         .map_err(|e| e.to_string())?;
@@ -415,9 +449,21 @@ impl TaskPlanCompiler {
                     TaskWorkerRunner::Model {provider_kind, model, effort} if !review_core::task::is_name(provider_kind) || model.trim().is_empty() || !review_core::task::is_name(effort) || cost.tokens == 0 => return Err("Model Worker needs explicit Provider/model/effort and token reservation".into()),
                     _ => (),
                 }
-                Ok((None, Some(worker)))
+                Ok(ParsedPackage::Worker(worker))
             }
-            _ => Err("Task package must have exactly one pipeline.toml or worker.toml".into()),
+            (None, None, Some(source)) => {
+                let kind: TaskKindManifest =
+                    toml::from_str(std::str::from_utf8(source).map_err(|e| e.to_string())?)
+                        .map_err(|e| e.to_string())?;
+                kind.validate()?;
+                if kind.name != bytes.name || kind.version != bytes.version {
+                    return Err("Task-kind manifest disagrees with its pin".into());
+                }
+                Ok(ParsedPackage::TaskKind(kind))
+            }
+            _ => Err(
+                "Task package must have exactly one pipeline.toml, worker.toml or kind.toml".into(),
+            ),
         }
     }
 
@@ -464,14 +510,291 @@ impl TaskPlanCompiler {
         Ok(())
     }
 
+    /// The caller captures these local settings as part of Run authority. Replacement is
+    /// checked against every Pipeline boundary by the compiler, then against payload schemas.
+    pub fn replace_slot_workers(&mut self, slots: BTreeMap<String, String>) -> Result<(), String> {
+        if slots.len() > 64
+            || slots.iter().any(|(slot, worker)| {
+                !slot.starts_with("root.")
+                    || slot
+                        .split('.')
+                        .any(|part| !review_core::task::is_name(part))
+                    || !self.workers.contains_key(worker)
+            })
+        {
+            return Err(
+                "Local bindings require qualified slots and captured Worker packages".into(),
+            );
+        }
+        self.slot_workers = slots;
+        Ok(())
+    }
+
+    fn validate_replacement_schemas(&self, graph: &CompiledTask) -> Result<(), String> {
+        for (slot, defaults) in &graph.replaced_workers {
+            let effective = &self.packages[&graph.slots[slot].worker].bytes.files;
+            for original in defaults {
+                let files = &self.packages[original].bytes.files;
+                let schemas = |files: &BTreeMap<String, Vec<u8>>| -> Result<BTreeMap<String, serde_json::Value>, String> {
+                    files.iter().filter(|(path, _)| path.as_str() == "input.schema.json" || (path.starts_with("outputs/") && path.ends_with(".schema.json")))
+                        .map(|(path, bytes)| Ok((path.clone(), serde_json::from_slice(bytes).map_err(|e| format!("Worker schema {path}: {e}"))?))).collect()
+                };
+                if schemas(files)? != schemas(effective)? {
+                    return Err(format!(
+                        "Replacement for {slot} changes its payload schemas"
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn pipelines(&self) -> &BTreeMap<String, PipelineDefinitionV1> {
         &self.pipelines
+    }
+    pub fn task_kind(&self, name: &str) -> Option<&TaskKindManifest> {
+        self.kinds.get(name)
+    }
+    pub fn select_task_kind(&mut self, name: &str) -> Result<(), String> {
+        if !self.kinds.contains_key(name) {
+            return Err("Task-kind package is not captured".into());
+        }
+        self.active_kind = Some(name.into());
+        Ok(())
+    }
+
+    /// A sync validates names and dependency availability without installing or running any
+    /// Worker. Exact Task compilation subsequently proves contracts, authority and resources.
+    pub fn validate_dependency_closure(&self) -> Result<(), String> {
+        for pipeline in self.pipelines.values() {
+            for slot in pipeline.slots.values() {
+                if !self.workers.contains_key(&slot.worker) {
+                    return Err(format!(
+                        "Pipeline {} requires missing Worker {}",
+                        pipeline.name, slot.worker
+                    ));
+                }
+            }
+            for node in &pipeline.nodes {
+                if let TaskOperatorV1::Call {
+                    pipeline: child, ..
+                } = &node.operator
+                    && !self.pipelines.contains_key(child)
+                {
+                    return Err(format!(
+                        "Pipeline {} requires missing child {child}",
+                        pipeline.name
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
     pub fn worker(&self, name: &str) -> Option<&TaskWorkerManifest> {
         self.workers.get(name)
     }
+    pub fn worker_contract(
+        &self,
+        cas: &Cas,
+        name: &str,
+        kernel_outputs: &BTreeSet<String>,
+    ) -> Result<review_runner::task::WorkerContract, String> {
+        let worker = self
+            .worker(name)
+            .ok_or("Missing captured Worker manifest")?;
+        let files = self
+            .package_files(name)
+            .ok_or("Missing captured Worker files")?;
+        let schema = |path: &str| -> Result<serde_json::Value, String> {
+            serde_json::from_slice(
+                files
+                    .get(path)
+                    .ok_or_else(|| format!("Worker {name} lacks {path}"))?,
+            )
+            .map_err(|e| e.to_string())
+        };
+        let outputs = worker
+            .signature
+            .contract
+            .outputs
+            .keys()
+            .filter(|port| !kernel_outputs.contains(*port))
+            .map(|port| {
+                Ok((
+                    port.clone(),
+                    schema(&format!("outputs/{port}.schema.json"))?,
+                ))
+            })
+            .collect::<Result<_, String>>()?;
+        let contract = review_runner::task::WorkerContract::capture(
+            cas,
+            schema("input.schema.json")?,
+            outputs,
+        )?;
+        match &worker.runner {
+            TaskWorkerRunner::LegacyTaskCommand {
+                protocol,
+                legacy_budget_tokens,
+                ..
+            } => match legacy_budget_tokens {
+                Some(tokens) => contract.with_legacy_protocol_and_budget(cas, *protocol, *tokens),
+                None => contract.with_legacy_protocol(cas, *protocol),
+            },
+            _ => Ok(contract),
+        }
+    }
     pub fn package_files(&self, name: &str) -> Option<&BTreeMap<String, Vec<u8>>> {
         self.packages.get(name).map(|package| &package.bytes.files)
+    }
+
+    /// Read-only routing preflight. Resource refusals are distinct from a malformed graph;
+    /// neither result constitutes Store admission or a generated-plan developer decision.
+    pub fn candidate_structure(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        root: &str,
+    ) -> Result<(TaskRevisionV1, CompiledTask, Vec<String>), String> {
+        if task.authority.policy_id != self.policy_id {
+            return Err("Task does not belong to captured authority".into());
+        }
+        if self
+            .active_kind
+            .as_ref()
+            .is_some_and(|kind| self.kinds[kind].kind != task.kind)
+        {
+            return Err("Task kind differs from its captured kind package".into());
+        }
+        let mut normalized = task.clone();
+        normalized.inputs = self.normalize_root_inputs(cas, root, normalized.inputs)?;
+        let (graph, mut resources) = review_graph::task::compile_task_structure(
+            &normalized,
+            root,
+            &CompileContext {
+                pipelines: &self.pipelines,
+                signatures: &self.signatures,
+                slot_workers: self.slot_workers.clone(),
+                acceptance_outputs: self.acceptance_outputs.clone(),
+                max_nodes: 64,
+                max_depth: 4,
+            },
+        )?;
+        self.validate_requirements_inputs(&graph)?;
+        self.validate_replacement_schemas(&graph)?;
+        if let Err(reason) = graph.budget(task.limits.clone()) {
+            resources.push(reason);
+        }
+        Ok((normalized, graph, resources))
+    }
+
+    fn effective_bindings(
+        &self,
+        cas: &Cas,
+        graph: &CompiledTask,
+    ) -> Result<BTreeMap<String, EffectiveWorkerBindingV1>, String> {
+        let mut bindings = BTreeMap::new();
+        for (slot, declaration) in &graph.slots {
+            let package = self
+                .packages
+                .get(&declaration.worker)
+                .ok_or("Compiled Worker is not captured")?;
+            let settings = self
+                .settings
+                .get(&declaration.worker)
+                .ok_or("Worker lacks trusted runtime admission")?;
+            cas.verify(&settings.invocation_policy_id)
+                .map_err(|e| e.to_string())?;
+            bindings.insert(
+                slot.clone(),
+                EffectiveWorkerBindingV1 {
+                    package_digest: package.bytes.digest.clone(),
+                    package_artifact_id: package.dependency.artifact_id.clone(),
+                    execution: settings.execution.clone(),
+                    invocation_policy_id: settings.invocation_policy_id.clone(),
+                },
+            );
+        }
+        Ok(bindings)
+    }
+
+    /// Account identities are captured by the host before this check. Provider admission is
+    /// still a paid runtime operation, whose full reservation must fit the selected Task.
+    pub fn candidate_resources(
+        &self,
+        cas: &Cas,
+        mut graph: CompiledTask,
+        limits: &review_core::task::TaskLimitsV1,
+        now_unix_ms: u64,
+    ) -> Result<Vec<String>, String> {
+        let bindings = self.effective_bindings(cas, &graph)?;
+        if let Some(cost) = &self.provider_admission {
+            graph.install_provider_admission(&bindings, cost)?;
+        }
+        self.compiled_resources(&graph, limits, now_unix_ms)
+    }
+
+    /// A compiled graph already includes paid Provider admission. Recheck remaining capacity
+    /// without inserting another operation or altering the recorded plan.
+    pub fn compiled_resources(
+        &self,
+        graph: &CompiledTask,
+        limits: &review_core::task::TaskLimitsV1,
+        now_unix_ms: u64,
+    ) -> Result<Vec<String>, String> {
+        let mut reasons = Vec::new();
+        if let Err(reason) = graph.budget(limits.clone()) {
+            reasons.push(reason);
+        }
+        let remaining = limits.deadline_unix_ms.saturating_sub(now_unix_ms);
+        // Bound mandatory non-verifier time along the dependency path; independent Workers
+        // may overlap. Verification keeps its separately protected aggregate allocation.
+        let mut path_wall: BTreeMap<String, u64> = BTreeMap::new();
+        for name in &graph.order {
+            let node = &graph.nodes[name];
+            let prior = node
+                .inputs
+                .values()
+                .map(|address| &address.node)
+                .chain(
+                    node.conditions
+                        .iter()
+                        .map(|condition| &condition.source.node),
+                )
+                .filter_map(|source| path_wall.get(source))
+                .copied()
+                .max()
+                .unwrap_or(0);
+            let own = graph
+                .allowances
+                .get(name)
+                .filter(|a| a.verification_attempts == 0)
+                .filter(|_| {
+                    node.conditions.iter().all(|condition| {
+                        matches!(
+                            graph.nodes[&condition.source.node].operator,
+                            CompiledOperator::ProviderAdmission { .. }
+                        )
+                    })
+                })
+                .map_or(0, |a| a.wall_ms_per_attempt);
+            path_wall.insert(
+                name.clone(),
+                prior.checked_add(own).ok_or("Task wall path overflow")?,
+            );
+        }
+        let required = path_wall
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .checked_add(limits.verification.wall_ms)
+            .ok_or("Task wall reservation overflow")?;
+        if now_unix_ms >= limits.deadline_unix_ms || remaining < required {
+            reasons.push(
+                "Remaining Task deadline cannot protect verification and declared Attempts".into(),
+            );
+        }
+        Ok(reasons)
     }
 
     pub fn compile(
@@ -497,17 +820,15 @@ impl TaskPlanCompiler {
         if task.authority.policy_id != self.policy_id {
             return Err("Task does not belong to captured authority".into());
         }
-        let graph = compile_task(
-            &task,
-            root,
-            &CompileContext {
-                pipelines: &self.pipelines,
-                signatures: &self.signatures,
-                acceptance_outputs: self.acceptance_outputs.clone(),
-                max_nodes: 64,
-                max_depth: 4,
-            },
-        )?;
+        if self
+            .active_kind
+            .as_ref()
+            .is_some_and(|kind| self.kinds[kind].kind != task.kind)
+        {
+            return Err("Task kind differs from its captured kind package".into());
+        }
+        let graph = self.compile_graph(&task, root)?;
+        self.validate_replacement_schemas(&graph)?;
         Ok(graph
             .slots
             .values()
@@ -528,47 +849,26 @@ impl TaskPlanCompiler {
         if task.authority.policy_id != self.policy_id {
             return Err("Task does not belong to captured project authority".into());
         }
+        if self
+            .active_kind
+            .as_ref()
+            .is_some_and(|kind| self.kinds[kind].kind != task.kind)
+        {
+            return Err("Task kind differs from its captured kind package".into());
+        }
         cas.verify(&self.engine_id).map_err(|e| e.to_string())?;
         cas.verify(&self.policy_id).map_err(|e| e.to_string())?;
-        let mut graph = compile_task(
-            &task,
-            root,
-            &CompileContext {
-                pipelines: &self.pipelines,
-                signatures: &self.signatures,
-                acceptance_outputs: self.acceptance_outputs.clone(),
-                max_nodes: 64,
-                max_depth: 4,
-            },
-        )?;
-        let mut bindings = BTreeMap::new();
+        let mut graph = self.compile_graph(&task, root)?;
+        self.validate_replacement_schemas(&graph)?;
+        let bindings = self.effective_bindings(cas, &graph)?;
         let mut used: BTreeSet<String> = graph
             .calls
             .values()
             .map(|call| call.pipeline.clone())
             .collect();
-        for (slot, declaration) in &graph.slots {
-            let package = self
-                .packages
-                .get(&declaration.worker)
-                .ok_or("Compiled Worker is not captured")?;
-            let settings = self
-                .settings
-                .get(&declaration.worker)
-                .ok_or("Worker lacks trusted runtime admission")?;
-            cas.verify(&settings.invocation_policy_id)
-                .map_err(|e| e.to_string())?;
-            bindings.insert(
-                slot.clone(),
-                EffectiveWorkerBindingV1 {
-                    package_digest: package.bytes.digest.clone(),
-                    package_artifact_id: package.dependency.artifact_id.clone(),
-                    execution: settings.execution.clone(),
-                    invocation_policy_id: settings.invocation_policy_id.clone(),
-                },
-            );
-            used.insert(declaration.worker.clone());
-        }
+        used.extend(graph.replaced_workers.values().flatten().cloned());
+        used.extend(self.active_kind.iter().cloned());
+        used.extend(graph.slots.values().map(|slot| slot.worker.clone()));
         for (slot, declaration) in &graph.slots {
             for other in &declaration.independent_from {
                 validate_independent_bindings(
@@ -576,6 +876,41 @@ impl TaskPlanCompiler {
                     &bindings[other],
                     self.independence,
                 )?;
+            }
+        }
+        // An author cannot remove mandatory independence by omitting a slot annotation.
+        // All verification Workers are independent from every source-writing Worker in this
+        // Task, including embedded calls and bounded repair paths, under captured policy.
+        let writers: BTreeSet<_> = graph
+            .slots
+            .iter()
+            .filter(|(_, slot)| {
+                self.workers[&slot.worker]
+                    .signature
+                    .effects
+                    .contains("write-source")
+                    || self.workers[&slot.worker]
+                        .signature
+                        .contract
+                        .outputs
+                        .values()
+                        .any(|port| self.authored_artifacts.contains(&port.artifact_type))
+            })
+            .map(|(name, _)| name)
+            .collect();
+        for node in graph.nodes.values() {
+            if let CompiledOperator::Primitive {
+                operator: TaskOperatorV1::Verify { slot } | TaskOperatorV1::FixVerify { slot },
+                ..
+            } = &node.operator
+            {
+                for writer in &writers {
+                    validate_independent_bindings(
+                        &bindings[slot],
+                        &bindings[*writer],
+                        self.independence,
+                    )?;
+                }
             }
         }
         // A syntactically declared but unused slot cannot smuggle an unrelated package into
@@ -636,6 +971,10 @@ impl TaskPlanCompiler {
             .0
         };
         let plan = ExecutionPlanV1 {
+            preparation: self
+                .preparation_roots
+                .contains(root)
+                .then_some(review_core::task::plan::PlanPreparationV1::Planning {}),
             task_revision_id: task_revision_id.into(),
             engine_id: self.engine_id.clone(),
             pipeline_id: self.packages[root].dependency.artifact_id.clone(),

@@ -49,6 +49,12 @@ budget, or sandbox boundary to make a test or review pass.
   input/output contract, including embedded and generated Pipelines; newly generated plans
   require developer review and exact-plan approval before execution. The implementation status
   and compatibility checkpoints are recorded in [docs/task-execution.md](docs/task-execution.md).
+  Captured Review operations use common Task Attempts, preserve canonical domain receipts and
+  require the Review verdict for acceptance
+  ([ADR-0077](docs/adr/0077-run-captured-review-operations-under-common-task-attempts.md)).
+- Task-backed Review conclusions carry exact cumulative accounting and a checked Task log
+  prefix; report snapshots are never summed as independent spend
+  ([ADR-0078](docs/adr/0078-bind-review-conclusions-to-exact-task-accounting.md)).
 - Claude calls for this project use only `claude-personal`. The owner-selected implementation
   PR review policy uses Fable 5.1/high for correctness and architecture, Opus 5/xhigh for
   performance, and GPT-5.6-Sol/high on `codex-personal` for bug bounty. The full increment is

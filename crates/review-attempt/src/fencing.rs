@@ -59,7 +59,7 @@ pub struct Attempt {
     pub epoch: Epoch,
     pub state: AttemptState,
     /// Cost charged, whether or not the output was ever used.
-    pub charged: u64,
+    pub charged: u128,
 }
 
 /// What an attempt delivered.
@@ -68,6 +68,14 @@ pub struct Receipt {
     pub attempt: AttemptId,
     pub output: String,
     pub cost: u64,
+}
+
+/// A common Task receipt can include several bounded Provider operations.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExactReceipt {
+    pub attempt: AttemptId,
+    pub output: String,
+    pub cost: u128,
 }
 
 /// The outcome of admitting a receipt.
@@ -82,6 +90,8 @@ pub enum Selection {
 #[derive(Debug, Clone, Default)]
 pub struct AttemptLedger {
     attempts: BTreeMap<AttemptId, Attempt>,
+    /// Updated with the same checked mutation as each Attempt's cumulative charge.
+    charged_total: u128,
     /// The current epoch per node. A receipt from any earlier epoch is late.
     current: BTreeMap<String, Epoch>,
     /// Outputs that may feed downstream, in the order they were selected.
@@ -150,11 +160,36 @@ impl AttemptLedger {
     }
 
     /// Record spend for an attempt that produced no receipt, such as a timeout or malformed
-    /// provider response. Fencing and accounting are independent facts.
+    /// provider response. This preserves legacy replacement accounting; common Task callers
+    /// use [`Self::charge_exact`] for cumulative floors. Fencing and accounting are independent.
     pub fn charge(&mut self, attempt: &AttemptId, amount: u64) {
+        self.set_charge(attempt, u128::from(amount))
+            .expect("legacy charge must fit the exact Attempt ledger");
+    }
+
+    /// Cumulative charge floors cannot refund earlier observations. Check the aggregate
+    /// before mutation so callers can reject an unrepresentable accounting transition.
+    pub fn charge_exact(&mut self, attempt: &AttemptId, amount: u128) -> Result<(), String> {
+        let Some(existing) = self.attempts.get(attempt) else {
+            return Ok(());
+        };
+        self.set_charge(attempt, amount.max(existing.charged))
+    }
+
+    fn set_charge(&mut self, attempt: &AttemptId, amount: u128) -> Result<(), String> {
+        let Some(existing) = self.attempts.get(attempt) else {
+            return Ok(());
+        };
+        let total = self
+            .charged_total
+            .checked_sub(existing.charged)
+            .and_then(|total| total.checked_add(amount))
+            .ok_or("Attempt charge total overflow")?;
         if let Some(attempt) = self.attempts.get_mut(attempt) {
             attempt.charged = amount;
         }
+        self.charged_total = total;
+        Ok(())
     }
 
     /// Admit a receipt.
@@ -163,18 +198,26 @@ impl AttemptLedger {
     /// output is charged and recorded but never selected — so a late delivery cannot change the
     /// run, whatever it contains.
     pub fn admit(&mut self, receipt: &Receipt) -> Selection {
-        let Some(attempt) = self.attempts.get_mut(&receipt.attempt) else {
+        self.charge(&receipt.attempt, receipt.cost);
+        self.select_receipt(&receipt.attempt, &receipt.output)
+    }
+
+    pub fn admit_exact(&mut self, receipt: &ExactReceipt) -> Result<Selection, String> {
+        self.charge_exact(&receipt.attempt, receipt.cost)?;
+        Ok(self.select_receipt(&receipt.attempt, &receipt.output))
+    }
+
+    fn select_receipt(&mut self, attempt: &AttemptId, output: &str) -> Selection {
+        let Some(attempt) = self.attempts.get_mut(attempt) else {
             return Selection::Quarantined;
         };
-        attempt.charged = receipt.cost;
 
         let current = self.current.get(&attempt.node).copied();
         let is_current = current == Some(attempt.epoch) && attempt.state != AttemptState::Fenced;
 
         if is_current {
             attempt.state = AttemptState::Selected;
-            self.selected
-                .push((attempt.node.clone(), receipt.output.clone()));
+            self.selected.push((attempt.node.clone(), output.into()));
             Selection::Selected
         } else {
             attempt.state = AttemptState::Quarantined;
@@ -201,8 +244,8 @@ impl AttemptLedger {
     }
 
     /// Everything spent, including on attempts whose output was thrown away.
-    pub fn total_charged(&self) -> u64 {
-        self.attempts.values().map(|a| a.charged).sum()
+    pub fn total_charged(&self) -> u128 {
+        self.charged_total
     }
 
     pub fn quarantined(&self) -> Vec<&Attempt> {
@@ -216,6 +259,79 @@ impl AttemptLedger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_receipts_keep_their_historical_replacement_accounting() {
+        let mut ledger = AttemptLedger::default();
+        let attempt = ledger.dispatch("reviewer");
+        ledger.charge(&attempt, 20);
+        ledger.charge(&attempt, 7);
+        assert_eq!(ledger.total_charged(), 7);
+        ledger.admit(&Receipt {
+            attempt: attempt.clone(),
+            output: "legacy".into(),
+            cost: 5,
+        });
+        assert_eq!(ledger.total_charged(), 5);
+        assert_eq!(ledger.attempt(&attempt).unwrap().charged, 5);
+    }
+
+    #[test]
+    fn exact_late_receipts_keep_the_charge_floor_and_remain_quarantined() {
+        let mut ledger = AttemptLedger::default();
+        let old = ledger.dispatch("reviewer");
+        ledger.charge_exact(&old, u128::from(u64::MAX) + 7).unwrap();
+        let current = ledger.dispatch("reviewer");
+        ledger.admit(&Receipt {
+            attempt: current,
+            output: "current".into(),
+            cost: 5,
+        });
+        assert_eq!(
+            ledger
+                .admit_exact(&ExactReceipt {
+                    attempt: old.clone(),
+                    output: "late".into(),
+                    cost: u128::from(u64::MAX) + 8,
+                })
+                .unwrap(),
+            Selection::Quarantined
+        );
+        ledger.charge_exact(&old, 1).unwrap();
+        assert_eq!(
+            ledger.attempt(&old).unwrap().charged,
+            u128::from(u64::MAX) + 8
+        );
+        assert_eq!(ledger.total_charged(), u128::from(u64::MAX) + 13);
+        assert_eq!(
+            ledger.selected_outputs(),
+            vec![("reviewer".into(), "current".into())]
+        );
+    }
+
+    #[test]
+    fn exact_attempt_total_overflow_does_not_mutate_charge_or_selection() {
+        let mut ledger = AttemptLedger::default();
+        let first = ledger.dispatch("first");
+        let second = ledger.dispatch("second");
+        ledger.charge_exact(&first, u128::MAX).unwrap();
+        assert!(
+            ledger
+                .admit_exact(&ExactReceipt {
+                    attempt: second.clone(),
+                    output: "overflow".into(),
+                    cost: 1,
+                })
+                .is_err()
+        );
+        assert_eq!(ledger.total_charged(), u128::MAX);
+        assert_eq!(ledger.attempt(&second).unwrap().charged, 0);
+        assert_eq!(
+            ledger.attempt(&second).unwrap().state,
+            AttemptState::Running
+        );
+        assert!(ledger.selected_outputs().is_empty());
+    }
 
     #[test]
     fn a_second_dispatch_fences_the_first() {

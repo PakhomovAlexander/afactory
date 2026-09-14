@@ -1318,10 +1318,13 @@ dependencies = [
 name = "review-config"
 version = "0.8.0"
 dependencies = [
+ "jsonschema",
+ "review-attempt",
  "review-check",
  "review-core",
  "review-graph",
  "review-runner",
+ "review-source-git",
  "review-store",
  "semver",
  "serde",
@@ -1362,6 +1365,7 @@ dependencies = [
 name = "review-pipeline"
 version = "0.8.0"
 dependencies = [
+ "jsonschema",
  "review-attempt",
  "review-broker",
  "review-check",
@@ -1373,6 +1377,7 @@ dependencies = [
  "review-sandbox",
  "review-source-git",
  "review-store",
+ "rusqlite",
  "serde",
  "serde_json",
  "tempfile",
@@ -1423,6 +1428,7 @@ dependencies = [
  "review-sandbox",
  "review-source-git",
  "review-store",
+ "rustix",
  "serde_json",
  "tempfile",
 ]
@@ -1464,6 +1470,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "review-source-task"
+version = "0.8.0"
+dependencies = [
+ "review-core",
+ "review-process",
+ "review-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "toml",
+]
+
+[[package]]
 name = "review-store"
 version = "0.8.0"
 dependencies = [
@@ -1488,6 +1507,7 @@ dependencies = [
  "clap_complete",
  "clap_mangen",
  "crossterm",
+ "jsonschema",
  "minisign",
  "minisign-verify",
  "nix 0.30.1",
@@ -1505,6 +1525,7 @@ dependencies = [
  "review-runner-codex",
  "review-sandbox",
  "review-source-git",
+ "review-source-task",
  "review-store",
  "rusqlite",
  "rustix",

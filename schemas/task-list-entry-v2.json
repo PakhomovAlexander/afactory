@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-list-entry:2",
+  "title": "Task list entry af/task-list-entry@2",
+  "$comment": "One common Task entry in the CLI list. Unfinished outcome, absent snapshot and absent delivery are explicit nulls. phase/result/delivery identity and charge consistency are checked by Store projection, not by this structural schema.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "kind",
+    "phase",
+    "outcome",
+    "chargeable_tokens",
+    "derived_snapshot_id",
+    "delivery"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/task-list-entry@2"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "kind": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+    },
+    "phase": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/taskPhase"
+    },
+    "outcome": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/text"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "chargeable_tokens": {
+      "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+    },
+    "derived_snapshot_id": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "delivery": {
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:task-inspection:3#/$defs/deliveryReceipt"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "phase": {
+            "properties": {
+              "kind": {
+                "const": "finished"
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "outcome": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/text"
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "outcome": {
+            "type": "null"
+          },
+          "derived_snapshot_id": {
+            "type": "null"
+          },
+          "delivery": {
+            "type": "null"
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-context:1",
+  "title": "task-context@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "invocation",
+    "feedback_ids",
+    "rendered_id",
+    "contract_id",
+    "manifest"
+  ],
+  "properties": {
+    "invocation": {
+      "$ref": "urn:af:schema:task-invocation:1"
+    },
+    "feedback_ids": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+      }
+    },
+    "rendered_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "contract_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entries",
+        "rendered_bytes",
+        "estimated_tokens"
+      ],
+      "properties": {
+        "entries": {
+          "type": "array",
+          "minItems": 3,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "name",
+              "required_by",
+              "rendered_bytes",
+              "estimated_tokens"
+            ],
+            "properties": {
+              "name": {
+                "type": "string",
+                "minLength": 1
+              },
+              "required_by": {
+                "type": "string",
+                "minLength": 1
+              },
+              "artifact_id": {
+                "anyOf": [
+                  {
+                    "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "artifact_type": {
+                "anyOf": [
+                  {
+                    "$ref": "urn:af:schema:task-contracts:1#/$defs/artifactType"
+                  },
+                  {
+                    "enum": [
+                      "af/implement-input@1",
+                      "af/evaluate-input@1"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "rendered_bytes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "estimated_tokens": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              }
+            }
+          }
+        },
+        "rendered_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576
+        },
+        "estimated_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 262144
+        }
+      }
+    }
+  },
+  "$comment": "Existing af/TaskContext@1 payload. Total rendered input is bounded to 1 MiB; Rust checks each four-byte token estimate against its byte count. ContextManifest optional observation references preserve historical null-to-None decoding. The captured Worker contract and Store rederive exact input ports, rendered content, authority, feedback, producer and envelope references; a structurally valid digest is not an authorization. Historical ContextManifest entries also retain af/implement-input@1 and af/evaluate-input@1 rendered-protocol labels; those are observations, not ArtifactEnvelope types."
+}

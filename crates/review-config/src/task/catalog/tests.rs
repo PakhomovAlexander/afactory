@@ -2,6 +2,195 @@ use super::*;
 use review_core::task::pipeline::PipelineContractV1;
 use serde_json::json;
 
+#[test]
+fn installed_document_authorship_cannot_be_removed_by_omitting_worker_effects() {
+    let mut f = Fixture::new();
+    let pipeline = f.compiler.pipelines.get_mut("builtin/document").unwrap();
+    let slot = pipeline.slots.keys().next().unwrap().clone();
+    pipeline.nodes[0].operator = review_core::task::pipeline::TaskOperatorV1::Verify { slot };
+    // The installed profile chooses which data artifacts establish authorship. A package's
+    // empty effects declaration cannot turn that author into an independent verifier.
+    let authored = f.compiler.workers["builtin/document-author"]
+        .signature
+        .contract
+        .outputs
+        .values()
+        .map(|p| p.artifact_type.clone())
+        .collect();
+    f.compiler = f.compiler.with_authored_artifacts(authored).unwrap();
+    let error = f
+        .compiler
+        .compile(&f.cas, &f.revision_id, "builtin/document")
+        .unwrap_err();
+    assert!(error.contains("Independent slots"), "{error}");
+}
+
+#[test]
+fn export_uses_shared_defaults_and_checked_renaming_without_local_authority() {
+    let mut f = Fixture::new();
+    f.replacement(|_, files| {
+        files.insert("private-local.txt".into(), b"PRIVATE LOCAL WORKER".to_vec());
+    });
+    let exported = f
+        .compiler
+        .export_catalog("builtin/document", "team/document")
+        .unwrap();
+    assert_eq!(exported.catalog.packages.len(), 2);
+    assert!(
+        exported
+            .catalog
+            .packages
+            .contains_key("builtin/document-author")
+    );
+    assert!(!exported.catalog.packages.contains_key("local/author"));
+    assert!(
+        !exported
+            .files
+            .values()
+            .any(|b| String::from_utf8_lossy(b).contains("PRIVATE LOCAL"))
+    );
+    let mut compiler = TaskPlanCompiler::new(
+        f.compiler.engine_id.clone(),
+        f.compiler.policy_id.clone(),
+        BTreeMap::new(),
+        f.compiler.acceptance_outputs.clone(),
+        f.compiler.independence,
+    )
+    .unwrap();
+    for (name, pin) in &exported.catalog.packages {
+        compiler
+            .capture_package(&f.cas, name, pin, &exported.files)
+            .unwrap();
+    }
+    compiler.validate_dependency_closure().unwrap();
+    compiler
+        .check_contract_fixtures(&exported.contracts)
+        .unwrap();
+    let root = std::env::var_os("AF_WORKSPACE_ROOT")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+    let schema = |name: &str| -> serde_json::Value {
+        serde_json::from_slice(&std::fs::read(root.join("schemas").join(name)).unwrap()).unwrap()
+    };
+    let mut options = jsonschema::options();
+    for name in [
+        "task-contracts-v1.json",
+        "task-operator-signature-v1.json",
+        "task-kind-v1.json",
+    ] {
+        let value = schema(name);
+        options.with_resource(
+            value["$id"].as_str().unwrap().to_owned(),
+            jsonschema::Resource::from_contents(value).unwrap(),
+        );
+    }
+    for (name, value) in [
+        (
+            "catalog-contract-fixtures-v1.json",
+            serde_json::to_value(&exported.contracts).unwrap(),
+        ),
+        (
+            "shared-task-catalog-v1.json",
+            serde_json::to_value(&exported.catalog).unwrap(),
+        ),
+    ] {
+        let validator = options.build(&schema(name)).unwrap();
+        assert!(
+            validator.is_valid(&value),
+            "{name}: {:?}",
+            validator.iter_errors(&value).collect::<Vec<_>>()
+        );
+        let mut invalid = value;
+        invalid["approval"] = json!(true);
+        assert!(!validator.is_valid(&invalid));
+    }
+    let mut changed = exported.contracts.clone();
+    changed
+        .pipelines
+        .get_mut("team/document")
+        .unwrap()
+        .coverage
+        .clear();
+    assert!(compiler.check_contract_fixtures(&changed).is_err());
+    for name in [
+        "generated/document",
+        "local/document",
+        "af-internal/document",
+        "builtin/document-author",
+    ] {
+        assert!(
+            f.compiler.export_catalog("builtin/document", name).is_err(),
+            "{name}"
+        );
+    }
+    f.compiler
+        .pipelines
+        .get_mut("builtin/document")
+        .unwrap()
+        .slots
+        .get_mut("author")
+        .unwrap()
+        .worker = "local/author".into();
+    assert!(
+        f.compiler
+            .export_catalog("builtin/document", "team/document")
+            .unwrap_err()
+            .contains("shared Worker")
+    );
+}
+
+#[test]
+fn proposal_feedback_uses_full_effective_binding_independence_without_installing_a_plan() {
+    use review_core::task::pipeline::*;
+    use review_core::task::planning::PipelineProposalV1;
+    let mut f = Fixture::new();
+    // This proposal declares two evidence Workers. Give this new test an explicit reserve
+    // for both so the intended independence rejection is reached after resource admission.
+    f.task.limits.verification.attempts = 2;
+    f.task.limits.verification.wall_ms = 2000;
+    let mut pipeline = f.compiler.pipelines["builtin/document"].clone();
+    pipeline.name = "generated/document".into();
+    let mut second = pipeline.slots["author"].clone();
+    second.independent_from = BTreeSet::from(["author".into()]);
+    second.min_attempts = 1;
+    second.max_attempts = 1;
+    pipeline.slots.insert("second".into(), second);
+    pipeline.nodes.push(TaskNodeV1 {
+        id: "second".into(),
+        operator: TaskOperatorV1::Worker {
+            slot: "second".into(),
+        },
+        inputs: pipeline.nodes[0].inputs.clone(),
+        when: None,
+    });
+    let mut proposal = PipelineProposalV1 {
+        schema: "af.pipeline-proposal/1".into(),
+        root: pipeline.name.clone(),
+        definitions: BTreeMap::from([(pipeline.name.clone(), toml::to_string(&pipeline).unwrap())]),
+    };
+    f.compiler
+        .check_proposal_structure(&f.cas, &f.task, &proposal)
+        .unwrap();
+    let error = f
+        .compiler
+        .check_pipeline_proposal(&f.cas, &f.task, &proposal)
+        .unwrap_err();
+    assert!(error.contains("Independent slots"), "{error}");
+    assert!(!f.compiler.pipelines.contains_key(&pipeline.name));
+    pipeline.nodes.pop();
+    pipeline.slots.remove("second");
+    proposal
+        .definitions
+        .insert(pipeline.name.clone(), toml::to_string(&pipeline).unwrap());
+    f.compiler
+        .check_pipeline_proposal(&f.cas, &f.task, &proposal)
+        .unwrap();
+    assert!(
+        !f.compiler.pipelines.contains_key(&pipeline.name),
+        "A preview cannot install executable authority"
+    );
+}
+
 struct Fixture {
     _dir: tempfile::TempDir,
     cas: Cas,
@@ -13,6 +202,50 @@ struct Fixture {
 }
 
 impl Fixture {
+    fn replacement(
+        &mut self,
+        edit: impl FnOnce(&mut TaskWorkerManifest, &mut BTreeMap<String, Vec<u8>>),
+    ) {
+        let mut worker = self.compiler.workers["builtin/document-author"].clone();
+        let mut files = self.compiler.packages["builtin/document-author"]
+            .bytes
+            .files
+            .clone();
+        worker.name = "local/author".into();
+        edit(&mut worker, &mut files);
+        files.insert(
+            "worker.toml".into(),
+            toml::to_string(&worker).unwrap().into_bytes(),
+        );
+        let pin = TaskPackagePin {
+            version: "1.0.0".into(),
+            digest: package_digest_from_files(&files),
+            path: "packages/local".into(),
+        };
+        let project = files
+            .into_iter()
+            .map(|(name, bytes)| (format!("packages/local/{name}"), bytes))
+            .collect();
+        self.compiler
+            .capture_package(&self.cas, "local/author", &pin, &project)
+            .unwrap();
+        self.compiler
+            .bind_worker(
+                "local/author",
+                AdmittedWorkerSettings {
+                    execution: WorkerExecutionV1::Command {},
+                    invocation_policy_id: self.task.authority.policy_id.clone(),
+                },
+            )
+            .unwrap();
+        self.compiler
+            .replace_slot_workers(BTreeMap::from([(
+                "root.slots.author".into(),
+                "local/author".into(),
+            )]))
+            .unwrap();
+    }
+
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let cas = Cas::open(dir.path().join("cas")).unwrap();
@@ -144,6 +377,96 @@ impl Fixture {
             project,
             pins,
         }
+    }
+}
+
+#[test]
+fn local_worker_replacement_preserves_default_authority_and_exact_replay() {
+    let mut f = Fixture::new();
+    f.replacement(|worker, _| worker.signature.attempt.as_mut().unwrap().wall_ms = 500);
+    let (plan, graph) = f
+        .compiler
+        .compile(&f.cas, &f.revision_id, "builtin/document")
+        .unwrap();
+    assert_eq!(graph.slots["root.slots.author"].worker, "local/author");
+    assert_eq!(
+        graph.replaced_workers["root.slots.author"],
+        BTreeSet::from(["builtin/document-author".into()])
+    );
+    assert_eq!(
+        plan.dependencies
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        [
+            "builtin/document",
+            "builtin/document-author",
+            "local/author"
+        ]
+    );
+    f.compiler.validate_plan(&f.cas, &f.task, &plan).unwrap();
+    f.compiler.replace_slot_workers(BTreeMap::new()).unwrap();
+    assert!(f.compiler.validate_plan(&f.cas, &f.task, &plan).is_err());
+}
+
+#[test]
+fn local_worker_cannot_weaken_schema_evidence_role_effects_or_slot_permission() {
+    for case in [
+        "schema",
+        "evidence",
+        "role",
+        "effects",
+        "type",
+        "forbidden",
+        "unknown_slot",
+    ] {
+        let mut f = Fixture::new();
+        f.replacement(|worker, files| match case {
+            "schema" => {
+                files.insert("input.schema.json".into(), b"{}".to_vec());
+            }
+            "evidence" => worker.signature.evidence.clear(),
+            "role" => {
+                worker.signature.roles = BTreeSet::from(["another".into()]);
+            }
+            "effects" => {
+                worker.signature.effects.insert("write-source".into());
+            }
+            "type" => {
+                worker.signature.worker_input_type = Some("af/Other@1".into());
+            }
+            _ => (),
+        });
+        if case == "forbidden" {
+            f.compiler
+                .pipelines
+                .get_mut("builtin/document")
+                .unwrap()
+                .slots
+                .get_mut("author")
+                .unwrap()
+                .allow_local_replacement = false;
+        }
+        if case == "unknown_slot" {
+            f.compiler
+                .replace_slot_workers(BTreeMap::from([(
+                    "root.slots.misspelled".into(),
+                    "local/author".into(),
+                )]))
+                .unwrap();
+        }
+        assert!(
+            f.compiler
+                .required_worker_packages(&f.cas, &f.revision_id, "builtin/document")
+                .is_err(),
+            "{case} reached account admission"
+        );
+        assert!(
+            f.compiler
+                .compile(&f.cas, &f.revision_id, "builtin/document")
+                .is_err(),
+            "{case} compiled"
+        );
     }
 }
 
@@ -299,6 +622,103 @@ fn package_capture_checks_the_same_bytes_before_parsing_and_never_falls_through(
 }
 
 #[test]
+fn captured_plan_validation_rechecks_bytes_and_never_reuses_changed_authority() {
+    for generated in [false, true] {
+        let mut f = Fixture::new();
+        if generated {
+            f.compiler.generated.insert(
+                "builtin/document".into(),
+                GeneratedOriginV1 {
+                    pipeline_id: f.compiler.packages["builtin/document"]
+                        .dependency
+                        .artifact_id
+                        .clone(),
+                    proposal_id: f.revision_id.clone(),
+                    bootstrap_plan_id: f.compiler.policy_id.clone(),
+                },
+            );
+        }
+        let (plan, _) = f
+            .compiler
+            .compile(&f.cas, &f.revision_id, "builtin/document")
+            .unwrap();
+        let validator = CapturedTaskPlanValidator::new(&f.compiler);
+        assert_eq!(
+            validator.validate_plan(&f.cas, &f.task, &plan).unwrap(),
+            plan.generated_origins
+        );
+        assert_eq!(
+            validator.validate_plan(&f.cas, &f.task, &plan).unwrap(),
+            plan.generated_origins
+        );
+        let mut changed_task = f.task.clone();
+        changed_task.goal.push_str(" changed");
+        assert!(
+            validator
+                .validate_plan(&f.cas, &changed_task, &plan)
+                .is_err()
+        );
+        let mut changed = plan.clone();
+        changed.limits.tokens += 1;
+        assert!(validator.validate_plan(&f.cas, &f.task, &changed).is_err());
+        let mut changed = plan.clone();
+        changed
+            .bindings
+            .values_mut()
+            .next()
+            .unwrap()
+            .invocation_policy_id = f.revision_id.clone();
+        assert!(validator.validate_plan(&f.cas, &f.task, &changed).is_err());
+        if generated {
+            let mut stripped = plan.clone();
+            stripped.generated_origins.clear();
+            assert!(validator.validate_plan(&f.cas, &f.task, &stripped).is_err());
+        }
+        let mut ids = BTreeSet::from([
+            plan.task_revision_id.clone(),
+            plan.compiled_graph_id.clone(),
+            plan.engine_id.clone(),
+            plan.authority.policy_id.clone(),
+        ]);
+        ids.extend(plan.dependencies.values().map(|d| d.artifact_id.clone()));
+        ids.extend(
+            plan.bindings
+                .values()
+                .map(|b| b.invocation_policy_id.clone()),
+        );
+        for id in ids {
+            let hex = id.strip_prefix("sha256:").unwrap();
+            let file = f
+                ._dir
+                .path()
+                .join("cas/objects")
+                .join(&hex[..2])
+                .join(&hex[2..]);
+            let original = std::fs::read(&file).unwrap();
+            std::fs::write(&file, b"corrupted after validation").unwrap();
+            assert!(
+                validator.validate_plan(&f.cas, &f.task, &plan).is_err(),
+                "{id}"
+            );
+            std::fs::remove_file(&file).unwrap();
+            assert!(
+                validator.validate_plan(&f.cas, &f.task, &plan).is_err(),
+                "{id}"
+            );
+            assert!(
+                !file.exists(),
+                "memoized validation must not recreate missing authority"
+            );
+            std::fs::write(&file, original).unwrap();
+            assert_eq!(
+                validator.validate_plan(&f.cas, &f.task, &plan).unwrap(),
+                plan.generated_origins
+            );
+        }
+    }
+}
+
+#[test]
 fn restored_packages_keep_identity_and_missing_graph_is_not_recreated_during_validation() {
     let f = Fixture::new();
     let (plan, _) = f
@@ -349,6 +769,213 @@ fn restored_packages_keep_identity_and_missing_graph_is_not_recreated_during_val
         !path.exists(),
         "validation must not repair missing authority"
     );
+}
+
+#[test]
+fn installed_planner_bootstrap_is_exact_fixed_and_cannot_be_reclassified_by_wire_text() {
+    use review_core::task::planning::{PIPELINE_PROPOSAL_V1, PLANNING_REQUEST_V1};
+    for native in [false, true] {
+        let mut f = Fixture::new();
+        let mut worker = f.compiler.workers["builtin/document-author"].clone();
+        worker.name = "builtin/planner".into();
+        let request = planning::planning_context_signature().contract.outputs["request"].clone();
+        let mut proposal = request.clone();
+        proposal.artifact_type = PIPELINE_PROPOSAL_V1.into();
+        worker.signature.contract = PipelineContractV1 {
+            inputs: BTreeMap::from([("request".into(), request)]),
+            outputs: BTreeMap::from([("proposal".into(), proposal)]),
+        };
+        worker.signature.effects.clear();
+        worker.signature.evidence.clear();
+        worker.signature.roles = BTreeSet::from(["plan".into()]);
+        worker.signature.retains =
+            BTreeMap::from([("proposal".into(), BTreeSet::from(["request".into()]))]);
+        worker.signature.worker_input_type = Some("af/PlannerInput@1".into());
+        worker.signature.worker_output_type = Some(PIPELINE_PROPOSAL_V1.into());
+        if native {
+            worker.signature.attempt.as_mut().unwrap().tokens = 100;
+            worker.runner = TaskWorkerRunner::Model {
+                provider_kind: "claude".into(),
+                model: "fixture-model".into(),
+                effort: "high".into(),
+            };
+            f.compiler =
+                f.compiler
+                    .with_provider_admission(review_graph::task::OperatorAttemptCost {
+                        tokens: 100,
+                        wall_ms: 500,
+                    });
+        }
+        let bytes = toml::to_string(&worker).unwrap().into_bytes();
+        let files = BTreeMap::from([("worker.toml".into(), bytes.clone())]);
+        let pin = TaskPackagePin {
+            version: "1.0.0".into(),
+            digest: package_digest_from_files(&files),
+            path: "planner".into(),
+        };
+        f.compiler
+            .capture_package(
+                &f.cas,
+                "builtin/planner",
+                &pin,
+                &BTreeMap::from([("planner/worker.toml".into(), bytes)]),
+            )
+            .unwrap();
+        f.compiler
+            .bind_worker(
+                "builtin/planner",
+                AdmittedWorkerSettings {
+                    execution: if native {
+                        WorkerExecutionV1::Model {
+                            provider: "personal".into(),
+                            provider_kind: "claude".into(),
+                            principal_id: f.task.authority.policy_id.clone(),
+                            model: "fixture-model".into(),
+                            effort: "high".into(),
+                        }
+                    } else {
+                        WorkerExecutionV1::Command {}
+                    },
+                    invocation_policy_id: f.task.authority.policy_id.clone(),
+                },
+            )
+            .unwrap();
+        let settings = planning::PlannerSettings {
+            worker: "builtin/planner".into(),
+            max_attempts: 2,
+        };
+        let name = f
+            .compiler
+            .install_planning_bootstrap(&f.cas, &f.task, &settings)
+            .unwrap();
+        assert_eq!(
+            f.compiler
+                .install_planning_bootstrap(&f.cas, &f.task, &settings)
+                .unwrap(),
+            name
+        );
+        assert_eq!(
+            f.compiler
+                .required_worker_packages(&f.cas, &f.revision_id, &name)
+                .unwrap(),
+            BTreeSet::from(["builtin/planner".into()])
+        );
+        let (plan, graph) = f.compiler.compile(&f.cas, &f.revision_id, &name).unwrap();
+        assert_eq!(
+            graph
+                .nodes
+                .values()
+                .filter(|n| matches!(n.operator, CompiledOperator::ProviderAdmission { .. }))
+                .count(),
+            usize::from(native)
+        );
+        let now = f.task.limits.deadline_unix_ms - 5000;
+        assert!(
+            f.compiler
+                .compiled_resources(&graph, &f.task.limits, now)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            !f.compiler
+                .compiled_resources(&graph, &f.task.limits, f.task.limits.deadline_unix_ms - 500)
+                .unwrap()
+                .is_empty()
+        );
+        let mut exhausted = f.task.limits.clone();
+        exhausted.max_attempts = exhausted.verification.attempts;
+        assert!(
+            !f.compiler
+                .compiled_resources(&graph, &exhausted, now)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(plan.preparation.is_some());
+        assert!(plan.acceptance.is_empty());
+        assert!(plan.generated_origins.is_empty());
+        assert_eq!(plan.inputs, f.task.inputs);
+        assert_eq!(graph.inputs, f.task.inputs);
+        assert_eq!(
+            graph.nodes["root.nodes.context"].contract.outputs["request"].artifact_type,
+            PLANNING_REQUEST_V1
+        );
+        f.compiler.validate_plan(&f.cas, &f.task, &plan).unwrap();
+        let request = f.compiler.planning_request(&f.task).unwrap();
+        let mut options = jsonschema::options();
+        let root = std::env::var_os("AF_WORKSPACE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
+        let schema = |name: &str| -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(root.join("schemas").join(name)).unwrap())
+                .unwrap()
+        };
+        for name in ["task-contracts-v1.json", "task-operator-signature-v1.json"] {
+            let value = schema(name);
+            options.with_resource(
+                value["$id"].as_str().unwrap().to_owned(),
+                jsonschema::Resource::from_contents(value).unwrap(),
+            );
+        }
+        let validator = options.build(&schema("planning-request-v1.json")).unwrap();
+        assert!(
+            validator.is_valid(&request),
+            "{:?}",
+            validator
+                .iter_errors(&request)
+                .map(|e| e.to_string())
+                .collect::<Vec<_>>()
+        );
+        assert!(request["workers"]["builtin/planner"].is_null());
+        assert!(request["pipelines"][planning::PLANNER_PIPELINE].is_null());
+        for pointer in [
+            "",
+            "/task",
+            "/workers/builtin~1document-author",
+            "/pipelines/builtin~1document",
+        ] {
+            let mut invalid = request.clone();
+            invalid.pointer_mut(pointer).unwrap()["private_worker_instructions"] =
+                json!("undeclared context");
+            assert!(!validator.is_valid(&invalid));
+        }
+        let mut stripped = plan.clone();
+        stripped.preparation = None;
+        assert!(
+            f.compiler
+                .validate_plan(&f.cas, &f.task, &stripped)
+                .is_err()
+        );
+        let mut forged = f.compiler.clone();
+        forged.preparation_roots.clear();
+        assert!(
+            forged.validate_plan(&f.cas, &f.task, &plan).is_err(),
+            "Pipeline text supplied the preparation capability"
+        );
+        assert!(
+            f.compiler
+                .install_planning_bootstrap(
+                    &f.cas,
+                    &f.task,
+                    &planning::PlannerSettings {
+                        max_attempts: 3,
+                        ..settings
+                    }
+                )
+                .is_err()
+        );
+        assert!(
+            f.compiler
+                .install_planning_bootstrap(
+                    &f.cas,
+                    &f.task,
+                    &planning::PlannerSettings {
+                        worker: "builtin/document-author".into(),
+                        max_attempts: 1
+                    }
+                )
+                .is_err()
+        );
+    }
 }
 
 #[test]

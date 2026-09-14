@@ -100,13 +100,12 @@ impl WorkerModelAdapter for DomainModel {
         };
         let message = serde_json::to_vec(&json!({"schema":"af.worker-reply/1","outputs":{"output":[{"outcome":"passed","text":text}]}})).unwrap();
         ModelWorkerReturn {
+            usage_observation: None,
             raw_artifact_ids: vec![cas.put(&message).unwrap()],
             message: Ok(message),
-            usage: Some(review_runner::TokenUsage::charge_only(if count == 0 {
-                17
-            } else {
-                23
-            })),
+            usage: Some(
+                review_runner::TokenUsage::charge_only(if count == 0 { 17 } else { 23 }).into(),
+            ),
         }
     }
 }
@@ -138,11 +137,12 @@ fn domain_output_rejection_retries_with_durable_typed_feedback_and_exact_charge(
             &models,
         )
         .unwrap();
-        let authority = CapturedTaskAuthority {
-            compiler: &f.compiler,
-            domain: &host,
-            developer: &NoTaskDeveloper,
+        let planning = review_pipeline::task::planning::PlanningTaskHost {
+            inner: &host,
+            task: &f.task,
+            validate_proposal: &|_, _, _| panic!("Business output must not invoke a Planner"),
         };
+        let authority = CapturedTaskAuthority::new(&f.compiler, &planning, &NoTaskDeveloper);
         let lease = f
             .store
             .open_task(&f.cas, &f.revision_id, "domain-retry", 60_000)
@@ -154,7 +154,8 @@ fn domain_output_rejection_retries_with_durable_typed_feedback_and_exact_charge(
         let mut retained_feedback = None;
         for _ in 0..2 {
             let runtime =
-                TaskRuntime::new(&mut f.store, &f.cas, lease.clone(), &authority, &host).unwrap();
+                TaskRuntime::new(&mut f.store, &f.cas, lease.clone(), &authority, &planning)
+                    .unwrap();
             let report = runtime.execute().unwrap();
             assert_eq!(report.complete(), !always_reject, "{report:?}");
             if always_reject && retained_feedback.is_none() {
@@ -251,11 +252,7 @@ fn feedback_persistence_failure_does_not_authorize_a_retry_or_hide_known_usage()
     )
     .unwrap();
     let failing = FeedbackFailure(&host);
-    let authority = CapturedTaskAuthority {
-        compiler: &f.compiler,
-        domain: &host,
-        developer: &NoTaskDeveloper,
-    };
+    let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
     let lease = f
         .store
         .open_task(&f.cas, &f.revision_id, "feedback-failure", 60_000)

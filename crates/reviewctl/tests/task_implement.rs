@@ -22,17 +22,28 @@ fn verification(outcome: &serde_json::Value, state: &Path) -> serde_json::Value 
 fn worker_context(outcome: &serde_json::Value, cas: &Cas, node: &str) -> serde_json::Value {
     for entry in outcome["execution_records"].as_array().unwrap() {
         let record = &entry["record"];
-        if record["kind"] != "prepared" {
+        if !matches!(record["kind"].as_str(), Some("prepared" | "reserved")) {
             continue;
         }
         let input = cas
             .get_json(record["invocation_id"].as_str().unwrap())
             .unwrap();
         if input["payload"]["node"] == node {
-            return cas
-                .get_json(record["context_id"].as_str().unwrap())
-                .unwrap()["payload"]
-                .clone();
+            let context_id = record["context_id"].as_str().unwrap_or_else(|| {
+                outcome["execution_records"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|entry| &entry["record"])
+                    .find(|bound| {
+                        bound["kind"] == "context_bound"
+                            && bound["attempt_id"] == record["attempt_id"]
+                    })
+                    .unwrap()["context_id"]
+                    .as_str()
+                    .unwrap()
+            });
+            return cas.get_json(context_id).unwrap()["payload"].clone();
         }
     }
     panic!("No prepared Attempt for {node}");
@@ -223,7 +234,7 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
     assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(outcome["schema"], "af/task-inspection@2");
+    assert_eq!(outcome["schema"], "af/task-inspection@3");
     assert_eq!(outcome["result"]["acceptance"], "satisfied");
     assert!(outcome.get("delivery").is_none());
     assert_eq!(outcome["attempts"], 3);
@@ -273,7 +284,10 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
     assert_eq!(evaluator["legacy"]["budget_tokens"], 1000);
     assert_eq!(evaluator["legacy"]["plan_id"], outcome["plan_id"]);
     for entry in outcome["execution_records"].as_array().unwrap() {
-        if entry["record"]["kind"] == "prepared" {
+        if matches!(
+            entry["record"]["kind"].as_str(),
+            Some("prepared" | "reserved")
+        ) {
             assert_eq!(entry["record"]["reserved_tokens"], 0);
         }
     }
@@ -431,7 +445,7 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
     );
     assert_eq!(code, 0, "{stderr}");
     let shown: serde_json::Value = serde_json::from_str(shown.trim()).unwrap();
-    assert_eq!(shown["schema"], "af/task-inspection@2");
+    assert_eq!(shown["schema"], "af/task-inspection@3");
     assert_eq!(shown["result"]["acceptance"], "satisfied");
     assert!(shown["history"].as_array().unwrap().len() >= 8);
 }

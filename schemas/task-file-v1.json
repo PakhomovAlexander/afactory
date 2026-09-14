@@ -1,0 +1,147 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-file:1",
+  "title": "TaskFile af.task-file/1",
+  "$comment": "JSON representation of the JSON/TOML CLI Task file. Admission additionally checks encoded byte bounds, sorted Jira fields, captured source/package existence, kind/profile compatibility and joint resource feasibility. Omitted options use their Rust defaults; explicit null is invalid. wall_ms is an input duration, optionally capped by command-line policy before the absolute deadline is validated.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_id",
+    "kind",
+    "goal",
+    "strategy",
+    "limits"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.task-file/1"
+    },
+    "task_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "kind": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/package"
+    },
+    "goal": {
+      "type": "string",
+      "pattern": "\\S",
+      "maxLength": 65536
+    },
+    "requirements": {
+      "type": "object",
+      "minProperties": 1
+    },
+    "document_sources": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*[\\\\\\x00-\\x1f\\x7f-\\x9f])(?!(?:.*/)?(?:\\.|\\.\\.|\\.git)(?:/|$))[^/]+(?:/[^/]+)*$"
+    },
+    "issue": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "path"
+          ],
+          "properties": {
+            "kind": {
+              "const": "local"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^(?!/)(?!.*[\\\\\\x00-\\x1f\\x7f-\\x9f])(?!(?:.*/)?(?:\\.|\\.\\.|\\.git)(?:/|$))[^/]+(?:/[^/]+)*\\.(?:json|toml)$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "binding",
+            "key"
+          ],
+          "properties": {
+            "kind": {
+              "const": "jira"
+            },
+            "binding": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+            },
+            "key": {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]{0,63}-[1-9][0-9]{0,19}$"
+            },
+            "acceptance_fields": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^customfield_[0-9]{1,20}$"
+              },
+              "maxItems": 16,
+              "uniqueItems": true
+            }
+          }
+        }
+      ]
+    },
+    "pipeline": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/choice"
+    },
+    "strategy": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+    },
+    "verification": {
+      "enum": [
+        "evaluation",
+        "review",
+        "review_or_targeted_fixes"
+      ]
+    },
+    "facts": {
+      "type": "object",
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/fact"
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tokens",
+        "max_attempts",
+        "wall_ms",
+        "verification"
+      ],
+      "properties": {
+        "tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "max_attempts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "wall_ms": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "verification": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/reserve"
+        }
+      }
+    }
+  }
+}

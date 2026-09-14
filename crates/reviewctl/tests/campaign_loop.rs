@@ -8,6 +8,15 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+#[path = "campaign_loop/contracts.rs"]
+mod contracts;
+#[path = "campaign_loop/heartbeat.rs"]
+mod heartbeat;
+#[path = "campaign_loop/provider_admission.rs"]
+mod provider_admission;
+#[path = "campaign_loop/provider_currentness.rs"]
+mod provider_currentness;
+
 fn git(repo: &Path, home: &Path, args: &[&str]) {
     let out = Command::new("git")
         .current_dir(repo)
@@ -41,6 +50,13 @@ fn invoke_reviewctl(
     let provider_registry = home.join(".config/afactory/providers.toml");
     if provider_registry.is_file() {
         command.env("AF_PROVIDERS_FILE", provider_registry);
+    }
+    if home.join("codex").is_file() {
+        let mut paths = vec![home.to_path_buf()];
+        paths.extend(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        ));
+        command.env("PATH", std::env::join_paths(paths).unwrap());
     }
     let mut actual = args.to_vec();
     if actual.first() == Some(&"run") {
@@ -481,7 +497,8 @@ fn final_local_review_uses_af_authority_and_one_json_result() {
 
     assert_eq!(code, 3, "{stderr}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(outcome["schema"], "af/review-outcome@1");
+    contracts::valid("review-outcome-v2.json", &outcome);
+    assert_eq!(outcome["schema"], "af/review-outcome@2");
     assert_eq!(outcome["campaign_mode"], "light");
     assert_eq!(outcome["next_action"]["kind"], "fix_then_gate");
     assert_eq!(outcome["next_action"]["start_another_campaign"], false);
@@ -490,14 +507,22 @@ fn final_local_review_uses_af_authority_and_one_json_result() {
     let attempts = outcome["attempts"].as_array().unwrap();
     assert_eq!(attempts.len(), 1);
     assert_eq!(attempts[0]["node"], "architecture");
-    assert_eq!(attempts[0]["cost_tokens"], 0);
+    assert_eq!(attempts[0]["cost_tokens"], "0");
     assert!(
         attempts[0]["context_manifest"]["rendered_bytes"]
-            .as_u64()
+            .as_str()
+            .unwrap()
+            .parse::<u64>()
             .unwrap()
             > 0
     );
-    assert_eq!(outcome["totals"]["usage"]["chargeable_tokens"], 0);
+    assert_eq!(
+        outcome["totals"]["selected_attempts"]["usage"]["chargeable_tokens"],
+        "0"
+    );
+    assert_eq!(outcome["task"]["committed_tokens"], "0");
+    assert_eq!(outcome["task"]["begun_attempts"], "2");
+    assert_eq!(outcome["task"]["phase"]["kind"], "finished");
     assert_eq!(
         attempts[0]["context_manifest"]["entries"][0]["name"],
         "worker_input"
@@ -554,7 +579,7 @@ fn required_demands_are_visible_in_run_ledger_and_json_output() {
     );
     assert_eq!(code, 3, "{stdout}\n{stderr}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(outcome["totals"]["open_required_demands"], 1);
+    assert_eq!(outcome["totals"]["open_required_demands"], "1");
     assert_eq!(
         outcome["totals"]["open_or_stale_demand_ids"]
             .as_array()
@@ -853,6 +878,7 @@ fn exact_prior_set_requires_and_persists_explicit_disposition() {
                 && event.node_id.as_deref() == Some("correctness")
         })
         .expect("Round 2 reviewer invocation");
+    let invocation_event_id = invocation.event_id.clone();
     let invocation: review_core::NodeInvocationPayloadV1 =
         serde_json::from_value(invocation.payload.clone()).unwrap();
     let assigned = invocation
@@ -865,23 +891,36 @@ fn exact_prior_set_requires_and_persists_explicit_disposition() {
         vec![set.prior_finding_set_id.clone()]
     );
 
-    let dispatched = events
+    let selected = events
         .iter()
         .rev()
         .find(|event| {
-            event.event_type == review_core::EventType::AttemptDispatchedV1
+            event.event_type == review_core::EventType::TaskReviewResultSelectedV1
                 && event.node_id.as_deref() == Some("correctness")
         })
-        .expect("Round 2 reviewer dispatch");
-    let dispatch: review_core::event::AttemptDispatchedPayloadV1 =
-        serde_json::from_value(dispatched.payload.clone()).unwrap();
+        .expect("Round 2 common Reviewer selection");
+    let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
+        serde_json::from_value(selected.payload.clone()).unwrap();
+    let context: review_core::task::review_compat::TaskReviewContextV1 =
+        serde_json::from_value(cas.get_artifact(&selected.context_id).unwrap().payload).unwrap();
     assert_eq!(
-        dispatch.prior_findings.as_deref(),
-        Some(set.prior_finding_set_id.as_str())
+        context.invocation_event_id, invocation_event_id,
+        "common Attempt context must bind the canonical invocation with the exact assigned FindingSet"
     );
+    assert_eq!(context.task_invocation_id, selected.invocation_id);
+    let frame = cas.get_artifact(&selected.context_id).unwrap();
+    assert!(frame.input_artifacts.contains(&context.reviewer_inputs_id));
+    assert!(frame.input_artifacts.contains(&context.rendered_input_id));
+    let task = store
+        .task_projection(&cas, &selected.task_id)
+        .unwrap()
+        .unwrap();
     assert!(
-        dispatched.artifact_refs.contains(&set.prior_finding_set_id),
-        "dispatch must pin the exact assignment Set"
+        task.execution
+            .unwrap()
+            .attempt_accounting()
+            .iter()
+            .any(|attempt| attempt.attempt_id == context.attempt_id && attempt.started)
     );
 }
 
@@ -941,9 +980,9 @@ fn missing_disposition_coverage_makes_the_round_structurally_incomplete() {
         .unwrap()
         .into_iter()
         .rev()
-        .find(|event| event.event_type == review_core::EventType::RunReportV3)
-        .expect("durable incomplete RunReport@3");
-    let report: review_core::RunReportPayloadV3 = serde_json::from_value(report.payload).unwrap();
+        .find(|event| event.event_type == review_core::EventType::RunReportV6)
+        .expect("durable incomplete Task-backed RunReport@6");
+    let report: review_core::RunReportPayloadV6 = serde_json::from_value(report.payload).unwrap();
     let review_core::RunVerdictV3::Incomplete { missing_nodes } = report.verdict else {
         panic!("missing dispositions did not produce an incomplete verdict");
     };
@@ -952,7 +991,7 @@ fn missing_disposition_coverage_makes_the_round_structurally_incomplete() {
         .find(|missing| missing.node == "correctness")
         .expect("structured missing correctness output");
     assert!(
-        correctness.reason.contains("missing_disposition_coverage"),
+        correctness.reason.contains("MissingDispositionCoverage"),
         "{}",
         correctness.reason
     );
@@ -1046,26 +1085,28 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     );
     assert_eq!(code, 0, "{report_json}\n{report_err}");
     let report: serde_json::Value = serde_json::from_str(&report_json).unwrap();
-    assert_eq!(report["schema"], "af/review-report@1");
+    assert_eq!(report["schema"], "af/review-report@3");
     assert_eq!(report["rounds"][0]["round"], 1);
-    assert_eq!(
-        report["spend"][0]["reviewers"][0]["reviewer"],
-        "architecture"
+    assert!(
+        report["spend"].as_array().unwrap().is_empty(),
+        "common Task spend is never copied into the historical Round accumulator"
     );
-    assert_eq!(
-        report["spend"][0]["reviewers"][0]["attempts"][0]["outcome"],
-        "selected"
-    );
-    // The wall-clock sidecar rides beside the event stream: present, positive, never authority.
-    let wall = &report["spend"][0]["reviewers"][0]["attempts"][0]["wall"];
+    let task = &report["task_accounting"][0];
+    assert_eq!(task["attempts_started"], "2");
+    assert_eq!(task["chargeable_tokens"], "0");
+    let attempt = task["attempts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|attempt| attempt["review_node"] == "architecture")
+        .unwrap();
+    assert_eq!(attempt["outcome"], "selected");
+    // The common wall-clock sidecar remains observational and is never execution authority.
+    let wall = &attempt["wall"];
     assert!(wall["elapsed_ms"].is_u64(), "{wall}");
     assert!(wall["started_unix_ms"].as_u64().unwrap() > 0, "{wall}");
-    assert!(wall["usage"]["chargeable_tokens"].is_u64(), "{wall}");
-    assert!(
-        report["spend"][0]["wall_ms"].is_u64(),
-        "{}",
-        report["spend"][0]
-    );
+    assert_eq!(wall["usage"]["chargeable_tokens"], "0", "{wall}");
+    assert!(task["wall_ms"].is_u64(), "{task}");
     assert!(report["wall_ms"].is_u64());
     assert!(report["findings_summary"]["open"].is_u64());
 
@@ -1088,7 +1129,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
         "{report_text}"
     );
     assert!(report_text.contains("architecture:"), "{report_text}");
-    assert!(report_text.contains("attempt"), "{report_text}");
+    assert!(report_text.contains("Attempt"), "{report_text}");
 
     // Change the code, then record an authenticated, scoped non-fixed disposition. The separate
     // attestation/verification path is covered by the canonical projection tests.
@@ -1153,31 +1194,25 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert!(ledger_out.contains("\trejected\t"), "{ledger_out}");
     assert!(ledger_err.contains("0 open"), "{ledger_err}");
 
-    let (_, report_out, report_err) = reviewctl(
+    let (code, report_out, report_err) = reviewctl(
         &repo,
         &home,
         &["report", "--campaign", "loop", "--state", &state],
     );
+    assert_eq!(code, 0, "{report_out}\n{report_err}");
     assert!(report_out.contains("Final verdict: pass"), "{report_out}");
     assert!(
         report_out.contains("operator rejected the original claim"),
         "{report_out}"
     );
-    let attempts_heading = report_out.find("### Attempts").unwrap();
-    let spend_table = &report_out[..attempts_heading];
-    assert!(
-        spend_table.contains("| 1 | 1 | architecture |"),
+    assert!(report_out.contains("## Task accounting:"), "{report_out}");
+    assert!(report_out.contains("Round 1 epoch 1"), "{report_out}");
+    assert!(report_out.contains("Round 2 epoch 1"), "{report_out}");
+    assert_eq!(
+        report_out.matches("architecture: Attempt ").count(),
+        2,
         "{report_out}"
     );
-    assert!(
-        spend_table.contains("| 2 | 1 | architecture |"),
-        "{report_out}"
-    );
-    assert!(
-        !spend_table.contains("\n- Round"),
-        "Attempt bullets must not interrupt the Markdown Spend table:\n{report_out}"
-    );
-    assert!(report_err.is_empty(), "{report_err}");
 }
 
 #[test]
@@ -1493,7 +1528,7 @@ fn an_incomplete_run_does_not_burn_a_round() {
     );
 
     // Explicit supersession captures the changed head under a new epoch of the same Round.
-    let (code, stdout, _) = reviewctl(
+    let (code, stdout, stderr) = reviewctl(
         &repo,
         &home,
         &[
@@ -1505,7 +1540,10 @@ fn an_incomplete_run_does_not_burn_a_round() {
             "--restart-round",
         ],
     );
-    assert_eq!(code, 3, "the defect is found; not converged\n{stdout}");
+    assert_eq!(
+        code, 3,
+        "the defect is found; not converged\n{stdout}\n{stderr}"
+    );
     assert!(
         stdout.contains("round    1"),
         "the incomplete run must not have burned round 1:\n{stdout}"
@@ -1576,14 +1614,21 @@ fn a_declined_finding_is_not_sent_back_to_reviewers() {
     );
 }
 
-#[test]
-fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
-    let dir = tempfile::tempdir().unwrap();
-    let (repo, home, state) = fixture(dir.path());
+fn native_diff_fixture(directory: &Path) -> (PathBuf, PathBuf, String) {
+    let (repo, home, state) = fixture(directory);
     let codex = home.join("codex");
     std::fs::write(
         &codex,
         r#"#!/bin/sh
+if [ "$1" = "app-server" ]; then
+  while IFS= read -r request; do
+    case "$request" in
+      *'"id":1'*) printf '%s\n' '{"id":1,"result":{}}' ;;
+      *'"id":2'*) printf '%s\n' '{"id":2,"result":{"account":{"type":"chatgpt","email":"fixture@example.test"}}}' ;;
+    esac
+  done
+  exit 0
+fi
 if [ "$1" = "login" ]; then
   printf '%s\n' 'Logged in using ChatGPT' >&2
   exit 0
@@ -1593,7 +1638,9 @@ while [ "$#" -gt 0 ]; do
   if [ "$1" = "-o" ]; then out=$2; shift 2; else shift; fi
 done
 input=$(cat)
-if [ -n "$out" ]; then
+if [ -n "$out" ] && [ "$input" = 'Reply with exactly: OK' ]; then
+  printf '%s' 'OK' >"$out"
+elif [ -n "$out" ]; then
   printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}' >"$out"
 fi
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}'
@@ -1630,7 +1677,7 @@ subjects = ["diff"]
 
 [runner]
 program = "{}"
-args = []
+args = [{{ value = "--model" }}, {{ value = "gpt-fixture-1" }}, {{ value = "-c" }}, {{ value = 'model_reasoning_effort="high"' }}]
 "#,
             codex.display()
         ),
@@ -1696,6 +1743,16 @@ gate = "major"
     set_pipeline(&repo, &pipeline);
     git(&repo, &home, &["add", "-A"]);
     git(&repo, &home, &["commit", "-qm", "declare diff subject"]);
+
+    (repo, home, state)
+}
+
+#[test]
+fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
+    let dir = tempfile::tempdir().unwrap();
+    let (repo, home, state) = native_diff_fixture(dir.path());
+    let codex = home.join("codex");
+    let provider_registry = home.join(".config/afactory/providers.toml");
 
     let (code, plan_stdout, plan_stderr) = invoke_reviewctl(
         &repo,
@@ -1799,34 +1856,44 @@ gate = "major"
         "{missing_stderr}"
     );
 
-    let doctor = Command::new(env!("CARGO_BIN_EXE_af"))
-        .args([
-            "provider",
-            "doctor",
-            "--repo",
-            repo.to_str().unwrap(),
-            "--pipeline",
-            PIPELINE,
-            "--campaign",
-            "diff",
-            "--state",
-            &state,
-            "--heavy",
-            "--policy-rev",
-            "HEAD",
-            "--base",
-            "HEAD^",
-            "--candidate",
-            "HEAD",
-            "--provider",
-            "reviewer=test-codex",
-            "--json",
-        ])
-        .env("HOME", &home)
-        .env("USER", "loop-test")
-        .env("AF_PROVIDERS_FILE", &provider_registry)
-        .output()
-        .unwrap();
+    let run_doctor = |campaign: &str| {
+        Command::new(env!("CARGO_BIN_EXE_af"))
+            .args([
+                "provider",
+                "doctor",
+                "--repo",
+                repo.to_str().unwrap(),
+                "--pipeline",
+                PIPELINE,
+                "--campaign",
+                campaign,
+                "--state",
+                &state,
+                "--heavy",
+                "--policy-rev",
+                "HEAD",
+                "--base",
+                "HEAD^",
+                "--candidate",
+                "HEAD",
+                "--provider",
+                "reviewer=test-codex",
+                "--json",
+            ])
+            .env("PATH", {
+                let mut paths = vec![home.clone()];
+                paths.extend(std::env::split_paths(
+                    &std::env::var_os("PATH").unwrap_or_default(),
+                ));
+                std::env::join_paths(paths).unwrap()
+            })
+            .env("HOME", &home)
+            .env("USER", "loop-test")
+            .env("AF_PROVIDERS_FILE", &provider_registry)
+            .output()
+            .unwrap()
+    };
+    let doctor = run_doctor("diff");
     assert!(
         doctor.status.success(),
         "{}\n{}",
@@ -1834,6 +1901,40 @@ gate = "major"
         String::from_utf8_lossy(&doctor.stderr)
     );
     let doctor: serde_json::Value = serde_json::from_slice(&doctor.stdout).unwrap();
+    contracts::valid("provider-doctor-v2.json", &doctor);
+    assert_eq!(doctor["schema"], "af/provider-doctor@2");
+    assert_eq!(doctor["task"]["committed_tokens"], "2");
+    assert_eq!(doctor["task"]["begun_attempts"], "1");
+    let doctor_task_id = doctor["task"]["task_id"].as_str().unwrap().to_string();
+    {
+        let cas = review_store::Cas::open(Path::new(&state).join("cas")).unwrap();
+        let store =
+            review_store::EventStore::open(Path::new(&state).join("events.sqlite")).unwrap();
+        let task = store
+            .task_projection(&cas, &doctor_task_id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            task.run_reports.is_empty(),
+            "Provider doctor must not fabricate a business RunReport"
+        );
+        assert!(!matches!(
+            task.phase,
+            review_core::task::TaskPhaseV1::Finished { .. }
+        ));
+        assert!(
+            store
+                .replay("campaign-diff")
+                .unwrap()
+                .iter()
+                .all(|event| !matches!(
+                    event.event_type,
+                    review_core::EventType::TaskReviewResultSelectedV1
+                        | review_core::EventType::RunReportV6
+                        | review_core::EventType::AttemptDispatchedV1
+                ))
+        );
+    }
     assert_eq!(doctor["ready"], true);
     assert_eq!(doctor["gates_run"], false);
     assert_eq!(doctor["workers_dispatched"], false);
@@ -1860,6 +1961,26 @@ gate = "major"
 
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     assert!(stdout.contains("done      generation"), "{stdout}");
+    {
+        let cas = review_store::Cas::open(Path::new(&state).join("cas")).unwrap();
+        let store =
+            review_store::EventStore::open(Path::new(&state).join("events.sqlite")).unwrap();
+        let task = store
+            .task_projection(&cas, &doctor_task_id)
+            .unwrap()
+            .unwrap();
+        let execution = task.execution.unwrap();
+        assert_eq!(
+            execution.budget.begun_attempts(),
+            2,
+            "one Provider probe followed by one Reviewer; doctor admission is reused"
+        );
+        assert_eq!(execution.budget.committed_tokens(), 4);
+        assert!(matches!(
+            task.phase,
+            review_core::task::TaskPhaseV1::Finished { .. }
+        ));
+    }
 
     std::fs::write(repo.join("dirty.txt"), b"not committed\n").unwrap();
     let (code, stdout, stderr) = reviewctl(
@@ -1882,6 +2003,49 @@ gate = "major"
     );
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     assert!(stdout.contains("done      reviewer"), "{stdout}");
+
+    // A failed capability probe still returns exactly one typed document and keeps
+    // the original charged Attempt when doctor is repeated for the same Campaign.
+    let native_script = std::fs::read_to_string(&codex).unwrap();
+    let failing_script = native_script.replace(
+        "printf '%s' 'OK' >\"$out\"",
+        "printf '%s' 'not-ready' >\"$out\"",
+    );
+    assert_ne!(native_script, failing_script);
+    std::fs::write(&codex, failing_script).unwrap();
+    let mut failed_task_id = None;
+    for _ in 0..2 {
+        let output = run_doctor("diff-probe-failed");
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let failed: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        contracts::valid("provider-doctor-v2.json", &failed);
+        assert_eq!(failed["schema"], "af/provider-doctor@2");
+        assert_eq!(failed["ready"], false);
+        assert_eq!(failed["gates_run"], false);
+        assert_eq!(failed["workers_dispatched"], false);
+        assert_eq!(failed["task"]["begun_attempts"], "1");
+        assert_eq!(failed["task"]["committed_tokens"], "2");
+        let id = failed["task"]["task_id"].as_str().unwrap().to_string();
+        if let Some(previous) = &failed_task_id {
+            assert_eq!(&id, previous);
+        }
+        failed_task_id = Some(id.clone());
+        let cas = review_store::Cas::open_existing(Path::new(&state).join("cas")).unwrap();
+        let store =
+            review_store::EventStore::open_read_only(Path::new(&state).join("events.sqlite"))
+                .unwrap();
+        let task = store.task_projection(&cas, &id).unwrap().unwrap();
+        assert!(task.run_reports.is_empty());
+        assert!(!matches!(
+            task.phase,
+            review_core::task::TaskPhaseV1::Finished { .. }
+        ));
+    }
 }
 
 /// `gc` previews by default and removes only whole Campaign directories on `--apply`; what it
