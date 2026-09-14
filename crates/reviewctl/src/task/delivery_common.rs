@@ -99,59 +99,6 @@ fn heartbeat_tick(store: &mut EventStore, cas: &Cas, lease: &TaskLease) -> Resul
     Ok(())
 }
 
-#[cfg(test)]
-mod heartbeat_tests {
-    use super::*;
-
-    #[test]
-    fn delivery_tick_refuses_replaced_writer_before_renewal_threshold() {
-        let directory = tempfile::tempdir().unwrap();
-        let cas = Cas::open(directory.path().join("cas")).unwrap();
-        let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
-        let mut task: review_core::task::TaskRevisionV1 = serde_json::from_str(include_str!(
-            "../../../../fixtures/task-contracts/v1/task-revision.json"
-        ))
-        .unwrap();
-        let policy = cas
-            .put_json(&serde_json::json!({"fixture":"delivery lease"}))
-            .unwrap();
-        task.inputs.clear();
-        task.provenance.input_artifact_ids.clear();
-        task.provenance.adapter_id = policy.clone();
-        task.authority.policy_id = policy.clone();
-        task.acceptance.get_mut("checked").unwrap().verifier_policy = policy;
-        let revision = cas
-            .put_artifact(
-                review_core::task::TASK_REVISION_V1,
-                review_core::Producer::KernelOperation {
-                    run_id: "fixture".into(),
-                    node_id: None,
-                    operation_id: "capture".into(),
-                },
-                vec![],
-                None,
-                serde_json::to_value(&task).unwrap(),
-            )
-            .unwrap()
-            .0;
-        let old = store.open_task(&cas, &revision, "old", 60_000).unwrap();
-        heartbeat_tick(&mut store, &cas, &old).unwrap();
-        store.release_task_lease(&cas, &old).unwrap();
-        assert!(heartbeat_tick(&mut store, &cas, &old).is_err());
-        let current = store
-            .take_task_lease(&cas, &task.task_id, "new", 60_000)
-            .unwrap();
-        let run = review_store::store::task::task_run_id(&task.task_id).unwrap();
-        let prefix = store.replay(&run).unwrap();
-        assert!(heartbeat_tick(&mut store, &cas, &old).is_err());
-        heartbeat_tick(&mut store, &cas, &current).unwrap();
-        assert_eq!(
-            store.replay(&run).unwrap(),
-            prefix,
-            "ticks cannot acquire or renew another writer"
-        );
-    }
-}
 impl Drop for CommonDelivery {
     fn drop(&mut self) {
         let _ = self.stop.send(());
@@ -325,4 +272,58 @@ pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets,
         source_manifest,
         derived_manifest,
     })
+}
+
+#[cfg(test)]
+mod heartbeat_tests {
+    use super::*;
+
+    #[test]
+    fn delivery_tick_refuses_replaced_writer_before_renewal_threshold() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+        let mut task: review_core::task::TaskRevisionV1 = serde_json::from_str(include_str!(
+            "../../../../fixtures/task-contracts/v1/task-revision.json"
+        ))
+        .unwrap();
+        let policy = cas
+            .put_json(&serde_json::json!({"fixture":"delivery lease"}))
+            .unwrap();
+        task.inputs.clear();
+        task.provenance.input_artifact_ids.clear();
+        task.provenance.adapter_id = policy.clone();
+        task.authority.policy_id = policy.clone();
+        task.acceptance.get_mut("checked").unwrap().verifier_policy = policy;
+        let revision = cas
+            .put_artifact(
+                review_core::task::TASK_REVISION_V1,
+                review_core::Producer::KernelOperation {
+                    run_id: "fixture".into(),
+                    node_id: None,
+                    operation_id: "capture".into(),
+                },
+                vec![],
+                None,
+                serde_json::to_value(&task).unwrap(),
+            )
+            .unwrap()
+            .0;
+        let old = store.open_task(&cas, &revision, "old", 60_000).unwrap();
+        heartbeat_tick(&mut store, &cas, &old).unwrap();
+        store.release_task_lease(&cas, &old).unwrap();
+        assert!(heartbeat_tick(&mut store, &cas, &old).is_err());
+        let current = store
+            .take_task_lease(&cas, &task.task_id, "new", 60_000)
+            .unwrap();
+        let run = review_store::store::task::task_run_id(&task.task_id).unwrap();
+        let prefix = store.replay(&run).unwrap();
+        assert!(heartbeat_tick(&mut store, &cas, &old).is_err());
+        heartbeat_tick(&mut store, &cas, &current).unwrap();
+        assert_eq!(
+            store.replay(&run).unwrap(),
+            prefix,
+            "ticks cannot acquire or renew another writer"
+        );
+    }
 }
