@@ -13,6 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 crossterm = "0.29.0"
+fs2 = "0.4.3"
 review-config = { path = "../review-config" }
 review-attempt = { path = "../review-attempt" }
 review-check = { path = "../review-check" }

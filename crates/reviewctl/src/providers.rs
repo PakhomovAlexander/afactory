@@ -344,6 +344,7 @@ fn add_to_registry(
     kind: ProviderKind,
     auth_dir: &Path,
 ) -> Result<(), String> {
+    let _lock = registry_lock(path)?;
     let existing = match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -382,6 +383,12 @@ fn add_to_registry(
                     duplicate.id
                 ));
             }
+            if specs.len() >= MAX_PROVIDERS {
+                return Err(format!(
+                    "provider registry {} already has the limit of {MAX_PROVIDERS} entries",
+                    path.display()
+                ));
+            }
             text.parse::<DocumentMut>()
                 .map_err(|error| format!("provider registry {}: {error}", path.display()))?
         }
@@ -391,9 +398,7 @@ fn add_to_registry(
             document
         }
     };
-    if document.get("providers").is_none() {
-        document["providers"] = Item::ArrayOfTables(ArrayOfTables::new());
-    }
+    normalize_provider_tables(&mut document, path)?;
     let providers = document["providers"]
         .as_array_of_tables_mut()
         .ok_or_else(|| {
@@ -419,7 +424,110 @@ fn add_to_registry(
             path.display()
         ));
     }
+    parse_registry(&bytes, path)?;
+    ensure_registry_unchanged(path, existing.as_deref())?;
     write_registry(path, bytes.as_bytes())
+}
+
+fn ensure_registry_unchanged(path: &Path, expected: Option<&str>) -> Result<(), String> {
+    match (expected, fs::symlink_metadata(path)) {
+        (None, Err(error)) if error.kind() == ErrorKind::NotFound => Ok(()),
+        (None, Ok(_)) => Err(format!(
+            "provider registry {} appeared while adding an entry; retry",
+            path.display()
+        )),
+        (None, Err(error)) => Err(format!(
+            "cannot recheck provider registry {}: {error}",
+            path.display()
+        )),
+        (Some(_), Ok(metadata)) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            Err(format!(
+                "provider registry {} was replaced by a non-regular file while adding an entry",
+                path.display()
+            ))
+        }
+        (Some(expected), Ok(_)) => match read_registry(path)? {
+            Some(current) if current == expected => Ok(()),
+            _ => Err(format!(
+                "provider registry {} changed while adding an entry; retry",
+                path.display()
+            )),
+        },
+        (Some(_), Err(error)) => Err(format!(
+            "provider registry {} changed while adding an entry: {error}",
+            path.display()
+        )),
+    }
+}
+
+fn normalize_provider_tables(document: &mut DocumentMut, path: &Path) -> Result<(), String> {
+    let Some(providers) = document.get_mut("providers") else {
+        document["providers"] = Item::ArrayOfTables(ArrayOfTables::new());
+        return Ok(());
+    };
+    if providers.is_array_of_tables() {
+        return Ok(());
+    }
+    let array = providers.as_array().ok_or_else(|| {
+        format!(
+            "provider registry {} `providers` must be an array of tables",
+            path.display()
+        )
+    })?;
+    let mut tables = ArrayOfTables::new();
+    for entry in array.iter() {
+        let inline = entry.as_inline_table().ok_or_else(|| {
+            format!(
+                "provider registry {} `providers` must contain only tables",
+                path.display()
+            )
+        })?;
+        tables.push(inline.clone().into_table());
+    }
+    *providers = Item::ArrayOfTables(tables);
+    Ok(())
+}
+
+fn registry_lock(path: &Path) -> Result<File, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "creating provider registry directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let mut lock_name = path.as_os_str().to_os_string();
+    lock_name.push(".lock");
+    let lock_path = PathBuf::from(lock_name);
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    options
+        .mode(0o600)
+        .custom_flags(nix::libc::O_CLOEXEC | nix::libc::O_NOFOLLOW);
+    let file = options.open(&lock_path).map_err(|error| {
+        format!(
+            "opening provider registry lock {}: {error}",
+            lock_path.display()
+        )
+    })?;
+    let metadata = file.metadata().map_err(|error| {
+        format!(
+            "inspecting provider registry lock {}: {error}",
+            lock_path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "provider registry lock {} must be a regular file",
+            lock_path.display()
+        ));
+    }
+    fs2::FileExt::lock_exclusive(&file)
+        .map_err(|error| format!("locking provider registry {}: {error}", lock_path.display()))?;
+    Ok(file)
 }
 
 fn write_registry(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -456,6 +564,9 @@ fn write_registry(path: &Path, bytes: &[u8]) -> Result<(), String> {
     temporary
         .persist(path)
         .map_err(|error| format!("replacing provider registry atomically: {}", error.error))?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("syncing provider registry directory: {error}"))?;
     Ok(())
 }
 
@@ -3025,6 +3136,18 @@ fn is_executable(path: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registry_recheck_detects_noncooperating_replacements() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        assert!(ensure_registry_unchanged(&path, None).is_ok());
+        fs::write(&path, "version = 1\nproviders = []\n").unwrap();
+        assert!(ensure_registry_unchanged(&path, None).is_err());
+        let original = fs::read_to_string(&path).unwrap();
+        fs::write(&path, "version = 1\n# external change\nproviders = []\n").unwrap();
+        assert!(ensure_registry_unchanged(&path, Some(&original)).is_err());
+    }
 
     #[test]
     fn registry_allows_multiple_accounts_of_one_kind() {
