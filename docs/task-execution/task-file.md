@@ -1,6 +1,6 @@
 # Task-file command walkthrough
 
-The unreleased Task-file entry point runs captured Workers through the common Task
+The Task-file entry point runs captured Workers through the common Task
 runtime. The checked-in `fixtures/task-runtime/pagination` project is a deterministic example:
 an implementation Worker adds offset/limit pagination, a check exercises it, and an independent
 evaluator verifies the sealed result. It requires Git and `/usr/bin/python3`, with no credentials.

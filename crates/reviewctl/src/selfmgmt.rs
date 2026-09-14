@@ -383,7 +383,10 @@ fn require_gh() -> Result<(), String> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_err(|_| "GitHub CLI is required to reach the private release — fix: install gh and run `gh auth login`".to_string())?;
+        .map_err(|_| {
+            "GitHub CLI is required to reach the release — fix: install gh and run `gh auth login`"
+                .to_string()
+        })?;
     if !status.success() {
         return Err("gh is not authenticated — fix: gh auth login (an account with access to the release repository)".into());
     }

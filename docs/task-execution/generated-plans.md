@@ -130,5 +130,5 @@ refusal, insufficient remaining Attempts, signed approval, rejection, revocation
 replay. A generated implementation composes the shared Review and adds only its declared history
 constructor while preserving original inputs and limits.
 
-These are deterministic fixtures. Live model performance and the release pilot remain separate
-P14 acceptance work. Export, starter installation and source-adapter demonstrations are P12/P13.
+These are deterministic fixtures and make no live-model performance claim. See [export](export.md),
+[starters](starters.md) and [issue sources](issues.md) for the surrounding flows.

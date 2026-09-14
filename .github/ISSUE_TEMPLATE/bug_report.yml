@@ -1,0 +1,66 @@
+name: Bug report
+description: af did something other than what its documentation or contract says.
+title: "bug: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. A reproducible bug needs the exact binary, the exact policy it
+        read, and the exact command; the fields below collect those. Redact anything private
+        (repository names, issue keys, prompts) but keep the shape of the policy intact.
+        Security vulnerabilities go through https://github.com/PakhomovAlexander/afactory/security/advisories/new, never here.
+  - type: input
+    id: version
+    attributes:
+      label: af version
+      description: The output of `af self status` (or `af --version --json` for a source build).
+      placeholder: "af 0.8.0 · target aarch64-apple-darwin · key: embedded"
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS and target
+      description: Operating system, version, and the release target you installed (or "source build").
+      placeholder: "macOS 15.6 / aarch64-apple-darwin"
+    validations:
+      required: true
+  - type: textarea
+    id: policy
+    attributes:
+      label: Relevant `.af/` policy
+      description: The pipeline, worker, or project excerpt that af read. Include the `[gate]` binding and provider when a sandbox is involved.
+      render: toml
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The exact `af …` invocation, with the environment variables that mattered (`AF_*`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME` as names, never their contents).
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+      description: What the documentation, ADR, or contract says should happen.
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: What happened instead, including the exact error line.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Report or logs
+      description: The output of `af review report` for the affected run, or the relevant stderr. Captured stdout/stderr is redacted for granted paths only, so check it before pasting.
+      render: text
+    validations:
+      required: false

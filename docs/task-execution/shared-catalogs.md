@@ -63,9 +63,8 @@ profile = "reviewed_implementation"
 Pin that package and add `[kinds] "team/feature" = "team/feature-kind"` to the project catalog.
 Tasks with `kind = "team/feature"` then require embedded Review acceptance; their selected
 Pipeline must accept that kind. The kind package becomes an exact plan dependency. A Task-file
-verification override cannot weaken its profile. `implementation`, `reviewed_implementation`,
-`repair_allowed_implementation` and `review` are executable profiles at this checkpoint. `document` is a recognized package
-declaration whose runtime capability belongs to P13. Packages cannot install arbitrary domain
+verification override cannot weaken its profile. `implementation`, `reviewed_implementation`, `repair_allowed_implementation`, `review` and
+`document` are the installed profiles. Packages cannot install arbitrary domain
 handlers or replace engine acceptance rules.
 
 Tests sync a transitive catalog, remove its original repository, plan an imported Task, modify

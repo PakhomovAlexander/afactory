@@ -1,13 +1,18 @@
-# Review Kernel — architecture decisions
+# Architecture decisions
 
-Decisions about the kernel's own design. These are distinct from
-[`../../../../docs/adr/`](../../../../docs/adr/), which is a generated hub's own decision log —
-the kernel ships *into* such a hub, so its decisions travel with the code rather than with the
-project using it.
+The binding decisions behind the Review Kernel and the `af` command. They travel with the code
+rather than with any project that uses it: a consuming repository records its own decisions in
+its own log, and the kernel's are all here.
 
-Same rules as the hub's: one decision per file, numbered, **immutable once accepted**. A changed
-decision becomes a new ADR marked *superseded by* the old one, with links both ways. Record the
-options you rejected and why — that is the part future-you needs.
+One decision per file, numbered in order of acceptance as `NNNN-kebab-case-title.md`, **immutable
+once accepted**. Each opens with a status line carrying the status and date, states the context,
+lists the considered options with the reasons each was rejected, records the decision, and ends
+with its consequences. A changed decision is a new ADR marked *supersedes* the old one, with links
+both ways — the old file stays as it was.
+
+To propose one, take the next free number, write it in that shape, add it to the index below, and
+open a pull request; it becomes binding when the pull request merges with the status `accepted`.
+Record the options you rejected and why — that is the part future readers need.
 
 ## Index
 

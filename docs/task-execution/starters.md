@@ -59,8 +59,7 @@ The command Workers implement the explicit pagination and release-note goals in 
 Task files. Evaluators check those requirements against the produced output; reviewers report
 actual failures. The fix verifier handles its declared pagination claims and returns inconclusive
 for unsupported claims. Configure shared or local Workers with compatible contracts for broader
-tasks. These examples establish lifecycle and contract behavior; live model speed and cost remain
-separately measured product gates.
+tasks. These examples establish lifecycle and contract behavior, not live-model speed or cost.
 
 The initial pagination source is unfinished. Run an implementation Task and explicitly deliver
 its verified result to a new worktree to inspect it. Review Task files can review a captured source

@@ -65,7 +65,7 @@ Keep local account settings in a machine-local file:
 ```toml
 schema = "af.task-source-bindings/1"
 
-[jira.personal]
+[jira.cloud]
 site = "example.atlassian.net"
 email = "developer@example.invalid"
 token_file = "/absolute/local/path/jira-token"
@@ -76,7 +76,7 @@ The token file contains the API token. Configure the Task file's issue selector:
 ```json
 {
   "kind": "jira",
-  "binding": "personal",
+  "binding": "cloud",
   "key": "AF-42",
   "acceptance_fields": ["customfield_10001"]
 }

@@ -1,7 +1,7 @@
 # `af` manages itself: dispatch to the pinned release, policy-driven updates, a layered configuration
 
-**Status:** accepted (2026-09-03) — owner-approved in the hub workstream "af as a self-managed
-CLI" (hub ADR-0007 moves the consumer pin into `af.lock`); implements kernel issues #55–#59.
+**Status:** accepted (2026-09-03) — designed with a consuming project that moved its pin into
+`af.lock`; implements issues #55–#59.
 Part 2's "verifying it against the release checksums" is revised by
 [ADR-0045](0045-one-release-train-and-a-pin-that-binds-bytes.md): under a lock, the lock's own
 per-target digest is what the bytes must match.
@@ -56,7 +56,7 @@ The decision, in five parts that ship together:
   `gh` is already the credential boundary and `tar` is on every host; a directory source covers
   offline and tests. Revisit when the repository is public.
 - **Branch overlays (`[branch."<glob>"]`)** — a mechanism for what git does by committing
-  `.af/` on the branch. Rejected by the owner.
+  `.af/` on the branch. Rejected.
 
 ## Consequences
 

@@ -1,47 +1,25 @@
 # AGENTS.md
 
-This repository is **Afactory**, a future multi-agent coding factory. Its current product surface
-is the deterministic Review Kernel exposed as `af review ...`.
+This repository is **Afactory**: the `af` CLI, a multi-agent coding factory whose first capability
+is the deterministic Review Kernel behind `af review`, and whose current increment adds
+implementation Tasks behind `af task`. Reviewers and implementers only ever mutate a sandbox; the
+kernel integrates; humans publish.
 
-Before changing behavior, read:
+Before changing behaviour, read [`CONTEXT.md`](CONTEXT.md) for the canonical vocabulary and
+[`docs/adr/README.md`](docs/adr/README.md) for the binding decisions; [`docs/README.md`](docs/README.md)
+maps the rest of the documentation. Use the pinned Rust toolchain (`rust-toolchain.toml`) and keep
+`make check` green. Never weaken a contract, fixture, gate, budget, or sandbox boundary to make a
+test or review pass. Project-specific pipelines, reviewer packages, Campaign state, and captured
+review corpora belong in consuming repositories, not here.
 
-- [`CONTEXT.md`](CONTEXT.md) for canonical domain vocabulary.
-- [`docs/workstream.md`](docs/workstream.md) for current status and resume point.
-- [`docs/backlog.md`](docs/backlog.md) for the dependency-ordered M0-M9 roadmap.
-- [`docs/adr/README.md`](docs/adr/README.md) for binding design decisions.
-
-M2.1-M2.6, minimal product v1/v2, and the first candidate implementation dogfood are complete and
-verified. M3.1–M6 are complete and retain their merged or dogfood evidence. M7–M9 shipped in
-private release `v0.6.0` from exact `main` commit `fb462ba`: verified base-bound Proposals and
-export, bounded typed Scatter with whole-Subject semantic closure, and opt-in checked internal
-Integration. Pinned `v0.5.0` light dogfood found five authority/replay defects; all five have
-regressions and are fixed. Local and exact-main gates, live container probes, both release
-archives/checksums, and the extracted macOS binary passed. Static automatic Integration is
-deliberately refused until a captured semantic-closure route exists. The canonical M0–M9 roadmap
-is complete. The first post-roadmap safety slice shipped in private release `v0.7.0` from exact
-`main` commit `c9a62fb`: explicit review selectors and token-free planning, empty-Diff refusal,
-strict Provider admission/doctor, adapter-owned reviewer isolation, strict project policy, and
-reservation-aware onboarding. New capability is separately scoped post-roadmap work.
-V3.1 local delivery is
-implemented, proven against a real trusted repository, and passed a fresh pinned correctness
-Campaign; its reported minor corrections are implemented and verified. New Campaigns use the
-bounded correctness-review policy in ADR-0027 rather than extending the retired two-specialist
-clean-window Campaign.
-V3.2 `af onboard` shipped in private release `v0.4.0` from exact `main` commit `bb9e5a3`; its
-supported release archives and checksum sidecars were downloaded and verified.
-Product rebranding must not rename
-`review.kernel/*` artifact types, persisted events, or established Review Kernel domain terms
-until a separate accepted migration ADR supersedes this rule; the `.review/` authority *layout*
-is no longer read for new Campaigns since `v0.8.0`
-([ADR-0043](docs/adr/0043-drop-legacy-review-authority-in-v0-8-0.md), executed by
-[ADR-0045](docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md): `af onboard --migrate
---apply` moves a consumer to `.af/`), which renames nothing persisted. Releases are cut only
-through `make release` and the release workflow; a lock pins the release's bytes, not just its
-version (ADR-0045). v1 adds the final
-user-facing `af` and `.af/` surface without physically renaming those internals. Project-specific pipelines,
-reviewer packages, campaign state, and private corpora belong in consuming repositories, not here.
-Use the pinned Rust toolchain and keep `make check` green. Never weaken a contract, fixture, gate,
-budget, or sandbox boundary to make a test or review pass.
+- Product rebranding must not rename `review.kernel/*` artifact types, persisted events, or
+  established Review Kernel domain terms until a separate accepted migration ADR supersedes this
+  rule. The `.review/` authority *layout* is no longer read for new Campaigns since `v0.8.0`
+  ([ADR-0043](docs/adr/0043-drop-legacy-review-authority-in-v0-8-0.md), executed by
+  [ADR-0045](docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md): `af onboard --migrate
+  --apply` moves a consumer to `.af/`), which renames nothing persisted. Releases are cut only
+  through `make release` and the release workflow; a lock pins the release's bytes, not just its
+  version (ADR-0045).
 
 ## Invariants
 
@@ -55,11 +33,6 @@ budget, or sandbox boundary to make a test or review pass.
 - Task-backed Review conclusions carry exact cumulative accounting and a checked Task log
   prefix; report snapshots are never summed as independent spend
   ([ADR-0078](docs/adr/0078-bind-review-conclusions-to-exact-task-accounting.md)).
-- Claude calls for this project use only `claude-personal`. The owner-selected implementation
-  PR review policy uses Fable 5.1/high for correctness and architecture, Opus 5/xhigh for
-  performance, and GPT-5.6-Sol/high on `codex-personal` for bug bounty. The full increment is
-  authorized as three PRs, with one light specialist Round per PR followed by fixes and Gates.
-  This is an explicit specialist exception to the default single-reviewer policy.
 - A rename-limit warning does not erase a complete diff Subject: preserve the full Add/Delete
   path set, record truncated rename linkage, and keep the fixed limit in the diff-policy identity
   ([ADR-0017](docs/adr/0017-record-rename-truncation-and-continue.md)).
@@ -117,9 +90,9 @@ budget, or sandbox boundary to make a test or review pass.
 - Every milestone receives external `af review`, but the standard dogfood policy uses one
   high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
   or performance audits are explicit exceptions
-  ([ADR-0027](docs/adr/0027-use-one-correctness-reviewer-per-milestone.md)). Every dogfood record
-  states the Campaign's wall-clock, per-Attempt provider usage, and Finding dispositions including
-  rejected and wontfix, exactly as `af review report` prints them.
+  ([ADR-0027](docs/adr/0027-use-one-correctness-reviewer-per-milestone.md)). Review records state
+  the Campaign's wall-clock, per-Attempt provider usage, and Finding dispositions exactly as
+  `af review report` prints them.
 - Proposal declarations travel beside, never inside, the persisted flat Reviewer Result. The
   kernel verifies one declaration against the complete sealed sandbox diff, durably prepares it
   with the selected Attempt, and publishes `PatchProposal@1` only after canonical Report IDs exist

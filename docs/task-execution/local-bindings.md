@@ -12,7 +12,7 @@ schema = "af.task-bindings/1"
 "root.slots.implementer" = "team/fast-implementer"
 
 [providers]
-"team/fast-implementer" = "codex-personal"
+"team/fast-implementer" = "codex-main"
 ```
 
 Use `af task plan --file ticket.json --bindings alice.toml --json` to inspect the effective

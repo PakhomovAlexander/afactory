@@ -1,12 +1,9 @@
 # Review command compatibility
 
-New `af review run` executions and Provider doctor now use the common Task runtime alongside
+`af review run` executions and the Provider doctor use the common Task runtime alongside
 Task-file and embedded Review. Historical paid Campaigns retain their original executor and
-accounting; missing common Task state refuses instead of falling back. The installed CLI
-cutover and subsequent usage, recovery and cancellation changes pass the full local gate:
-1,129 tests, zero failures, 15 ignored across 132 suites. Published `5aa6bd52` passes Check and
-container-probes in [CI run 34723107534](https://github.com/PakhomovAlexander/afactory/actions/runs/34723107534).
-Live supported-environment evidence, external PR reviews and release remain separate requirements. See
+accounting; missing common Task state refuses instead of falling back. This page maps the
+extracted operations and the versioned CLI compatibility boundaries. See
 [ADR-0084](../adr/0084-route-new-review-commands-through-the-common-task.md).
 
 ## Adapter boundaries
@@ -118,10 +115,7 @@ and prior spend across Round revisions; each successor plan requires admission. 
 [heavy Review walkthrough](heavy-review.md) records the shared history and acceptance boundary.
 
 Historical Campaign readers and resumes retain their original event types and identities.
-Frozen fixtures remain byte-identical. Entry-point, interruption, Broker, Proposal, Scatter and
-heavy-continuation gates pass in the current checkpoint. Release remains pending live evidence,
-external reviews, the pilot and supported consumer migration. Earlier current-status wording is
-retained in the [2026-09-13 archive](status-archive-2026-09-13.txt).
+Frozen fixtures remain byte-identical.
 
 The captured Round can now compile directly from its recorded Campaign Manifest, authority
 Snapshot and packages. The installed resource translator derives Worker timeouts, two-Attempt

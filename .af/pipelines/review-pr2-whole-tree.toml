@@ -1,9 +1,8 @@
-# Explicit whole-tree review of the exact PR2 resulting implementation.
+# Explicit whole-tree review of the current implementation.
 # No canonical Diff or Base is claimed; baseline and complete path index travel in captured focus.
-# Task increment PR review: Fable 5.1/high correctness and architecture;
-# Opus 5/xhigh performance; GPT-5.6-Sol/high bug bounty.
-# Bind correctness=claude-personal, performance=claude-personal, bugs=codex-personal.
-# Owner-authorized specialist policy; one light Round per PR, then fixes and project Gates.
+# The same three reviewers as `review.toml`: correctness and architecture (Fable 5.1/high),
+# performance (Opus 5/xhigh) and bug bounty (GPT-5.6-Sol/high), bound to admitted Providers at
+# run time. One light Round per change, then fixes and the project Gates.
 
 version = 2
 check_timeout_seconds = 3600

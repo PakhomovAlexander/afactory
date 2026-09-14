@@ -6,15 +6,15 @@ but the mutable ledger overwrites the evidence, and escalation was never exercis
 every remaining Phase 0 case is produced here.
 
 **These are generated, not written.** [`generate.sh`](generate.sh) drives the actual
-[`ledger.sh`](../../../../.agents/skills/self-review-heavy/scripts/ledger.sh) and
-[`checks.sh`](../../../../.agents/skills/self-review-heavy/scripts/checks.sh) and records what
+[`ledger.sh`](../../compat/legacy-harness/ledger.sh) and
+[`checks.sh`](../../compat/legacy-harness/checks.sh) and records what
 they really do. The harness is the specification the kernel must reproduce; a hand-authored
 JSONL fixture would encode our reading of it instead of its behavior, and the reading is
 exactly what a port gets wrong.
 
 ```sh
-tools/review-kernel/fixtures/synthetic/generate.sh           # rewrite the corpus
-tools/review-kernel/fixtures/synthetic/generate.sh --check   # prove it still reproduces
+fixtures/synthetic/generate.sh           # rewrite the corpus
+fixtures/synthetic/generate.sh --check   # prove it still reproduces
 ```
 
 Every case asserts what it claims to prove, so `generate.sh` fails loudly if the harness ever

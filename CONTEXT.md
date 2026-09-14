@@ -1,10 +1,9 @@
-# Review Kernel — shared language
+# Afactory — shared language
 
 The vocabulary of Afactory's Review Kernel and the `af review` command behind it. These words are
 load-bearing: the kernel's guarantees are stated in them, and several of its invariants are
 only expressible because two nearby concepts are kept apart. The mechanism itself is
-documented in [`../../docs/self-review-heavy.md`](../../docs/self-review-heavy.md); this file
-defines only the terms.
+documented in [`docs/architecture.md`](docs/architecture.md); this file defines only the terms.
 
 ## Language
 
@@ -383,8 +382,9 @@ the result incomplete.
 
 ## Flagged ambiguities
 
-- **"the change"** — used in both reviewer prompts and `heavy.toml` while the kernel captured
-  only a whole-tree Snapshot, so it named something structurally unavailable. Resolved: the
+- **"the change"** — used in both reviewer prompts and the early pipeline definitions (today's
+  `.af/pipelines/review.toml`) while the kernel captured only a whole-tree Snapshot, so it named
+  something structurally unavailable. Resolved: the
   umbrella term is **Subject**, and "the change" is legitimate only under a `diff` Subject.
 - **Review Target** — the original design used it for the immutable base/candidate/change-set
   tuple, while a later draft used it for mutable branch/PR/base-ref labels. Resolved: retire the

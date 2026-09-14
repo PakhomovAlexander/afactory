@@ -93,4 +93,4 @@ af task deliver repair-cli --confirm repair-cli \
 ```
 
 The fixture verifies one original negative-offset case and the existing pagination check. Its
-eight command Attempts demonstrate mechanics and authority; they are not a paid-model pilot.
+eight command Attempts demonstrate mechanics and authority; they run without a live model.

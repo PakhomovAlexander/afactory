@@ -11,19 +11,18 @@ release pages only.
 
 ### Authority compatibility
 
-The Task increment is implemented on the development branches and remains unreleased.
+The Task increment is implemented and unreleased.
 New Task execution requires its versioned `.af` catalog, Pipeline/Worker contracts and lock.
 Every generated Execution Plan requires an authorized developer's exact-plan approval.
 Local bindings do not travel with shared definitions. Existing `.review` consumers still
 need the supported `af onboard --migrate --apply` path; validate migrated authority together
 with the chosen released binary and its verified archive digests before switching launchers.
-No release version or consumer pin has been selected by this preparation.
 
 New Review executions use the common Task runtime. Historical paid Campaigns preserve their
 captured executor, authority and accounting; they are not rewritten into new Tasks. Keep the
 original Store and known-good release for historical continuation and rollback. An older
 binary must not reinterpret unsupported new state, and rollback cannot refund recorded usage
-or reopen completed work. Release-bound migration and rollback evidence remain P14 gates.
+or reopen completed work. Release-bound migration and rollback evidence are release gates.
 
 ### Changes
 
@@ -38,6 +37,10 @@ or reopen completed work. Release-bound migration and rollback evidence remain P
   delivery to a new local worktree.
 - Preserve Provider usage and recovery evidence across cancellation, writer loss and storage
   failures, and capture explicit admission allowances in Task catalog V2.
+- Open the repository: `install.sh` installs from a public release with `curl` alone, verifies
+  the release signature by default when `minisign` is present, and keeps `gh` only as a
+  fallback; the release also ships `LICENSE` (Apache-2.0), `SECURITY.md`, `CONTRIBUTING.md`
+  and a restructured `docs/` (architecture, tasks, migration, non-goals, design notes).
 
 Specialist PR reviews, the separately budgeted live pilot, supported boundary checks and the
 checksummed consumer cutover remain required before release completion. See

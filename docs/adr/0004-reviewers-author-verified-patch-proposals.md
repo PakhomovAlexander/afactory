@@ -52,7 +52,7 @@ Getting it into a working tree is a separate step and stays outside the kernel:
   missing proposal, never a proposal carrying an unrelated edit.
 - A reviewer now authors code intended for application, which raises what a compromised reviewer
   can reach. Combined with [ADR-0003's](0003-gate-caches-pass-through-to-the-host.md) host cache
-  passthrough, the risk delta is recorded under M6 in [`../backlog.md`](../backlog.md); the
+  passthrough, the risk delta is recorded in [`../non-goals.md`](../non-goals.md); the
   containment probes stay open and labelled open rather than narrowed away.
 - Sequencing: this should follow M3. A proposal against a whole-tree Subject has far less to say
   than one scoped to a Change Set.

@@ -6,8 +6,8 @@ maps its package name to a machine-local Provider registry label:
 
 ```toml
 [providers]
-"team/implementer" = "claude-personal"
-"team/reviewer" = "codex-personal"
+"team/implementer" = "claude-main"
+"team/reviewer" = "codex-main"
 ```
 
 The registry contains authentication directory selectors. Credentials and those directories
@@ -65,9 +65,8 @@ same native adapter as downstream Workers. Failure retains reported usage and bl
 dispatch. Unknown usage is conservatively charged under the common runtime's existing rule.
 Successful receipts survive replay without another paid probe.
 
-A short probe prompt does not bound the native client's complete context. One observed probe
-charged 5,712 tokens after a cache discount; its 16,331 input tokens and five output tokens
-would charge 16,336 without that discount. Neither figure guarantees a future upper bound.
+A short probe prompt does not bound the native client's complete context. The native client adds its own context, so an observed probe can charge many times the
+prompt's own tokens, and no observed figure guarantees a future upper bound.
 Any individual reservation overrun retains exact usage and blocks further dispatch, even if
 the acknowledgement passed and the wider Task has tokens left. Raising a Task total cannot
 clear that fence or change a completed Task.
@@ -112,6 +111,4 @@ to a different message; an absent or empty regular file retains the existing eve
 fallback. These checks preserve observed usage on refusal.
 
 Deterministic native-CLI fixtures prove token-free planning, shared admission, account-change
-refusal, typed output and replay. One fixture reports 36 synthetic usage tokens across a probe
-and two reviewer calls in one Task; this is stub evidence, not a live-model measurement. Live
-containment and supported-environment probes remain required before release.
+refusal, typed output and replay. Their usage figures are synthetic stub evidence, not live-model measurements.

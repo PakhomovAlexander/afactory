@@ -4,7 +4,7 @@
 
 Minimal v2 deliberately stops at a verified internal derived Snapshot. That boundary proved the
 implementation and verification loop without giving the product authority to mutate a user's
-checkout. Trusted design-partner dogfood now needs a narrow way to inspect and continue from that
+checkout. Trusted early adopters now need a narrow way to inspect and continue from that
 verified result, while pushes, pull requests, and publishing remain human actions.
 
 Add one local delivery transition after a Task has completed with the exact `verified` outcome.
@@ -53,7 +53,7 @@ first v3 slice.
 
 ## Consequences
 
-- Initial delivery is for trusted local repositories and design partners. Arbitrary untrusted
+- Initial delivery is for trusted local repositories and early adopters. Arbitrary untrusted
   execution and client credential brokering still depend on M4/M6 controls.
 - The delivery receipt and history become part of Task operations; the original Task outcome
   remains immutable.

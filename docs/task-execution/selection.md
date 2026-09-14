@@ -37,7 +37,7 @@ A Task file may name a preferred Pipeline:
 preferred choice fails. `generate` performs that same search and returns `needs_generation`
 only when every candidate has a known semantic mismatch. Missing packages, unavailable
 Providers or executables, insufficient budget, missing facts and unresolved ties cannot
-trigger generation. This checkpoint records that request; the Planner bootstrap is P11.
+trigger generation. Generation itself is described in [generated plans](generated-plans.md).
 
 Omit `pipeline` for automatic catalog selection. The captured project catalog supplies optional
 ranking per Task strategy and `no_match = "refuse" | "generate"` (default `refuse`):

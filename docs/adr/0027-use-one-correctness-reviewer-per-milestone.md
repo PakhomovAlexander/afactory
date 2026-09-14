@@ -21,7 +21,7 @@ local `make check` remains the non-negotiable correctness gate.
 - **Keep both specialists but lower their effort.** Preserves topic coverage. Rejected because
   two broad prompts still duplicate repository exploration and finding reconciliation.
 - **Skip external review on some milestones.** Has the lowest aggregate cost. Rejected because
-  the owner requires CLI dogfood review for every milestone.
+  the project requires CLI dogfood review for every milestone.
 - **Use one high-effort correctness reviewer (chosen).** Concentrates the external budget on
   behavioral and contract failures while retaining one post-fix verification opportunity.
 

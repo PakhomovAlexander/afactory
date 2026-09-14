@@ -59,5 +59,5 @@ independence. Fresh sessions and role-scoped contexts remain mandatory runtime r
 
 No frozen review artifact or historical event is changed. P02/P03 must consume these canonical
 contracts and their strict validation; P04/P06 must derive completeness and authority from exact
-receipts. The [P01 review record](../task-execution/p01-review.md) distinguishes corrections in
-the branch from the original reviewed Subject's still-open Finding and Demand ledger.
+receipts. Corrections in the branch are distinguished from the original reviewed Subject's
+still-open Finding and Demand ledger.

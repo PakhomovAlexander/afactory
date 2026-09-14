@@ -65,7 +65,7 @@ mirrors the hub under `.af/`, and the old layout survives only as a test fixture
 
 - **cargo-dist** for the whole train — it generates an installer, checksums, a manifest, Homebrew
   and binstall metadata, and attestations from one config. Rejected for now: its workflow cannot
-  be exercised before a tag is pushed, its installer cannot fetch a private release through `gh`,
+  be exercised before a tag is pushed, its installer could not fetch the then-private release,
   and it brings a second toolchain that must itself be pinned. The current workflow, extended,
   stays readable and every step of it runs locally. Revisit when the repository is public.
 - **release-plz** for the release PR — conventional-commit driven bumps and changelogs. Rejected:
