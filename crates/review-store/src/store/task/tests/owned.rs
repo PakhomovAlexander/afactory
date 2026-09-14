@@ -1123,6 +1123,25 @@ fn owned_canonical_receipt_is_fenced_by_parent_seal_but_recorded_selection_repla
         assert!(check().is_err(), "publication cannot precede registration");
         swap();
         check().unwrap();
+        // Narrowing the history query must still freshly verify the selected record and
+        // the complete registered set, including its other child's captured invocation.
+        for id in [publication, &set.children[1].invocation_id] {
+            let hex = id.strip_prefix("sha256:").unwrap();
+            let file = f
+                ._dir
+                .path()
+                .join("cas/objects")
+                .join(&hex[..2])
+                .join(&hex[2..]);
+            let original = std::fs::read(&file).unwrap();
+            std::fs::write(&file, b"corrupt owned receipt evidence").unwrap();
+            assert!(
+                check().is_err(),
+                "matching ownership CAS remains freshly verified"
+            );
+            std::fs::write(&file, original).unwrap();
+        }
+        check().unwrap();
         for index in 1..=128 {
             f.store
                 .renew_task_lease(&f.cas, &lease, 1_000_000 + index * 1000)
