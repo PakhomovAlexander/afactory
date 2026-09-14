@@ -193,6 +193,61 @@ fn apply_resolution(
 }
 
 #[test]
+fn task_and_campaign_use_identical_pure_canonical_reduction_without_another_store() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let run_id = "shared-domain-reducer";
+    let authority = opened_round(&mut store, &cas, run_id);
+    let mut output = stage();
+    output
+        .benchmark_demands
+        .push(review_core::legacy::LegacyBenchmarkDemand {
+            claim: "Pagination remains bounded".into(),
+            why: "Large inputs must not allocate the full result".into(),
+            suggested_method: "Measure allocation growth".into(),
+        });
+    let result = cas
+        .put_json(&serde_json::to_value(&output).unwrap())
+        .unwrap();
+    let input = cas.put(b"declared input").unwrap();
+    let stages = [CanonicalStage {
+        source: "root.review.correctness",
+        demand_requirement: review_core::DemandRequirement::Required,
+        stage: &output,
+        attempt_id: "01aaaaaaaaaaaaaaaaaaaaaaaa",
+        result_artifact_id: &result,
+        input_artifacts: std::slice::from_ref(&input),
+        subject_snapshot_id: &authority.head,
+        subject_id: &authority.subject,
+        result_contract: review_core::ReviewerResultContract::V1,
+    }];
+    let mut task_ledger =
+        review_store::Ledger::for_task_subject(&cas, &authority.subject, 1).unwrap();
+    let before = store.len(run_id).unwrap();
+    let pure = review_store::prepare_canonical_review(&cas, run_id, &task_ledger, &stages).unwrap();
+    assert_eq!(
+        store.len(run_id).unwrap(),
+        before,
+        "pure reduction cannot append another execution history"
+    );
+    let mut ingest = Ingest::new(&mut store, &cas, run_id)
+        .unwrap()
+        .under_round(&authority.round_event_id);
+    assert_eq!(ingest.round(), 1);
+    let historical = ingest.add_canonical_stage_outputs(&stages).unwrap();
+    assert_eq!(pure.reduction, historical);
+    assert_eq!(pure.ledger.finding_views(), ingest.ledger().finding_views());
+    assert_eq!(pure.ledger.demand_views(), ingest.ledger().demand_views());
+    assert!(review_store::prepare_canonical_review(&cas, run_id, &task_ledger, &[]).is_err());
+    assert!(
+        task_ledger
+            .bind_task_subject(&cas, "sha256:missing", 2)
+            .is_err()
+    );
+}
+
+#[test]
 fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();

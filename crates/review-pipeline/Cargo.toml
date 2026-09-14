@@ -20,9 +20,11 @@ review-sandbox = { path = "../review-sandbox" }
 review-source-git = { path = "../review-source-git" }
 review-store = { path = "../review-store" }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
+serde = { version = "1.0.228", features = ["derive"] }
+tempfile = "3.27.0"
 
 [dev-dependencies]
-tempfile = "3.27.0"
+toml = "0.8.23"
 
 [lints]
 workspace = true

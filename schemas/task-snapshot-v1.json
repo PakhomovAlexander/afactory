@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-snapshot:1",
+  "title": "task-snapshot@1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "manifest_id",
+    "content_digest",
+    "origin_id"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.task-snapshot/1"
+    },
+    "manifest_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "content_digest": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "origin_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "parent_snapshot_id": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    }
+  }
+}

@@ -11,12 +11,13 @@ license.workspace = true
 review-broker = { path = "../review-broker" }
 review-core = { path = "../review-core" }
 review-process = { path = "../review-process" }
+review-source-git = { path = "../review-source-git" }
 review-store = { path = "../review-store" }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
+jsonschema = { version = "0.26.1", default-features = false }
 
 [dev-dependencies]
-jsonschema = { version = "0.26.1", default-features = false }
 tempfile = "3.27.0"
 
 [lints]

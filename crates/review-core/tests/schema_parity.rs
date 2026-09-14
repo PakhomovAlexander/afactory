@@ -32,8 +32,37 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 42] = [
+const SCHEMAS: [&str; 71] = [
+    "task-provider-admission-v1.json",
+    "task-review-subject-v1.json",
+    "task-review-subject-v2.json",
+    "task-review-assignment-v1.json",
+    "task-review-round-v1.json",
+    "task-check-receipt-v1.json",
+    "task-evaluation-v1.json",
+    "verification-result-v1.json",
+    "task-snapshot-v1.json",
+    "source-tree-v1.json",
+    "candidate-tree-v1.json",
+    "task-worker-reply-v1.json",
+    "task-worker-request-v1.json",
+    "task-retry-feedback-v1.json",
     "artifact-envelope-v1.json",
+    "task-contracts-v1.json",
+    "task-transition-v1.json",
+    "task-delivery-record-v1.json",
+    "task-invocation-v1.json",
+    "task-output-v1.json",
+    "task-execution-record-v1.json",
+    "task-revision-v1.json",
+    "task-result-v1.json",
+    "task-phase-v1.json",
+    "pipeline-definition-v1.json",
+    "execution-plan-v1.json",
+    "plan-decision-v1.json",
+    "review-history-v1.json",
+    "verification-continuation-v1.json",
+    "repair-assessment-v1.json",
     "cache-manifest-v1.json",
     "campaign-manifest-v1.json",
     "campaign-opened-v1.json",
@@ -89,19 +118,355 @@ fn schema(name: &str) -> Value {
         .unwrap_or_else(|e| panic!("{name}: {e}"))
 }
 
-fn validator(name: &str) -> jsonschema::Validator {
-    let finding_report = jsonschema::Resource::from_contents(schema("finding-report-v1.json"))
-        .expect("FindingReport@1 is a schema resource");
-    let reviewer_result = jsonschema::Resource::from_contents(schema("reviewer-result-v1.json"))
-        .expect("ReviewerResult@1 is a schema resource");
-    jsonschema::options()
-        .with_resource("urn:review-kernel:schema:finding-report:1", finding_report)
-        .with_resource(
-            "urn:review-kernel:schema:reviewer-result:1",
-            reviewer_result,
-        )
-        .build(&schema(name))
-        .unwrap_or_else(|e| panic!("{name}: {e}"))
+#[test]
+fn task_invocations_and_attempt_records_are_versioned_and_closed() {
+    use review_core::task::execution::*;
+    let id = format!("sha256:{}", "1".repeat(64));
+    let attempt_id = "a".repeat(26);
+    let invocation = TaskInvocationV1 {
+        plan_id: id.clone(),
+        node: "root.nodes.implement".into(),
+        inputs: Default::default(),
+    };
+    invocation.validate().unwrap();
+    assert_valid(
+        "task-invocation-v1.json",
+        &serde_json::to_value(&invocation).unwrap(),
+    );
+    let output = TaskOutputV1 {
+        invocation_id: id.clone(),
+        outputs: Default::default(),
+    };
+    output.validate().unwrap();
+    assert_valid(
+        "task-output-v1.json",
+        &serde_json::to_value(&output).unwrap(),
+    );
+    let records = [
+        TaskExecutionRecordV1::Invocation {
+            invocation_id: id.clone(),
+        },
+        TaskExecutionRecordV1::Prepared {
+            invocation_id: id.clone(),
+            attempt_id: attempt_id.clone(),
+            reservation_id: "reservation:0".into(),
+            reserved_tokens: 10,
+            deadline_unix_ms: 1000,
+            context_id: id.clone(),
+            feedback_ids: vec![],
+        },
+        TaskExecutionRecordV1::Started {
+            attempt_id: attempt_id.clone(),
+        },
+        TaskExecutionRecordV1::Released {
+            attempt_id: attempt_id.clone(),
+            reason: "not dispatched".into(),
+        },
+        TaskExecutionRecordV1::Settled {
+            attempt_id: attempt_id.clone(),
+            charged_tokens: 11,
+            result: TaskAttemptResultV1::Succeeded {
+                output_id: id.clone(),
+            },
+            raw_artifact_ids: vec![],
+            usage_id: Some(id.clone()),
+        },
+        TaskExecutionRecordV1::Settled {
+            attempt_id: attempt_id.clone(),
+            charged_tokens: 11,
+            result: TaskAttemptResultV1::Failed {
+                diagnostic_id: id.clone(),
+                feedback_id: Some(id.clone()),
+            },
+            raw_artifact_ids: vec![id.clone()],
+            usage_id: None,
+        },
+        TaskExecutionRecordV1::Settled {
+            attempt_id: attempt_id.clone(),
+            charged_tokens: 10,
+            result: TaskAttemptResultV1::Abandoned {
+                diagnostic_id: id.clone(),
+            },
+            raw_artifact_ids: vec![],
+            usage_id: None,
+        },
+        TaskExecutionRecordV1::Published {
+            output_id: id.clone(),
+            attempt_id: Some(attempt_id.clone()),
+        },
+        TaskExecutionRecordV1::UsageObserved {
+            charged_tokens: 12,
+            raw_artifact_ids: vec![],
+            usage_id: id,
+            attempt_id,
+        },
+    ];
+    for record in records {
+        record.validate().unwrap();
+        let mut value = serde_json::to_value(record).unwrap();
+        assert_valid("task-execution-record-v1.json", &value);
+        value["undeclared"] = json!(true);
+        assert!(!validator("task-execution-record-v1.json").is_valid(&value));
+        assert!(serde_json::from_value::<TaskExecutionRecordV1>(value).is_err());
+    }
+}
+
+#[test]
+fn task_retry_feedback_has_only_a_bounded_code_and_exact_attempt_contract() {
+    use review_core::task::feedback::*;
+    for code in [
+        TaskFeedbackCodeV1::InvalidOutputContract,
+        TaskFeedbackCodeV1::ProcessFailure,
+        TaskFeedbackCodeV1::ProviderFailure,
+        TaskFeedbackCodeV1::ContextRejected,
+        TaskFeedbackCodeV1::OutputAdmissionRejected,
+    ] {
+        let feedback = TaskRetryFeedbackV1 {
+            attempt_id: "01AAAAAAAAAAAAAAAAAAAAAAAA".into(),
+            contract_id: format!("sha256:{}", "1".repeat(64)),
+            code,
+        };
+        feedback.validate().unwrap();
+        let mut value = serde_json::to_value(feedback).unwrap();
+        assert_valid("task-retry-feedback-v1.json", &value);
+        value["transcript"] = json!("unrelated prior conversation");
+        assert!(!validator("task-retry-feedback-v1.json").is_valid(&value));
+        assert!(serde_json::from_value::<TaskRetryFeedbackV1>(value).is_err());
+    }
+}
+
+#[test]
+fn task_delivery_contract_binds_the_exact_result_and_local_receipt() {
+    use review_core::task::delivery::*;
+    let id = format!("sha256:{}", "1".repeat(64));
+    for status in [
+        TaskDeliveryStatusV1::Prepared,
+        TaskDeliveryStatusV1::Delivered,
+        TaskDeliveryStatusV1::Failed,
+    ] {
+        let record = TaskDeliveryRecordV1 {
+            task_id: "pagination".into(),
+            result_id: id.clone(),
+            source_snapshot_id: id.clone(),
+            derived_snapshot_id: id.clone(),
+            target_id: id.clone(),
+            receipt_id: id.clone(),
+            status,
+        };
+        record.validate().unwrap();
+        let mut value = serde_json::to_value(record).unwrap();
+        assert_valid("task-delivery-record-v1.json", &value);
+        value["approved"] = json!(true);
+        assert!(!validator("task-delivery-record-v1.json").is_valid(&value));
+        assert!(serde_json::from_value::<TaskDeliveryRecordV1>(value).is_err());
+    }
+}
+
+#[test]
+fn task_verification_contracts_preserve_negative_results_and_require_positive_evidence() {
+    use review_core::task::pipeline::ReceiptOutcomeV1;
+    use review_core::task::verification::*;
+    let id = format!("sha256:{}", "1".repeat(64));
+    for outcome in [
+        ReceiptOutcomeV1::Passed,
+        ReceiptOutcomeV1::Failed,
+        ReceiptOutcomeV1::Inconclusive,
+    ] {
+        let check = TaskCheckReceiptV1 {
+            plan_id: id.clone(),
+            snapshot_id: id.clone(),
+            policy_id: id.clone(),
+            outcome,
+            checks: std::collections::BTreeMap::from([("unit".into(), id.clone())]),
+        };
+        check.validate().unwrap();
+        assert_valid(
+            "task-check-receipt-v1.json",
+            &serde_json::to_value(check).unwrap(),
+        );
+        let evaluation = TaskEvaluationV1 {
+            outcome,
+            reason: "Verified the current source".into(),
+        };
+        evaluation.validate().unwrap();
+        assert_valid(
+            "task-evaluation-v1.json",
+            &serde_json::to_value(evaluation).unwrap(),
+        );
+        let result = VerificationResultV1 {
+            plan_id: id.clone(),
+            snapshot_id: id.clone(),
+            policy_id: id.clone(),
+            outcome,
+            check_receipt_id: id.clone(),
+            evaluation_id: (outcome == ReceiptOutcomeV1::Passed).then(|| id.clone()),
+        };
+        result.validate().unwrap();
+        let value = serde_json::to_value(&result).unwrap();
+        assert_valid("verification-result-v1.json", &value);
+        let mut unknown = value.clone();
+        unknown["approved"] = json!(true);
+        assert!(!validator("verification-result-v1.json").is_valid(&unknown));
+        assert!(serde_json::from_value::<VerificationResultV1>(unknown).is_err());
+        let mut null = value;
+        null["evaluation_id"] = Value::Null;
+        assert!(!validator("verification-result-v1.json").is_valid(&null));
+        assert!(serde_json::from_value::<VerificationResultV1>(null).is_err());
+    }
+    let missing = json!({"plan_id":id,"snapshot_id":id,"policy_id":id,"outcome":"passed","check_receipt_id":id});
+    assert!(!validator("verification-result-v1.json").is_valid(&missing));
+    assert!(
+        serde_json::from_value::<VerificationResultV1>(missing)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+}
+
+#[test]
+fn review_task_round_contracts_preserve_completeness() {
+    use review_core::task::review::*;
+    let id = format!("sha256:{}", "a".repeat(64));
+    let subject = json!({"subject_id":id,"snapshot_id":id,"prior_history_id":id,"round":1,"subject":{"kind":"whole-tree","head_snapshot_id":id}});
+    assert_valid("task-review-subject-v1.json", &subject);
+    serde_json::from_value::<TaskReviewSubjectV1>(subject)
+        .unwrap()
+        .validate()
+        .unwrap();
+    for (conclusion, outcome, complete) in [
+        ("pass", "passed", true),
+        ("changes_requested", "failed", true),
+        ("convergence_exhausted", "failed", true),
+        ("incomplete", "inconclusive", false),
+    ] {
+        let mut value = json!({"invocation":{"plan_id":id,"node":"root.nodes.reduce","inputs":{}},"policy_id":id,
+            "subject_id":id,"snapshot_id":id,"round":1,"outcome":outcome,"conclusion":conclusion,
+            "selected_results":{"correctness":id},"missing_reviewers":[]});
+        if complete {
+            value["finding_set_id"] = json!(id);
+            value["demand_set_id"] = json!(id);
+        }
+        assert_valid("task-review-round-v1.json", &value);
+        serde_json::from_value::<TaskReviewRoundV1>(value.clone())
+            .unwrap()
+            .validate()
+            .unwrap();
+        let mut changed = value.clone();
+        changed["outcome"] = json!(if outcome == "passed" {
+            "failed"
+        } else {
+            "passed"
+        });
+        assert_invalid(
+            "task-review-round-v1.json",
+            &changed,
+            "conclusion/outcome mismatch",
+        );
+        assert!(
+            serde_json::from_value::<TaskReviewRoundV1>(changed)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+        if complete {
+            value.as_object_mut().unwrap().remove("finding_set_id");
+        } else {
+            value["finding_set_id"] = json!(id);
+        }
+        assert_invalid(
+            "task-review-round-v1.json",
+            &value,
+            "partial sets must not close a Review Round",
+        );
+        assert!(
+            serde_json::from_value::<TaskReviewRoundV1>(value)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn provider_admission_contract_requires_exact_model_capability() {
+    use review_core::task::provider::TaskProviderAdmissionV1;
+    let id = format!("sha256:{}", "b".repeat(64));
+    let value = json!({"plan_id":id,"invocation_policy_id":id,"outcome":"passed","bindings":["root.slots.reviewer"],
+        "execution":{"kind":"model","provider":"personal","provider_kind":"claude","principal_id":id,"model":"claude-fixture-1","effort":"high"}});
+    assert_valid("task-provider-admission-v1.json", &value);
+    serde_json::from_value::<TaskProviderAdmissionV1>(value.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    for (field, replacement) in [
+        ("outcome", json!("failed")),
+        ("bindings", json!([])),
+        ("execution", json!({"kind":"command"})),
+    ] {
+        let mut changed = value.clone();
+        changed[field] = replacement;
+        assert_invalid(
+            "task-provider-admission-v1.json",
+            &changed,
+            "invalid capability proof",
+        );
+        assert!(
+            serde_json::from_value::<TaskProviderAdmissionV1>(changed)
+                .unwrap()
+                .validate()
+                .is_err()
+        );
+    }
+}
+
+fn validator(name: &str) -> &'static jsonschema::Validator {
+    type Validators =
+        std::collections::BTreeMap<String, std::sync::OnceLock<jsonschema::Validator>>;
+    static VALIDATORS: std::sync::OnceLock<Validators> = std::sync::OnceLock::new();
+    static RESOURCES: std::sync::OnceLock<Vec<Value>> = std::sync::OnceLock::new();
+    let validators = VALIDATORS.get_or_init(|| {
+        SCHEMAS
+            .into_iter()
+            .map(|name| (name.to_owned(), std::sync::OnceLock::new()))
+            .collect()
+    });
+    validators
+        .get(name)
+        .unwrap_or_else(|| panic!("unregistered schema: {name}"))
+        .get_or_init(|| {
+            let resources = RESOURCES.get_or_init(|| {
+                [
+                    "finding-report-v1.json",
+                    "reviewer-result-v1.json",
+                    "task-contracts-v1.json",
+                    "task-invocation-v1.json",
+                    "subject-v1.json",
+                    "change-set-v1.json",
+                    "finding-set-v1.json",
+                ]
+                .into_iter()
+                .map(schema)
+                .collect()
+            });
+            let root = schema(name);
+            let mut options = jsonschema::options();
+            options.with_resource(
+                "urn:af:schema:task-transition:1".to_owned(),
+                jsonschema::Resource::from_contents(schema("task-transition-v1.json")).unwrap(),
+            );
+            for resource in resources {
+                let id = resource["$id"].as_str().unwrap();
+                {
+                    options.with_resource(
+                        id.to_owned(),
+                        jsonschema::Resource::from_contents(resource.clone()).unwrap(),
+                    );
+                }
+            }
+            options
+                .build(&root)
+                .unwrap_or_else(|e| panic!("{name}: {e}"))
+        })
 }
 
 fn assert_valid(name: &str, instance: &Value) {
@@ -1649,4 +2014,145 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
             "invalid Finding projection",
         );
     }
+}
+
+#[path = "schema_parity/task_contracts.rs"]
+mod task_contracts;
+
+#[test]
+fn task_lifecycle_events_have_closed_versioned_payloads() {
+    use review_core::task::TaskWaitingReasonV1;
+    use review_core::task::event::{TaskChangeV1, TaskTransitionV1};
+    let id = format!("sha256:{}", "a".repeat(64));
+    let changes = [
+        TaskChangeV1::Opened {
+            revision_id: id.clone(),
+            lease_until_unix_ms: 200,
+        },
+        TaskChangeV1::LeaseTaken {
+            lease_until_unix_ms: 200,
+        },
+        TaskChangeV1::LeaseRenewed {
+            lease_until_unix_ms: 200,
+        },
+        TaskChangeV1::RevisionRecorded {
+            revision_id: id.clone(),
+        },
+        TaskChangeV1::PlanProposed {
+            plan_id: id.clone(),
+        },
+        TaskChangeV1::PlanDecided {
+            decision_id: id.clone(),
+            valid_until_unix_ms: 200,
+        },
+        TaskChangeV1::ApprovalRevoked {
+            decision_id: id.clone(),
+            reason: "Revoked by developer".into(),
+        },
+        TaskChangeV1::PlanAdmitted {
+            plan_id: id.clone(),
+        },
+        TaskChangeV1::Waiting {
+            reason: TaskWaitingReasonV1::NeedsInput,
+        },
+        TaskChangeV1::Resumed {},
+        TaskChangeV1::LeaseReleased {},
+        TaskChangeV1::ExecutionRecorded {
+            record_id: id.clone(),
+        },
+        TaskChangeV1::DeliveryRecorded {
+            record_id: id.clone(),
+        },
+        TaskChangeV1::Finished { result_id: id },
+    ];
+    for change in changes {
+        let transition = TaskTransitionV1 {
+            writer: "writer-1".into(),
+            epoch: 1,
+            now_unix_ms: 100,
+            change,
+        };
+        transition.validate().unwrap();
+        let mut value = serde_json::to_value(&transition).unwrap();
+        assert_valid("task-transition-v1.json", &value);
+        review_core::event::validate_event_payload(EventType::TaskTransitionV1, &value).unwrap();
+        value["change"]["unrecognized"] = json!(true);
+        assert!(!validator("task-transition-v1.json").is_valid(&value));
+        assert!(
+            review_core::event::validate_event_payload(EventType::TaskTransitionV1, &value)
+                .is_err()
+        );
+    }
+}
+
+#[test]
+fn task_review_readable_context_generations_are_strict() {
+    use review_core::task::review::*;
+    let id = format!("sha256:{}", "a".repeat(64));
+    let value = TaskReviewSubjectV2 {
+        subject_id: id.clone(),
+        subject: SubjectV1::diff(&id, &id, &id),
+        snapshot_id: id.clone(),
+        prior_history_id: id.clone(),
+        round: 2,
+        change_scope: Some(TaskReviewChangeScopeV1 {
+            changed_paths: vec!["src/lib.rs".into()],
+            renames: vec![],
+            rename_detection_truncated: false,
+            git_version: "fixture".into(),
+            diff_policy_version: "fixture".into(),
+            patch: TaskReviewFileV1 {
+                path: TaskReviewFileV1::path_for(&id),
+                content_id: id.clone(),
+                bytes: 1_245_548,
+            },
+        }),
+    };
+    value.validate().unwrap();
+    let encoded = serde_json::to_value(value).unwrap();
+    assert_valid("task-review-subject-v2.json", &encoded);
+    assert!(serde_json::from_value::<TaskReviewSubjectV1>(encoded.clone()).is_err());
+    for (field, replacement) in [
+        ("bytes", json!(4194305)),
+        ("bytes", json!(-1)),
+        ("bytes", json!(1.5)),
+        ("path", json!("../escape")),
+        ("content_id", json!("invented")),
+    ] {
+        let mut bad = encoded.clone();
+        bad["change_scope"]["patch"][field] = replacement;
+        assert_invalid("task-review-subject-v2.json", &bad, "invalid declared file");
+        assert!(
+            serde_json::from_value::<TaskReviewSubjectV2>(bad)
+                .map_err(|e| e.to_string())
+                .and_then(|v| v.validate())
+                .is_err()
+        );
+    }
+    let mut bad = encoded.clone();
+    bad["change_scope"]["canonical_patch_base64"] = json!("AAAA");
+    assert_invalid(
+        "task-review-subject-v2.json",
+        &bad,
+        "no hidden inline patch",
+    );
+    assert!(serde_json::from_value::<TaskReviewSubjectV2>(bad).is_err());
+    let assignment = TaskReviewAssignmentV1 {
+        subject_id: id.clone(),
+        prior_history_id: id,
+        round: 2,
+        reviewer: "correctness".into(),
+        findings: vec![],
+    };
+    assignment.validate().unwrap();
+    let encoded = serde_json::to_value(&assignment).unwrap();
+    assert_valid("task-review-assignment-v1.json", &encoded);
+    let mut bad = encoded;
+    bad["all_reviewers"] = json!(true);
+    assert_invalid(
+        "task-review-assignment-v1.json",
+        &bad,
+        "assignments are source scoped",
+    );
+    assert!(serde_json::from_value::<TaskReviewAssignmentV1>(bad).is_err());
 }

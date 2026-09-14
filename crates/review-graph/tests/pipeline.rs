@@ -318,6 +318,67 @@ fn independent_reviewers_run_concurrently() {
 }
 
 #[test]
+fn child_concurrency_limit_and_task_artifact_order_survive_flattening() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    struct Scoped {
+        active: AtomicUsize,
+        peak: AtomicUsize,
+    }
+    impl Dispatch for Scoped {
+        fn run(&self, node: &Node, inputs: &ArtifactMap) -> Result<ArtifactMap, String> {
+            if node.id == "root.inputs" {
+                return Ok(BTreeMap::from([(
+                    "out".into(),
+                    vec!["z".into(), "a".into()],
+                )]));
+            }
+            assert_eq!(
+                inputs["in"],
+                ["z", "a"],
+                "Task collections retain source order"
+            );
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(active, Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(BTreeMap::from([("out".into(), vec![node.id.clone()])]))
+        }
+    }
+    let many = |name| PortContract::opaque(name).with_cardinality(PortCardinality::Many);
+    let plan = Pipeline::default()
+        .node(Node::new("root.inputs", NodeKind::Task).emitting_contracts(vec![many("out")]))
+        .node(
+            Node::new("root.nodes.child.nodes.a", NodeKind::Task)
+                .accepting_contracts(vec![many("in")]),
+        )
+        .node(
+            Node::new("root.nodes.child.nodes.b", NodeKind::Task)
+                .accepting_contracts(vec![many("in")]),
+        )
+        .edge(
+            Port::new("root.inputs", "out"),
+            Port::new("root.nodes.child.nodes.a", "in"),
+        )
+        .edge(
+            Port::new("root.inputs", "out"),
+            Port::new("root.nodes.child.nodes.b", "in"),
+        )
+        .plan()
+        .unwrap();
+    let scoped = Scoped {
+        active: AtomicUsize::new(0),
+        peak: AtomicUsize::new(0),
+    };
+    let report = Scheduler::new(&plan)
+        .with_parallelism(4)
+        .with_scope_limits(BTreeMap::from([("root.nodes.child".into(), 1)]))
+        .unwrap()
+        .run(&scoped);
+    assert!(report.complete());
+    assert_eq!(scoped.peak.load(Ordering::SeqCst), 1);
+}
+
+#[test]
 fn planning_refuses_incompatible_port_contracts() {
     let typed_edge = |output: PortContract, input: PortContract| {
         Pipeline::default()

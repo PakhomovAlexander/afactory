@@ -14,3 +14,8 @@ unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = "warn"
+
+# Capture hashes the running executable and every exact package. Keep the audited SHA-2
+# implementation at production speed in debug/CI too; Task deadlines still include capture.
+[profile.dev.package.sha2]
+opt-level = 3

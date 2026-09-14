@@ -33,6 +33,8 @@ use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+pub mod task;
+
 const MAX_PROVIDERS: usize = 32;
 const MAX_PROBE_OUTPUT: usize = 64 * 1024;
 const MAX_REGISTRY_BYTES: u64 = 64 * 1024;
@@ -1161,6 +1163,23 @@ fn probe_codex_subscription(
     probe_path: &std::ffi::OsStr,
     cancelled: &AtomicBool,
 ) -> Result<SubscriptionSnapshot, String> {
+    parse_codex_subscription_response(&probe_codex_request(
+        program,
+        spec,
+        probe_path,
+        cancelled,
+        &serde_json::json!({"method":"account/rateLimits/read","id":2}),
+    )?)
+}
+
+#[cfg(unix)]
+fn probe_codex_request(
+    program: &Path,
+    spec: &ProviderSpec,
+    probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
+    request: &serde_json::Value,
+) -> Result<serde_json::Value, String> {
     let mut command = Command::new(program);
     command.args(["app-server", "--stdio"]);
     configure_probe_environment(&mut command, spec, probe_path);
@@ -1211,9 +1230,7 @@ fn probe_codex_subscription(
                 break Err("Codex app-server rejected initialization".to_string());
             }
             if let Err(error) = writeln!(stdin, "{{\"method\":\"initialized\",\"params\":{{}}}}")
-                .and_then(|()| {
-                    writeln!(stdin, "{{\"method\":\"account/rateLimits/read\",\"id\":2}}")
-                })
+                .and_then(|()| writeln!(stdin, "{request}"))
                 .and_then(|()| stdin.flush())
             {
                 break Err(format!("cannot request Codex subscription status: {error}"));
@@ -1221,7 +1238,7 @@ fn probe_codex_subscription(
             requested_limits = true;
         }
         if requested_limits && let Some(response) = response_for_id(&captured, 2) {
-            break parse_codex_subscription_response(&response);
+            break Ok(response);
         }
         match child.try_wait() {
             Ok(Some(_)) => {

@@ -100,3 +100,25 @@ options you rejected and why — that is the part future-you needs.
   layered configuration](0044-af-manages-itself-and-dispatches-to-the-pinned-release.md)
 - [0045 — One release train, and a pin that binds
   bytes](0045-one-release-train-and-a-pin-that-binds-bytes.md)
+- [0046 — Add versioned Task contracts with exact-plan
+  approval](0046-add-versioned-task-contracts-with-exact-plan-approval.md)
+- [0047 — Preserve Task wire identity and review
+  completeness](0047-preserve-task-wire-identity-and-review-completeness.md)
+- [0048 — Compile Task ports and fence developer plan
+  decisions](0048-compile-task-ports-and-fence-developer-plan-decisions.md)
+- [0049 — Run Task Workers through shared durable
+  Attempts](0049-run-task-workers-through-shared-durable-attempts.md)
+- [0050 — Reduce Review Tasks with the canonical domain
+  Ledger](0050-reduce-review-tasks-with-the-canonical-domain-ledger.md)
+- [0051 — Compile fixed implementation Tasks into the common
+  runtime](0051-compile-fixed-implementation-tasks-into-the-common-runtime.md)
+- [0095 — Bind legacy Task context and retry output admission](0095-bind-legacy-task-context-and-retry-output-admission.md)
+- [0096 — Revalidate Task execution evidence on cached
+  replay](0096-revalidate-task-execution-evidence-on-cached-replay.md)
+- [0093 — Derive CodeTask acceptance from execution and evidence](0093-derive-code-task-acceptance-from-execution-and-evidence.md)
+- [0097 — Share validated source reads within one
+  operation](0097-share-validated-source-reads-within-one-operation.md)
+- [0094 — Bind Task Review assignments and readable
+  inputs](0094-bind-task-review-assignments-and-readable-inputs.md)
+- [0099 — Select Task Review generation independently of Provider
+  costs](0099-select-task-review-generation-independently-of-provider-costs.md)

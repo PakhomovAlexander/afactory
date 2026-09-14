@@ -5,21 +5,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn hub_fixture() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/consumers/hub")
+    fixtures::workspace_root().join("fixtures/consumers/hub")
 }
 
-fn copy_tree(src: &Path, dst: &Path) {
-    std::fs::create_dir_all(dst).unwrap();
-    for entry in std::fs::read_dir(src).unwrap() {
-        let entry = entry.unwrap();
-        let target = dst.join(entry.file_name());
-        if entry.file_type().unwrap().is_dir() {
-            copy_tree(&entry.path(), &target);
-        } else {
-            std::fs::copy(entry.path(), &target).unwrap();
-        }
-    }
-}
+#[path = "support/fixtures.rs"]
+mod fixtures;
+
+use fixtures::copy_tree;
 
 fn git(repo: &Path, args: &[&str]) {
     let output = Command::new("git")
@@ -41,7 +33,10 @@ fn git(repo: &Path, args: &[&str]) {
 fn af(state_home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_af"))
         .args(args)
+        .env("HOME", state_home)
+        .env("XDG_CONFIG_HOME", state_home.join("config"))
         .env("XDG_STATE_HOME", state_home)
+        .env("AF_SELF_OFFLINE", "1")
         .output()
         .unwrap()
 }

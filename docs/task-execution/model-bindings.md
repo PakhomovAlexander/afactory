@@ -1,0 +1,58 @@
+# Model bindings for Task files
+
+Task files accept captured command Workers and native Claude/Codex Model Workers. A Model
+Worker's manifest declares its Provider family, versioned model ID and effort. The catalog
+maps its package name to a machine-local Provider registry label:
+
+```toml
+[providers]
+"team/implementer" = "claude-personal"
+"team/reviewer" = "codex-personal"
+```
+
+The registry contains authentication directory selectors. Credentials and those directories
+are not copied into shared packages or execution plans. The native identity adapters support
+first-party Claude subscription accounts and Codex ChatGPT accounts exposing an email identity.
+Unavailable identity or unsupported authentication types fail admission. An alias or directory
+name never proves independence.
+
+Planning probes only accounts used by the selected Pipeline. It obtains account metadata from
+`claude auth status --json` or Codex's local `account/read` protocol, then records a
+domain-separated principal digest. Raw account metadata and email addresses are not stored in
+Task artifacts. Provider family, principal, explicit model/effort and invocation policy become
+part of the exact binding. Bare model-family aliases and `-latest` selectors are refused.
+
+Planning performs no model inference. The compiler adds a visible internal capability node
+for each distinct effective Model binding and invocation policy. Slots with the same capability
+share that node. Each reserves **4,096 tokens, one Attempt and 45 seconds** inside the Task's
+limits. Admission serving a required verifier is protected alongside that verifier. Pipeline
+and Task limits must have room for these Attempts; children do not create another allowance.
+
+```text
+account identity probe       planning: no model call
+         |
+   exact compiled plan
+         |
+ normal Task admission      generated plans still require developer approval
+         |
+ Provider capability probe  durable reservation -> start -> charge -> settle
+         |
+   passed receipt
+      /       \
+  Worker A   Worker B        same native binding, isolated invocations
+```
+
+The capability probe receives only the installed acknowledgement prompt in an empty working
+directory. Its exact prompt and context manifest are persisted before dispatch. It uses the
+same native adapter as downstream Workers. Failure retains reported usage and blocks their
+dispatch. Unknown usage is conservatively charged under the common runtime's existing rule.
+Successful receipts survive replay without another paid probe.
+
+Before a planned Task resumes, the adapter checks the current account and recompiles against
+the recorded binding. Account, model, package or policy changes cannot silently alter an
+admitted plan. Finished Tasks remain inspectable without Provider calls.
+
+Deterministic native-CLI fixtures prove token-free planning, shared admission, account-change
+refusal, typed output and replay. One fixture reports 36 synthetic usage tokens across a probe
+and two reviewer calls in one Task; this is stub evidence, not a live-model measurement. Live
+containment and supported-environment probes remain required before release.

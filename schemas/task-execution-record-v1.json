@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-execution-record:1",
+  "title": "TaskExecutionRecord@1",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "invocation_id"
+      ],
+      "properties": {
+        "kind": {
+          "const": "invocation"
+        },
+        "invocation_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "invocation_id",
+        "attempt_id",
+        "reservation_id",
+        "reserved_tokens",
+        "deadline_unix_ms",
+        "context_id",
+        "feedback_ids"
+      ],
+      "properties": {
+        "kind": {
+          "const": "prepared"
+        },
+        "invocation_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]{26}$"
+        },
+        "reservation_id": {
+          "type": "string",
+          "pattern": "^reservation:[0-9]{1,20}$"
+        },
+        "reserved_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "deadline_unix_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "context_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "feedback_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "maxItems": 16,
+          "uniqueItems": true
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "attempt_id"
+      ],
+      "properties": {
+        "kind": {
+          "const": "started"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]{26}$"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "attempt_id",
+        "reason"
+      ],
+      "properties": {
+        "kind": {
+          "const": "released"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]{26}$"
+        },
+        "reason": {
+          "type": "string",
+          "pattern": "\\S",
+          "maxLength": 65536
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "attempt_id",
+        "charged_tokens",
+        "result",
+        "raw_artifact_ids"
+      ],
+      "properties": {
+        "kind": {
+          "const": "settled"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]{26}$"
+        },
+        "charged_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "result": {
+          "oneOf": [
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "output_id"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "succeeded"
+                },
+                "output_id": {
+                  "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "diagnostic_id"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "failed"
+                },
+                "diagnostic_id": {
+                  "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                },
+                "feedback_id": {
+                  "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                }
+              }
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "diagnostic_id"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "abandoned"
+                },
+                "diagnostic_id": {
+                  "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                }
+              }
+            }
+          ]
+        },
+        "raw_artifact_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "maxItems": 64,
+          "uniqueItems": true
+        },
+        "usage_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "output_id"
+      ],
+      "properties": {
+        "kind": {
+          "const": "published"
+        },
+        "output_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]{26}$"
+        }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "attempt_id",
+        "charged_tokens",
+        "usage_id",
+        "raw_artifact_ids"
+      ],
+      "properties": {
+        "kind": {
+          "const": "usage_observed"
+        },
+        "attempt_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9]{26}$"
+        },
+        "charged_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "usage_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "raw_artifact_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 64,
+          "items": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          }
+        }
+      }
+    }
+  ]
+}

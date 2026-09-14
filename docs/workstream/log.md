@@ -1477,7 +1477,6 @@ the bounded alternatives (narrower range, larger `budget.attempt`, a Scatter nod
 truncated. The automatic bounded-strategy selection with typed closure obligations is the
 remaining half of #32 and belongs with path routing (#40).
 
-
 ## 2026-09-03 — Campaign state has a size and a garbage collector (audit recommendation 6)
 
 `af review campaigns` now reports each Campaign's state directory and newest store write
@@ -1500,4 +1499,3 @@ run still refuses before admission when that one does not fit either. `af onboar
 validates every route target; `validate_af_project` accepts every declared candidate; input sizing
 skips Scatter nodes and closeout reviewers, which have no first-Attempt input to measure. Plan
 JSON carries `route`; open prints `route    …`.
-

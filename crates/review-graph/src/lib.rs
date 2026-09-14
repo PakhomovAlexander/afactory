@@ -18,6 +18,7 @@
 
 pub mod plan;
 pub mod schedule;
+pub mod task;
 
 pub use plan::{
     Edge, Node, NodeKind, Pipeline, PlanError, Planned, Port, PortCardinality, PortContract,

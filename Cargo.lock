@@ -1286,6 +1286,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 name = "review-attempt"
 version = "0.8.0"
 dependencies = [
+ "review-core",
  "serde",
  "sha2",
 ]
@@ -1344,7 +1345,10 @@ dependencies = [
 name = "review-graph"
 version = "0.8.0"
 dependencies = [
+ "review-attempt",
  "review-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1369,8 +1373,10 @@ dependencies = [
  "review-sandbox",
  "review-source-git",
  "review-store",
+ "serde",
  "serde_json",
  "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -1388,6 +1394,7 @@ dependencies = [
  "review-broker",
  "review-core",
  "review-process",
+ "review-source-git",
  "review-store",
  "serde",
  "serde_json",
@@ -1462,7 +1469,9 @@ version = "0.8.0"
 dependencies = [
  "nix 0.30.1",
  "reflink-copy",
+ "review-attempt",
  "review-core",
+ "review-graph",
  "rusqlite",
  "serde",
  "serde_json",

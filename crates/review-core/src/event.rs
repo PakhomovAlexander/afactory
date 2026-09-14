@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 /// arbitrary strings cannot enter a new log through the typed API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum EventType {
+    #[serde(rename = "TaskTransition@1")]
+    TaskTransitionV1,
     #[serde(rename = "BrokerOperationCompleted@1")]
     BrokerOperationCompletedV1,
     #[serde(rename = "AttemptAdmitted@1")]
@@ -112,7 +114,8 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 50] = [
+    pub const ALL: [Self; 51] = [
+        Self::TaskTransitionV1,
         Self::BrokerOperationCompletedV1,
         Self::AttemptAdmittedV1,
         Self::AttemptDispatchedV1,
@@ -167,6 +170,7 @@ impl EventType {
 
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::TaskTransitionV1 => "TaskTransition@1",
             Self::BrokerOperationCompletedV1 => "BrokerOperationCompleted@1",
             Self::AttemptAdmittedV1 => "AttemptAdmitted@1",
             Self::AttemptDispatchedV1 => "AttemptDispatched@1",
@@ -242,6 +246,7 @@ impl EventType {
 
     pub const fn typed(self) -> (&'static str, u32) {
         match self {
+            Self::TaskTransitionV1 => ("TaskTransition", 1),
             Self::BrokerOperationCompletedV1 => ("BrokerOperationCompleted", 1),
             Self::AttemptAdmittedV1 => ("AttemptAdmitted", 1),
             Self::AttemptDispatchedV1 => ("AttemptDispatched", 1),
@@ -330,6 +335,7 @@ impl std::str::FromStr for EventType {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
+            "TaskTransition@1" => Ok(Self::TaskTransitionV1),
             "AttemptAdmitted@1" => Ok(Self::AttemptAdmittedV1),
             "AttemptDispatched@1" => Ok(Self::AttemptDispatchedV1),
             "AttemptFailed@1" => Ok(Self::AttemptFailedV1),
@@ -1365,6 +1371,11 @@ pub fn validate_event_payload(
     payload: &serde_json::Value,
 ) -> Result<(), String> {
     match event_type {
+        EventType::TaskTransitionV1 => {
+            serde_json::from_value::<crate::task::event::TaskTransitionV1>(payload.clone())
+                .map_err(|e| e.to_string())?
+                .validate()
+        }
         EventType::BrokerOperationCompletedV1 => {
             let receipt =
                 serde_json::from_value::<crate::BrokerOperationReceiptV1>(payload.clone())

@@ -25,6 +25,8 @@
 //! bookkeeping. Codex reports cached reads inside `input_tokens`, so the two adapters differ
 //! exactly where their providers do.
 
+pub mod task;
+
 use std::path::Path;
 use std::time::Duration;
 

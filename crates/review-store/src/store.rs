@@ -19,6 +19,9 @@ use serde_json::Value;
 
 use crate::cas::{Cas, CasError};
 
+pub mod task;
+pub mod task_legacy;
+
 #[derive(Debug)]
 pub enum StoreError {
     Sqlite(rusqlite::Error),
@@ -29,6 +32,9 @@ pub enum StoreError {
     },
     /// Two events claimed the same sequence, or an event id repeated.
     Conflict(String),
+    /// The captured domain rejected structurally valid output. This is distinct from
+    /// an authority, artifact or persistence failure at the Store boundary.
+    TaskOutputRejected(String),
     /// A Broker completion lost the atomic race with Attempt fencing or replacement.
     AttemptNotCurrent,
     /// The CAS could not make a referenced object durable.
@@ -47,6 +53,9 @@ impl std::fmt::Display for StoreError {
                 "event references an artifact that is not durable: {digest}"
             ),
             StoreError::Conflict(what) => write!(f, "event store conflict: {what}"),
+            StoreError::TaskOutputRejected(what) => {
+                write!(f, "Task output admission rejected: {what}")
+            }
             StoreError::AttemptNotCurrent => {
                 write!(
                     f,
@@ -158,6 +167,8 @@ impl NewEvent {
 
 pub struct EventStore {
     conn: Connection,
+    /// At most one live Task projection; append-only sequence is its cache watermark.
+    task_cache: std::cell::RefCell<Option<task::TaskProjection>>,
     /// Parsed Change Sets keyed by their content digest. A cache hit is accepted only after the
     /// current on-disk object is streamed and verified again; this removes repeated JSON/base64
     /// allocations without turning process history into integrity authority.
@@ -229,6 +240,7 @@ impl EventStore {
         let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
         Ok(Self {
             conn,
+            task_cache: std::cell::RefCell::new(None),
             validated_change_sets: std::collections::BTreeMap::new(),
         })
     }
@@ -283,6 +295,7 @@ impl EventStore {
         )?;
         Ok(Self {
             conn,
+            task_cache: std::cell::RefCell::new(None),
             validated_change_sets: std::collections::BTreeMap::new(),
         })
     }
@@ -329,8 +342,27 @@ impl EventStore {
         cas: &Cas,
         events: &[NewEvent],
     ) -> Result<Vec<RunEvent>, StoreError> {
+        self.append_batch_inner(run_id, cas, events, None)
+    }
+
+    fn append_batch_inner(
+        &mut self,
+        run_id: &str,
+        cas: &Cas,
+        events: &[NewEvent],
+        task_permit: Option<&task::WritePermit>,
+    ) -> Result<Vec<RunEvent>, StoreError> {
         if events.is_empty() {
             return Ok(Vec::new());
+        }
+        if events
+            .iter()
+            .any(|e| e.event_type == EventType::TaskTransitionV1)
+            && task_permit.is_none()
+        {
+            return Err(StoreError::Conflict(
+                "Task events require the trusted Task entry point".into(),
+            ));
         }
         for event in events {
             review_core::json::admit(&event.payload)
@@ -413,7 +445,20 @@ impl EventStore {
             )
             .optional()?
             .unwrap_or(0);
-        validate_campaign_transition(&tx, cas, run_id, events, first, &prepared)?;
+        if let Some(permit) = task_permit {
+            permit.validate(run_id, first, events)?;
+        } else {
+            let task_log: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE run_id = ?1 AND type = 'TaskTransition@1')",
+                [run_id], |row| row.get(0),
+            )?;
+            if task_log {
+                return Err(StoreError::Conflict(
+                    "Task log cannot accept Campaign or generic append authority".into(),
+                ));
+            }
+            validate_campaign_transition(&tx, cas, run_id, events, first, &prepared)?;
+        }
         let mut appended = Vec::with_capacity(events.len());
         for (offset, event) in events.iter().enumerate() {
             let offset = i64::try_from(offset)

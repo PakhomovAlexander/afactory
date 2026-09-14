@@ -219,6 +219,9 @@ pub(crate) struct ReviewNamespace {
 #[derive(Debug, Args, Clone)]
 #[command(group = ArgGroup::new("mode").args(["light", "heavy"]))]
 pub(crate) struct RunArgs {
+    /// Versioned Review Task file, executed through the shared Task runtime
+    #[arg(long = "file", value_name = "FILE", help_heading = "Selector", conflicts_with_all = ["pipeline", "campaign", "base", "candidate", "focus", "node", "light", "heavy", "restart_round", "provider", "resume_provider", "git_timeout_secs"])]
+    pub(crate) task_file: Option<PathBuf>,
     /// Repository to review
     #[arg(
         long,
@@ -770,11 +773,19 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
     )]
     Start {
         /// Task kind (v2 supports exactly `implement`)
-        #[arg(long, value_parser = ["implement"], value_name = "KIND")]
-        kind: String,
+        #[arg(long, value_parser = ["implement"], value_name = "KIND", required_unless_present = "file", conflicts_with = "file")]
+        kind: Option<String>,
         /// What the implementer must achieve
-        #[arg(long, value_name = "TEXT")]
-        goal: String,
+        #[arg(
+            long,
+            value_name = "TEXT",
+            required_unless_present = "file",
+            conflicts_with = "file"
+        )]
+        goal: Option<String>,
+        /// Versioned Task JSON/TOML file, processed by the common Task runtime
+        #[arg(long, value_name = "FILE")]
+        file: Option<PathBuf>,
         /// Repository to work in
         #[arg(
             long,
@@ -784,7 +795,7 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
         )]
         repo: PathBuf,
         /// Pipeline definition, relative to the repository
-        #[arg(long, value_name = "FILE", default_value = IMPLEMENT_PIPELINE, help_heading = "Selector")]
+        #[arg(long, value_name = "FILE", default_value = IMPLEMENT_PIPELINE, help_heading = "Selector", conflicts_with = "file")]
         pipeline: PathBuf,
         /// Explicit state directory (outside the repository)
         #[arg(long, value_name = "DIR", help_heading = "Selector")]
@@ -801,12 +812,39 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
         /// Start from the working tree instead of a revision
         #[arg(long, help_heading = "Selector")]
         uncommitted: bool,
-        /// Wall-clock budget for the whole Task
-        #[arg(long, value_name = "N", help_heading = "Budget")]
+        /// Positive wall-clock budget for the whole Task
+        #[arg(long, value_name = "N", value_parser = clap::value_parser!(u64).range(1..), help_heading = "Budget")]
         timeout_secs: Option<u64>,
         /// One JSON document on stdout instead of text
         #[arg(long, help_heading = "Output")]
         json: bool,
+    },
+    /// Capture and compile a Task file without dispatching any Worker
+    Plan {
+        #[arg(long, value_name = "FILE")]
+        file: PathBuf,
+        #[arg(long, value_name = "DIR", default_value = ".")]
+        repo: PathBuf,
+        #[arg(long, value_name = "DIR")]
+        state: Option<PathBuf>,
+        #[arg(long, default_value = "HEAD", conflicts_with = "uncommitted")]
+        authority: String,
+        #[arg(long)]
+        uncommitted: bool,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Run or resume a captured Task using its exact recorded plan and authority
+    Run {
+        task_id: String,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
+    /// Explain a captured Task's ports, hierarchy, bindings, coverage and budgets
+    Explain {
+        task_id: String,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
     },
     /// Deliver a verified Task to a new local branch and worktree
     #[command(

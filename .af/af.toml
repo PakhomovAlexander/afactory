@@ -16,3 +16,9 @@ package = "implementer"
 
 [worker.evaluator]
 package = "evaluator"
+
+[worker.bugs]
+package = "bugs"
+
+[worker.performance]
+package = "performance"

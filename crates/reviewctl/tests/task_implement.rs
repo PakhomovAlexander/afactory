@@ -8,6 +8,76 @@ use review_config::lock::package_digest;
 use review_source_git::Manifest;
 use review_store::Cas;
 
+fn verification(outcome: &serde_json::Value, state: &Path) -> serde_json::Value {
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    cas.get_json(
+        outcome["result"]["outputs"]["verification"]["artifact_ids"][0]
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap()["payload"]
+        .clone()
+}
+
+fn worker_context(outcome: &serde_json::Value, cas: &Cas, node: &str) -> serde_json::Value {
+    for entry in outcome["execution_records"].as_array().unwrap() {
+        let record = &entry["record"];
+        if record["kind"] != "prepared" {
+            continue;
+        }
+        let input = cas
+            .get_json(record["invocation_id"].as_str().unwrap())
+            .unwrap();
+        if input["payload"]["node"] == node {
+            return cas
+                .get_json(record["context_id"].as_str().unwrap())
+                .unwrap()["payload"]
+                .clone();
+        }
+    }
+    panic!("No prepared Attempt for {node}");
+}
+
+fn terminal_delivery(state: &Path, task_id: &str) -> &'static str {
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let task = store.task_projection(&cas, task_id).unwrap().unwrap();
+    match task.deliveries.last().unwrap().1.status {
+        review_core::task::delivery::TaskDeliveryStatusV1::Failed => "TaskDeliveryFailed@1",
+        review_core::task::delivery::TaskDeliveryStatusV1::Prepared => "TaskDeliveryPrepared@1",
+        review_core::task::delivery::TaskDeliveryStatusV1::Delivered => "TaskDelivered@1",
+    }
+}
+
+fn forget_terminal_delivery(state: &Path, task_id: &str) {
+    // Fault fixture: materialization finished but the terminal journal write did not. Retain
+    // the writer's lease release at the next dense sequence, so recovery exercises delivery
+    // ownership immediately without changing clocks or weakening Store replay validation.
+    let cas = Cas::open_existing(state.join("cas")).unwrap();
+    let store = review_store::EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+    let task = store.task_projection(&cas, task_id).unwrap().unwrap();
+    let record = &task.deliveries.last().unwrap().0;
+    assert_eq!(terminal_delivery(state, task_id), "TaskDelivered@1");
+    let run_id = review_store::store::task::task_run_id(task_id).unwrap();
+    let mut connection = rusqlite::Connection::open(state.join("events.sqlite")).unwrap();
+    let transaction = connection.transaction().unwrap();
+    let sequence: i64 = transaction.query_row("SELECT sequence FROM events WHERE run_id = ?1 AND json_extract(payload, '$.change.record_id') = ?2",rusqlite::params![run_id,record],|r|r.get(0)).unwrap();
+    let (payload, occurred_at): (String,String) = transaction.query_row("SELECT payload, occurred_at FROM events WHERE run_id = ?1 ORDER BY sequence DESC LIMIT 1",[&run_id],|r|Ok((r.get(0)?,r.get(1)?))).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&payload).unwrap()["change"]["kind"],
+        "lease_released"
+    );
+    transaction.execute("UPDATE events SET payload = ?3, artifact_refs = '[]', occurred_at = ?4 WHERE run_id = ?1 AND sequence = ?2",rusqlite::params![run_id,sequence,payload,occurred_at]).unwrap();
+    transaction
+        .execute(
+            "DELETE FROM events WHERE run_id = ?1 AND sequence > ?2",
+            rusqlite::params![run_id, sequence],
+        )
+        .unwrap();
+    transaction.commit().unwrap();
+    assert_eq!(terminal_delivery(state, task_id), "TaskDeliveryPrepared@1");
+}
+
 fn workspace_root() -> PathBuf {
     std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
@@ -151,24 +221,27 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), true);
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(outcome["schema"], "af/task-outcome@1");
-    assert_eq!(outcome["outcome"]["kind"], "verified");
-    assert_eq!(outcome["delivery"]["kind"], "none");
-    assert_eq!(outcome["workers"].as_array().unwrap().len(), 2);
-    assert_eq!(outcome["gates"][0]["status"], "passed");
+    assert_eq!(outcome["schema"], "af/task-inspection@2");
+    assert_eq!(outcome["result"]["acceptance"], "satisfied");
+    assert!(outcome.get("delivery").is_none());
+    assert_eq!(outcome["attempts"], 3);
+    assert_eq!(verification(&outcome, &state)["outcome"], "passed");
     assert!(
         !repo.join("implemented.txt").exists(),
         "source checkout changed"
     );
-    assert!(state.join("tasks.sqlite").exists());
+    assert!(state.join("events.sqlite").exists());
+    assert!(!state.join("tasks.sqlite").exists());
 
     let cas = Cas::open(state.join("cas")).unwrap();
-    let snapshot_id = outcome["derived_snapshot_id"].as_str().unwrap();
+    let snapshot_id = outcome["result"]["outputs"]["snapshot"]["snapshot_id"]
+        .as_str()
+        .unwrap();
     let snapshot = cas.get_json(snapshot_id).unwrap();
     let manifest: Manifest = serde_json::from_value(
-        cas.get_json(snapshot["manifest_artifact_id"].as_str().unwrap())
+        cas.get_json(snapshot["manifest_id"].as_str().unwrap())
             .unwrap(),
     )
     .unwrap();
@@ -179,8 +252,8 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
         "derived\n"
     );
 
-    let evaluator = &outcome["workers"][1];
-    let task_input = evaluator["context_manifest"]["entries"]
+    let evaluator = worker_context(&outcome, &cas, "root.nodes.evaluate");
+    let task_input = evaluator["manifest"]["entries"]
         .as_array()
         .unwrap()
         .iter()
@@ -192,6 +265,18 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
     )
     .unwrap();
     assert!(evaluator_input.get("goal").is_some());
+    assert_eq!(
+        evaluator_input["budget"],
+        serde_json::json!({"reserved_tokens":1000})
+    );
+    assert_eq!(evaluator_input["task_id"], outcome["task_id"]);
+    assert_eq!(evaluator["legacy"]["budget_tokens"], 1000);
+    assert_eq!(evaluator["legacy"]["plan_id"], outcome["plan_id"]);
+    for entry in outcome["execution_records"].as_array().unwrap() {
+        if entry["record"]["kind"] == "prepared" {
+            assert_eq!(entry["record"]["reserved_tokens"], 0);
+        }
+    }
     assert!(evaluator_input.get("gates").is_some());
     assert!(evaluator_input.get("implementer_output").is_none());
     assert!(evaluator_input.get("implementer_transcript").is_none());
@@ -204,10 +289,14 @@ fn failed_gate_is_typed_unverified_and_skips_the_evaluator() {
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
     assert_eq!(code, 3, "{stderr}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(outcome["outcome"]["kind"], "unverified");
-    assert_eq!(outcome["outcome"]["stage"], "gates");
-    assert_eq!(outcome["workers"].as_array().unwrap().len(), 1);
-    assert_eq!(outcome["gates"][0]["status"], "failed");
+    assert_eq!(outcome["result"]["acceptance"], "unsatisfied");
+    assert_eq!(verification(&outcome, &state)["outcome"], "failed");
+    assert_eq!(outcome["attempts"], 2);
+    assert!(
+        verification(&outcome, &state)
+            .get("evaluation_id")
+            .is_none()
+    );
     assert!(!repo.join("implemented.txt").exists());
 }
 
@@ -216,7 +305,7 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), true);
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     let task_id = outcome["task_id"].as_str().unwrap();
     let worktree = directory.path().join("delivered");
@@ -282,13 +371,7 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
 
     // Simulate a crash after exact materialization but before the terminal receipt. The durable
     // prepared record must let the exact repeat reconcile and seal the delivery without rewriting.
-    let connection = rusqlite::Connection::open(state.join("tasks.sqlite")).unwrap();
-    connection
-        .execute(
-            "DELETE FROM task_events WHERE task_id = ?1 AND event_type = 'TaskDelivered@1'",
-            [task_id],
-        )
-        .unwrap();
+    forget_terminal_delivery(&state, task_id);
     let (code, recovered, stderr) = run_af(&repo, &home, &delivery_args);
     assert_eq!(code, 0, "{stderr}");
     let recovered: serde_json::Value = serde_json::from_str(recovered.trim()).unwrap();
@@ -348,8 +431,8 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
     );
     assert_eq!(code, 0, "{stderr}");
     let shown: serde_json::Value = serde_json::from_str(shown.trim()).unwrap();
-    assert_eq!(shown["schema"], "af/task-inspection@1");
-    assert_eq!(shown["outcome"]["outcome"]["kind"], "verified");
+    assert_eq!(shown["schema"], "af/task-inspection@2");
+    assert_eq!(shown["result"]["acceptance"], "satisfied");
     assert!(shown["history"].as_array().unwrap().len() >= 8);
 }
 
@@ -358,7 +441,7 @@ fn delivery_ignored_paths_include_operator_global_excludes() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), true);
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     let task_id = outcome["task_id"].as_str().unwrap();
     std::fs::create_dir_all(home.join(".config/git")).unwrap();
@@ -398,7 +481,7 @@ fn crash_before_index_population_recovers_the_empty_owned_worktree() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), true);
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     let task_id = outcome["task_id"].as_str().unwrap();
     let worktree = directory.path().join("empty-index");
@@ -420,13 +503,7 @@ fn crash_before_index_population_recovers_the_empty_owned_worktree() {
     let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
     assert_eq!(code, 0, "{stderr}");
 
-    let connection = rusqlite::Connection::open(state.join("tasks.sqlite")).unwrap();
-    connection
-        .execute(
-            "DELETE FROM task_events WHERE task_id = ?1 AND event_type = 'TaskDelivered@1'",
-            [task_id],
-        )
-        .unwrap();
+    forget_terminal_delivery(&state, task_id);
     git(&worktree, &home, &["read-tree", "--empty"]);
     for child in std::fs::read_dir(&worktree).unwrap() {
         let child = child.unwrap();
@@ -461,7 +538,7 @@ fn crash_during_materialization_becomes_terminal_and_can_redeliver() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), true);
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     let task_id = outcome["task_id"].as_str().unwrap();
     let worktree = directory.path().join("partial-materialization");
@@ -482,13 +559,7 @@ fn crash_during_materialization_becomes_terminal_and_can_redeliver() {
     ];
     let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
     assert_eq!(code, 0, "{stderr}");
-    let connection = rusqlite::Connection::open(state.join("tasks.sqlite")).unwrap();
-    connection
-        .execute(
-            "DELETE FROM task_events WHERE task_id = ?1 AND event_type = 'TaskDelivered@1'",
-            [task_id],
-        )
-        .unwrap();
+    forget_terminal_delivery(&state, task_id);
     std::fs::remove_file(worktree.join("proof.generated")).unwrap();
     std::fs::write(worktree.join(".materialize-interrupted"), "partial\n").unwrap();
 
@@ -499,13 +570,7 @@ fn crash_during_materialization_becomes_terminal_and_can_redeliver() {
         "{stderr}"
     );
     assert!(worktree.join("implemented.txt").is_file());
-    let terminal: String = connection
-        .query_row(
-            "SELECT event_type FROM task_events WHERE task_id = ?1 ORDER BY sequence DESC LIMIT 1",
-            [task_id],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let terminal = terminal_delivery(&state, task_id);
     assert_eq!(terminal, "TaskDeliveryFailed@1");
 
     let replacement = directory.path().join("replacement-delivery");
@@ -541,7 +606,7 @@ fn crash_recovery_preserves_operator_modified_delivery() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), true);
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     let task_id = outcome["task_id"].as_str().unwrap();
     let worktree = directory.path().join("operator-work");
@@ -566,13 +631,7 @@ fn crash_recovery_preserves_operator_modified_delivery() {
 
     // Simulate a crash after materialization but before the terminal receipt, followed by a human
     // editing the delivered worktree. Recovery must preserve those bytes and end explicitly.
-    let connection = rusqlite::Connection::open(state.join("tasks.sqlite")).unwrap();
-    connection
-        .execute(
-            "DELETE FROM task_events WHERE task_id = ?1 AND event_type = 'TaskDelivered@1'",
-            [task_id],
-        )
-        .unwrap();
+    forget_terminal_delivery(&state, task_id);
     std::fs::write(worktree.join("implemented.txt"), "operator work\n").unwrap();
 
     let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
@@ -605,13 +664,7 @@ fn crash_recovery_preserves_operator_modified_delivery() {
         .output()
         .unwrap();
     assert!(branch.status.success(), "delivery branch was removed");
-    let terminal: String = connection
-        .query_row(
-            "SELECT event_type FROM task_events WHERE task_id = ?1 ORDER BY sequence DESC LIMIT 1",
-            [task_id],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let terminal = terminal_delivery(&state, task_id);
     assert_eq!(terminal, "TaskDeliveryFailed@1");
 }
 
@@ -620,7 +673,7 @@ fn crash_recovery_preserves_operator_staging() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), true);
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     let task_id = outcome["task_id"].as_str().unwrap();
     let worktree = directory.path().join("operator-index");
@@ -641,13 +694,7 @@ fn crash_recovery_preserves_operator_staging() {
     ];
     let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
     assert_eq!(code, 0, "{stderr}");
-    let connection = rusqlite::Connection::open(state.join("tasks.sqlite")).unwrap();
-    connection
-        .execute(
-            "DELETE FROM task_events WHERE task_id = ?1 AND event_type = 'TaskDelivered@1'",
-            [task_id],
-        )
-        .unwrap();
+    forget_terminal_delivery(&state, task_id);
     git(&worktree, &home, &["add", "implemented.txt"]);
 
     let (code, _, stderr) = run_af(&repo, &home, &delivery_args);
@@ -704,7 +751,7 @@ fn delivery_refuses_unverified_and_dirty_sources_without_creating_a_target() {
     let clean = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(clean.path(), true);
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     let task_id = outcome["task_id"].as_str().unwrap();
     let lock = rusqlite::Connection::open(state.join("task-delivery-lock.sqlite")).unwrap();
@@ -778,7 +825,7 @@ fn failed_local_creation_rolls_back_only_its_owned_refs() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(directory.path(), true);
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
-    assert_eq!(code, 0, "{stderr}");
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
     let task_id = outcome["task_id"].as_str().unwrap();
     let locked = directory.path().join("locked");
@@ -817,14 +864,7 @@ fn failed_local_creation_rolls_back_only_its_owned_refs() {
         !branch.status.success(),
         "delivery branch survived rollback"
     );
-    let connection = rusqlite::Connection::open(state.join("tasks.sqlite")).unwrap();
-    let terminal: String = connection
-        .query_row(
-            "SELECT event_type FROM task_events WHERE task_id = ?1 ORDER BY sequence DESC LIMIT 1",
-            [task_id],
-            |row| row.get(0),
-        )
-        .unwrap();
+    let terminal = terminal_delivery(&state, task_id);
     assert_eq!(terminal, "TaskDeliveryFailed@1");
 }
 

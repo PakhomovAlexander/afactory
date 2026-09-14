@@ -8,6 +8,8 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+review-attempt = { path = "../review-attempt" }
+review-graph = { path = "../review-graph" }
 review-core = { path = "../review-core" }
 rusqlite = { version = "0.37.0", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }

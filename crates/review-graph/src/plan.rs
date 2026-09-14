@@ -74,6 +74,8 @@ impl PortContract {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
+    /// An operator from a compiled Task plan, dispatched through the common Task runtime.
+    Task,
     /// Emits the run's generation state — the campaign's prior findings — as an artifact, so
     /// reviewers receive it through a wired input port rather than from ambient kernel state.
     Generation,

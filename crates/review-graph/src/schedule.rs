@@ -17,6 +17,12 @@ pub type ArtifactMap = BTreeMap<String, Vec<String>>;
 /// What the caller does when a node is dispatched. The scheduler owns *when* and *whether*, the
 /// caller owns *what* — so scheduling can be tested without models, checks, or a filesystem.
 pub trait Dispatch {
+    /// Task-only branch decision over admitted, named inputs. This runs before invocation
+    /// publication and may suppress an inactive branch without manufacturing a receipt.
+    fn task_node_selected(&self, _node: &Node, _inputs: &ArtifactMap) -> Result<bool, String> {
+        Ok(true)
+    }
+
     /// Persist or otherwise observe the exact input selection before the node is scheduled.
     fn record_invocation(&self, _node: &Node, _inputs: &ArtifactMap) -> Result<(), String> {
         Ok(())
@@ -57,6 +63,8 @@ pub enum NodeFailureClass {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SuppressionReason {
+    /// A typed Task receipt selected another branch. No invocation or Attempt occurred.
+    BranchNotSelected,
     /// A gate this node depends on did not pass.
     GateBlocked,
     /// An upstream node it depends on was itself suppressed or failed.
@@ -127,6 +135,7 @@ impl RunReport {
 pub struct Scheduler<'a> {
     plan: &'a Planned,
     max_parallel: usize,
+    scope_limits: BTreeMap<String, usize>,
 }
 
 pub const DEFAULT_MAX_PARALLEL: usize = 4;
@@ -139,6 +148,7 @@ impl<'a> Scheduler<'a> {
             // local CPU — running them one after another priced a review at the *sum* of
             // model latencies.
             max_parallel: DEFAULT_MAX_PARALLEL,
+            scope_limits: BTreeMap::new(),
         }
     }
 
@@ -146,6 +156,18 @@ impl<'a> Scheduler<'a> {
     pub fn with_parallelism(mut self, max_parallel: usize) -> Scheduler<'a> {
         self.max_parallel = max_parallel.max(1);
         self
+    }
+
+    /// Additional bounds for flattened child Pipeline namespaces. All share this scheduler.
+    pub fn with_scope_limits(mut self, limits: BTreeMap<String, usize>) -> Result<Self, String> {
+        if limits
+            .iter()
+            .any(|(scope, limit)| *limit == 0 || !scope.split('.').all(review_core::task::is_name))
+        {
+            return Err("Invalid Pipeline scope concurrency bound".into());
+        }
+        self.scope_limits = limits;
+        Ok(self)
     }
 
     /// Execute the plan.
@@ -192,9 +214,10 @@ impl<'a> Scheduler<'a> {
                     }
 
                     let dependencies = self.plan.dependencies_of(node_id);
-                    if dependencies
-                        .iter()
-                        .any(|edge| unusable.contains(&edge.from.node))
+                    if node.kind != NodeKind::Task
+                        && dependencies
+                            .iter()
+                            .any(|edge| unusable.contains(&edge.from.node))
                     {
                         outcomes.insert(
                             node_id.clone(),
@@ -218,6 +241,16 @@ impl<'a> Scheduler<'a> {
                     if in_flight.len() >= self.max_parallel {
                         continue;
                     }
+                    if self.scope_limits.iter().any(|(scope, limit)| {
+                        let contains = |id: &str| {
+                            id.strip_prefix(scope)
+                                .is_some_and(|tail| tail.starts_with('.'))
+                        };
+                        contains(node_id)
+                            && in_flight.iter().filter(|id| contains(id)).count() >= *limit
+                    }) {
+                        continue;
+                    }
 
                     // Inputs are exactly what the edges resolved to, each labelled with the
                     // input port it arrived on — so a node reads its inputs by name (a reviewer
@@ -238,8 +271,53 @@ impl<'a> Scheduler<'a> {
                                 .extend(artifacts.iter().cloned());
                         }
                     }
-                    for artifacts in inputs.values_mut() {
-                        artifacts.sort();
+                    if node.kind != NodeKind::Task {
+                        for artifacts in inputs.values_mut() {
+                            artifacts.sort();
+                        }
+                    } else {
+                        match dispatch.task_node_selected(node, &inputs) {
+                            Ok(false) => {
+                                outcomes.insert(
+                                    node_id.clone(),
+                                    NodeOutcome::Suppressed {
+                                        reason: SuppressionReason::BranchNotSelected,
+                                    },
+                                );
+                                unusable.insert(node_id.clone());
+                                progressed = true;
+                                continue;
+                            }
+                            Err(error) => {
+                                outcomes.insert(
+                                    node_id.clone(),
+                                    NodeOutcome::Failed {
+                                        error,
+                                        class: dispatch.failure_class(node_id),
+                                    },
+                                );
+                                unusable.insert(node_id.clone());
+                                progressed = true;
+                                continue;
+                            }
+                            Ok(true) => (),
+                        }
+                        if node.inputs.iter().any(|port| {
+                            let count = inputs[&port.name].len();
+                            (!port.optional && count == 0)
+                                || (port.cardinality == review_core::PortCardinality::One
+                                    && count > 1)
+                        }) {
+                            outcomes.insert(
+                                node_id.clone(),
+                                NodeOutcome::Suppressed {
+                                    reason: SuppressionReason::UpstreamMissing,
+                                },
+                            );
+                            unusable.insert(node_id.clone());
+                            progressed = true;
+                            continue;
+                        }
                     }
 
                     if let Err(error) = dispatch.record_invocation(node, &inputs) {
