@@ -639,12 +639,18 @@ fn sync_directory(_path: &Path) -> Result<(), String> {
 ))]
 fn replace_registry_if_unchanged(
     path: &Path,
-    temporary: tempfile::NamedTempFile,
+    mut temporary: tempfile::NamedTempFile,
     expected: &str,
 ) -> Result<(), String> {
     use rustix::fs::{CWD, RenameFlags, renameat_with};
 
     let temporary_path = temporary.path().to_path_buf();
+    let transaction =
+        write_registry_transaction(path, &temporary_path, expected, temporary.as_file())?;
+    // After the first exchange this pathname may hold somebody else's registry. Disable
+    // automatic cleanup before publishing so no error, rollback race, or Drop path can unlink a
+    // foreign inode.
+    temporary.disable_cleanup(true);
     renameat_with(CWD, &temporary_path, CWD, path, RenameFlags::EXCHANGE).map_err(|error| {
         format!(
             "conditionally replacing provider registry {}: {error}",
@@ -652,8 +658,12 @@ fn replace_registry_if_unchanged(
         )
     })?;
 
-    let displaced = read_registry(&temporary_path);
-    if !matches!(displaced.as_ref(), Ok(Some(current)) if current == expected) {
+    let displaced_regular = fs::symlink_metadata(&temporary_path)
+        .map(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+        .unwrap_or(false);
+    let displaced = read_registry_unchecked(&temporary_path);
+    if !displaced_regular || !matches!(displaced.as_ref(), Ok(Some(current)) if current == expected)
+    {
         let target_is_ours = same_file(path, temporary.as_file()).unwrap_or(false);
         if target_is_ours {
             renameat_with(CWD, &temporary_path, CWD, path, RenameFlags::EXCHANGE).map_err(
@@ -665,13 +675,100 @@ fn replace_registry_if_unchanged(
                 },
             )?;
         }
+        let _ = temporary.keep();
         return Err(format!(
-            "provider registry {} changed while adding an entry; retry",
-            path.display()
+            "provider registry {} changed while adding an entry; all competing files were preserved, inspect {} and {} before removing {}",
+            path.display(),
+            path.display(),
+            temporary_path.display(),
+            transaction.display()
         ));
     }
-    drop(temporary);
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
+    sync_directory(parent)?;
+    // Keep the marker until the displaced version is durably gone. Every crash state therefore
+    // remains fail-closed; only marker removal publishes the validated candidate to readers.
+    fs::remove_file(&temporary_path).map_err(|error| {
+        format!(
+            "removing prior provider registry {}: {error}",
+            temporary_path.display()
+        )
+    })?;
+    sync_directory(parent)?;
+    fs::remove_file(&transaction).map_err(|error| {
+        format!(
+            "committing provider registry transaction {}: {error}",
+            transaction.display()
+        )
+    })?;
+    sync_directory(parent)?;
     Ok(())
+}
+
+fn registry_transaction_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(".transaction");
+    PathBuf::from(name)
+}
+
+fn write_registry_transaction(
+    path: &Path,
+    stage: &Path,
+    expected: &str,
+    candidate: &File,
+) -> Result<PathBuf, String> {
+    use std::io::Seek;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
+    let stage_name = stage
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "provider registry stage {} has no UTF-8 file name",
+                stage.display()
+            )
+        })?;
+    let mut candidate_bytes = Vec::new();
+    candidate
+        .try_clone()
+        .and_then(|mut file| {
+            file.rewind()?;
+            file.read_to_end(&mut candidate_bytes)
+        })
+        .map_err(|error| format!("reading staged provider registry: {error}"))?;
+    let marker = format!(
+        "version = 1\nstage = {:?}\nexpected_sha256 = {:?}\ncandidate_sha256 = {:?}\n",
+        stage_name,
+        format!("{:x}", Sha256::digest(expected.as_bytes())),
+        format!("{:x}", Sha256::digest(&candidate_bytes))
+    );
+    let transaction = registry_transaction_path(path);
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("creating provider transaction marker: {error}"))?;
+    #[cfg(unix)]
+    temporary
+        .as_file()
+        .set_permissions(fs::Permissions::from_mode(0o600))
+        .map_err(|error| format!("setting provider transaction permissions: {error}"))?;
+    temporary
+        .write_all(marker.as_bytes())
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|error| format!("writing provider transaction marker: {error}"))?;
+    temporary.persist_noclobber(&transaction).map_err(|error| {
+        format!(
+            "provider registry {} already has an unfinished transaction at {}: {}",
+            path.display(),
+            transaction.display(),
+            error.error
+        )
+    })?;
+    sync_directory(parent)?;
+    Ok(transaction)
 }
 
 #[cfg(any(
@@ -819,6 +916,27 @@ fn registry_path() -> Result<Option<PathBuf>, String> {
 }
 
 fn read_registry(path: &Path) -> Result<Option<String>, String> {
+    let transaction = registry_transaction_path(path);
+    match fs::symlink_metadata(&transaction) {
+        Ok(_) => {
+            return Err(format!(
+                "provider registry {} has an unfinished publication transaction at {}; registry reads fail closed until the preserved files are inspected",
+                path.display(),
+                transaction.display()
+            ));
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect provider registry transaction {}: {error}",
+                transaction.display()
+            ));
+        }
+    }
+    read_registry_unchecked(path)
+}
+
+fn read_registry_unchecked(path: &Path) -> Result<Option<String>, String> {
     let resolved = match fs::canonicalize(path) {
         Ok(path) => path,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
@@ -3292,6 +3410,74 @@ mod tests {
         fs::write(&path, external).unwrap();
         assert!(write_registry(&path, b"version = 1\n", Some(original)).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), external);
+        let transaction = registry_transaction_path(&path);
+        assert!(transaction.is_file());
+        let marker = fs::read_to_string(&transaction).unwrap();
+        let stage = marker
+            .lines()
+            .find_map(|line| line.strip_prefix("stage = \""))
+            .and_then(|line| line.strip_suffix('"'))
+            .unwrap();
+        assert!(path.parent().unwrap().join(stage).is_file());
+        assert!(read_registry(&path).is_err());
+    }
+
+    #[test]
+    fn crash_between_exchange_and_validation_fails_closed_with_both_files() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let stage = root.path().join(".provider-stage");
+        let transaction = registry_transaction_path(&path);
+        fs::write(&path, "candidate\n").unwrap();
+        fs::write(&stage, "displaced\n").unwrap();
+        fs::write(&transaction, "version = 1\nstage = \".provider-stage\"\n").unwrap();
+
+        let error = read_registry(&path).unwrap_err();
+        assert!(
+            error.contains("unfinished publication transaction"),
+            "{error}"
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "candidate\n");
+        assert_eq!(fs::read_to_string(&stage).unwrap(), "displaced\n");
+    }
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "visionos",
+        target_os = "watchos"
+    ))]
+    #[test]
+    fn rollback_race_preserves_the_second_replacement_at_the_stage_path() {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        fs::write(&path, "candidate\n").unwrap();
+        let candidate = File::open(&path).unwrap();
+        let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        stage.write_all(b"first external replacement\n").unwrap();
+        let stage_path = stage.path().to_path_buf();
+        stage.disable_cleanup(true);
+
+        assert!(same_file(&path, &candidate).unwrap());
+        let second = root.path().join("second");
+        fs::write(&second, "second external replacement\n").unwrap();
+        fs::rename(&second, &path).unwrap();
+        renameat_with(CWD, &stage_path, CWD, &path, RenameFlags::EXCHANGE).unwrap();
+        let _ = stage.keep();
+
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "first external replacement\n"
+        );
+        assert_eq!(
+            fs::read_to_string(&stage_path).unwrap(),
+            "second external replacement\n"
+        );
     }
 
     #[test]
