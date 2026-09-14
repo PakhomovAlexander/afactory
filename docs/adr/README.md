@@ -178,3 +178,4 @@ Record the options you rejected and why — that is the part future readers need
   inputs](0094-bind-task-review-assignments-and-readable-inputs.md)
 - [0099 — Select Task Review generation independently of Provider
   costs](0099-select-task-review-generation-independently-of-provider-costs.md)
+- [0100 — Preserve issue hierarchy and selected-field refresh semantics](0100-preserve-issue-hierarchy-and-selected-field-refresh.md)

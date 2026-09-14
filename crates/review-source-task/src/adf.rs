@@ -144,7 +144,15 @@ impl Renderer {
                     };
                     format!("{}. ", start + i as u64)
                 };
-                part = format!("{marker}{}\n", part.trim_end_matches('\n'));
+                let mut lines = part.trim_end_matches('\n').split('\n');
+                let mut item = format!("{marker}{}\n", lines.next().unwrap_or_default());
+                let indent = " ".repeat(marker.len());
+                for line in lines {
+                    item.push_str(&indent);
+                    item.push_str(line);
+                    item.push('\n');
+                }
+                part = item;
             }
             content.push_str(&part);
             if content.len() > 131072 {
