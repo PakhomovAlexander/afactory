@@ -365,6 +365,9 @@ fn add_to_registry(
     auth_dir: &Path,
 ) -> Result<Option<PathBuf>, String> {
     let _lock = registry_lock(path)?;
+    // A prior first-file publication may have crashed after creating its marker but before the
+    // registry appeared. Never treat that recovery state as an empty registry.
+    ensure_no_registry_transaction(path)?;
     let existing = match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if metadata.file_type().is_symlink() || !metadata.is_file() {
@@ -656,74 +659,91 @@ fn replace_registry_if_unchanged(
     use rustix::fs::{CWD, RenameFlags, renameat_with};
 
     let temporary_path = temporary.path().to_path_buf();
-    let transaction =
-        write_registry_transaction(path, &temporary_path, expected, temporary.as_file())?;
+    let candidate = read_registry_unchecked(&temporary_path)?
+        .ok_or_else(|| "staged provider registry disappeared".to_string())?;
+    let recovery = prepare_registry_recovery(
+        path,
+        &temporary_path,
+        temporary.as_file(),
+        expected,
+        &candidate,
+    )?;
+    let (transaction, transaction_file) = write_registry_transaction(
+        path,
+        &temporary_path,
+        expected,
+        temporary.as_file(),
+        &recovery,
+    )?;
     // After the first exchange this pathname may hold somebody else's registry. Disable
     // automatic cleanup before publishing so no error, rollback race, or Drop path can unlink a
     // foreign inode.
     temporary.disable_cleanup(true);
-    renameat_with(CWD, &temporary_path, CWD, path, RenameFlags::EXCHANGE).map_err(|error| {
-        format!(
-            "conditionally replacing provider registry {}: {error}",
-            path.display()
-        )
-    })?;
-
-    let displaced_file = open_registry(&temporary_path);
-    let displaced_regular = displaced_file
-        .as_ref()
-        .ok()
-        .and_then(|file| file.metadata().ok())
-        .map(|metadata| metadata.is_file())
-        .unwrap_or(false);
-    let displaced = read_registry_unchecked(&temporary_path);
-    if !displaced_regular || !matches!(displaced.as_ref(), Ok(Some(current)) if current == expected)
-    {
-        let target_is_ours = same_file(path, temporary.as_file()).unwrap_or(false);
-        if target_is_ours {
-            renameat_with(CWD, &temporary_path, CWD, path, RenameFlags::EXCHANGE).map_err(
-                |error| {
-                    format!(
-                        "provider registry {} changed and restoring it failed: {error}",
-                        path.display()
-                    )
-                },
-            )?;
-        }
+    if let Err(error) = renameat_with(CWD, &temporary_path, CWD, path, RenameFlags::EXCHANGE) {
         let _ = temporary.keep();
+        make_recovery_inspectable(&recovery);
+        archive_transaction_if_ours(path, &transaction, &transaction_file, &recovery)?;
         return Err(format!(
-            "provider registry {} changed while adding an entry; all competing files were preserved, inspect {} and {} before removing {}",
+            "conditionally replacing provider registry {} failed: {error}; the candidate and prior registry were preserved in {}",
             path.display(),
-            path.display(),
-            temporary_path.display(),
-            transaction.display()
+            recovery.directory.display()
         ));
     }
+
     let parent = path
         .parent()
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
     sync_directory(parent)?;
-    // Move the displaced version behind an unlistable, randomly named directory before removing
-    // it. A non-cooperating writer that replaces the stage pathname is moved into quarantine and
-    // preserved instead of being unlinked. Keep the marker until preservation is durable; only
-    // marker removal publishes the validated candidate to readers.
-    let preserved = quarantine_displaced(
-        path,
-        &temporary_path,
-        displaced_file
-            .as_ref()
-            .expect("a regular displaced file was opened"),
-        expected,
-        &transaction,
-    )?;
-    fs::remove_file(&transaction).map_err(|error| {
+
+    // Move whatever the exchange displaced into the recovery directory. The original inode was
+    // hard-linked there before publication, so even a replacement of this mutable stage pathname
+    // cannot destroy a late write through an already-open descriptor.
+    fs::rename(&temporary_path, &recovery.exchange_stage).map_err(|error| {
         format!(
-            "committing provider registry transaction {}: {error}",
+            "moving exchanged provider registry into {}: {error}; transaction remains at {}",
+            recovery.exchange_stage.display(),
             transaction.display()
         )
     })?;
+    recovery
+        .directory_file
+        .sync_all()
+        .map_err(|error| format!("syncing provider registry recovery directory: {error}"))?;
     sync_directory(parent)?;
-    Ok(preserved)
+
+    if !registry_file_matches(&recovery.exchange_stage, &recovery.original_file, expected) {
+        make_recovery_inspectable(&recovery);
+        return Err(format!(
+            "provider registry {} changed during publication; all versions were preserved in {}, inspect them before removing {}",
+            path.display(),
+            recovery.directory.display(),
+            transaction.display()
+        ));
+    }
+    if !registry_file_matches(path, temporary.as_file(), &candidate) {
+        make_recovery_inspectable(&recovery);
+        return Err(format!(
+            "provider registry {} was replaced before commit; the candidate and prior registry were preserved in {}, transaction remains at {}",
+            path.display(),
+            recovery.directory.display(),
+            transaction.display()
+        ));
+    }
+
+    make_recovery_inspectable(&recovery);
+    archive_transaction_if_ours(path, &transaction, &transaction_file, &recovery)?;
+    // The marker archival is the commit point for cooperating readers. Rechecking afterward makes
+    // the command report a concurrent replacement instead of claiming that the requested entry
+    // is still active. The candidate copy remains recoverable either way.
+    if !registry_file_matches(path, temporary.as_file(), &candidate) {
+        return Err(format!(
+            "provider registry {} changed at commit; the candidate and prior registry were preserved in {}",
+            path.display(),
+            recovery.directory.display()
+        ));
+    }
+    ensure_no_registry_transaction(path)?;
+    Ok(recovery.displaced_copy)
 }
 
 #[cfg(any(
@@ -735,70 +755,192 @@ fn replace_registry_if_unchanged(
     target_os = "visionos",
     target_os = "watchos"
 ))]
-fn quarantine_displaced(
+struct RegistryRecovery {
+    directory: PathBuf,
+    directory_file: File,
+    candidate_copy: PathBuf,
+    displaced_copy: PathBuf,
+    exchange_stage: PathBuf,
+    archived_marker: PathBuf,
+    original_file: File,
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+))]
+fn prepare_registry_recovery(
     path: &Path,
     stage: &Path,
-    displaced: &File,
+    candidate_file: &File,
     expected: &str,
-    transaction: &Path,
-) -> Result<PathBuf, String> {
+    candidate: &str,
+) -> Result<RegistryRecovery, String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
-    let quarantine = tempfile::Builder::new()
-        .prefix(".af-provider-quarantine-")
-        .tempdir_in(parent)
-        .map_err(|error| format!("creating provider registry quarantine: {error}"))?;
-    let quarantine_file = File::open(quarantine.path())
-        .map_err(|error| format!("opening provider registry quarantine: {error}"))?;
-    let quarantine = quarantine.keep();
-    fs::set_permissions(&quarantine, fs::Permissions::from_mode(0o300))
-        .map_err(|error| format!("securing provider registry quarantine: {error}"))?;
-    quarantine_file
-        .sync_all()
-        .map_err(|error| format!("syncing provider registry quarantine: {error}"))?;
-    sync_directory(parent)?;
-
-    let quarantined = quarantine.join("displaced");
-    fs::rename(stage, &quarantined).map_err(|error| {
-        format!(
-            "moving displaced provider registry {} into quarantine {}: {error}; inspect it before removing {}",
-            stage.display(),
-            quarantine.display(),
-            transaction.display()
-        )
-    })?;
-    quarantine_file
-        .sync_all()
-        .map_err(|error| format!("syncing quarantined provider registry: {error}"))?;
-    sync_directory(parent)?;
-
-    let quarantined_regular = fs::symlink_metadata(&quarantined)
-        .map(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
-        .unwrap_or(false);
-    let quarantined_is_displaced = same_file(&quarantined, displaced).unwrap_or(false);
-    let quarantined_contents = read_registry_unchecked(&quarantined);
-    if !quarantined_regular
-        || !quarantined_is_displaced
-        || !matches!(quarantined_contents.as_ref(), Ok(Some(current)) if current == expected)
-    {
+    let original_file = open_registry(path)
+        .map_err(|error| format!("opening provider registry before publication: {error}"))?;
+    if !registry_file_matches(path, &original_file, expected) {
         return Err(format!(
-            "provider registry {} changed during cleanup; the competing file was preserved at {}, inspect it before removing {}",
-            path.display(),
-            quarantined.display(),
-            transaction.display()
+            "provider registry {} changed before publication; retry",
+            path.display()
         ));
     }
 
-    // Do not unlink the displaced inode: a non-cooperating process may still hold it open and
-    // append after validation. Keeping the prior registry makes every such write recoverable.
-    fs::set_permissions(&quarantine, fs::Permissions::from_mode(0o700))
-        .map_err(|error| format!("making provider registry quarantine inspectable: {error}"))?;
-    quarantine_file
+    let recovery = tempfile::Builder::new()
+        .prefix(".af-provider-recovery-")
+        .tempdir_in(parent)
+        .map_err(|error| format!("creating provider registry recovery directory: {error}"))?;
+    let directory_file = File::open(recovery.path())
+        .map_err(|error| format!("opening provider registry recovery directory: {error}"))?;
+    let candidate_copy = recovery.path().join("candidate");
+    let displaced_copy = recovery.path().join("displaced");
+    let exchange_stage = recovery.path().join("exchange-stage");
+    let archived_marker = recovery.path().join("transaction-marker");
+    fs::copy(stage, &candidate_copy)
+        .map_err(|error| format!("copying candidate provider registry for recovery: {error}"))?;
+    fs::hard_link(path, &displaced_copy)
+        .map_err(|error| format!("linking prior provider registry for recovery: {error}"))?;
+    if !registry_file_matches(stage, candidate_file, candidate)
+        || !matches!(
+            read_registry_unchecked(&candidate_copy),
+            Ok(Some(current)) if current == candidate
+        )
+        || !registry_file_matches(&displaced_copy, &original_file, expected)
+    {
+        return Err(format!(
+            "provider registry {} changed while preparing publication; retry",
+            path.display()
+        ));
+    }
+    File::open(&candidate_copy)
+        .and_then(|file| file.sync_all())
+        .map_err(|error| format!("syncing candidate recovery copy: {error}"))?;
+    original_file
         .sync_all()
-        .map_err(|error| format!("syncing preserved provider registry: {error}"))?;
+        .map_err(|error| format!("syncing prior provider registry: {error}"))?;
+    directory_file
+        .sync_all()
+        .map_err(|error| format!("syncing provider registry recovery directory: {error}"))?;
     sync_directory(parent)?;
-    Ok(quarantined)
+
+    let directory = recovery.keep();
+    fs::set_permissions(&directory, fs::Permissions::from_mode(0o300))
+        .map_err(|error| format!("securing provider registry recovery directory: {error}"))?;
+    directory_file.sync_all().map_err(|error| {
+        format!("syncing secured provider registry recovery directory: {error}")
+    })?;
+    sync_directory(parent)?;
+    Ok(RegistryRecovery {
+        directory,
+        directory_file,
+        candidate_copy,
+        displaced_copy,
+        exchange_stage,
+        archived_marker,
+        original_file,
+    })
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+))]
+fn registry_file_matches(path: &Path, file: &File, expected: &str) -> bool {
+    same_file(path, file).unwrap_or(false)
+        && matches!(read_registry_unchecked(path), Ok(Some(current)) if current == expected)
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+))]
+fn make_recovery_inspectable(recovery: &RegistryRecovery) {
+    let _ = fs::set_permissions(&recovery.directory, fs::Permissions::from_mode(0o700));
+    let _ = recovery.directory_file.sync_all();
+    if let Some(parent) = recovery.directory.parent() {
+        let _ = sync_directory(parent);
+    }
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+))]
+fn archive_transaction_if_ours(
+    path: &Path,
+    transaction: &Path,
+    transaction_file: &File,
+    recovery: &RegistryRecovery,
+) -> Result<(), String> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+    renameat_with(
+        CWD,
+        transaction,
+        CWD,
+        &recovery.archived_marker,
+        RenameFlags::NOREPLACE,
+    )
+    .map_err(|error| {
+        format!(
+            "archiving provider registry transaction {}: {error}",
+            transaction.display()
+        )
+    })?;
+    recovery
+        .directory_file
+        .sync_all()
+        .map_err(|error| format!("syncing archived provider registry transaction: {error}"))?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
+    sync_directory(parent)?;
+    if same_file(&recovery.archived_marker, transaction_file).unwrap_or(false) {
+        return Ok(());
+    }
+
+    // A non-cooperating writer replaced the marker between publication and archival. Preserve
+    // its inode in recovery and restore a hard link beside the registry so readers stay fail
+    // closed. If another marker appeared in the meantime, the path is already fail closed.
+    match fs::hard_link(&recovery.archived_marker, transaction) {
+        Ok(()) => {}
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            return Err(format!(
+                "provider registry transaction {} changed and restoring its marker failed: {error}; replacement preserved at {}",
+                transaction.display(),
+                recovery.archived_marker.display()
+            ));
+        }
+    }
+    sync_directory(parent)?;
+    Err(format!(
+        "provider registry transaction {} changed; replacement preserved at {} and registry remains fail closed",
+        transaction.display(),
+        recovery.archived_marker.display()
+    ))
 }
 
 fn registry_transaction_path(path: &Path) -> PathBuf {
@@ -812,7 +954,8 @@ fn write_registry_transaction(
     stage: &Path,
     expected: &str,
     candidate: &File,
-) -> Result<PathBuf, String> {
+    recovery: &RegistryRecovery,
+) -> Result<(PathBuf, File), String> {
     use std::io::Seek;
 
     let parent = path
@@ -827,6 +970,33 @@ fn write_registry_transaction(
                 stage.display()
             )
         })?;
+    let recovery_name = recovery
+        .directory
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "provider registry recovery directory {} has no UTF-8 file name",
+                recovery.directory.display()
+            )
+        })?;
+    let recovery_path = |item: &Path| {
+        item.strip_prefix(parent)
+            .ok()
+            .and_then(Path::to_str)
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                format!(
+                    "provider registry recovery path {} is not a UTF-8 child of {}",
+                    item.display(),
+                    parent.display()
+                )
+            })
+    };
+    let candidate_copy = recovery_path(&recovery.candidate_copy)?;
+    let displaced_copy = recovery_path(&recovery.displaced_copy)?;
+    let exchange_stage = recovery_path(&recovery.exchange_stage)?;
+    let archived_marker = recovery_path(&recovery.archived_marker)?;
     let mut candidate_bytes = Vec::new();
     candidate
         .try_clone()
@@ -836,8 +1006,13 @@ fn write_registry_transaction(
         })
         .map_err(|error| format!("reading staged provider registry: {error}"))?;
     let marker = format!(
-        "version = 1\nstage = {:?}\nexpected_sha256 = {:?}\ncandidate_sha256 = {:?}\n",
+        "version = 1\nstage = {:?}\nrecovery = {:?}\ncandidate_copy = {:?}\ndisplaced_copy = {:?}\nexchange_stage = {:?}\narchived_marker = {:?}\nexpected_sha256 = {:?}\ncandidate_sha256 = {:?}\n",
         stage_name,
+        recovery_name,
+        candidate_copy,
+        displaced_copy,
+        exchange_stage,
+        archived_marker,
         format!("{:x}", Sha256::digest(expected.as_bytes())),
         format!("{:x}", Sha256::digest(&candidate_bytes))
     );
@@ -853,7 +1028,7 @@ fn write_registry_transaction(
         .write_all(marker.as_bytes())
         .and_then(|()| temporary.as_file().sync_all())
         .map_err(|error| format!("writing provider transaction marker: {error}"))?;
-    temporary.persist_noclobber(&transaction).map_err(|error| {
+    let marker_file = temporary.persist_noclobber(&transaction).map_err(|error| {
         format!(
             "provider registry {} already has an unfinished transaction at {}: {}",
             path.display(),
@@ -862,7 +1037,7 @@ fn write_registry_transaction(
         )
     })?;
     sync_directory(parent)?;
-    Ok(transaction)
+    Ok((transaction, marker_file))
 }
 
 #[cfg(any(
@@ -1018,18 +1193,31 @@ fn read_registry_with_hooks(
     before_read: impl FnOnce(),
     after_read: impl FnOnce(),
 ) -> Result<Option<String>, String> {
+    // Check beside the configured pathname even when the registry is absent. A writer may have
+    // created its marker before publishing the first file, or the pathname may have been swapped
+    // between a regular file and a symlink.
+    ensure_no_registry_transaction(path)?;
     let Some(resolved) = resolve_registry(path)? else {
+        ensure_no_registry_transaction(path)?;
         return Ok(None);
     };
-    ensure_no_registry_transaction(&resolved)?;
+    ensure_registry_transactions_clear(path, &resolved)?;
     before_read();
     let registry = read_registry_resolved(path, &resolved)?;
     after_read();
     // A writer may have created the marker after the first check and exchanged the candidate
     // while this read was in flight. Rechecking makes such a tentative value fail closed; if the
     // marker has already disappeared, the candidate was durably committed.
-    ensure_no_registry_transaction(&resolved)?;
+    ensure_registry_transactions_clear(path, &resolved)?;
     Ok(Some(registry))
+}
+
+fn ensure_registry_transactions_clear(configured: &Path, resolved: &Path) -> Result<(), String> {
+    ensure_no_registry_transaction(configured)?;
+    if configured != resolved {
+        ensure_no_registry_transaction(resolved)?;
+    }
+    Ok(())
 }
 
 fn resolve_registry(path: &Path) -> Result<Option<PathBuf>, String> {
@@ -3534,16 +3722,8 @@ mod tests {
         fs::write(&path, external).unwrap();
         assert!(write_registry(&path, b"version = 1\n", Some(original)).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), external);
-        let transaction = registry_transaction_path(&path);
-        assert!(transaction.is_file());
-        let marker = fs::read_to_string(&transaction).unwrap();
-        let stage = marker
-            .lines()
-            .find_map(|line| line.strip_prefix("stage = \""))
-            .and_then(|line| line.strip_suffix('"'))
-            .unwrap();
-        assert!(path.parent().unwrap().join(stage).is_file());
-        assert!(read_registry(&path).is_err());
+        assert!(!registry_transaction_path(&path).exists());
+        assert_eq!(read_registry(&path).unwrap().as_deref(), Some(external));
     }
 
     #[test]
@@ -3690,41 +3870,39 @@ mod tests {
         target_os = "watchos"
     ))]
     #[test]
-    fn cleanup_race_quarantines_a_second_replacement() {
+    fn recovery_hardlink_preserves_late_writes_after_stage_replacement() {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let stage = root.path().join("stage");
-        let transaction = registry_transaction_path(&path);
         let original = "version = 1\nproviders = []\n";
+        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        fs::write(&path, original).unwrap();
+        let mut displaced = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&path)
+            .unwrap();
+        let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        stage.write_all(candidate.as_bytes()).unwrap();
+        stage.as_file().sync_all().unwrap();
+        let stage_path = stage.path().to_path_buf();
+        let recovery =
+            prepare_registry_recovery(&path, &stage_path, stage.as_file(), original, candidate)
+                .unwrap();
+
+        renameat_with(CWD, &stage_path, CWD, &path, RenameFlags::EXCHANGE).unwrap();
         let external = "version = 1\n# second replacement\nproviders = []\n";
-        fs::write(&path, "candidate\n").unwrap();
-        fs::write(&stage, original).unwrap();
-        let displaced = File::open(&stage).unwrap();
-        fs::write(&transaction, "version = 1\n").unwrap();
         let second = root.path().join("second");
         fs::write(&second, external).unwrap();
-        fs::rename(&second, &stage).unwrap();
+        fs::rename(&second, &stage_path).unwrap();
+        displaced.write_all(b"# late concurrent write\n").unwrap();
+        displaced.sync_all().unwrap();
 
-        let error =
-            quarantine_displaced(&path, &stage, &displaced, original, &transaction).unwrap_err();
-        assert!(error.contains("changed during cleanup"), "{error}");
-        let quarantine = fs::read_dir(root.path())
-            .unwrap()
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .find(|entry| {
-                entry
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .is_some_and(|name| name.starts_with(".af-provider-quarantine-"))
-            })
-            .unwrap();
-        assert_eq!(
-            fs::read_to_string(quarantine.join("displaced")).unwrap(),
-            external
-        );
-        assert!(transaction.is_file());
-        assert_eq!(fs::read_to_string(&path).unwrap(), "candidate\n");
+        let preserved = fs::read_to_string(&recovery.displaced_copy).unwrap();
+        assert!(preserved.starts_with(original));
+        assert!(preserved.ends_with("# late concurrent write\n"));
+        assert_eq!(fs::read_to_string(&stage_path).unwrap(), external);
     }
 
     #[cfg(any(
@@ -3737,30 +3915,57 @@ mod tests {
         target_os = "watchos"
     ))]
     #[test]
-    fn successful_quarantine_preserves_late_writes_through_the_displaced_fd() {
+    fn successful_replace_records_and_preserves_recovery_versions() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        let stage = root.path().join("stage");
-        let transaction = registry_transaction_path(&path);
         let original = "version = 1\nproviders = []\n";
-        fs::write(&path, "candidate\n").unwrap();
-        fs::write(&stage, original).unwrap();
-        fs::write(&transaction, "version = 1\n").unwrap();
-        let mut displaced = OpenOptions::new()
-            .read(true)
-            .append(true)
-            .open(&stage)
+        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        fs::write(&path, original).unwrap();
+
+        let preserved = write_registry(&path, candidate.as_bytes(), Some(original))
+            .unwrap()
             .unwrap();
+        let recovery = preserved.parent().unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), candidate);
+        assert_eq!(fs::read_to_string(&preserved).unwrap(), original);
+        assert_eq!(
+            fs::read_to_string(recovery.join("candidate")).unwrap(),
+            candidate
+        );
+        assert_eq!(
+            fs::read_to_string(recovery.join("exchange-stage")).unwrap(),
+            original
+        );
+        assert!(!registry_transaction_path(&path).exists());
+    }
 
-        let preserved =
-            quarantine_displaced(&path, &stage, &displaced, original, &transaction).unwrap();
-        displaced.write_all(b"# late concurrent write\n").unwrap();
-        displaced.sync_all().unwrap();
+    #[test]
+    fn a_marker_beside_a_missing_registry_still_fails_closed() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
 
-        let contents = fs::read_to_string(&preserved).unwrap();
-        assert!(contents.starts_with(original));
-        assert!(contents.ends_with("# late concurrent write\n"));
-        assert!(transaction.is_file());
+        let error = read_registry(&path).unwrap_err();
+        assert!(
+            error.contains("unfinished publication transaction"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn add_rejects_a_marker_beside_a_missing_registry() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
+
+        let error =
+            add_to_registry(&path, "codex-main", ProviderKind::Codex, root.path()).unwrap_err();
+        assert!(
+            error.contains("unfinished publication transaction"),
+            "{error}"
+        );
+        assert!(!path.exists());
+        assert!(registry_transaction_path(&path).is_file());
     }
 
     #[test]
