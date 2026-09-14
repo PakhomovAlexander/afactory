@@ -25,7 +25,7 @@ tempfile = "3.27.0"
 
 [dev-dependencies]
 rusqlite = { version = "0.37.0", features = ["bundled"] }
-jsonschema = { version = "0.26.1", default-features = false }
+jsonschema = { version = "0.56.0", default-features = false }
 toml = "0.8.23"
 
 [lints]
