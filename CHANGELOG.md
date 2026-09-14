@@ -28,7 +28,8 @@ or reopen completed work. Release-bound migration and rollback evidence are rele
 
 - Make fresh Provider bootstrap explicit with `af provider add`, distinguish ambient discovery
   labels from selectable registry IDs, preserve every Gate in onboarding's copyable apply command,
-  and make the README's Codex-only quickstart complete.
+  make registry publication serialized, conditional and durable, and make the README's Codex-only
+  quickstart complete.
 - Make Task the common durable execution model for implementation, Review and documents,
   with typed Pipeline input/output contracts, captured context and shared budget accounting.
 - Compose reusable Review Pipelines inside implementation, with independent acceptance and

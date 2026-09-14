@@ -242,7 +242,9 @@ pub fn print_status() {
         "ID", "KIND", "STATUS", "AUTH"
     );
     let mut ambient = BTreeSet::new();
+    let mut ids = BTreeSet::new();
     for provider in inventory.providers {
+        ids.insert(provider.id.clone());
         if matches!(provider.id.as_str(), "claude-ambient" | "codex-ambient") {
             ambient.insert(provider.kind.clone());
         }
@@ -261,9 +263,21 @@ pub fn print_status() {
         println!();
         println!("Ambient IDs are discovered only and cannot be selected by --provider.");
         for kind in ambient {
-            println!("  register {kind}: af provider add {kind}-main --kind {kind}");
+            let id = available_provider_id(&kind, &ids);
+            println!("  register {kind}: af provider add {id} --kind {kind}");
         }
     }
+}
+
+fn available_provider_id(kind: &str, ids: &BTreeSet<String>) -> String {
+    let base = format!("{kind}-main");
+    if !ids.contains(&base) {
+        return base;
+    }
+    (2..)
+        .map(|suffix| format!("{base}-{suffix}"))
+        .find(|candidate| !ids.contains(candidate))
+        .expect("the finite provider registry cannot exhaust numeric suffixes")
 }
 
 /// Add one explicit Provider without requiring the user to learn the registry's TOML shape.
@@ -425,39 +439,7 @@ fn add_to_registry(
         ));
     }
     parse_registry(&bytes, path)?;
-    ensure_registry_unchanged(path, existing.as_deref())?;
-    write_registry(path, bytes.as_bytes())
-}
-
-fn ensure_registry_unchanged(path: &Path, expected: Option<&str>) -> Result<(), String> {
-    match (expected, fs::symlink_metadata(path)) {
-        (None, Err(error)) if error.kind() == ErrorKind::NotFound => Ok(()),
-        (None, Ok(_)) => Err(format!(
-            "provider registry {} appeared while adding an entry; retry",
-            path.display()
-        )),
-        (None, Err(error)) => Err(format!(
-            "cannot recheck provider registry {}: {error}",
-            path.display()
-        )),
-        (Some(_), Ok(metadata)) if metadata.file_type().is_symlink() || !metadata.is_file() => {
-            Err(format!(
-                "provider registry {} was replaced by a non-regular file while adding an entry",
-                path.display()
-            ))
-        }
-        (Some(expected), Ok(_)) => match read_registry(path)? {
-            Some(current) if current == expected => Ok(()),
-            _ => Err(format!(
-                "provider registry {} changed while adding an entry; retry",
-                path.display()
-            )),
-        },
-        (Some(_), Err(error)) => Err(format!(
-            "provider registry {} changed while adding an entry: {error}",
-            path.display()
-        )),
-    }
+    write_registry(path, bytes.as_bytes(), existing.as_deref())
 }
 
 fn normalize_provider_tables(document: &mut DocumentMut, path: &Path) -> Result<(), String> {
@@ -492,12 +474,7 @@ fn registry_lock(path: &Path) -> Result<File, String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
-    fs::create_dir_all(parent).map_err(|error| {
-        format!(
-            "creating provider registry directory {}: {error}",
-            parent.display()
-        )
-    })?;
+    create_dir_all_durable(parent)?;
     let mut lock_name = path.as_os_str().to_os_string();
     lock_name.push(".lock");
     let lock_path = PathBuf::from(lock_name);
@@ -530,16 +507,11 @@ fn registry_lock(path: &Path) -> Result<File, String> {
     Ok(file)
 }
 
-fn write_registry(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn write_registry(path: &Path, bytes: &[u8], expected: Option<&str>) -> Result<(), String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
-    fs::create_dir_all(parent).map_err(|error| {
-        format!(
-            "creating provider registry directory {}: {error}",
-            parent.display()
-        )
-    })?;
+    create_dir_all_durable(parent)?;
     let permissions = fs::metadata(path)
         .ok()
         .map(|metadata| metadata.permissions());
@@ -561,13 +533,182 @@ fn write_registry(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .write_all(bytes)
         .and_then(|()| temporary.as_file().sync_all())
         .map_err(|error| format!("writing provider registry: {error}"))?;
-    temporary
-        .persist(path)
-        .map_err(|error| format!("replacing provider registry atomically: {}", error.error))?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| format!("syncing provider registry directory: {error}"))?;
+    match expected {
+        None => {
+            temporary.persist_noclobber(path).map_err(|error| {
+                format!(
+                    "provider registry {} appeared while adding an entry; retry: {}",
+                    path.display(),
+                    error.error
+                )
+            })?;
+        }
+        Some(expected) => replace_registry_if_unchanged(path, temporary, expected)?,
+    }
+    sync_directory(parent)?;
     Ok(())
+}
+
+fn create_dir_all_durable(path: &Path) -> Result<(), String> {
+    let mut missing = Vec::new();
+    let mut cursor = path;
+    loop {
+        match fs::metadata(cursor) {
+            Ok(metadata) if metadata.is_dir() => break,
+            Ok(_) => {
+                return Err(format!(
+                    "provider registry directory {} is not a directory",
+                    cursor.display()
+                ));
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                missing.push(cursor.to_path_buf());
+                cursor = cursor.parent().ok_or_else(|| {
+                    format!(
+                        "provider registry directory {} has no existing ancestor",
+                        path.display()
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect provider registry directory {}: {error}",
+                    cursor.display()
+                ));
+            }
+        }
+    }
+    for directory in missing.into_iter().rev() {
+        match fs::create_dir(&directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+                if !fs::metadata(&directory)
+                    .map(|metadata| metadata.is_dir())
+                    .unwrap_or(false)
+                {
+                    return Err(format!(
+                        "provider registry directory {} is not a directory",
+                        directory.display()
+                    ));
+                }
+            }
+            Err(error) => {
+                return Err(format!(
+                    "creating provider registry directory {}: {error}",
+                    directory.display()
+                ));
+            }
+        }
+        let parent = directory.parent().ok_or_else(|| {
+            format!(
+                "provider registry directory {} has no parent",
+                directory.display()
+            )
+        })?;
+        sync_directory(&directory)?;
+        sync_directory(parent)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> Result<(), String> {
+    File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| {
+            format!(
+                "syncing provider registry directory {}: {error}",
+                path.display()
+            )
+        })
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+))]
+fn replace_registry_if_unchanged(
+    path: &Path,
+    temporary: tempfile::NamedTempFile,
+    expected: &str,
+) -> Result<(), String> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+    let temporary_path = temporary.path().to_path_buf();
+    renameat_with(CWD, &temporary_path, CWD, path, RenameFlags::EXCHANGE).map_err(|error| {
+        format!(
+            "conditionally replacing provider registry {}: {error}",
+            path.display()
+        )
+    })?;
+
+    let displaced = read_registry(&temporary_path);
+    if !matches!(displaced.as_ref(), Ok(Some(current)) if current == expected) {
+        let target_is_ours = same_file(path, temporary.as_file()).unwrap_or(false);
+        if target_is_ours {
+            renameat_with(CWD, &temporary_path, CWD, path, RenameFlags::EXCHANGE).map_err(
+                |error| {
+                    format!(
+                        "provider registry {} changed and restoring it failed: {error}",
+                        path.display()
+                    )
+                },
+            )?;
+        }
+        return Err(format!(
+            "provider registry {} changed while adding an entry; retry",
+            path.display()
+        ));
+    }
+    drop(temporary);
+    Ok(())
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+))]
+fn same_file(path: &Path, file: &File) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    let path = fs::symlink_metadata(path)?;
+    let file = file.metadata()?;
+    Ok(path.dev() == file.dev() && path.ino() == file.ino())
+}
+
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+)))]
+fn replace_registry_if_unchanged(
+    path: &Path,
+    _temporary: tempfile::NamedTempFile,
+    _expected: &str,
+) -> Result<(), String> {
+    Err(format!(
+        "provider registry {} already exists, but this platform has no conditional replacement primitive",
+        path.display()
+    ))
 }
 
 pub fn format_limit(limit: &ProviderLimit) -> String {
@@ -743,11 +884,16 @@ fn implicit_defaults() -> Vec<ProviderSpec> {
         .filter(|path| path.is_absolute());
     let mut defaults = Vec::new();
     if resolve_program("claude").is_some() {
+        let configured_home = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
         defaults.push(ProviderSpec {
             id: "claude-ambient".to_string(),
             kind: ProviderKind::Claude,
-            auth_dir: std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from),
-            explicit_selector: std::env::var_os("CLAUDE_CONFIG_DIR").is_some(),
+            auth_dir: canonical_if_present(
+                configured_home
+                    .clone()
+                    .or_else(|| home.as_ref().map(|home| home.join(".claude"))),
+            ),
+            explicit_selector: configured_home.is_some(),
             registry_declared: false,
             source: "ambient CLI candidate; unstable local context label".to_string(),
         });
@@ -3138,15 +3284,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn registry_recheck_detects_noncooperating_replacements() {
+    fn conditional_registry_replace_preserves_a_noncooperating_replacement() {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("providers.toml");
-        assert!(ensure_registry_unchanged(&path, None).is_ok());
-        fs::write(&path, "version = 1\nproviders = []\n").unwrap();
-        assert!(ensure_registry_unchanged(&path, None).is_err());
-        let original = fs::read_to_string(&path).unwrap();
-        fs::write(&path, "version = 1\n# external change\nproviders = []\n").unwrap();
-        assert!(ensure_registry_unchanged(&path, Some(&original)).is_err());
+        let original = "version = 1\nproviders = []\n";
+        let external = "version = 1\n# external change\nproviders = []\n";
+        fs::write(&path, external).unwrap();
+        assert!(write_registry(&path, b"version = 1\n", Some(original)).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), external);
+    }
+
+    #[test]
+    fn first_registry_publication_never_clobbers_an_external_file() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let external = "version = 1\n# external creation\nproviders = []\n";
+        fs::write(&path, external).unwrap();
+        assert!(write_registry(&path, b"version = 1\n", None).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), external);
+    }
+
+    #[test]
+    fn ambient_registration_hints_choose_an_unused_id() {
+        let ids = BTreeSet::from(["claude-main".to_string(), "claude-main-2".to_string()]);
+        assert_eq!(available_provider_id("claude", &ids), "claude-main-3");
+    }
+
+    #[test]
+    fn durable_directory_creation_builds_the_complete_hierarchy() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join("config/af");
+        create_dir_all_durable(&directory).unwrap();
+        assert!(directory.is_dir());
+        create_dir_all_durable(&directory).unwrap();
     }
 
     #[test]
