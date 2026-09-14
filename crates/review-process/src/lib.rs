@@ -15,6 +15,7 @@ pub use capture::{
     run_supervised_captured_cancellable_with_policy, run_supervised_captured_with_policy,
 };
 use drain::{collect_after_kill, collect_stderr, drain_async};
+pub use spawn::spawn;
 
 const STDIN_EXIT_GRACE: Duration = Duration::from_millis(500);
 const OUTPUT_DRAIN_GRACE: Duration = Duration::from_secs(5);
