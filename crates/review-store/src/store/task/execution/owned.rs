@@ -915,39 +915,65 @@ pub(in crate::store) fn check_canonical_child_receipt(
             "Owned canonical receipt changed its exact Task and Review association",
         ));
     }
-    let mut registered = None;
+    // The protected execution transition records its output and child-set IDs as exact
+    // references. Filter those indexed run rows before decoding; unrelated Attempt history
+    // and renewal payloads are not part of this ownership-seal check. General Task replay
+    // continues to validate that complete history separately.
+    let run_id = task_run_id(&selected.task_id)?;
+    let mut published_set = None;
+    for row in receipt_records_referencing(connection, &run_id, &selected.output_id)? {
+        if let TaskExecutionRecordV1::OwnedChildPublished {
+            child_set_id,
+            output_id,
+            attempt_id,
+        } = read_execution_record(cas, &row)?.record
+            && output_id == selected.output_id
+            && attempt_id == attempt
+        {
+            if published_set.as_ref().is_some_and(|id| id != &child_set_id) {
+                return Err(conflict(
+                    "Canonical child receipt has ambiguous ownership publication",
+                ));
+            }
+            published_set = Some(child_set_id);
+        }
+    }
+    let child_set_id = published_set.ok_or_else(|| {
+        conflict("Canonical child receipt has no exact protected ownership publication")
+    })?;
+    let set = read_task_owned_children(cas, &child_set_id)?;
+    if set.plan_id != selected.plan_id
+        || !set.children.iter().any(|child| {
+            child.node == selected.task_node && child.invocation_id == selected.invocation_id
+        })
+    {
+        return Err(conflict(
+            "Canonical child receipt changed its registered ownership",
+        ));
+    }
+    let mut registered = false;
     let mut published = false;
-    let rows=connection.prepare("SELECT payload FROM events WHERE run_id=?1 AND type='TaskTransition@1' ORDER BY sequence")?.query_map([task_run_id(&selected.task_id)?],|row|row.get::<_,String>(0))?.collect::<Result<Vec<_>,_>>()?;
-    for row in rows {
-        let transition: TaskTransitionV1 = serde_json::from_str(&row)?;
-        let TaskChangeV1::ExecutionRecorded { record_id } = transition.change else {
-            continue;
-        };
+    for record_id in receipt_records_referencing(connection, &run_id, &child_set_id)? {
         match read_execution_record(cas, &record_id)?.record {
-            TaskExecutionRecordV1::OwnedChildrenRegistered { child_set_id } => {
-                let set = read_task_owned_children(cas, &child_set_id)?;
-                if set.plan_id == selected.plan_id
-                    && set.children.iter().any(|child| {
-                        child.node == selected.task_node
-                            && child.invocation_id == selected.invocation_id
-                    })
-                {
-                    registered = Some(child_set_id);
-                }
+            TaskExecutionRecordV1::OwnedChildrenRegistered { child_set_id: id }
+                if id == child_set_id =>
+            {
+                registered = true
             }
             TaskExecutionRecordV1::OwnedChildPublished {
-                child_set_id,
+                child_set_id: id,
                 output_id,
                 attempt_id,
-            } if registered.as_ref() == Some(&child_set_id)
+            } if registered
+                && id == child_set_id
                 && output_id == selected.output_id
                 && attempt_id == attempt =>
             {
                 published = true;
             }
-            TaskExecutionRecordV1::OwnedChildrenCompleted { child_set_id, .. }
-                if registered.as_ref() == Some(&child_set_id) =>
-            {
+            TaskExecutionRecordV1::OwnedChildrenCompleted {
+                child_set_id: id, ..
+            } if registered && id == child_set_id => {
                 return Err(conflict(
                     "Owned parent sealed before canonical child receipt publication",
                 ));
@@ -955,10 +981,46 @@ pub(in crate::store) fn check_canonical_child_receipt(
             _ => {}
         }
     }
-    if registered.is_none() || !published {
+    if !registered || !published {
         return Err(conflict(
             "Canonical child receipt has no exact protected ownership publication",
         ));
     }
     Ok(())
+}
+
+pub(in crate::store::task) fn receipt_records_referencing(
+    connection: &rusqlite::Connection,
+    run_id: &str,
+    artifact_id: &str,
+) -> Result<Vec<String>, StoreError> {
+    let mut query = connection.prepare(
+        "SELECT payload,artifact_refs FROM events
+         WHERE run_id=?1 AND type='TaskTransition@1' AND instr(artifact_refs,?2)>0
+         AND EXISTS (SELECT 1 FROM json_each(events.artifact_refs)
+                     WHERE json_each.type='text' AND json_each.value=?2)
+         ORDER BY sequence",
+    )?;
+    let rows = query.query_map(rusqlite::params![run_id, artifact_id], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    let mut records = Vec::new();
+    for row in rows {
+        let (payload, refs) = row?;
+        let refs: Vec<String> = serde_json::from_str(&refs)?;
+        if !refs.iter().any(|id| id == artifact_id) {
+            return Err(conflict("Owned receipt reference query changed identity"));
+        }
+        let transition: TaskTransitionV1 = serde_json::from_str(&payload)?;
+        transition.validate().map_err(conflict)?;
+        if let TaskChangeV1::ExecutionRecorded { record_id } = transition.change {
+            if !refs.contains(&record_id) {
+                return Err(conflict(
+                    "Owned receipt transition omitted its execution record",
+                ));
+            }
+            records.push(record_id);
+        }
+    }
+    Ok(records)
 }

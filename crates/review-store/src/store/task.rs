@@ -23,6 +23,7 @@ mod tests;
 
 mod delivery;
 pub mod execution;
+mod lease;
 pub mod planning;
 mod recording;
 mod report;

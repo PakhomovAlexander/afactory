@@ -2,6 +2,7 @@ use super::*;
 use review_core::Producer;
 use review_core::task::plan::PlanDependencyV1;
 mod broker;
+mod lease;
 mod owned;
 mod planning;
 mod recording;
@@ -1362,6 +1363,10 @@ fn late_usage_is_charged_after_task_finish_without_reopening_its_result() {
     f.store = EventStore::open(&f.path).unwrap();
     let state = f.state();
     assert_eq!(state.phase, TaskPhaseV1::Finished { result_id });
+    assert_eq!(
+        f.store.task_lease_state(&lease).unwrap(),
+        state.lease_until_unix_ms()
+    );
     let execution = state.execution.unwrap();
     assert_eq!(execution.budget.committed_tokens(), 17);
     assert!(execution.budget.breached());

@@ -1028,6 +1028,124 @@ fn owned_canonical_receipt_is_fenced_by_parent_seal_but_recorded_selection_repla
         let selected = f.store.replay("review-task").unwrap().pop().unwrap();
         let selected: TaskReviewResultSelectedV1 =
             serde_json::from_value(selected.payload).unwrap();
+        let run = task_run_id(&selected.task_id).unwrap();
+        let sql = rusqlite::Connection::open(&f.path).unwrap();
+        let check = || {
+            check_canonical_child_receipt(
+                &sql,
+                &f.cas,
+                "review-task",
+                &context.round_event_id,
+                "reviewer",
+                attempt.id(),
+            )
+        };
+        check().unwrap();
+        let (registered_sequence, registered_refs): (u64, String) = sql.query_row(
+            "SELECT sequence,artifact_refs FROM events WHERE run_id=?1 AND instr(artifact_refs,?2)>0 ORDER BY sequence LIMIT 1",
+            rusqlite::params![run, id], |r| Ok((r.get(0)?,r.get(1)?)),
+        ).unwrap();
+        let records = receipt_records_referencing(&sql, &run, &output).unwrap();
+        let publication = records
+            .iter()
+            .find(|record| {
+                matches!(
+                    execution::read_execution_record(&f.cas, record)
+                        .unwrap()
+                        .record,
+                    TaskExecutionRecordV1::OwnedChildPublished { .. }
+                )
+            })
+            .unwrap();
+        let (published_sequence, published_refs): (u64, String) = sql.query_row(
+            "SELECT sequence,artifact_refs FROM events WHERE run_id=?1 AND json_extract(payload,'$.change.record_id')=?2",
+            rusqlite::params![run, publication], |r| Ok((r.get(0)?,r.get(1)?)),
+        ).unwrap();
+        for (sequence, refs) in [
+            (registered_sequence, &registered_refs),
+            (published_sequence, &published_refs),
+        ] {
+            sql.execute(
+                "UPDATE events SET artifact_refs='[]' WHERE run_id=?1 AND sequence=?2",
+                rusqlite::params![run, sequence],
+            )
+            .unwrap();
+            assert!(
+                check().is_err(),
+                "missing exact registration/publication must refuse"
+            );
+            sql.execute(
+                "UPDATE events SET artifact_refs=?3 WHERE run_id=?1 AND sequence=?2",
+                rusqlite::params![run, sequence, refs],
+            )
+            .unwrap();
+        }
+        // A string containing the digest is not that exact reference.
+        let aliased = serde_json::to_string(&vec![
+            format!("prefix-{output}-suffix"),
+            publication.clone(),
+        ])
+        .unwrap();
+        sql.execute(
+            "UPDATE events SET artifact_refs=?3 WHERE run_id=?1 AND sequence=?2",
+            rusqlite::params![run, published_sequence, aliased],
+        )
+        .unwrap();
+        assert!(check().is_err());
+        sql.execute(
+            "UPDATE events SET artifact_refs=?3 WHERE run_id=?1 AND sequence=?2",
+            rusqlite::params![run, published_sequence, published_refs],
+        )
+        .unwrap();
+        let temporary = f.store.len(&run).unwrap() + 1;
+        let swap = || {
+            sql.execute(
+                "UPDATE events SET sequence=?3 WHERE run_id=?1 AND sequence=?2",
+                rusqlite::params![run, registered_sequence, temporary],
+            )
+            .unwrap();
+            sql.execute(
+                "UPDATE events SET sequence=?3 WHERE run_id=?1 AND sequence=?2",
+                rusqlite::params![run, published_sequence, registered_sequence],
+            )
+            .unwrap();
+            sql.execute(
+                "UPDATE events SET sequence=?3 WHERE run_id=?1 AND sequence=?2",
+                rusqlite::params![run, temporary, published_sequence],
+            )
+            .unwrap();
+        };
+        swap();
+        assert!(check().is_err(), "publication cannot precede registration");
+        swap();
+        check().unwrap();
+        for index in 1..=128 {
+            f.store
+                .renew_task_lease(&f.cas, &lease, 1_000_000 + index * 1000)
+                .unwrap();
+        }
+        let rows = f.store.len(&run).unwrap();
+        let matched = receipt_records_referencing(&sql, &run, &output)
+            .unwrap()
+            .len()
+            + receipt_records_referencing(&sql, &run, &id).unwrap().len();
+        assert!(matched < 16, "queries must not decode unrelated renewals");
+        let start = std::time::Instant::now();
+        for _ in 0..32 {
+            check_canonical_child_receipt(
+                &sql,
+                &f.cas,
+                "review-task",
+                &context.round_event_id,
+                "reviewer",
+                attempt.id(),
+            )
+            .unwrap();
+        }
+        eprintln!(
+            "owned receipt benchmark: Task_rows={rows}, matching_rows={matched}, iterations=32, guarded_check_us={}; actual selected child with 128 protected renewals, not multi-Round latency evidence",
+            start.elapsed().as_micros()
+        );
         let receipt = NewEvent::new(
             EventType::NodeOutputReceiptV1,
             serde_json::to_value(review_core::NodeOutputReceiptPayloadV1 {
