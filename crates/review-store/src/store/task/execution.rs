@@ -348,7 +348,7 @@ impl TaskExecutionProjection {
         plan: &ExecutionPlanV1,
         node: &str,
         authority: &dyn TaskAuthority,
-    ) -> Result<(), StoreError> {
+    ) -> Result<bool, StoreError> {
         let (invocation_id, input) = self
             .invocations
             .get(node)
@@ -379,7 +379,7 @@ impl TaskExecutionProjection {
                 .validate_retry(cas, task, plan, input, &previous)
                 .map_err(conflict)?;
         }
-        Ok(())
+        Ok(!previous.is_empty())
     }
 
     pub(super) fn new(cas: &Cas, state: &TaskProjection) -> Result<Self, StoreError> {
@@ -1204,18 +1204,20 @@ impl EventStore {
         record: TaskExecutionRecordV1,
         time: u64,
     ) -> Result<RunEvent, StoreError> {
-        self.task_execution_record_inner(cas, lease, record, time, None)
+        self.task_execution_record_inner(cas, lease, record, time, None, None)
     }
 
-    fn task_execution_record_with_owned_prefix(
+    fn task_execution_record_from_state(
         &mut self,
         cas: &Cas,
         lease: &TaskLease,
         record: TaskExecutionRecordV1,
         time: u64,
-        prefix: (u64, Option<(String, u64)>),
+        state: TaskProjection,
+        review_prefix: Option<(String, u64)>,
     ) -> Result<RunEvent, StoreError> {
-        self.task_execution_record_inner(cas, lease, record, time, Some(prefix))
+        let prefix = Some((state.next_sequence, review_prefix));
+        self.task_execution_record_inner(cas, lease, record, time, prefix, Some(state))
     }
 
     fn task_execution_record_inner(
@@ -1225,6 +1227,7 @@ impl EventStore {
         record: TaskExecutionRecordV1,
         time: u64,
         prefix: Option<(u64, Option<(String, u64)>)>,
+        checked: Option<TaskProjection>,
     ) -> Result<RunEvent, StoreError> {
         let (kind, payload) = encoding::encode_record(&record)?;
         let (id, _) = cas
@@ -1244,7 +1247,11 @@ impl EventStore {
                 payload,
             )
             .map_err(|e| StoreError::Artifact(e.to_string()))?;
-        self.append_task_transition_with_owned_prefix(
+        let state = match checked {
+            Some(state) => Some(state),
+            None => self.task_projection(cas, lease.task_id())?,
+        };
+        self.append_task_transition_from_state(
             cas,
             &lease.task_id,
             TaskTransitionV1 {
@@ -1254,6 +1261,7 @@ impl EventStore {
                 change: TaskChangeV1::ExecutionRecorded { record_id: id },
             },
             prefix,
+            state,
         )
     }
 
@@ -1277,13 +1285,15 @@ impl EventStore {
                 Err(conflict("Invocation replay changed its inputs"))
             };
         }
-        self.task_execution_record(
+        self.task_execution_record_from_state(
             cas,
             lease,
             TaskExecutionRecordV1::Invocation {
                 invocation_id: invocation_id.into(),
             },
             now()?,
+            state,
+            None,
         )?;
         Ok(())
     }
@@ -1300,9 +1310,10 @@ impl EventStore {
         let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
         let mut execution = state
             .execution
+            .clone()
             .ok_or_else(|| conflict("Task has no recorded invocation"))?;
         execution.check_owned_open(node)?;
-        execution.validate_retry(cas, &state.revision, &plan, node, authority)?;
+        let callback = execution.validate_retry(cas, &state.revision, &plan, node, authority)?;
         let (invocation_id, input) = execution
             .invocations
             .get(node)
@@ -1320,7 +1331,14 @@ impl EventStore {
             reservation,
             feedback_ids: execution.retry_feedback(node),
         };
-        self.task_execution_record(
+        let fresh = if callback {
+            // Retry policy is a domain callback, so its historical evidence must be checked again.
+            self.task_projection(cas, lease.task_id())?
+                .ok_or_else(|| conflict("Unknown Task"))?
+        } else {
+            state
+        };
+        self.task_execution_record_from_state(
             cas,
             lease,
             TaskExecutionRecordV1::Reserved {
@@ -1332,6 +1350,8 @@ impl EventStore {
                 feedback_ids: reserved.feedback_ids.clone(),
             },
             time,
+            fresh,
+            None,
         )?;
         Ok(reserved)
     }
@@ -1361,8 +1381,8 @@ impl EventStore {
             .validate_context_for_attempt(cas, &state.revision, &plan, &input, attempt, context_id)
             .map_err(conflict)?;
         // Domain callbacks cannot leave stale plan, revocation or artifact authority admitted.
-        self.check_task_dispatch(cas, lease, authority)?;
-        self.task_execution_record(
+        let fresh = self.checked_task_dispatch(cas, lease, authority)?.0;
+        self.task_execution_record_from_state(
             cas,
             lease,
             TaskExecutionRecordV1::ContextBound {
@@ -1370,6 +1390,8 @@ impl EventStore {
                 context_id: context_id.into(),
             },
             now()?,
+            fresh,
+            None,
         )?;
         Ok(PreparedTaskAttempt {
             task_id: lease.task_id.clone(),
@@ -1490,13 +1512,15 @@ impl EventStore {
     ) -> Result<(), StoreError> {
         let (state, _) = self.checked_task_dispatch(cas, lease, authority)?;
         state.check_prepared_capability(lease, attempt)?;
-        self.task_execution_record(
+        self.task_execution_record_from_state(
             cas,
             lease,
             TaskExecutionRecordV1::Started {
                 attempt_id: attempt.id.clone(),
             },
             now()?,
+            state,
+            None,
         )?;
         Ok(())
     }
@@ -1616,6 +1640,13 @@ impl EventStore {
                 Err(conflict("Conflicting Task settlement"))
             };
         }
+        let domain_callback = matches!(
+            &settlement,
+            TaskExecutionRecordV1::Settled {
+                result: TaskAttemptResultV1::Succeeded { .. },
+                ..
+            }
+        );
         let failure = match &settlement {
             TaskExecutionRecordV1::Settled {
                 result: TaskAttemptResultV1::Succeeded { output_id },
@@ -1653,7 +1684,12 @@ impl EventStore {
                 };
             }
         }
-        self.task_execution_record(cas, lease, settlement, now()?)?;
+        if domain_callback {
+            // Successful output admission (including rejection feedback) can touch evidence.
+            self.task_execution_record(cas, lease, settlement, now()?)?;
+        } else {
+            self.task_execution_record_from_state(cas, lease, settlement, now()?, state, None)?;
+        }
         match failure {
             Some(StoreError::TaskOutputRejected(reason)) => {
                 Ok(TaskSettlement::OutputRejected { reason })

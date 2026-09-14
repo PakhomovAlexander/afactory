@@ -246,7 +246,36 @@ fn review_handoff_retains_original_budget_late_charge_and_exact_reopen_without_a
             }
         );
         f.store = EventStore::open(&f.path).unwrap();
+        REVIEW_REPLAY_LOADS.with(|loads| loads.set(0));
         let next = f.state();
+        assert_eq!(
+            REVIEW_REPLAY_LOADS.with(|loads| loads.get()),
+            1,
+            "cold replay shares one canonical prefix"
+        );
+        let refs = next.artifact_refs.len();
+        let bytes: u64 = next
+            .artifact_refs
+            .iter()
+            .map(|id| f.cas.stored_len(id).unwrap())
+            .sum();
+        let mut durations = Vec::new();
+        for _ in 0..16 {
+            REVIEW_REPLAY_LOADS.with(|loads| loads.set(0));
+            let start = std::time::Instant::now();
+            assert_eq!(f.state().next_sequence, next.next_sequence);
+            durations.push(start.elapsed().as_micros());
+            assert_eq!(
+                REVIEW_REPLAY_LOADS.with(|loads| loads.get()),
+                1,
+                "each warm call must replay its own canonical prefix exactly once"
+            );
+        }
+        durations.sort_unstable();
+        eprintln!(
+            "task-projection: generated={generated} handoffs=1 samples=16 refs={refs} closure_bytes={bytes} campaign_replays=1 p50_us={} p95_us={}",
+            durations[8], durations[15]
+        );
         assert!(!next.admitted);
         assert_eq!(next.revision.limits, f.revision.limits);
         assert_eq!(next.plan_id.as_ref(), Some(&handoff.successor_plan_id));

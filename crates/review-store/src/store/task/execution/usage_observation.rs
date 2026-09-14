@@ -35,23 +35,19 @@ pub(super) fn validate(
 ) -> Result<(), StoreError> {
     let mut seen = false;
     for id in raw_artifact_ids {
-        let bytes = cas
-            .get(id)
-            .map_err(|error| StoreError::Artifact(error.to_string()))?;
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+        let Some(envelope) = cas
+            .get_optional_artifact(id)
+            .map_err(|error| StoreError::Artifact(error.to_string()))?
+        else {
             continue;
         };
-        if value.get("type").and_then(serde_json::Value::as_str) != Some(TASK_USAGE_OBSERVATION_V1)
-        {
+        if envelope.artifact_type != TASK_USAGE_OBSERVATION_V1 {
             continue;
         }
         if seen {
             return Err(conflict("Duplicate Task usage observations in one record"));
         }
         seen = true;
-        let envelope = cas
-            .get_artifact(id)
-            .map_err(|error| StoreError::Artifact(error.to_string()))?;
         let observation: TaskUsageObservationV1 = serde_json::from_value(envelope.payload)?;
         observation.validate().map_err(conflict)?;
         if envelope.producer

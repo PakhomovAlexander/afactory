@@ -179,3 +179,5 @@ Record the options you rejected and why — that is the part future readers need
 - [0099 — Select Task Review generation independently of Provider
   costs](0099-select-task-review-generation-independently-of-provider-costs.md)
 - [0100 — Preserve issue hierarchy and selected-field refresh semantics](0100-preserve-issue-hierarchy-and-selected-field-refresh.md)
+- [0101 — Reuse Review structure with fresh Task
+  boundaries](0101-reuse-review-structure-with-fresh-task-boundaries.md)

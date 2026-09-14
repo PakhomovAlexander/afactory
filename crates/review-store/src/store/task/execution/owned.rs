@@ -754,7 +754,7 @@ impl EventStore {
                 Err(conflict("Conflicting owned publication replay"))
             };
         }
-        self.task_execution_record(
+        self.task_execution_record_from_state(
             cas,
             lease,
             TaskExecutionRecordV1::OwnedChildPublished {
@@ -763,6 +763,8 @@ impl EventStore {
                 attempt_id: attempt_id.into(),
             },
             now()?,
+            fresh,
+            None,
         )?;
         Ok(())
     }
@@ -818,7 +820,7 @@ impl EventStore {
                 "Task or Review changed during owned completion validation",
             ));
         }
-        self.task_execution_record_with_owned_prefix(
+        self.task_execution_record_from_state(
             cas,
             lease,
             TaskExecutionRecordV1::OwnedChildrenCompleted {
@@ -826,7 +828,8 @@ impl EventStore {
                 output_id: output_id.into(),
             },
             now()?,
-            (state.next_sequence, prefix),
+            fresh,
+            prefix,
         )?;
         Ok(())
     }

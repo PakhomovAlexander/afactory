@@ -509,10 +509,13 @@ fn owned_common_attempt_overrun_can_publish_facts_and_seal_without_new_dispatch(
             .publish_task_output(&f.cas, &lease, &result, Some(attempt.id()), &f.authority)
             .is_err()
     );
+    PROJECTION_CALLS.with(|calls| calls.set(0));
     f.store
         .publish_task_owned_child(&f.cas, &lease, &handle, &result, attempt.id(), &f.authority)
         .unwrap();
+    assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 2);
     let parent = parent_out(&f, &handle);
+    PROJECTION_CALLS.with(|calls| calls.set(0));
     f.store
         .complete_task_owned_children(
             &f.cas,
@@ -522,6 +525,7 @@ fn owned_common_attempt_overrun_can_publish_facts_and_seal_without_new_dispatch(
             &OwnedAuthority(&f.authority),
         )
         .unwrap();
+    assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 3);
     let before = f.state().next_sequence;
     assert!(
         f.store
