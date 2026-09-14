@@ -1,7 +1,8 @@
-# Task increment PR review: Fable 5.1/high correctness and architecture;
-# Opus 5/xhigh performance; GPT-5.6-Sol/high bug bounty.
-# Bind correctness=claude-personal, performance=claude-personal, bugs=codex-personal.
-# Owner-authorized specialist policy; one light Round per PR, then fixes and project Gates.
+# Diff review for this repository: a correctness and architecture reviewer (Fable 5.1/high),
+# a performance reviewer (Opus 5/xhigh) and a bug-bounty reviewer (GPT-5.6-Sol/high).
+# Bind the three Workers to admitted Providers at run time, for example
+# `--provider correctness=claude-main --provider performance=claude-main --provider bugs=codex-main`.
+# One light Round per change, then fixes and the project Gates.
 
 version = 2
 check_timeout_seconds = 3600

@@ -73,7 +73,6 @@ Completing a Review Task means producing its required review evidence. The separ
 conclusion still governs whether the reviewed change passes. `af task run` retains these
 Review exit codes on replay, and inspection includes the typed Round receipts.
 
-This is the command-Worker Review Task checkpoint. Historical Campaign commands still use
-their captured format and readers. The full legacy entry-point cutover, current-Snapshot repair
-operators, embedded implementation acceptance and live Provider boundary probes are unfinished
-parts of the accepted increment; this checkpoint does not close P06 or release the product.
+Historical Campaign commands still use their captured format and readers; see
+[Review compatibility](review-compatibility.md) for the shared runtime boundary and
+[bounded repair](bounded-repair.md) for current-Snapshot repair operators.

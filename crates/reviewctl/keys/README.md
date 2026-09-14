@@ -6,7 +6,7 @@ release from 0.8.0 on. The matching secret key never enters this repository: it 
 the `MINISIGN_SECRET_KEY` Actions secret, and the release workflow refuses to publish a build
 that embeds no key or a release it cannot sign.
 
-Create the pair once, on the owner's machine:
+Create the pair once, on the maintainer's machine:
 
 ```sh
 minisign -G -W -p release.pub -s release.key         # -W: no password, the secret store guards it

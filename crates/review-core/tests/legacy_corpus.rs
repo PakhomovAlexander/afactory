@@ -4,7 +4,7 @@
 //!
 //! `fixtures/legacy/` holds frozen bundles of real reviewer output. If `FindingReport@1`
 //! cannot express them unchanged, the schema is wrong, not the payloads. That corpus is
-//! private review data and ships only in the hub that captured it, so those tests are
+//! private review data and ships only in the project that captured it, so those tests are
 //! `#[ignore]`d: cargo prints `ignored` in its default output, where a runtime skip would
 //! print `ok` and hide the reason. `make review-kernel-test-corpus` runs them, and there a
 //! missing corpus fails.

@@ -2,7 +2,7 @@
 
 The command-only project in `fixtures/task-runtime/embedded-review` uses one Task, one budget
 and the same `fixture/review` package for standalone and embedded Review. Copy it into an empty
-repository and commit the files before running the unreleased Task-file CLI.
+repository and commit the files before running the Task-file CLI.
 
 ```text
 ticket.json: "Implement this Jira ticket: offset/limit pagination"

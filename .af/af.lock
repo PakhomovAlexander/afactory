@@ -36,8 +36,8 @@ digest = "sha256:93e750b071481afd9094a82ea86211143fe556b1aea44b7a227f46b9e25f245
 
 [pipelines.review]
 version = "1.0.0"
-digest = "sha256:ef59d6f33eb41909d647540847f4663f2638004fb10170ca1a9f91c7041d7a5f"
+digest = "sha256:ab2319a62211afb38af4ddc05b907fe9f481119e6fd9a5ba1fed5ab2e2594c1c"
 
 [pipelines.review-pr2-whole-tree]
 version = "1.0.0"
-digest = "sha256:89529a8cdb0d3b3cca190ff93ab7a74c668d6a43a3c6ab9d0525432bae144298"
+digest = "sha256:dbc4ab93a505ed0fca00756b7096d6a63cf4798a27897ef643b57e70d75dd704"

@@ -59,4 +59,4 @@ loosening being accepted here, and it is recorded rather than quietly done.
   no automated check can verify. This widens the gap between declared and verified isolation, and
   it does so alongside [ADR-0004's](0004-reviewers-author-verified-patch-proposals.md) decision to
   have reviewers author patches. The combined risk delta is recorded in
-  [`../backlog.md`](../backlog.md) under M6; the containment probes stay open and labelled open.
+  [`../non-goals.md`](../non-goals.md); the containment probes stay open and labelled open.

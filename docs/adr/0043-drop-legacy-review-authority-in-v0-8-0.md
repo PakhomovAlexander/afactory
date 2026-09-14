@@ -22,7 +22,7 @@ and deletes `.review/`. Implementation is tracked in [#52](https://github.com/Pa
 ## Considered options
 
 - **Keep both layouts indefinitely.** Rejected: two authority code paths, two lock shapes, and a
-  dual-layout smell the product audit flagged; the owner sees no value in carrying it.
+  dual-layout smell the product audit flagged; there is no value in carrying it.
 - **Drop the layout without a move command.** Rejected: consumers would hand-migrate digests and
   lock entries, exactly the class of error onboarding exists to remove.
 - **Deprecate by date.** Rejected: releases are the unit consumers pin; a date means nothing to a

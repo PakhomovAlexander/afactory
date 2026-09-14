@@ -100,8 +100,5 @@ result does not promote its status. It never overwrites a file.
 
 The real CLI tests cover successful capture, planning, execution, Markdown output and exact replay
 after live source/catalog edits. Failure cases cover missing sections, unsafe links, stale Document
-IDs, negative evaluation and a missing verifier. The full starter pack and
-[Jira/local issue revision adapter](issues.md) are also implemented and tested. These flows are
-included in the 1,129-test checkpoint and green Linux CI recorded in the
-[increment status](../task-execution.md). Live semantic calibration and release evidence remain
-separate requirements; the credential-free starter makes no live-model authoring claim.
+IDs, negative evaluation and a missing verifier. See the [starter walkthrough](starters.md) and the [issue adapter](issues.md). The
+credential-free starter makes no live-model authoring claim.

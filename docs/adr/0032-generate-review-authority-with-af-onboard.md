@@ -2,7 +2,7 @@
 
 **Status:** accepted (2026-08-27)
 
-Private release `v0.3.0` can execute and validate digest-pinned `.af/` review authority, but a new
+Release `v0.3.0` can execute and validate digest-pinned `.af/` review authority, but a new
 consuming repository still needs a maintainer to construct the pipeline, Worker packages, and
 lockfile out of band. Agents therefore cannot discover the supported setup from the binary and
 are tempted to paste prompts, hand-type digests, trust candidate-owned policy, or weaken a Gate
