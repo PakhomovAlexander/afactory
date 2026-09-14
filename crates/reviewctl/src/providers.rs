@@ -27,6 +27,7 @@ use review_core::{
 use review_pipeline::RoundAuthority;
 use review_store::{Cas, EventStore, NewEvent};
 use sha2::{Digest, Sha256};
+use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 #[cfg(unix)]
 use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
@@ -240,7 +241,11 @@ pub fn print_status() {
         "{:<24} {:<8} {:<19} {:<18} SUBSCRIPTION",
         "ID", "KIND", "STATUS", "AUTH"
     );
+    let mut ambient = BTreeSet::new();
     for provider in inventory.providers {
+        if matches!(provider.id.as_str(), "claude-ambient" | "codex-ambient") {
+            ambient.insert(provider.kind.clone());
+        }
         println!(
             "{:<24} {:<8} {:<19} {:<18} {}",
             provider.id, provider.kind, provider.status, provider.auth_type, provider.subscription
@@ -252,6 +257,206 @@ pub fn print_status() {
             println!("  note   {}", provider.detail);
         }
     }
+    if !ambient.is_empty() {
+        println!();
+        println!("Ambient IDs are discovered only and cannot be selected by --provider.");
+        for kind in ambient {
+            println!("  register {kind}: af provider add {kind}-main --kind {kind}");
+        }
+    }
+}
+
+/// Add one explicit Provider without requiring the user to learn the registry's TOML shape.
+/// Existing entries and auth contexts are immutable through this absent-only command.
+pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String> {
+    safe_id(id)?;
+    if matches!(id, "claude-ambient" | "codex-ambient") {
+        return Err(format!(
+            "provider id `{id}` is reserved for ambient discovery"
+        ));
+    }
+    let kind = ProviderKind::parse(kind)?;
+    let auth_dir = match auth_dir {
+        Some(path) => path.to_path_buf(),
+        None => default_auth_dir(kind)?,
+    };
+    if !auth_dir.is_absolute()
+        || auth_dir
+            .components()
+            .any(|component| component == Component::ParentDir)
+    {
+        return Err("--auth-dir must be an absolute path without `..`".into());
+    }
+    let auth_dir = fs::canonicalize(&auth_dir).map_err(|error| {
+        format!(
+            "auth directory {} cannot be resolved: {error}",
+            auth_dir.display()
+        )
+    })?;
+    if !auth_dir.is_dir() {
+        return Err(format!(
+            "auth directory {} is not a directory",
+            auth_dir.display()
+        ));
+    }
+    let path = registry_path()?.ok_or("no provider registry path is available")?;
+    add_to_registry(&path, id, kind, &auth_dir)?;
+    println!(
+        "provider {id} registered in {} ({}, {})",
+        path.display(),
+        kind.name(),
+        auth_dir.display()
+    );
+    println!("next: af provider status");
+    Ok(())
+}
+
+fn default_auth_dir(kind: ProviderKind) -> Result<PathBuf, String> {
+    let variable = match kind {
+        ProviderKind::Claude => "CLAUDE_CONFIG_DIR",
+        ProviderKind::Codex => "CODEX_HOME",
+    };
+    if let Some(value) = std::env::var_os(variable)
+        && !value.is_empty()
+    {
+        let path = PathBuf::from(value);
+        if !path.is_absolute() {
+            return Err(format!("{variable} must be absolute"));
+        }
+        return Ok(path);
+    }
+    let home = std::env::var_os("HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or("HOME is not set; pass --auth-dir")?;
+    if !home.is_absolute() {
+        return Err("HOME must be absolute; pass --auth-dir".into());
+    }
+    Ok(home.join(match kind {
+        ProviderKind::Claude => ".claude",
+        ProviderKind::Codex => ".codex",
+    }))
+}
+
+fn add_to_registry(
+    path: &Path,
+    id: &str,
+    kind: ProviderKind,
+    auth_dir: &Path,
+) -> Result<(), String> {
+    let existing = match fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_file() {
+                return Err(format!(
+                    "provider registry {} must be a regular file, not a symlink",
+                    path.display()
+                ));
+            }
+            Some(
+                read_registry(path)?
+                    .ok_or_else(|| format!("provider registry {} disappeared", path.display()))?,
+            )
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect provider registry {}: {error}",
+                path.display()
+            ));
+        }
+    };
+    let mut document = match existing.as_deref() {
+        Some(text) => {
+            let specs = parse_registry(text, path)?;
+            if specs.iter().any(|spec| spec.id == id) {
+                return Err(format!("provider `{id}` already exists"));
+            }
+            if let Some(duplicate) = specs
+                .iter()
+                .find(|spec| spec.kind == kind && spec.auth_dir.as_deref() == Some(auth_dir))
+            {
+                return Err(format!(
+                    "{} auth context {} duplicates provider `{}`",
+                    kind.name(),
+                    auth_dir.display(),
+                    duplicate.id
+                ));
+            }
+            text.parse::<DocumentMut>()
+                .map_err(|error| format!("provider registry {}: {error}", path.display()))?
+        }
+        None => {
+            let mut document = DocumentMut::new();
+            document["version"] = value(1);
+            document
+        }
+    };
+    if document.get("providers").is_none() {
+        document["providers"] = Item::ArrayOfTables(ArrayOfTables::new());
+    }
+    let providers = document["providers"]
+        .as_array_of_tables_mut()
+        .ok_or_else(|| {
+            format!(
+                "provider registry {} `providers` must be an array of tables",
+                path.display()
+            )
+        })?;
+    let mut provider = Table::new();
+    provider["id"] = value(id);
+    provider["kind"] = value(kind.name());
+    provider["auth_dir"] = value(auth_dir.to_str().ok_or_else(|| {
+        format!(
+            "auth directory {} is not valid UTF-8 and cannot be stored in TOML",
+            auth_dir.display()
+        )
+    })?);
+    providers.push(provider);
+    let bytes = document.to_string();
+    if bytes.len() as u64 > MAX_REGISTRY_BYTES {
+        return Err(format!(
+            "provider registry {} would exceed {MAX_REGISTRY_BYTES} bytes",
+            path.display()
+        ));
+    }
+    write_registry(path, bytes.as_bytes())
+}
+
+fn write_registry(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
+    fs::create_dir_all(parent).map_err(|error| {
+        format!(
+            "creating provider registry directory {}: {error}",
+            parent.display()
+        )
+    })?;
+    let permissions = fs::metadata(path)
+        .ok()
+        .map(|metadata| metadata.permissions());
+    let mut temporary = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("creating provider registry temporary file: {error}"))?;
+    #[cfg(unix)]
+    temporary
+        .as_file()
+        .set_permissions(permissions.unwrap_or_else(|| fs::Permissions::from_mode(0o600)))
+        .map_err(|error| format!("setting provider registry permissions: {error}"))?;
+    #[cfg(not(unix))]
+    if let Some(permissions) = permissions {
+        temporary
+            .as_file()
+            .set_permissions(permissions)
+            .map_err(|error| format!("setting provider registry permissions: {error}"))?;
+    }
+    temporary
+        .write_all(bytes)
+        .and_then(|()| temporary.as_file().sync_all())
+        .map_err(|error| format!("writing provider registry: {error}"))?;
+    temporary
+        .persist(path)
+        .map_err(|error| format!("replacing provider registry atomically: {}", error.error))?;
+    Ok(())
 }
 
 pub fn format_limit(limit: &ProviderLimit) -> String {

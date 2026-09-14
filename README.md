@@ -42,16 +42,22 @@ cargo install --path crates/reviewctl --locked
 ## Quickstart
 
 ```sh
-af onboard --apply                 # create .af/ (pipeline, lock, Worker packages) in a Git repository
-af provider status                 # which Claude / Codex logins the machine can dispatch to
+af onboard                          # preview .af/ and the exact apply command; spends no tokens
+af onboard --runner codex --gate 'check=make check' --apply  # use the real Gate for this repository
+af provider add codex-main --kind codex  # name the active Codex CLI login for explicit binding
+af provider status                 # verify registered and ambient Claude / Codex contexts
 af review plan --policy-rev origin/main --base origin/main --uncommitted \
-  --provider correctness=codex-main
+  --provider correctness=codex-main --provider architecture=codex-main
 af review run --campaign pr-123 --policy-rev origin/main --base origin/main --uncommitted \
-  --provider correctness=codex-main --json
+  --provider correctness=codex-main --provider architecture=codex-main --json
 ```
 
 `af onboard` previews a deterministic authority bundle and writes nothing without `--apply`; it
-never executes a Gate or a model, reads a credential, or overwrites existing policy. `af review
+never executes a Gate or a model, reads a credential, or overwrites existing policy. Its preview
+prints a copyable apply command carrying the exact detected or explicit Gate; replace `make check`
+above when the repository uses another deterministic acceptance command. `af provider add` writes
+only an ID, Provider kind, and auth-directory path to the machine-local registry; ambient IDs shown
+by `status` are discovery labels and cannot be selected directly. `af review
 plan` resolves policy, Base, candidate, the exact Change Set, the selected route, Gates, budgets,
 and required Provider bindings without Campaign state, external calls, or tokens — the route line
 reads like `route    route => .af/pipelines/docs.toml (docs); 3 changed path(s)`. `af review run`
@@ -98,7 +104,8 @@ af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directori
 
 - Git, and a Rust toolchain at or above 1.88 for source builds (`rust-toolchain.toml` pins it).
 - The `claude` and/or `codex` CLIs, logged in, for model Workers. `af provider status` shows
-  what each login can do without reading credentials; command Workers need neither.
+  what each login can do without reading credentials; `af provider add` gives an active CLI login
+  the stable machine-local ID required by explicit Worker bindings. Command Workers need neither.
 - Optional: an OCI container runtime (Docker or compatible) for `provider = "container"` Gates.
   Detection runs the runtime's own `info`; an unusable runtime is refused, never silently downgraded.
 - Optional: `minisign`, for verifying release signatures at install time.

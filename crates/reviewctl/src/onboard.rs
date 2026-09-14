@@ -672,6 +672,7 @@ fn build_bundle(repo: &Path, profile: RunnerProfile, gates: Vec<Gate>) -> Result
     let reviewers = reviewer_summaries(profile);
     let mut warnings = warnings;
     warnings.extend(pin_warnings);
+    let apply_command = apply_command(repo, profile, &gates);
     let report = Report {
         status: "preview".to_string(),
         profile: PROFILE.to_string(),
@@ -690,11 +691,7 @@ fn build_bundle(repo: &Path, profile: RunnerProfile, gates: Vec<Gate>) -> Result
         lock_af_version: af_pin.as_ref().map(|pin| pin.version.clone()),
         lock_af_targets: pin_targets(af_pin.as_ref()),
         next_steps: vec![
-            format!(
-                "Review this plan, then run `af onboard --repo {} --runner {} --apply`.",
-                shell_words::quote(&repo.to_string_lossy()),
-                profile.name()
-            ),
+            format!("Review this plan, then run `{apply_command}`."),
             "Review and commit the generated `.af/` diff on the trusted base branch.".into(),
             "Run `af onboard` again to validate authority and print the operating workflow.".into(),
         ],
@@ -704,6 +701,21 @@ fn build_bundle(repo: &Path, profile: RunnerProfile, gates: Vec<Gate>) -> Result
         worker_files,
         report,
     })
+}
+
+fn apply_command(repo: &Path, profile: RunnerProfile, gates: &[Gate]) -> String {
+    let mut command = format!(
+        "af onboard --repo {} --runner {}",
+        shell_words::quote(&repo.to_string_lossy()),
+        profile.name()
+    );
+    for gate in gates {
+        let literal = format!("{}={}", gate.name, gate.command_line());
+        command.push_str(" --gate ");
+        command.push_str(&shell_words::quote(&literal));
+    }
+    command.push_str(" --apply");
+    command
 }
 
 fn build_definition(gates: &[Gate]) -> Definition {

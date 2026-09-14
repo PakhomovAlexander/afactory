@@ -55,6 +55,45 @@ fn preview_detects_gate_and_writes_nothing() {
         "{warnings:?}"
     );
     assert!(!repo.join(".af").exists());
+
+    let apply = report["next_steps"][0].as_str().unwrap();
+    assert!(
+        apply.contains("--gate 'check=make check' --apply"),
+        "the printed command must preserve the exact discovered Gate: {apply}"
+    );
+}
+
+#[test]
+fn preview_preserves_explicit_gate_quoting_in_the_printed_apply_command() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo(root.path());
+
+    let output = af(
+        &repo,
+        &[
+            "--runner",
+            "codex",
+            "--gate",
+            "lint=sh -c 'echo ready'",
+            "--json",
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let apply = report["next_steps"][0].as_str().unwrap();
+    assert!(apply.contains("--runner codex"), "{apply}");
+    let command = apply.split('`').nth(1).unwrap();
+    let words = shell_words::split(command).unwrap();
+    let gate = words
+        .windows(2)
+        .find(|pair| pair[0] == "--gate")
+        .map(|pair| pair[1].as_str());
+    assert_eq!(
+        gate,
+        Some("lint=sh -c 'echo ready'"),
+        "the printed command must be shell-copyable and semantically exact: {apply}"
+    );
+    assert_eq!(words.last().map(String::as_str), Some("--apply"));
 }
 
 #[test]
