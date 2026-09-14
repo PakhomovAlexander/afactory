@@ -583,7 +583,7 @@ mod tests {
         static WIDE: OnceLock<jsonschema::Validator> = OnceLock::new();
         (if wide { &WIDE } else { &VALIDATOR }).get_or_init(|| {
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas");
-            let mut options = jsonschema::options();
+            let mut registry = jsonschema::Registry::new();
             for name in [
                 "task-contracts-v1.json",
                 "task-phase-v1.json",
@@ -594,10 +594,10 @@ mod tests {
             ] {
                 let value: Value =
                     serde_json::from_slice(&std::fs::read(dir.join(name)).unwrap()).unwrap();
-                options.with_resource(
-                    value["$id"].as_str().unwrap().to_owned(),
-                    jsonschema::Resource::from_contents(value).unwrap(),
-                );
+                let id = value["$id"].as_str().unwrap().to_owned();
+                registry = registry
+                    .add(id, jsonschema::Resource::from_contents(value))
+                    .unwrap();
             }
             let schema: Value = serde_json::from_slice(
                 &std::fs::read(dir.join(if wide {
@@ -608,7 +608,13 @@ mod tests {
                 .unwrap(),
             )
             .unwrap();
-            options.build(&schema).unwrap()
+            {
+                let registry = registry.prepare().unwrap();
+                jsonschema::options()
+                    .with_registry(&registry)
+                    .build(&schema)
+                    .unwrap()
+            }
         })
     }
     fn valid(value: &Value) {
