@@ -4,6 +4,21 @@ use review_core::task::execution::TaskExecutionRecordV1;
 #[test]
 fn reservation_requires_exact_context_before_start_and_refuses_rebinding() {
     let mut f = Fixture::new(false).with_execution_graph();
+    // The reservation must still be dispatchable after the store is reopened below; a loaded
+    // runner can spend more than the fixture's one-second attempt allowance on that.
+    f.revision.limits.verification.wall_ms = 60_000;
+    f.revision_id = put(&f.cas, task::TASK_REVISION_V1, &f.revision);
+    f.plan.task_revision_id = f.revision_id.clone();
+    f.plan.limits = f.revision.limits.clone();
+    let mut graph: review_graph::task::CompiledTask =
+        payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
+    graph
+        .allowances
+        .get_mut("root.nodes.write")
+        .unwrap()
+        .wall_ms_per_attempt = 60_000;
+    f.plan.compiled_graph_id = put(&f.cas, "af/CompiledTask@1", &graph);
+    f.plan_id = put(&f.cas, task::EXECUTION_PLAN_V1, &f.plan);
     let lease = f.open();
     f.propose(&lease);
     f.store
@@ -378,4 +393,16 @@ fn inflight_usage_survives_reopen_revocation_lower_settlement_and_writer_loss() 
             attempt_id, charged_tokens, ..
         }] if attempt_id == attempt.id() && *charged_tokens == if recover { 20 } else { 7 }));
     }
+}
+
+fn put<T: serde::Serialize>(cas: &Cas, kind: &str, value: &T) -> String {
+    cas.put_artifact(
+        kind,
+        producer(),
+        vec![],
+        None,
+        serde_json::to_value(value).unwrap(),
+    )
+    .unwrap()
+    .0
 }

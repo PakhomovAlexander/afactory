@@ -1201,8 +1201,7 @@ fn probe_codex_request_before(
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
     command.process_group(0);
-    let mut child = command
-        .spawn()
+    let mut child = review_process::spawn(&mut command)
         .map_err(|error| format!("cannot start Codex app-server probe: {error}"))?;
     let mut stdin = child.stdin.take().expect("provider stdin was piped");
     let mut stdout = child.stdout.take().expect("provider stdout was piped");
@@ -2071,8 +2070,7 @@ fn run_smoke(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .process_group(0);
-    let mut child = command
-        .spawn()
+    let mut child = review_process::spawn(&mut command)
         .map_err(|error| format!("cannot start provider smoke: {error}"))?;
     if let Some(mut stdin) = child.stdin.take() {
         if let Err(error) = stdin.write_all(b"Reply with exactly: OK\n") {
@@ -2464,8 +2462,7 @@ fn run_probe_before(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     command.process_group(0);
-    let mut child = command
-        .spawn()
+    let mut child = review_process::spawn(&mut command)
         .map_err(|error| format!("cannot start provider status probe: {error}"))?;
     let mut stdout = child.stdout.take().expect("provider stdout was piped");
     let mut stderr = child.stderr.take().expect("provider stderr was piped");
