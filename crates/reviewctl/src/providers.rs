@@ -310,14 +310,18 @@ pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String> 
 
 /// Own the complete first-run Provider flow while leaving credentials with the harness CLI.
 ///
-/// The registry is inspected before opening an external login so invalid or conflicting local
-/// configuration never causes an unnecessary account interaction. Publication is still rechecked
-/// under the registry lock after login, because another setup may have completed concurrently.
+/// The complete status/login/publication flow is serialized on the registry lock. The waiter
+/// rechecks authentication after acquiring the lock, so concurrent first-time setup never drives
+/// one Provider auth context from two interactive processes.
 pub fn setup(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String> {
     validate_explicit_id(id)?;
     let kind = ProviderKind::parse(kind)?;
     let path = registry_path()?.ok_or("no provider registry path is available")?;
     let auth_dir = resolve_auth_dir(kind, auth_dir, true)?;
+    // Serialize the complete check/login/publish operation. Two first-time setup processes must
+    // never drive the same Provider CLI against one auth context concurrently. Authentication is
+    // rechecked only after acquiring the lock, so a waiter observes the first process's login.
+    let _lock = registry_lock(&path)?;
     let already_registered = inspect_registration(&path, id, kind, &auth_dir)?;
     let spec = ProviderSpec {
         id: id.to_string(),
@@ -349,7 +353,7 @@ pub fn setup(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String
         return Ok(());
     }
 
-    match setup_registry(&path, id, kind, &auth_dir)? {
+    match add_to_registry_locked(&path, id, kind, &auth_dir, true)? {
         RegistryAdd::Added(preserved) => {
             println!(
                 "provider {id} authenticated and registered in {} ({}, {})",
@@ -684,15 +688,6 @@ enum RegistryAdd {
     AlreadyPresent,
 }
 
-fn setup_registry(
-    path: &Path,
-    id: &str,
-    kind: ProviderKind,
-    auth_dir: &Path,
-) -> Result<RegistryAdd, String> {
-    add_to_registry_inner(path, id, kind, auth_dir, true)
-}
-
 fn add_to_registry_inner(
     path: &Path,
     id: &str,
@@ -701,6 +696,16 @@ fn add_to_registry_inner(
     exact_is_success: bool,
 ) -> Result<RegistryAdd, String> {
     let _lock = registry_lock(path)?;
+    add_to_registry_locked(path, id, kind, auth_dir, exact_is_success)
+}
+
+fn add_to_registry_locked(
+    path: &Path,
+    id: &str,
+    kind: ProviderKind,
+    auth_dir: &Path,
+    exact_is_success: bool,
+) -> Result<RegistryAdd, String> {
     // A prior first-file publication may have crashed after creating its marker but before the
     // registry appeared. Never treat that recovery state as an empty registry.
     ensure_no_registry_transaction(path)?;
@@ -901,7 +906,11 @@ fn write_registry(
         }
         Some(expected) => Some(replace_registry_if_unchanged(path, temporary, expected)?),
     };
-    sync_directory(parent)?;
+    if let Err(error) = sync_directory(parent) {
+        eprintln!(
+            "warning: provider registry committed, but durability could not be confirmed: {error}"
+        );
+    }
     Ok(preserved)
 }
 

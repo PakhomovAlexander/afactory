@@ -315,7 +315,17 @@ fn concurrent_identical_setup_is_idempotent() {
         "codex",
         r#"#!/bin/sh
 if [ "$1" = login ] && [ "$2" = status ]; then
-  printf '%s\n' 'Logged in using ChatGPT' >&2
+  if [ -f "$CODEX_HOME/logged-in" ]; then
+    printf '%s\n' 'Logged in using ChatGPT' >&2
+    exit 0
+  fi
+  printf '%s\n' 'Not logged in' >&2
+  exit 1
+fi
+if [ "$1" = login ]; then
+  printf '%s\n' login >> "$CODEX_HOME/login-log"
+  sleep 1
+  : > "$CODEX_HOME/logged-in"
   exit 0
 fi
 exit 64
@@ -358,6 +368,11 @@ exit 64
         registry.matches("id = \"codex-main\"").count(),
         1,
         "{registry}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(auth.join("login-log")).unwrap(),
+        "login\n",
+        "concurrent first-time setup must run one interactive login"
     );
 }
 
