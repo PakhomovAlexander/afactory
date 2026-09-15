@@ -847,9 +847,14 @@ fn onboard_af_from_argv(argv: &[String]) -> Option<String> {
 
 fn exempt_from_dispatch(argv: &[String]) -> bool {
     let first = argv.get(1).map(String::as_str);
+    // Bootstrap is machine-local, not project authority. Dispatching it through an older project
+    // pin would make the newly installed command disappear precisely where users need it.
     matches!(
         first,
         None | Some("self" | "help" | "completions" | "config")
+    ) || matches!(
+        (first, argv.get(2).map(String::as_str)),
+        (Some("provider"), Some("setup" | "recover"))
     ) || argv
         .iter()
         .skip(1)
@@ -1720,6 +1725,15 @@ mod tests {
         assert!(exempt_from_dispatch(&argv(&[
             "af", "review", "plan", "--help"
         ])));
+        assert!(exempt_from_dispatch(&argv(&[
+            "af",
+            "provider",
+            "setup",
+            "codex-main",
+            "--kind",
+            "codex"
+        ])));
+        assert!(exempt_from_dispatch(&argv(&["af", "provider", "recover"])));
         assert!(!exempt_from_dispatch(&argv(&["af", "review", "plan"])));
         assert_eq!(
             repo_from_argv(&argv(&["af", "review", "plan", "--repo", "/x"])),

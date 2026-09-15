@@ -187,3 +187,5 @@ Record the options you rejected and why — that is the part future readers need
   replies](0103-constrain-native-claude-task-replies.md)
 - [0104 — Preview captured Task plans before first
   execution](0104-preview-captured-task-plans-before-first-execution.md)
+- [0105 — Keep Provider bootstrap machine-local and cross-release
+  safe](0105-keep-provider-bootstrap-machine-local-and-cross-release-safe.md)

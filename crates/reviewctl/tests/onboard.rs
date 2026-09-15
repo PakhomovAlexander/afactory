@@ -55,6 +55,162 @@ fn preview_detects_gate_and_writes_nothing() {
         "{warnings:?}"
     );
     assert!(!repo.join(".af").exists());
+
+    let apply = report["next_steps"][0].as_str().unwrap();
+    let command = apply.split('`').nth(1).unwrap();
+    let words = shell_words::split(command).unwrap();
+    assert!(
+        words
+            .windows(2)
+            .any(|pair| pair == ["--gate", "check=make check"])
+    );
+    assert!(
+        words
+            .windows(2)
+            .any(|pair| pair == ["--af", env!("CARGO_PKG_VERSION")]),
+        "the printed command must preserve the executing release: {apply}"
+    );
+    assert_eq!(words.last().map(String::as_str), Some("--apply"));
+}
+
+#[test]
+fn preview_preserves_explicit_gate_quoting_in_the_printed_apply_command() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo(root.path());
+
+    let output = af(
+        &repo,
+        &[
+            "--runner",
+            "codex",
+            "--gate",
+            "lint=sh -c 'echo ready'",
+            "--json",
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let apply = report["next_steps"][0].as_str().unwrap();
+    assert!(apply.contains("--runner codex"), "{apply}");
+    let command = apply.split('`').nth(1).unwrap();
+    let words = shell_words::split(command).unwrap();
+    let gate = words
+        .windows(2)
+        .find(|pair| pair[0] == "--gate")
+        .map(|pair| pair[1].as_str());
+    assert_eq!(
+        gate,
+        Some("lint=sh -c 'echo ready'"),
+        "the printed command must be shell-copyable and semantically exact: {apply}"
+    );
+    assert_eq!(words.last().map(String::as_str), Some("--apply"));
+}
+
+#[test]
+fn preview_preserves_the_explicit_af_release_in_the_printed_apply_command() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo(root.path());
+
+    let output = af(
+        &repo,
+        &[
+            "--gate",
+            "check=true",
+            "--af",
+            env!("CARGO_PKG_VERSION"),
+            "--json",
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let apply = report["next_steps"][0].as_str().unwrap();
+    let command = apply.split('`').nth(1).unwrap();
+    let words = shell_words::split(command).unwrap();
+    assert!(
+        words
+            .windows(2)
+            .any(|pair| pair == ["--af", env!("CARGO_PKG_VERSION")]),
+        "the copied apply must run under the release that produced the preview: {apply}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn preview_rejects_a_repository_path_that_cannot_be_copied_as_utf8() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = root
+        .path()
+        .join(std::ffi::OsString::from_vec(b"repo-\xff".to_vec()));
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .arg("onboard")
+        .arg("--repo")
+        .arg(&repo)
+        .args(["--gate", "check=true", "--json"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("not valid UTF-8"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!repo.join(".af").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_authority_can_be_validated_under_a_non_utf8_repository_path() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let source = repo(root.path());
+    std::fs::write(source.join("Makefile"), "check:\n\t@true\n").unwrap();
+    let created = af(&source, &["--apply", "--json"]);
+    assert!(created.status.success(), "{}", stderr(&created));
+    let target = root
+        .path()
+        .join(std::ffi::OsString::from_vec(b"repo-\xff".to_vec()));
+    std::fs::rename(&source, &target).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .arg("onboard")
+        .args(["--repo", "."])
+        .arg("--json")
+        .current_dir(&target)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["status"], "onboarded");
+}
+
+#[cfg(unix)]
+#[test]
+fn preview_rejects_a_non_utf8_canonical_repository_reached_as_dot() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = root
+        .path()
+        .join(std::ffi::OsString::from_vec(b"repo-\xff".to_vec()));
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .args(["onboard", "--repo", ".", "--gate", "check=true", "--json"])
+        .current_dir(&repo)
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("not valid UTF-8"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!repo.join(".af").exists());
 }
 
 #[test]

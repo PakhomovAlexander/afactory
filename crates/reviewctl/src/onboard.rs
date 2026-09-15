@@ -423,7 +423,7 @@ fn execute(options: &Options) -> Result<Report, String> {
                         .to_string(),
                 );
             }
-            let mut bundle = build_bundle(&repo, options.profile, gates)?;
+            let mut bundle = build_bundle(&repo, options.profile, gates, options.af.as_deref())?;
             validate_bundle(&bundle)?;
             if options.apply {
                 apply_bundle(&repo, &bundle)?;
@@ -608,7 +608,12 @@ fn read_bounded_text(path: &Path) -> Result<String, String> {
     std::fs::read_to_string(path).map_err(|error| format!("reading {}: {error}", path.display()))
 }
 
-fn build_bundle(repo: &Path, profile: RunnerProfile, gates: Vec<Gate>) -> Result<Bundle, String> {
+fn build_bundle(
+    repo: &Path,
+    profile: RunnerProfile,
+    gates: Vec<Gate>,
+    af: Option<&str>,
+) -> Result<Bundle, String> {
     let project_name = repo
         .file_name()
         .and_then(|name| name.to_str())
@@ -672,6 +677,12 @@ fn build_bundle(repo: &Path, profile: RunnerProfile, gates: Vec<Gate>) -> Result
     let reviewers = reviewer_summaries(profile);
     let mut warnings = warnings;
     warnings.extend(pin_warnings);
+    let apply_command = apply_command(
+        repo,
+        profile,
+        &gates,
+        af.unwrap_or(env!("CARGO_PKG_VERSION")),
+    )?;
     let report = Report {
         status: "preview".to_string(),
         profile: PROFILE.to_string(),
@@ -690,11 +701,7 @@ fn build_bundle(repo: &Path, profile: RunnerProfile, gates: Vec<Gate>) -> Result
         lock_af_version: af_pin.as_ref().map(|pin| pin.version.clone()),
         lock_af_targets: pin_targets(af_pin.as_ref()),
         next_steps: vec![
-            format!(
-                "Review this plan, then run `af onboard --repo {} --runner {} --apply`.",
-                shell_words::quote(&repo.to_string_lossy()),
-                profile.name()
-            ),
+            format!("Review this plan, then run `{apply_command}`."),
             "Review and commit the generated `.af/` diff on the trusted base branch.".into(),
             "Run `af onboard` again to validate authority and print the operating workflow.".into(),
         ],
@@ -704,6 +711,34 @@ fn build_bundle(repo: &Path, profile: RunnerProfile, gates: Vec<Gate>) -> Result
         worker_files,
         report,
     })
+}
+
+fn apply_command(
+    repo: &Path,
+    profile: RunnerProfile,
+    gates: &[Gate],
+    af: &str,
+) -> Result<String, String> {
+    let repo = repo.to_str().ok_or_else(|| {
+        format!(
+            "repository path {} is not valid UTF-8 and cannot be represented in a copyable shell command",
+            repo.display()
+        )
+    })?;
+    let mut command = format!(
+        "af onboard --repo {} --runner {}",
+        shell_words::quote(repo),
+        profile.name()
+    );
+    for gate in gates {
+        let literal = format!("{}={}", gate.name, gate.command_line());
+        command.push_str(" --gate ");
+        command.push_str(&shell_words::quote(&literal));
+    }
+    command.push_str(" --af ");
+    command.push_str(&shell_words::quote(af));
+    command.push_str(" --apply");
+    Ok(command)
 }
 
 fn build_definition(gates: &[Gate]) -> Definition {
@@ -1687,7 +1722,7 @@ fn migrate_legacy(
                 .into(),
         );
     }
-    let mut bundle = plan_migration(repo, legacy)?;
+    let mut bundle = plan_migration(repo, legacy, options.af.as_deref())?;
     validate_migration(&bundle)?;
     if options.migrate && options.apply {
         apply_bundle(repo, &bundle)?;
@@ -1804,7 +1839,11 @@ fn migrated_project_file(project_name: &str, pipeline: &str, workers: &BTreeSet<
     .expect("the migrated project file serializes")
 }
 
-fn plan_migration(repo: &Path, legacy: &LegacyAuthority) -> Result<Bundle, String> {
+fn plan_migration(
+    repo: &Path,
+    legacy: &LegacyAuthority,
+    af: Option<&str>,
+) -> Result<Bundle, String> {
     let legacy_lock = Lockfile::from_toml(&read_authority_text(&legacy.root.join("review.lock"))?)
         .map_err(|error| error.to_string())?;
     let registry = Registry::new([legacy.root.join("reviewers")]);
@@ -1986,7 +2025,22 @@ fn plan_migration(repo: &Path, legacy: &LegacyAuthority) -> Result<Bundle, Strin
         .unwrap_or((None, None));
     let mut warnings = validate_budget_arithmetic(&default.definition)?;
     warnings.extend(pin_warnings);
-    let repository = repo.display().to_string();
+    let repository = repo
+        .to_str()
+        .ok_or_else(|| {
+            format!(
+                "repository path {} is not valid UTF-8 and cannot be represented in copyable onboarding commands",
+                repo.display()
+            )
+        })?
+        .to_string();
+    let mut migrate_command = format!(
+        "af onboard --repo {} --migrate",
+        shell_words::quote(&repository)
+    );
+    migrate_command.push_str(" --af ");
+    migrate_command.push_str(&shell_words::quote(af.unwrap_or(env!("CARGO_PKG_VERSION"))));
+    migrate_command.push_str(" --apply");
     let report = Report {
         status: "legacy".to_string(),
         profile: "legacy .review/ authority -> .af/".into(),
@@ -2009,8 +2063,7 @@ fn plan_migration(repo: &Path, legacy: &LegacyAuthority) -> Result<Bundle, Strin
         lock_af_targets: pin_targets(af_pin.as_ref()),
         next_steps: vec![
             format!(
-                "Run `af onboard --repo {} --migrate --apply` to write `.af/` (absent-only; `.review/` stays until you delete it).",
-                shell_words::quote(&repository)
+                "Run `{migrate_command}` to write `.af/` (absent-only; `.review/` stays until you delete it)."
             ),
             "Review the `.af/` diff, commit it on the trusted base branch, then delete `.review/`."
                 .into(),
