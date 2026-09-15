@@ -26,7 +26,8 @@ or reopen completed work. Release-bound migration and rollback evidence are rele
 
 ### Changes
 
-- Make fresh Provider bootstrap explicit with `af provider add`, distinguish ambient discovery
+- Make fresh Provider bootstrap one command with `af provider setup`, keep `af provider add` for
+  already-authenticated contexts, distinguish ambient discovery
   labels from selectable registry IDs, preserve every Gate in onboarding's copyable apply command,
   make registry publication serialized, conditional and durable, and make the README's Codex-only
   quickstart complete.

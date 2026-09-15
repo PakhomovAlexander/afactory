@@ -268,7 +268,7 @@ pub fn print_status() {
         println!("Ambient IDs are discovered only and cannot be selected by --provider.");
         for kind in ambient {
             let id = available_provider_id(&kind, &ids);
-            println!("  register {kind}: af provider add {id} --kind {kind}");
+            println!("  set up {kind}: af provider setup {id} --kind {kind}");
         }
     }
 }
@@ -287,36 +287,9 @@ fn available_provider_id(kind: &str, ids: &BTreeSet<String>) -> String {
 /// Add one explicit Provider without requiring the user to learn the registry's TOML shape.
 /// Existing entries and auth contexts are immutable through this absent-only command.
 pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String> {
-    safe_id(id)?;
-    if matches!(id, "claude-ambient" | "codex-ambient") {
-        return Err(format!(
-            "provider id `{id}` is reserved for ambient discovery"
-        ));
-    }
+    validate_explicit_id(id)?;
     let kind = ProviderKind::parse(kind)?;
-    let auth_dir = match auth_dir {
-        Some(path) => path.to_path_buf(),
-        None => default_auth_dir(kind)?,
-    };
-    if !auth_dir.is_absolute()
-        || auth_dir
-            .components()
-            .any(|component| component == Component::ParentDir)
-    {
-        return Err("--auth-dir must be an absolute path without `..`".into());
-    }
-    let auth_dir = fs::canonicalize(&auth_dir).map_err(|error| {
-        format!(
-            "auth directory {} cannot be resolved: {error}",
-            auth_dir.display()
-        )
-    })?;
-    if !auth_dir.is_dir() {
-        return Err(format!(
-            "auth directory {} is not a directory",
-            auth_dir.display()
-        ));
-    }
+    let auth_dir = resolve_auth_dir(kind, auth_dir, false)?;
     let path = registry_path()?.ok_or("no provider registry path is available")?;
     let preserved = add_to_registry(&path, id, kind, &auth_dir)?;
     println!(
@@ -332,6 +305,219 @@ pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String> 
         );
     }
     println!("next: af provider status");
+    Ok(())
+}
+
+/// Own the complete first-run Provider flow while leaving credentials with the harness CLI.
+///
+/// The registry is inspected before opening an external login so invalid or conflicting local
+/// configuration never causes an unnecessary account interaction. Publication is still rechecked
+/// under the registry lock after login, because another setup may have completed concurrently.
+pub fn setup(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String> {
+    validate_explicit_id(id)?;
+    let kind = ProviderKind::parse(kind)?;
+    let auth_dir = resolve_auth_dir(kind, auth_dir, true)?;
+    let path = registry_path()?.ok_or("no provider registry path is available")?;
+    let already_registered = inspect_registration(&path, id, kind, &auth_dir)?;
+    let spec = ProviderSpec {
+        id: id.to_string(),
+        kind,
+        auth_dir: Some(auth_dir.clone()),
+        explicit_selector: true,
+        registry_declared: already_registered,
+        source: path.display().to_string(),
+    };
+
+    if !authentication_ready(&spec)? {
+        run_interactive_login(&spec)?;
+        if !authentication_ready(&spec)? {
+            return Err(format!(
+                "{} login completed without authenticating {}",
+                kind.name(),
+                auth_dir.display()
+            ));
+        }
+    }
+
+    if already_registered {
+        println!(
+            "provider {id} is authenticated and registered ({}, {})",
+            kind.name(),
+            auth_dir.display()
+        );
+        println!("next: af provider status");
+        return Ok(());
+    }
+
+    let preserved = add_to_registry(&path, id, kind, &auth_dir)?;
+    println!(
+        "provider {id} authenticated and registered in {} ({}, {})",
+        path.display(),
+        kind.name(),
+        auth_dir.display()
+    );
+    if let Some(previous) = preserved {
+        println!(
+            "previous provider registry preserved at {}",
+            previous.display()
+        );
+    }
+    println!("next: af provider status");
+    Ok(())
+}
+
+fn validate_explicit_id(id: &str) -> Result<(), String> {
+    safe_id(id)?;
+    if matches!(id, "claude-ambient" | "codex-ambient") {
+        return Err(format!(
+            "provider id `{id}` is reserved for ambient discovery"
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_auth_dir(
+    kind: ProviderKind,
+    auth_dir: Option<&Path>,
+    create: bool,
+) -> Result<PathBuf, String> {
+    let auth_dir = match auth_dir {
+        Some(path) => path.to_path_buf(),
+        None => default_auth_dir(kind)?,
+    };
+    if !auth_dir.is_absolute()
+        || auth_dir
+            .components()
+            .any(|component| component == Component::ParentDir)
+    {
+        return Err("--auth-dir must be an absolute path without `..`".into());
+    }
+    if create && !auth_dir.exists() {
+        create_private_directory(&auth_dir)?;
+    }
+    let auth_dir = fs::canonicalize(&auth_dir).map_err(|error| {
+        format!(
+            "auth directory {} cannot be resolved: {error}",
+            auth_dir.display()
+        )
+    })?;
+    if !auth_dir.is_dir() {
+        return Err(format!(
+            "auth directory {} is not a directory",
+            auth_dir.display()
+        ));
+    }
+    Ok(auth_dir)
+}
+
+#[cfg(unix)]
+fn create_private_directory(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true).mode(0o700);
+    builder
+        .create(path)
+        .map_err(|error| format!("cannot create auth directory {}: {error}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn create_private_directory(path: &Path) -> Result<(), String> {
+    fs::create_dir_all(path)
+        .map_err(|error| format!("cannot create auth directory {}: {error}", path.display()))
+}
+
+/// Return true only when the requested ID already names this exact context. Conflicts are
+/// rejected before an interactive login; `add_to_registry` repeats these checks under its lock.
+fn inspect_registration(
+    path: &Path,
+    id: &str,
+    kind: ProviderKind,
+    auth_dir: &Path,
+) -> Result<bool, String> {
+    let Some(text) = read_registry(path)? else {
+        return Ok(false);
+    };
+    let specs = parse_registry(&text, path)?;
+    if let Some(existing) = specs.iter().find(|spec| spec.id == id) {
+        if existing.kind == kind && existing.auth_dir.as_deref() == Some(auth_dir) {
+            return Ok(true);
+        }
+        return Err(format!(
+            "provider `{id}` already names a different auth context"
+        ));
+    }
+    if let Some(existing) = specs
+        .iter()
+        .find(|spec| spec.kind == kind && spec.auth_dir.as_deref() == Some(auth_dir))
+    {
+        return Err(format!(
+            "{} auth context {} is already registered as provider `{}`",
+            kind.name(),
+            auth_dir.display(),
+            existing.id
+        ));
+    }
+    if specs.len() >= MAX_PROVIDERS {
+        return Err(format!(
+            "provider registry {} already has the limit of {MAX_PROVIDERS} entries",
+            path.display()
+        ));
+    }
+    Ok(false)
+}
+
+fn authentication_ready(spec: &ProviderSpec) -> Result<bool, String> {
+    let program = resolve_program(spec.kind.command())
+        .ok_or_else(|| format!("{} is not on PATH", spec.kind.command()))?;
+    let output = run_probe(&program, spec, &sanitized_path(), &AtomicBool::new(false))?;
+    let (status, _, detail) = match spec.kind {
+        ProviderKind::Claude => parse_claude_status(output.status.success(), &output.stdout),
+        ProviderKind::Codex => parse_codex_status(output.status.success(), &output.stdout),
+    };
+    match status.as_str() {
+        "authenticated" => Ok(true),
+        "not authenticated" => Ok(false),
+        _ => Err(if detail.is_empty() {
+            format!("{} authentication status is {status}", spec.kind.name())
+        } else {
+            detail
+        }),
+    }
+}
+
+fn run_interactive_login(spec: &ProviderSpec) -> Result<(), String> {
+    let program = resolve_program(spec.kind.command())
+        .ok_or_else(|| format!("{} is not on PATH", spec.kind.command()))?;
+    let auth_dir = spec
+        .auth_dir
+        .as_deref()
+        .ok_or("provider setup requires an explicit auth directory")?;
+    println!(
+        "starting interactive {} login for {}",
+        spec.kind.name(),
+        auth_dir.display()
+    );
+    let mut command = Command::new(program);
+    match spec.kind {
+        ProviderKind::Claude => {
+            command.args(["auth", "login", "--claudeai"]);
+            command.env("CLAUDE_CONFIG_DIR", auth_dir);
+        }
+        ProviderKind::Codex => {
+            command.arg("login");
+            command.env("CODEX_HOME", auth_dir);
+        }
+    }
+    let status = command
+        .status()
+        .map_err(|error| format!("cannot start {} login: {error}", spec.kind.name()))?;
+    if !status.success() {
+        return Err(format!(
+            "{} login exited with {status}; no provider was registered",
+            spec.kind.name()
+        ));
+    }
     Ok(())
 }
 

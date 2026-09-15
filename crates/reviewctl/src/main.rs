@@ -1180,6 +1180,15 @@ fn main() {
                     providers::print_status();
                     Ok(0)
                 }
+                cli::ProviderCommand::Setup { id, kind, auth_dir } => providers::setup(
+                    &id,
+                    match kind {
+                        cli::ProviderKindArg::Claude => "claude",
+                        cli::ProviderKindArg::Codex => "codex",
+                    },
+                    auth_dir.as_deref(),
+                )
+                .map(|()| 0),
                 cli::ProviderCommand::Add { id, kind, auth_dir } => providers::add(
                     &id,
                     match kind {

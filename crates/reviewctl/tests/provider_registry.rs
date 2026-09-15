@@ -5,6 +5,9 @@ use std::path::Path;
 use std::process::{Command, Output};
 use std::sync::{Arc, Barrier};
 
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
+
 fn af(home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_af"))
         .args(args)
@@ -17,6 +20,172 @@ fn af(home: &Path, args: &[&str]) -> Output {
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
+}
+
+#[cfg(unix)]
+fn fake_provider(root: &Path, name: &str, script: &str) -> std::path::PathBuf {
+    let bin = root.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let path = bin.join(name);
+    std::fs::write(&path, script).unwrap();
+    let mut permissions = std::fs::metadata(&path).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&path, permissions).unwrap();
+    bin
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_owns_claude_login_registration_and_idempotent_recheck() {
+    let root = tempfile::tempdir().unwrap();
+    let auth = root.path().join("claude auth");
+    let bin = fake_provider(
+        root.path(),
+        "claude",
+        r#"#!/bin/sh
+if [ "$1" = auth ] && [ "$2" = status ] && [ "$3" = --json ]; then
+  if [ -f "$CLAUDE_CONFIG_DIR/logged-in" ]; then
+    printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}'
+    exit 0
+  fi
+  printf '%s\n' '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}'
+  exit 1
+fi
+if [ "$1" = auth ] && [ "$2" = login ] && [ "$3" = --claudeai ]; then
+  printf '%s\n' "$*" >> "$CLAUDE_CONFIG_DIR/login-log"
+  : > "$CLAUDE_CONFIG_DIR/logged-in"
+  exit 0
+fi
+exit 64
+"#,
+    );
+    let invoke = || {
+        Command::new(env!("CARGO_BIN_EXE_af"))
+            .args([
+                "provider",
+                "setup",
+                "claude-main",
+                "--kind",
+                "claude",
+                "--auth-dir",
+                auth.to_str().unwrap(),
+            ])
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("PATH", &bin)
+            .env("AF_SELF_OFFLINE", "1")
+            .output()
+            .unwrap()
+    };
+
+    let first = invoke();
+    assert!(first.status.success(), "{}", stderr(&first));
+    assert!(auth.join("logged-in").is_file());
+    assert_eq!(
+        std::fs::read_to_string(auth.join("login-log")).unwrap(),
+        "auth login --claudeai\n"
+    );
+    let registry = std::fs::read_to_string(root.path().join("config/af/providers.toml")).unwrap();
+    assert!(registry.contains("claude-main"), "{registry}");
+    assert!(registry.contains(auth.canonicalize().unwrap().to_str().unwrap()));
+
+    let second = invoke();
+    assert!(second.status.success(), "{}", stderr(&second));
+    assert!(
+        String::from_utf8_lossy(&second.stdout).contains("is authenticated and registered"),
+        "{}",
+        String::from_utf8_lossy(&second.stdout)
+    );
+    assert_eq!(
+        std::fs::read_to_string(auth.join("login-log")).unwrap(),
+        "auth login --claudeai\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_owns_codex_login_and_reads_its_stderr_status() {
+    let root = tempfile::tempdir().unwrap();
+    let auth = root.path().join("codex-home");
+    let bin = fake_provider(
+        root.path(),
+        "codex",
+        r#"#!/bin/sh
+if [ "$1" = login ] && [ "$2" = status ]; then
+  if [ -f "$CODEX_HOME/logged-in" ]; then
+    printf '%s\n' 'Logged in using ChatGPT' >&2
+    exit 0
+  fi
+  printf '%s\n' 'Not logged in' >&2
+  exit 1
+fi
+if [ "$1" = login ] && [ -z "$2" ]; then
+  : > "$CODEX_HOME/logged-in"
+  exit 0
+fi
+exit 64
+"#,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .args([
+            "provider",
+            "setup",
+            "codex-main",
+            "--kind",
+            "codex",
+            "--auth-dir",
+            auth.to_str().unwrap(),
+        ])
+        .env("HOME", root.path())
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("PATH", bin)
+        .env("AF_SELF_OFFLINE", "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert!(auth.join("logged-in").is_file());
+    let registry = std::fs::read_to_string(root.path().join("config/af/providers.toml")).unwrap();
+    assert!(registry.contains("codex-main"), "{registry}");
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_never_registers_a_failed_login() {
+    let root = tempfile::tempdir().unwrap();
+    let auth = root.path().join("claude-auth");
+    let bin = fake_provider(
+        root.path(),
+        "claude",
+        r#"#!/bin/sh
+if [ "$1" = auth ] && [ "$2" = status ]; then
+  printf '%s\n' '{"loggedIn":false}'
+  exit 1
+fi
+if [ "$1" = auth ] && [ "$2" = login ]; then
+  exit 1
+fi
+exit 64
+"#,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .args([
+            "provider",
+            "setup",
+            "claude-main",
+            "--kind",
+            "claude",
+            "--auth-dir",
+            auth.to_str().unwrap(),
+        ])
+        .env("HOME", root.path())
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("PATH", bin)
+        .env("AF_SELF_OFFLINE", "1")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(stderr(&output).contains("no provider was registered"));
+    assert!(!root.path().join("config/af/providers.toml").exists());
 }
 
 #[test]
