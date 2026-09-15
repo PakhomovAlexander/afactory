@@ -2,6 +2,7 @@ use super::*;
 use review_core::Producer;
 use review_core::task::plan::PlanDependencyV1;
 mod broker;
+mod lease;
 mod owned;
 mod planning;
 mod recording;
@@ -1362,6 +1363,10 @@ fn late_usage_is_charged_after_task_finish_without_reopening_its_result() {
     f.store = EventStore::open(&f.path).unwrap();
     let state = f.state();
     assert_eq!(state.phase, TaskPhaseV1::Finished { result_id });
+    assert_eq!(
+        f.store.task_lease_state(&lease).unwrap(),
+        state.lease_until_unix_ms()
+    );
     let execution = state.execution.unwrap();
     assert_eq!(execution.budget.committed_tokens(), 17);
     assert!(execution.budget.breached());
@@ -1569,4 +1574,185 @@ fn task_listing_returns_sorted_validated_projections_and_refuses_corruption() {
         .join(&hex[2..]);
     std::fs::write(path, b"corrupt last Task revision").unwrap();
     assert!(f.store.map_tasks(&f.cas, |task| task.task_id).is_err());
+}
+
+#[test]
+fn authenticated_revocation_is_idempotent_and_refuses_changed_or_unapproved_decisions() {
+    for kind in [PlanDecisionKindV1::Approved, PlanDecisionKindV1::Rejected] {
+        let mut f = Fixture::new(true);
+        let lease = f.open();
+        f.propose(&lease);
+        f.decide(&lease, kind);
+        let before = f.state().next_sequence;
+        let revoke = |f: &mut Fixture, reason: &str| {
+            f.store
+                .revoke_task_approval(&f.cas, &lease, &f.plan_id, reason, &f.authority)
+        };
+        if kind == PlanDecisionKindV1::Rejected {
+            assert!(revoke(&mut f, "stop").is_err());
+            assert_eq!(f.state().next_sequence, before);
+            continue;
+        }
+        let original = revoke(&mut f, "stop").unwrap();
+        f.store = EventStore::open(&f.path).unwrap();
+        assert_eq!(revoke(&mut f, "stop").unwrap().event_id, original.event_id);
+        assert!(revoke(&mut f, "different reason").is_err());
+        f.authority.current = false;
+        assert!(revoke(&mut f, "stop").is_err());
+        f.authority.current = true;
+        f.authority.valid_until = 0;
+        assert!(revoke(&mut f, "stop").is_err());
+        assert_eq!(f.state().next_sequence, before + 1);
+        assert!(!f.state().admitted);
+        f.authority.valid_until = u64::MAX;
+        f.store.release_task_lease(&f.cas, &lease).unwrap();
+        assert!(revoke(&mut f, "stop").is_err());
+        assert_eq!(f.state().next_sequence, before + 2);
+    }
+}
+
+#[test]
+fn context_binding_checks_before_and_after_callback_without_a_third_projection() {
+    let mut f = Fixture::new(false).with_execution_graph();
+    let lease = f.open();
+    f.propose(&lease);
+    f.store
+        .admit_task_plan(&f.cas, &lease, &f.authority)
+        .unwrap();
+    PROJECTION_CALLS.with(|calls| calls.set(0));
+    f.record_execution_inputs(&lease);
+    // Two invocation records (one each), plus output validation before/after its callback.
+    assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 4);
+    let context = f.cas.put(b"exact context").unwrap();
+    PROJECTION_CALLS.with(|calls| calls.set(0));
+    let reserved = f
+        .store
+        .reserve_task_attempt(&f.cas, &lease, "root.nodes.write", &f.authority)
+        .unwrap();
+    assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 1);
+    PROJECTION_CALLS.with(|calls| calls.set(0));
+    let prepared = f
+        .store
+        .bind_task_attempt_context(&f.cas, &lease, &reserved, &context, &f.authority)
+        .unwrap();
+    assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 2);
+    PROJECTION_CALLS.with(|calls| calls.set(0));
+    f.store
+        .start_task_attempt(&f.cas, &lease, &prepared, &f.authority)
+        .unwrap();
+    assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 1);
+    let state = f.state();
+    assert_eq!(state.execution.unwrap().budget.begun_attempts(), 1);
+}
+
+#[test]
+fn review_replay_reuses_only_one_operation_and_refreshes_an_appended_prefix() {
+    let mut f = Fixture::new(false);
+    let lease = f.open();
+    let run = task_run_id(lease.task_id()).unwrap();
+    let mut replays = ReviewReplays::default();
+    let original = replays.read(&f.store, &run).unwrap();
+    let repeated = replays.read(&f.store, &run).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&original, &repeated));
+    f.propose(&lease);
+    let appended = replays.read(&f.store, &run).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&original, &appended));
+    assert_eq!(appended.len(), original.len() + 1);
+    let next_operation = ReviewReplays::default().read(&f.store, &run).unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&appended, &next_operation));
+    assert_eq!(next_operation.len(), appended.len());
+}
+
+#[test]
+fn native_usage_classification_keeps_exact_attempt_context_and_charge_guards() {
+    use review_core::task::execution::{TaskAttemptResultV1, TaskExecutionRecordV1};
+    use review_core::task::usage::{TaskTokenUsageV3, TaskUsageObservationV1};
+    for case in [
+        "valid",
+        "duplicate",
+        "producer",
+        "context",
+        "floor",
+        "incomplete",
+    ] {
+        let mut f = Fixture::new(false).with_execution_graph();
+        let lease = f.open();
+        f.propose(&lease);
+        f.store
+            .admit_task_plan(&f.cas, &lease, &f.authority)
+            .unwrap();
+        f.record_execution_inputs(&lease);
+        let context = f.cas.put(b"usage context").unwrap();
+        let attempt = f
+            .store
+            .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+            .unwrap();
+        f.store
+            .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
+            .unwrap();
+        let before = f.store.len(&task_run_id(lease.task_id()).unwrap()).unwrap();
+        let raw = f
+            .cas
+            .put(&vec![
+                b'x';
+                if case == "valid" {
+                    9 * 1024 * 1024
+                } else {
+                    1024
+                }
+            ])
+            .unwrap();
+        let producer = Producer::Attempt {
+            run_id: task_run_id(lease.task_id()).unwrap(),
+            node_id: if case == "producer" {
+                "other".into()
+            } else {
+                "root.nodes.write".into()
+            },
+            attempt_id: attempt.id().into(),
+        };
+        let observed = TaskUsageObservationV1 {
+            reported_usage: Some(TaskTokenUsageV3::charge_only(7)),
+            charge_complete: case != "incomplete",
+        };
+        let id = execution::usage_observation::capture_task_usage_observation(
+            &f.cas,
+            producer,
+            if case == "context" { &raw } else { &context },
+            &observed,
+        )
+        .unwrap();
+        let mut evidence = vec![raw.clone(), id.clone()];
+        if case == "duplicate" {
+            evidence.push(id);
+        }
+        let charge = if case == "floor" { 6 } else { 7 };
+        PROJECTION_CALLS.with(|calls| calls.set(0));
+        let result = f.store.settle_task_attempt(
+            &f.cas,
+            &lease,
+            TaskExecutionRecordV1::Settled {
+                attempt_id: attempt.id().into(),
+                charged_tokens: charge,
+                result: TaskAttemptResultV1::Failed {
+                    diagnostic_id: raw,
+                    feedback_id: None,
+                },
+                raw_artifact_ids: evidence,
+                usage_id: None,
+            },
+            &f.authority,
+        );
+        assert_eq!(PROJECTION_CALLS.with(|calls| calls.get()), 1);
+        assert_eq!(result.is_ok(), case == "valid", "{case}: {result:?}");
+        assert_eq!(
+            f.store.len(&task_run_id(lease.task_id()).unwrap()).unwrap(),
+            before + u64::from(case == "valid")
+        );
+        f.store = EventStore::open(&f.path).unwrap();
+        assert_eq!(
+            f.state().execution.unwrap().budget.committed_tokens(),
+            if case == "valid" { 7 } else { 0 }
+        );
+    }
 }

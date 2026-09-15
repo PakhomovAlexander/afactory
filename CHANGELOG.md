@@ -9,9 +9,14 @@ release pages only.
 
 ## [Unreleased]
 
+## [0.9.0-rc.1] - 2026-09-15
+
 ### Authority compatibility
 
-The Task increment is implemented and unreleased.
+This is a prerelease for Task integration and migration validation. Live pilot acceptance
+and complete consumer migration/rollback verification remain pending; this candidate does
+not establish stable-release readiness or replace the known-good consumer installation.
+
 New Task execution requires its versioned `.af` catalog, Pipeline/Worker contracts and lock.
 Every generated Execution Plan requires an authorized developer's exact-plan approval.
 Local bindings do not travel with shared definitions. Existing `.review` consumers still
@@ -37,14 +42,32 @@ or reopen completed work. Release-bound migration and rollback evidence are rele
   delivery to a new local worktree.
 - Preserve Provider usage and recovery evidence across cancellation, writer loss and storage
   failures, and capture explicit admission allowances in Task catalog V2.
+- Preserve nested Jira requirements, resolve explicit relative refresh files from the caller's
+  directory, and retain plans when only unselected Jira fields or update timestamps change.
+- Make identical authenticated plan-revocation requests idempotent and refuse revocation of
+  decisions that were never approved.
+- Reduce repeated captured Review validation, heartbeat and receipt-query work while retaining
+  fresh artifact, lease, approval and usage checks; stream raw usage transcripts with bounded memory.
 - Open the repository: `install.sh` installs from a public release with `curl` alone, verifies
   the release signature by default when `minisign` is present, and keeps `gh` only as a
   fallback; the release also ships `LICENSE` (Apache-2.0), `SECURITY.md`, `CONTRIBUTING.md`
   and a restructured `docs/` (architecture, tasks, migration, non-goals, design notes).
 
-Specialist PR reviews, the separately budgeted live pilot, supported boundary checks and the
-checksummed consumer cutover remain required before release completion. See
-[Task execution status](docs/task-execution.md).
+- Account for every model reported by native Claude Task usage; preserve auxiliary charges
+  and refuse unapproved auxiliary activity instead of accepting an Opus selector alone.
+- Use native JSON schemas and structured output for typed Claude Task replies while retaining
+  independent Kernel output validation and the existing legacy text transport.
+- Preserve prerelease versions in migrated authority so the candidate can read its own output.
+- Retry transient executable-busy process starts and correct concurrent Linux test allowances.
+- Explain logged-out Provider status and install declared toolchain components in release jobs.
+
+### Validation boundary
+
+The release workflow checks the tagged source on Linux and macOS, runs consumer fixtures,
+and signs archive checksums. These deterministic checks do not replace specialist reviews,
+live Task measurements or actual consumer migration and rollback rehearsals. See
+[Task execution](docs/task-execution.md) for the contracts; candidate publication does not
+claim those remaining acceptance gates have passed.
 
 ## [0.8.0] - 2026-09-08
 

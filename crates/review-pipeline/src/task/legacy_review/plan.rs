@@ -163,6 +163,12 @@ struct ReviewInvocationPolicy {
     timeout_ms: u64,
 }
 
+struct ValidatedReviewPlan {
+    task: TaskRevisionV1,
+    plan: ExecutionPlanV1,
+    artifacts: BTreeSet<String>,
+}
+
 pub struct LegacyReviewPlanCompiler {
     round: CapturedLegacyReviewRound,
     policy_id: String,
@@ -170,6 +176,7 @@ pub struct LegacyReviewPlanCompiler {
     policy_v2: Option<ReviewTaskPolicyV2>,
     owned_children: bool,
     integration: bool,
+    validated: std::sync::Mutex<Option<ValidatedReviewPlan>>,
 }
 
 impl LegacyReviewPlanCompiler {
@@ -390,6 +397,7 @@ impl LegacyReviewPlanCompiler {
                 REVIEW_TASK_POLICY_V3 | REVIEW_TASK_POLICY_V4
             ),
             integration: envelope.artifact_type == REVIEW_TASK_POLICY_V4,
+            validated: std::sync::Mutex::new(None),
         })
     }
     pub fn resources(&self) -> &ReviewResourcePolicy {
@@ -888,8 +896,103 @@ impl LegacyReviewPlanCompiler {
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
     ) -> Result<Vec<GeneratedOriginV1>, String> {
+        let mut validated = self
+            .validated
+            .lock()
+            .map_err(|_| "Review validation poisoned")?;
+        if let Some(known) = &*validated
+            && known.task == *task
+            && known.plan == *plan
+        {
+            // Reuse structure only. Immutable compiler fields bind this memo; every read
+            // dependency is still rehashed, and the Store checks live authority separately.
+            for id in &known.artifacts {
+                cas.verify(id).map_err(|error| error.to_string())?;
+            }
+            return Ok(vec![]);
+        }
         self.recompile(cas, task, plan)?;
+        let artifacts = self.validation_artifacts(cas, task, plan)?;
+        *validated = Some(ValidatedReviewPlan {
+            task: task.clone(),
+            plan: plan.clone(),
+            artifacts,
+        });
         Ok(vec![])
+    }
+
+    // Exact reads in compile_inner, validate_inputs and load_captured_review. The authority
+    // tree manifest is metadata: compilation does not read unrelated repository blob bytes.
+    fn validation_artifacts(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+    ) -> Result<BTreeSet<String>, String> {
+        let mut wrappers = BTreeSet::from([
+            plan.task_revision_id.clone(),
+            plan.compiled_graph_id.clone(),
+            self.policy_id.clone(),
+        ]);
+        wrappers.extend(
+            plan.dependencies
+                .values()
+                .map(|value| value.artifact_id.clone()),
+        );
+        wrappers.extend(
+            plan.bindings
+                .values()
+                .map(|value| value.invocation_policy_id.clone()),
+        );
+        wrappers.extend(
+            task.inputs
+                .values()
+                .flat_map(|value| value.artifact_ids.iter().cloned()),
+        );
+        let mut artifacts = wrappers.clone();
+        for id in wrappers {
+            let envelope = cas.get_artifact(&id).map_err(|error| error.to_string())?;
+            artifacts.extend(envelope.input_artifacts);
+            artifacts.extend(envelope.subject_snapshot_id);
+        }
+        artifacts.insert(plan.engine_id.clone());
+        artifacts.insert(self.policy.campaign_manifest_id.clone());
+        let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
+            cas.get_json(&self.policy.campaign_manifest_id)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        artifacts.extend([
+            manifest.pipeline.artifact_id,
+            manifest.reviewer_lock.artifact_id,
+            manifest.finding_genesis_id,
+            manifest.demand_genesis_id,
+            manifest.authority_snapshot_id.clone(),
+        ]);
+        artifacts.extend(manifest.project_policy_ids);
+        for package in manifest.reviewers {
+            artifacts.insert(package.package_artifact_id.clone());
+            let value: review_core::ReviewerPackageV1 = serde_json::from_value(
+                cas.get_json(&package.package_artifact_id)
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
+            artifacts.extend(value.files.into_values());
+        }
+        let snapshot: review_core::SourceSnapshot = serde_json::from_value(
+            cas.get_json(&manifest.authority_snapshot_id)
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
+        artifacts.insert(
+            snapshot
+                .artifact_manifest
+                .ok_or("Authority Snapshot has no manifest")?,
+        );
+        for id in &artifacts {
+            cas.verify(id).map_err(|error| error.to_string())?;
+        }
+        Ok(artifacts)
     }
 
     /// Recover the executable domain mapping without recreating missing authority bytes.

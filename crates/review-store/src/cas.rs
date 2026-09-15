@@ -518,6 +518,44 @@ impl Cas {
         decode_artifact_bytes(digest, &bytes)
     }
 
+    /// Verify mixed raw/typed evidence without decoding raw transcript JSON. Only a valid
+    /// artifact-domain identity can produce a typed envelope; a blob's `type` key grants none.
+    /// Both paths use one opened file and bounded memory (8 MiB for typed control records).
+    pub fn get_optional_artifact(
+        &self,
+        digest: &str,
+    ) -> Result<Option<review_core::ArtifactEnvelope>, CasError> {
+        let mut opened = self.open_for_verified_read(digest)?;
+        let (actual, size) = with_verify_scratch(|buffer| {
+            canonical::blob_content_id_reader_with_buffer(&mut opened.file, buffer)
+                .map_err(CasError::Io)
+        })?;
+        if size != opened.stored_len {
+            return Err(CasError::Corrupt {
+                digest: digest.into(),
+            });
+        }
+        if actual == digest {
+            return Ok(None);
+        }
+        if size > MAX_ARTIFACT_ENVELOPE_BYTES {
+            return Err(CasError::Corrupt {
+                digest: digest.into(),
+            });
+        }
+        opened.file.rewind()?;
+        let mut bytes = Vec::with_capacity(size as usize);
+        Read::by_ref(&mut opened.file)
+            .take(size + 1)
+            .read_to_end(&mut bytes)?;
+        if bytes.len() as u64 != size {
+            return Err(CasError::Corrupt {
+                digest: digest.into(),
+            });
+        }
+        decode_artifact_bytes(digest, &bytes).map(Some)
+    }
+
     /// Private unverified read; only the verifying public methods may expose its bytes.
     fn read_bounded_bytes(&self, digest: &str, max_bytes: u64) -> Result<Vec<u8>, CasError> {
         if !valid_digest(digest) {
@@ -1181,6 +1219,48 @@ mod tests {
             cas.put_artifact_bytes(&artifact_id, &bytes),
             Err(CasError::Io(error)) if error.kind() == std::io::ErrorKind::FileTooLarge
         ));
+    }
+
+    #[test]
+    fn mixed_evidence_streams_large_raw_blobs_and_requires_typed_identity() {
+        let (_dir, cas) = cas();
+        let raw = cas
+            .put(&vec![b'x'; MAX_ARTIFACT_ENVELOPE_BYTES as usize + 1])
+            .unwrap();
+        assert!(cas.get_optional_artifact(&raw).unwrap().is_none());
+        let (typed, envelope) = cas
+            .put_artifact(
+                "af/TaskUsageObservation@1",
+                review_core::Producer::Attempt {
+                    run_id: "01jd8m4qz9k7v3n2p6r8t0w1xz".into(),
+                    node_id: "node".into(),
+                    attempt_id: "01jd8m4qz9k7v3n2p6r8t0w202".into(),
+                },
+                vec![],
+                None,
+                json!({"fixture":true}),
+            )
+            .unwrap();
+        assert_eq!(
+            cas.get_optional_artifact(&typed).unwrap(),
+            Some(envelope.clone())
+        );
+        let raw_lookalike = cas
+            .put(&canonical::canonicalize(&serde_json::to_value(envelope).unwrap()).unwrap())
+            .unwrap();
+        assert!(cas.get_optional_artifact(&raw_lookalike).unwrap().is_none());
+        for id in [raw, typed] {
+            fs::write(cas.path_for(&id), b"corrupted").unwrap();
+            assert!(matches!(
+                cas.get_optional_artifact(&id),
+                Err(CasError::Corrupt { .. })
+            ));
+            fs::remove_file(cas.path_for(&id)).unwrap();
+            assert!(matches!(
+                cas.get_optional_artifact(&id),
+                Err(CasError::NotFound { .. })
+            ));
+        }
     }
 
     #[test]

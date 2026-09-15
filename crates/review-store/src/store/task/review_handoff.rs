@@ -201,8 +201,17 @@ pub(super) fn validate_evidence(
     cas: &Cas,
     value: &TaskReviewHandoffV1,
 ) -> Result<(), StoreError> {
+    validate_evidence_with_replays(store, cas, value, &mut ReviewReplays::default())
+}
+
+pub(super) fn validate_evidence_with_replays(
+    store: &EventStore,
+    cas: &Cas,
+    value: &TaskReviewHandoffV1,
+    replays: &mut ReviewReplays,
+) -> Result<(), StoreError> {
     let (_, _, old, new) = validate_revisions(cas, value)?;
-    let events = store.replay(&old.campaign_id)?;
+    let events = replays.read(store, &old.campaign_id)?;
     let old_event = events
         .iter()
         .find(|e| e.event_id == old.round_event_id)
@@ -267,6 +276,7 @@ pub(super) fn validate_evidence(
                 evidence,
                 &new,
                 &new_started,
+                replays,
             )?;
         }
         TaskReviewHandoffEvidenceV1::ClosedRound { .. } => {
@@ -424,12 +434,13 @@ pub(super) fn validate_cached(
     store: &EventStore,
     cas: &Cas,
     state: &TaskProjection,
+    replays: &mut ReviewReplays,
 ) -> Result<(), StoreError> {
     for (id, recorded) in &state.review_handoffs {
         if read_task_review_handoff(cas, id)? != *recorded {
             return Err(conflict("Cached Review handoff changed identity"));
         }
-        validate_evidence(store, cas, recorded)?;
+        validate_evidence_with_replays(store, cas, recorded, replays)?;
     }
     Ok(())
 }
