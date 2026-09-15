@@ -45,7 +45,7 @@ toml_edit = "0.22"
 minisign-verify = "0.2.5"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30.1", default-features = false, features = ["fs", "signal"] }
+nix = { version = "0.30.1", default-features = false, features = ["fs", "signal", "user"] }
 portable-pty = { version = "0.9.0", default-features = false }
 
 [dev-dependencies]

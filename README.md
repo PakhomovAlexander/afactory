@@ -58,7 +58,10 @@ prints a copyable apply command carrying the exact detected or explicit Gate; re
 above when the repository uses another deterministic acceptance command. `af provider setup`
 runs the Provider CLI's official interactive login when needed, verifies it, then writes only an
 ID, Provider kind, and auth-directory path to the machine-local registry; credentials remain owned
-by that CLI. `af provider add` registers an already authenticated context without opening a login.
+by that CLI. Login starts from an empty allowlisted environment in an owned auth directory that is
+not writable by other users. `setup` is machine-local and therefore does not dispatch to a
+repository's older pinned `af`. `af provider add` registers an already authenticated context
+without opening a login.
 Ambient IDs shown by `status` are discovery labels and cannot be selected directly. `af review
 plan` resolves policy, Base, candidate, the exact Change Set, the selected route, Gates, budgets,
 and required Provider bindings without Campaign state, external calls, or tokens — the route line

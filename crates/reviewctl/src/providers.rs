@@ -316,8 +316,8 @@ pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String> 
 pub fn setup(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String> {
     validate_explicit_id(id)?;
     let kind = ProviderKind::parse(kind)?;
-    let auth_dir = resolve_auth_dir(kind, auth_dir, true)?;
     let path = registry_path()?.ok_or("no provider registry path is available")?;
+    let auth_dir = resolve_auth_dir(kind, auth_dir, true)?;
     let already_registered = inspect_registration(&path, id, kind, &auth_dir)?;
     let spec = ProviderSpec {
         id: id.to_string(),
@@ -349,18 +349,26 @@ pub fn setup(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String
         return Ok(());
     }
 
-    let preserved = add_to_registry(&path, id, kind, &auth_dir)?;
-    println!(
-        "provider {id} authenticated and registered in {} ({}, {})",
-        path.display(),
-        kind.name(),
-        auth_dir.display()
-    );
-    if let Some(previous) = preserved {
-        println!(
-            "previous provider registry preserved at {}",
-            previous.display()
-        );
+    match setup_registry(&path, id, kind, &auth_dir)? {
+        RegistryAdd::Added(preserved) => {
+            println!(
+                "provider {id} authenticated and registered in {} ({}, {})",
+                path.display(),
+                kind.name(),
+                auth_dir.display()
+            );
+            if let Some(previous) = preserved {
+                println!(
+                    "previous provider registry preserved at {}",
+                    previous.display()
+                );
+            }
+        }
+        RegistryAdd::AlreadyPresent => println!(
+            "provider {id} is authenticated and registered ({}, {})",
+            kind.name(),
+            auth_dir.display()
+        ),
     }
     println!("next: af provider status");
     Ok(())
@@ -392,8 +400,36 @@ fn resolve_auth_dir(
     {
         return Err("--auth-dir must be an absolute path without `..`".into());
     }
-    if create && !auth_dir.exists() {
-        create_private_directory(&auth_dir)?;
+    match fs::symlink_metadata(&auth_dir) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(format!(
+                "auth directory {} must not be a symlink",
+                auth_dir.display()
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == ErrorKind::NotFound && create => {
+            create_private_directory(&auth_dir)?;
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "cannot inspect auth directory {}: {error}",
+                auth_dir.display()
+            ));
+        }
+    }
+    let unresolved = fs::symlink_metadata(&auth_dir).map_err(|error| {
+        format!(
+            "cannot inspect auth directory {}: {error}",
+            auth_dir.display()
+        )
+    })?;
+    if unresolved.file_type().is_symlink() {
+        return Err(format!(
+            "auth directory {} must not be a symlink",
+            auth_dir.display()
+        ));
     }
     let auth_dir = fs::canonicalize(&auth_dir).map_err(|error| {
         format!(
@@ -407,7 +443,52 @@ fn resolve_auth_dir(
             auth_dir.display()
         ));
     }
+    if create {
+        validate_private_auth_directory(&auth_dir)?;
+    }
     Ok(auth_dir)
+}
+
+#[cfg(unix)]
+fn validate_private_auth_directory(path: &Path) -> Result<(), String> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect auth directory {}: {error}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(format!(
+            "auth directory {} must be a real directory",
+            path.display()
+        ));
+    }
+    let effective_uid = nix::unistd::geteuid().as_raw();
+    if metadata.uid() != effective_uid {
+        return Err(format!(
+            "auth directory {} is owned by uid {}, not the current uid {effective_uid}",
+            path.display(),
+            metadata.uid()
+        ));
+    }
+    if metadata.mode() & 0o022 != 0 {
+        return Err(format!(
+            "auth directory {} is writable by another user; fix: chmod go-w {}",
+            path.display(),
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_private_auth_directory(path: &Path) -> Result<(), String> {
+    if path.is_dir() {
+        Ok(())
+    } else {
+        Err(format!(
+            "auth directory {} must be a real directory",
+            path.display()
+        ))
+    }
 }
 
 #[cfg(unix)]
@@ -468,6 +549,9 @@ fn inspect_registration(
 }
 
 fn authentication_ready(spec: &ProviderSpec) -> Result<bool, String> {
+    if let Some(auth_dir) = spec.auth_dir.as_deref() {
+        validate_private_auth_directory(auth_dir)?;
+    }
     let program = resolve_program(spec.kind.command())
         .ok_or_else(|| format!("{} is not on PATH", spec.kind.command()))?;
     let output = run_probe(&program, spec, &sanitized_path(), &AtomicBool::new(false))?;
@@ -476,7 +560,11 @@ fn authentication_ready(spec: &ProviderSpec) -> Result<bool, String> {
         ProviderKind::Codex => parse_codex_status(output.status.success(), &output.stdout),
     };
     match status.as_str() {
-        "authenticated" => Ok(true),
+        "authenticated" if output.status.success() => Ok(true),
+        "authenticated" => Err(format!(
+            "{} authentication status reported a login but exited unsuccessfully",
+            spec.kind.name()
+        )),
         "not authenticated" => Ok(false),
         _ => Err(if detail.is_empty() {
             format!("{} authentication status is {status}", spec.kind.name())
@@ -493,12 +581,43 @@ fn run_interactive_login(spec: &ProviderSpec) -> Result<(), String> {
         .auth_dir
         .as_deref()
         .ok_or("provider setup requires an explicit auth directory")?;
+    validate_private_auth_directory(auth_dir)?;
     println!(
         "starting interactive {} login for {}",
         spec.kind.name(),
         auth_dir.display()
     );
     let mut command = Command::new(program);
+    command
+        .env_clear()
+        .current_dir(Path::new("/"))
+        .env("PATH", sanitized_path());
+    for name in [
+        "HOME",
+        "USER",
+        "TERM",
+        "COLORTERM",
+        "DISPLAY",
+        "WAYLAND_DISPLAY",
+        "XDG_RUNTIME_DIR",
+        "DBUS_SESSION_BUS_ADDRESS",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    ] {
+        if let Some(value) = std::env::var_os(name) {
+            command.env(name, value);
+        }
+    }
     match spec.kind {
         ProviderKind::Claude => {
             command.args(["auth", "login", "--claudeai"]);
@@ -554,6 +673,33 @@ fn add_to_registry(
     kind: ProviderKind,
     auth_dir: &Path,
 ) -> Result<Option<PathBuf>, String> {
+    match add_to_registry_inner(path, id, kind, auth_dir, false)? {
+        RegistryAdd::Added(preserved) => Ok(preserved),
+        RegistryAdd::AlreadyPresent => unreachable!("plain add rejects existing providers"),
+    }
+}
+
+enum RegistryAdd {
+    Added(Option<PathBuf>),
+    AlreadyPresent,
+}
+
+fn setup_registry(
+    path: &Path,
+    id: &str,
+    kind: ProviderKind,
+    auth_dir: &Path,
+) -> Result<RegistryAdd, String> {
+    add_to_registry_inner(path, id, kind, auth_dir, true)
+}
+
+fn add_to_registry_inner(
+    path: &Path,
+    id: &str,
+    kind: ProviderKind,
+    auth_dir: &Path,
+    exact_is_success: bool,
+) -> Result<RegistryAdd, String> {
     let _lock = registry_lock(path)?;
     // A prior first-file publication may have crashed after creating its marker but before the
     // registry appeared. Never treat that recovery state as an empty registry.
@@ -582,7 +728,13 @@ fn add_to_registry(
     let mut document = match existing.as_deref() {
         Some(text) => {
             let specs = parse_registry(text, path)?;
-            if specs.iter().any(|spec| spec.id == id) {
+            if let Some(existing) = specs.iter().find(|spec| spec.id == id) {
+                if exact_is_success
+                    && existing.kind == kind
+                    && existing.auth_dir.as_deref() == Some(auth_dir)
+                {
+                    return Ok(RegistryAdd::AlreadyPresent);
+                }
                 return Err(format!("provider `{id}` already exists"));
             }
             if let Some(duplicate) = specs
@@ -638,7 +790,7 @@ fn add_to_registry(
         ));
     }
     parse_registry(&bytes, path)?;
-    write_registry(path, bytes.as_bytes(), existing.as_deref())
+    write_registry(path, bytes.as_bytes(), existing.as_deref()).map(RegistryAdd::Added)
 }
 
 fn normalize_provider_tables(document: &mut DocumentMut, path: &Path) -> Result<(), String> {
@@ -1099,15 +1251,25 @@ fn archive_transaction_if_ours(
             transaction.display()
         )
     })?;
-    recovery
-        .directory_file
-        .sync_all()
-        .map_err(|error| format!("syncing archived provider registry transaction: {error}"))?;
+    let mut durability_warnings = Vec::new();
+    if let Err(error) = recovery.directory_file.sync_all() {
+        durability_warnings.push(format!(
+            "syncing archived provider registry transaction: {error}"
+        ));
+    }
     let parent = path
         .parent()
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
-    sync_directory(parent)?;
+    if let Err(error) = sync_directory(parent) {
+        durability_warnings.push(error);
+    }
     if same_file(&recovery.archived_marker, transaction_file).unwrap_or(false) {
+        if !durability_warnings.is_empty() {
+            eprintln!(
+                "warning: provider registry transaction committed, but durability could not be confirmed: {}",
+                durability_warnings.join("; ")
+            );
+        }
         return Ok(());
     }
 

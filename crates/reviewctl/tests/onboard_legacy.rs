@@ -142,12 +142,17 @@ fn legacy_policy_previews_its_af_conversion_and_writes_nothing() {
                 ".af/workers/correctness/reviewer.toml",
             ])
         );
+        let next = report["next_steps"][0].as_str().unwrap();
+        let command = next.split('`').nth(1).unwrap();
+        let words = shell_words::split(command).unwrap();
+        assert!(words.iter().any(|word| word == "--migrate"));
         assert!(
-            report["next_steps"][0]
-                .as_str()
-                .unwrap()
-                .contains("--migrate --apply")
+            words
+                .windows(2)
+                .any(|pair| pair == ["--af", env!("CARGO_PKG_VERSION")]),
+            "the copied migration must preserve the executing release: {next}"
         );
+        assert_eq!(words.last().map(String::as_str), Some("--apply"));
         assert!(
             !repo.join(".af").exists(),
             "{args:?}: a preview never writes .af/"

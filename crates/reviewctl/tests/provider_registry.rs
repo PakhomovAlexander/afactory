@@ -53,6 +53,8 @@ if [ "$1" = auth ] && [ "$2" = status ] && [ "$3" = --json ]; then
 fi
 if [ "$1" = auth ] && [ "$2" = login ] && [ "$3" = --claudeai ]; then
   printf '%s\n' "$*" >> "$CLAUDE_CONFIG_DIR/login-log"
+  pwd > "$CLAUDE_CONFIG_DIR/login-cwd"
+  printf '%s\n' "${LEAK_ME-unset}" > "$CLAUDE_CONFIG_DIR/login-leak"
   : > "$CLAUDE_CONFIG_DIR/logged-in"
   exit 0
 fi
@@ -73,6 +75,7 @@ exit 64
             .env("HOME", root.path())
             .env("XDG_CONFIG_HOME", root.path().join("config"))
             .env("PATH", &bin)
+            .env("LEAK_ME", "must-not-reach-login")
             .env("AF_SELF_OFFLINE", "1")
             .output()
             .unwrap()
@@ -84,6 +87,14 @@ exit 64
     assert_eq!(
         std::fs::read_to_string(auth.join("login-log")).unwrap(),
         "auth login --claudeai\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(auth.join("login-cwd")).unwrap(),
+        "/\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(auth.join("login-leak")).unwrap(),
+        "unset\n"
     );
     let registry = std::fs::read_to_string(root.path().join("config/af/providers.toml")).unwrap();
     assert!(registry.contains("claude-main"), "{registry}");
@@ -186,6 +197,168 @@ exit 64
     assert!(!output.status.success());
     assert!(stderr(&output).contains("no provider was registered"));
     assert!(!root.path().join("config/af/providers.toml").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_rejects_an_auth_directory_writable_by_other_users() {
+    let root = tempfile::tempdir().unwrap();
+    let auth = root.path().join("shared-auth");
+    std::fs::create_dir(&auth).unwrap();
+    let mut permissions = std::fs::metadata(&auth).unwrap().permissions();
+    permissions.set_mode(0o777);
+    std::fs::set_permissions(&auth, permissions).unwrap();
+
+    let output = af(
+        root.path(),
+        &[
+            "provider",
+            "setup",
+            "codex-main",
+            "--kind",
+            "codex",
+            "--auth-dir",
+            auth.to_str().unwrap(),
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("writable by another user"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!root.path().join("config/af/providers.toml").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_rejects_a_symlinked_auth_directory() {
+    use std::os::unix::fs::symlink;
+
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("real-auth");
+    let auth = root.path().join("linked-auth");
+    std::fs::create_dir(&target).unwrap();
+    symlink(&target, &auth).unwrap();
+
+    let output = af(
+        root.path(),
+        &[
+            "provider",
+            "setup",
+            "codex-main",
+            "--kind",
+            "codex",
+            "--auth-dir",
+            auth.to_str().unwrap(),
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("must not be a symlink"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!root.path().join("config/af/providers.toml").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn setup_rejects_authenticated_output_from_a_failed_status_command() {
+    let root = tempfile::tempdir().unwrap();
+    let auth = root.path().join("codex-auth");
+    std::fs::create_dir(&auth).unwrap();
+    let bin = fake_provider(
+        root.path(),
+        "codex",
+        r#"#!/bin/sh
+if [ "$1" = login ] && [ "$2" = status ]; then
+  printf '%s\n' 'Logged in using ChatGPT' >&2
+  exit 1
+fi
+exit 64
+"#,
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .args([
+            "provider",
+            "setup",
+            "codex-main",
+            "--kind",
+            "codex",
+            "--auth-dir",
+            auth.to_str().unwrap(),
+        ])
+        .env("HOME", root.path())
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("PATH", bin)
+        .env("AF_SELF_OFFLINE", "1")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("reported a login but exited unsuccessfully"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!root.path().join("config/af/providers.toml").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn concurrent_identical_setup_is_idempotent() {
+    let root = tempfile::tempdir().unwrap();
+    let auth = root.path().join("codex-auth");
+    std::fs::create_dir(&auth).unwrap();
+    let bin = fake_provider(
+        root.path(),
+        "codex",
+        r#"#!/bin/sh
+if [ "$1" = login ] && [ "$2" = status ]; then
+  printf '%s\n' 'Logged in using ChatGPT' >&2
+  exit 0
+fi
+exit 64
+"#,
+    );
+    let barrier = Arc::new(Barrier::new(3));
+    let mut threads = Vec::new();
+    for _ in 0..2 {
+        let barrier = Arc::clone(&barrier);
+        let home = root.path().to_path_buf();
+        let auth = auth.clone();
+        let bin = bin.clone();
+        threads.push(std::thread::spawn(move || {
+            barrier.wait();
+            Command::new(env!("CARGO_BIN_EXE_af"))
+                .args([
+                    "provider",
+                    "setup",
+                    "codex-main",
+                    "--kind",
+                    "codex",
+                    "--auth-dir",
+                    auth.to_str().unwrap(),
+                ])
+                .env("HOME", &home)
+                .env("XDG_CONFIG_HOME", home.join("config"))
+                .env("PATH", &bin)
+                .env("AF_SELF_OFFLINE", "1")
+                .output()
+                .unwrap()
+        }));
+    }
+    barrier.wait();
+    for thread in threads {
+        let output = thread.join().unwrap();
+        assert!(output.status.success(), "{}", stderr(&output));
+    }
+    let registry = std::fs::read_to_string(root.path().join("config/af/providers.toml")).unwrap();
+    assert_eq!(
+        registry.matches("id = \"codex-main\"").count(),
+        1,
+        "{registry}"
+    );
 }
 
 #[test]

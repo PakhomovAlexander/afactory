@@ -361,12 +361,6 @@ fn safe_name(name: &str) -> bool {
 fn execute(options: &Options) -> Result<Report, String> {
     let repo = std::fs::canonicalize(&options.repo)
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
-    if repo.to_str().is_none() {
-        return Err(format!(
-            "repository path {} is not valid UTF-8 and cannot be represented in copyable onboarding commands",
-            repo.display()
-        ));
-    }
     if !repo.join(".git").exists() {
         return Err(format!(
             "{} is not a Git repository root (no .git entry)",
@@ -683,7 +677,12 @@ fn build_bundle(
     let reviewers = reviewer_summaries(profile);
     let mut warnings = warnings;
     warnings.extend(pin_warnings);
-    let apply_command = apply_command(repo, profile, &gates, af)?;
+    let apply_command = apply_command(
+        repo,
+        profile,
+        &gates,
+        af.unwrap_or(env!("CARGO_PKG_VERSION")),
+    )?;
     let report = Report {
         status: "preview".to_string(),
         profile: PROFILE.to_string(),
@@ -718,7 +717,7 @@ fn apply_command(
     repo: &Path,
     profile: RunnerProfile,
     gates: &[Gate],
-    af: Option<&str>,
+    af: &str,
 ) -> Result<String, String> {
     let repo = repo.to_str().ok_or_else(|| {
         format!(
@@ -736,10 +735,8 @@ fn apply_command(
         command.push_str(" --gate ");
         command.push_str(&shell_words::quote(&literal));
     }
-    if let Some(version) = af {
-        command.push_str(" --af ");
-        command.push_str(&shell_words::quote(version));
-    }
+    command.push_str(" --af ");
+    command.push_str(&shell_words::quote(af));
     command.push_str(" --apply");
     Ok(command)
 }
@@ -2031,10 +2028,8 @@ fn plan_migration(
         "af onboard --repo {} --migrate",
         shell_words::quote(&repository)
     );
-    if let Some(version) = af {
-        migrate_command.push_str(" --af ");
-        migrate_command.push_str(&shell_words::quote(version));
-    }
+    migrate_command.push_str(" --af ");
+    migrate_command.push_str(&shell_words::quote(af.unwrap_or(env!("CARGO_PKG_VERSION"))));
     migrate_command.push_str(" --apply");
     let report = Report {
         status: "legacy".to_string(),
