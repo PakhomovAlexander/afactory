@@ -318,10 +318,10 @@ pub fn setup(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String
     let kind = ProviderKind::parse(kind)?;
     let path = registry_path()?.ok_or("no provider registry path is available")?;
     let auth_dir = resolve_auth_dir(kind, auth_dir, true)?;
-    // Serialize the complete check/login/publish operation. Two first-time setup processes must
-    // never drive the same Provider CLI against one auth context concurrently. Authentication is
-    // rechecked only after acquiring the lock, so a waiter observes the first process's login.
-    let _lock = registry_lock(&path)?;
+    // Registry paths are configurable, so the login lock lives in and is keyed by the canonical
+    // auth context itself. A waiter rechecks authentication only after acquiring this lock.
+    let _auth_lock = auth_context_lock(kind, &auth_dir)?;
+    let _registry_lock = registry_lock(&path)?;
     let already_registered = inspect_registration(&path, id, kind, &auth_dir)?;
     let spec = ProviderSpec {
         id: id.to_string(),
@@ -447,9 +447,7 @@ fn resolve_auth_dir(
             auth_dir.display()
         ));
     }
-    if create {
-        validate_private_auth_directory(&auth_dir)?;
-    }
+    validate_private_auth_directory(&auth_dir)?;
     Ok(auth_dir)
 }
 
@@ -504,6 +502,45 @@ fn create_private_directory(path: &Path) -> Result<(), String> {
     builder
         .create(path)
         .map_err(|error| format!("cannot create auth directory {}: {error}", path.display()))
+}
+
+fn auth_context_lock(kind: ProviderKind, auth_dir: &Path) -> Result<File, String> {
+    let lock_path = auth_dir.join(format!(".af-{}-setup.lock", kind.name()));
+    let mut options = OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    options
+        .mode(0o600)
+        .custom_flags(nix::libc::O_CLOEXEC | nix::libc::O_NOFOLLOW);
+    let file = options.open(&lock_path).map_err(|error| {
+        format!(
+            "opening {} auth-context lock {}: {error}",
+            kind.name(),
+            lock_path.display()
+        )
+    })?;
+    let metadata = file.metadata().map_err(|error| {
+        format!(
+            "inspecting {} auth-context lock {}: {error}",
+            kind.name(),
+            lock_path.display()
+        )
+    })?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "{} auth-context lock {} must be a regular file",
+            kind.name(),
+            lock_path.display()
+        ));
+    }
+    fs2::FileExt::lock_exclusive(&file).map_err(|error| {
+        format!(
+            "locking {} auth context {}: {error}",
+            kind.name(),
+            auth_dir.display()
+        )
+    })?;
+    Ok(file)
 }
 
 #[cfg(not(unix))]
@@ -1041,60 +1078,102 @@ fn replace_registry_if_unchanged(
         ));
     }
 
+    // The exchange is the irreversible cross-release commit point: every released reader sees
+    // either the complete old registry or this already-validated complete candidate. The marker
+    // gives newer readers stronger fail-closed recovery, but correctness never depends on an older
+    // pinned binary understanding it. Nothing after this point rolls the candidate back.
     let parent = path
         .parent()
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
-    sync_directory(parent)?;
+    let mut post_commit_warnings = Vec::new();
+    if let Err(error) = sync_directory(parent) {
+        post_commit_warnings.push(error);
+    }
 
     // Move whatever the exchange displaced into the recovery directory. The original inode was
     // hard-linked there before publication, so even a replacement of this mutable stage pathname
     // cannot destroy a late write through an already-open descriptor.
-    fs::rename(&temporary_path, &recovery.exchange_stage).map_err(|error| {
-        format!(
-            "moving exchanged provider registry into {}: {error}; transaction remains at {}",
-            recovery.exchange_stage.display(),
-            transaction.display()
-        )
-    })?;
-    recovery
-        .directory_file
-        .sync_all()
-        .map_err(|error| format!("syncing provider registry recovery directory: {error}"))?;
-    sync_directory(parent)?;
-
-    if !registry_file_matches(&recovery.exchange_stage, &recovery.original_file, expected) {
-        make_recovery_inspectable(&recovery);
-        return Err(format!(
-            "provider registry {} changed during publication; all versions were preserved in {}, inspect them before removing {}",
-            path.display(),
-            recovery.directory.display(),
-            transaction.display()
+    let displaced_path = match fs::rename(&temporary_path, &recovery.exchange_stage) {
+        Ok(()) => recovery.exchange_stage.as_path(),
+        Err(error) => {
+            post_commit_warnings.push(format!(
+                "moving exchanged provider registry into {}: {error}; displaced version remains at {}",
+                recovery.exchange_stage.display(),
+                temporary_path.display()
+            ));
+            temporary_path.as_path()
+        }
+    };
+    if let Err(error) = recovery.directory_file.sync_all() {
+        post_commit_warnings.push(format!(
+            "syncing provider registry recovery directory: {error}"
         ));
     }
-    if !registry_file_matches(path, temporary.as_file(), &candidate) {
-        make_recovery_inspectable(&recovery);
-        return Err(format!(
-            "provider registry {} was replaced before commit; the candidate and prior registry were preserved in {}, transaction remains at {}",
-            path.display(),
-            recovery.directory.display(),
-            transaction.display()
-        ));
+    if let Err(error) = sync_directory(parent) {
+        post_commit_warnings.push(error);
     }
 
-    make_recovery_inspectable(&recovery);
-    archive_transaction_if_ours(path, &transaction, &transaction_file, &recovery)?;
-    // The marker archival is the commit point for cooperating readers. Rechecking afterward makes
-    // the command report a concurrent replacement instead of claiming that the requested entry
-    // is still active. The candidate copy remains recoverable either way.
-    if !registry_file_matches(path, temporary.as_file(), &candidate) {
-        return Err(format!(
-            "provider registry {} changed at commit; the candidate and prior registry were preserved in {}",
+    if !registry_file_matches(displaced_path, &recovery.original_file, expected) {
+        post_commit_warnings.push(format!(
+            "provider registry {} changed immediately before commit; the displaced version was preserved in {}",
             path.display(),
             recovery.directory.display()
         ));
     }
-    ensure_no_registry_transaction(path)?;
+    if !registry_file_matches(path, temporary.as_file(), &candidate) {
+        make_recovery_inspectable(&recovery);
+        if let Err(error) =
+            archive_transaction_if_ours(path, &transaction, &transaction_file, &recovery)
+        {
+            post_commit_warnings.push(error);
+        }
+        emit_registry_commit_warnings(&post_commit_warnings);
+        return Err(format!(
+            "provider registry {} was replaced by another writer after this update committed; the candidate and prior registry were preserved in {}",
+            path.display(),
+            recovery.directory.display()
+        ));
+    }
+
+    make_recovery_inspectable(&recovery);
+    if let Err(error) =
+        archive_transaction_if_ours(path, &transaction, &transaction_file, &recovery)
+    {
+        post_commit_warnings.push(error);
+    }
+    // Rechecking afterward distinguishes a later non-cooperating replacement from publication.
+    // The candidate copy remains recoverable either way and was never rolled back.
+    if !registry_file_matches(path, temporary.as_file(), &candidate) {
+        emit_registry_commit_warnings(&post_commit_warnings);
+        return Err(format!(
+            "provider registry {} changed after commit; the candidate and prior registry were preserved in {}",
+            path.display(),
+            recovery.directory.display()
+        ));
+    }
+    if let Err(error) = ensure_no_registry_transaction(path) {
+        post_commit_warnings.push(error);
+    }
+    emit_registry_commit_warnings(&post_commit_warnings);
     Ok(recovery.displaced_copy)
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+))]
+fn emit_registry_commit_warnings(warnings: &[String]) {
+    if !warnings.is_empty() {
+        eprintln!(
+            "warning: provider registry committed, but post-commit maintenance was incomplete: {}",
+            warnings.join("; ")
+        );
+    }
 }
 
 #[cfg(any(
@@ -1576,8 +1655,8 @@ fn read_registry_with_hooks(
     let registry = read_registry_resolved(path, &resolved)?;
     after_read();
     // A writer may have created the marker after the first check and exchanged the candidate
-    // while this read was in flight. Rechecking makes such a tentative value fail closed; if the
-    // marker has already disappeared, the candidate was durably committed.
+    // while this read was in flight. Rechecking gives current readers the stronger recovery fence;
+    // older readers still see only the complete registry committed by the atomic exchange.
     ensure_registry_transactions_clear(path, &resolved)?;
     Ok(Some(registry))
 }
@@ -1878,6 +1957,12 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool) -> ProviderStatus 
         .is_some_and(|path| spec.explicit_selector && !path.is_absolute())
     {
         return unavailable_status(&spec, "provider auth selector must be absolute");
+    }
+    if spec.explicit_selector
+        && let Some(auth_dir) = spec.auth_dir.as_deref()
+        && let Err(error) = validate_private_auth_directory(auth_dir)
+    {
+        return unavailable_status(&spec, &error);
     }
     let Some(program) = resolve_program(spec.kind.command()) else {
         return unavailable_status(&spec, &format!("{} is not on PATH", spec.kind.command()));
@@ -2688,7 +2773,7 @@ pub fn operation_id_for(
 
 fn configured_spec(provider_id: &str) -> Result<ProviderSpec, String> {
     let (specs, _, warning) = load_specs();
-    specs
+    let spec = specs
         .into_iter()
         .find(|spec| spec.id == provider_id && spec.registry_declared)
         .ok_or_else(|| {
@@ -2697,7 +2782,14 @@ fn configured_spec(provider_id: &str) -> Result<ProviderSpec, String> {
                     "provider `{provider_id}` is not an explicit entry in the machine-local registry"
                 )
             })
-        })
+        })?;
+    let auth_dir = spec
+        .auth_dir
+        .as_deref()
+        .ok_or_else(|| format!("provider `{provider_id}` has no explicit auth directory"))?;
+    validate_private_auth_directory(auth_dir)
+        .map_err(|error| format!("provider `{provider_id}` has an unsafe auth context: {error}"))?;
+    Ok(spec)
 }
 
 fn operation_identity(

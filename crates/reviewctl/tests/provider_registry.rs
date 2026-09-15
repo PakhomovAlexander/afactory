@@ -201,7 +201,7 @@ exit 64
 
 #[cfg(unix)]
 #[test]
-fn setup_rejects_an_auth_directory_writable_by_other_users() {
+fn explicit_registration_rejects_an_auth_directory_writable_by_other_users() {
     let root = tempfile::tempdir().unwrap();
     let auth = root.path().join("shared-auth");
     std::fs::create_dir(&auth).unwrap();
@@ -228,6 +228,60 @@ fn setup_rejects_an_auth_directory_writable_by_other_users() {
         stderr(&output)
     );
     assert!(!root.path().join("config/af/providers.toml").exists());
+
+    let added = af(
+        root.path(),
+        &[
+            "provider",
+            "add",
+            "codex-main",
+            "--kind",
+            "codex",
+            "--auth-dir",
+            auth.to_str().unwrap(),
+        ],
+    );
+    assert!(!added.status.success());
+    assert!(
+        stderr(&added).contains("writable by another user"),
+        "{}",
+        stderr(&added)
+    );
+    assert!(!root.path().join("config/af/providers.toml").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn status_revalidates_auth_directory_safety_after_registration() {
+    let root = tempfile::tempdir().unwrap();
+    let auth = root.path().join("codex-auth");
+    std::fs::create_dir(&auth).unwrap();
+    let mut permissions = std::fs::metadata(&auth).unwrap().permissions();
+    permissions.set_mode(0o700);
+    std::fs::set_permissions(&auth, permissions).unwrap();
+    let added = af(
+        root.path(),
+        &[
+            "provider",
+            "add",
+            "codex-main",
+            "--kind",
+            "codex",
+            "--auth-dir",
+            auth.to_str().unwrap(),
+        ],
+    );
+    assert!(added.status.success(), "{}", stderr(&added));
+
+    let mut permissions = std::fs::metadata(&auth).unwrap().permissions();
+    permissions.set_mode(0o777);
+    std::fs::set_permissions(&auth, permissions).unwrap();
+    let status = af(root.path(), &["provider", "status"]);
+    assert!(status.status.success(), "{}", stderr(&status));
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(stdout.contains("codex-main"), "{stdout}");
+    assert!(stdout.contains("unavailable"), "{stdout}");
+    assert!(stdout.contains("writable by another user"), "{stdout}");
 }
 
 #[cfg(unix)]
@@ -333,13 +387,14 @@ exit 64
     );
     let barrier = Arc::new(Barrier::new(3));
     let mut threads = Vec::new();
-    for _ in 0..2 {
+    for index in 0..2 {
         let barrier = Arc::clone(&barrier);
         let home = root.path().to_path_buf();
         let auth = auth.clone();
         let bin = bin.clone();
         threads.push(std::thread::spawn(move || {
             barrier.wait();
+            let registry = home.join(format!("registry-{index}.toml"));
             Command::new(env!("CARGO_BIN_EXE_af"))
                 .args([
                     "provider",
@@ -352,6 +407,7 @@ exit 64
                 ])
                 .env("HOME", &home)
                 .env("XDG_CONFIG_HOME", home.join("config"))
+                .env("AF_PROVIDERS_FILE", registry)
                 .env("PATH", &bin)
                 .env("AF_SELF_OFFLINE", "1")
                 .output()
@@ -363,12 +419,15 @@ exit 64
         let output = thread.join().unwrap();
         assert!(output.status.success(), "{}", stderr(&output));
     }
-    let registry = std::fs::read_to_string(root.path().join("config/af/providers.toml")).unwrap();
-    assert_eq!(
-        registry.matches("id = \"codex-main\"").count(),
-        1,
-        "{registry}"
-    );
+    for index in 0..2 {
+        let registry =
+            std::fs::read_to_string(root.path().join(format!("registry-{index}.toml"))).unwrap();
+        assert_eq!(
+            registry.matches("id = \"codex-main\"").count(),
+            1,
+            "{registry}"
+        );
+    }
     assert_eq!(
         std::fs::read_to_string(auth.join("login-log")).unwrap(),
         "login\n",

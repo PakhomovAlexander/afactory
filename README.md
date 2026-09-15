@@ -59,9 +59,10 @@ above when the repository uses another deterministic acceptance command. `af pro
 runs the Provider CLI's official interactive login when needed, verifies it, then writes only an
 ID, Provider kind, and auth-directory path to the machine-local registry; credentials remain owned
 by that CLI. Login starts from an empty allowlisted environment in an owned auth directory that is
-not writable by other users. `setup` is machine-local and therefore does not dispatch to a
-repository's older pinned `af`. `af provider add` registers an already authenticated context
-without opening a login.
+not writable by other users, and one canonical auth context admits only one setup/login at a time.
+`setup` is machine-local and therefore does not dispatch to a repository's older pinned `af`;
+registry publication remains atomic for those older readers. `af provider add` registers an already
+authenticated context without opening a login and applies the same auth-directory safety checks.
 Ambient IDs shown by `status` are discovery labels and cannot be selected directly. `af review
 plan` resolves policy, Base, candidate, the exact Change Set, the selected route, Gates, budgets,
 and required Provider bindings without Campaign state, external calls, or tokens — the route line
