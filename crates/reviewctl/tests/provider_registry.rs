@@ -351,7 +351,7 @@ exit 64
         .unwrap();
     assert!(!output.status.success());
     assert!(
-        stderr(&output).contains("reported a login but exited unsuccessfully"),
+        stderr(&output).contains("exited unsuccessfully"),
         "{}",
         stderr(&output)
     );

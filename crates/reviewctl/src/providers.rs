@@ -1069,8 +1069,21 @@ fn replace_registry_if_unchanged(
     temporary.disable_cleanup(true);
     if let Err(error) = renameat_with(CWD, &temporary_path, CWD, path, RenameFlags::EXCHANGE) {
         let _ = temporary.keep();
-        make_recovery_inspectable(&recovery);
-        archive_transaction_if_ours(path, &transaction, &transaction_file, &recovery)?;
+        let mut maintenance_warnings = Vec::new();
+        if let Err(error) = make_recovery_inspectable(&recovery) {
+            maintenance_warnings.push(error);
+        }
+        if let Err(error) =
+            archive_transaction_if_ours(path, &transaction, &transaction_file, &recovery)
+        {
+            maintenance_warnings.push(error);
+        }
+        if !maintenance_warnings.is_empty() {
+            eprintln!(
+                "warning: provider registry publication failed and recovery maintenance was incomplete: {}",
+                maintenance_warnings.join("; ")
+            );
+        }
         return Err(format!(
             "conditionally replacing provider registry {} failed: {error}; the candidate and prior registry were preserved in {}",
             path.display(),
@@ -1121,7 +1134,9 @@ fn replace_registry_if_unchanged(
         ));
     }
     if !registry_file_matches(path, temporary.as_file(), &candidate) {
-        make_recovery_inspectable(&recovery);
+        if let Err(error) = make_recovery_inspectable(&recovery) {
+            post_commit_warnings.push(error);
+        }
         if let Err(error) =
             archive_transaction_if_ours(path, &transaction, &transaction_file, &recovery)
         {
@@ -1135,7 +1150,9 @@ fn replace_registry_if_unchanged(
         ));
     }
 
-    make_recovery_inspectable(&recovery);
+    if let Err(error) = make_recovery_inspectable(&recovery) {
+        post_commit_warnings.push(error);
+    }
     if let Err(error) =
         archive_transaction_if_ours(path, &transaction, &transaction_file, &recovery)
     {
@@ -1301,11 +1318,28 @@ fn registry_file_matches(path: &Path, file: &File, expected: &str) -> bool {
     target_os = "visionos",
     target_os = "watchos"
 ))]
-fn make_recovery_inspectable(recovery: &RegistryRecovery) {
-    let _ = fs::set_permissions(&recovery.directory, fs::Permissions::from_mode(0o700));
-    let _ = recovery.directory_file.sync_all();
+fn make_recovery_inspectable(recovery: &RegistryRecovery) -> Result<(), String> {
+    let mut failures = Vec::new();
+    if let Err(error) = fs::set_permissions(&recovery.directory, fs::Permissions::from_mode(0o700))
+    {
+        failures.push(format!(
+            "making provider registry recovery directory inspectable: {error}"
+        ));
+    }
+    if let Err(error) = recovery.directory_file.sync_all() {
+        failures.push(format!(
+            "syncing inspectable provider registry recovery directory: {error}"
+        ));
+    }
     if let Some(parent) = recovery.directory.parent() {
-        let _ = sync_directory(parent);
+        if let Err(error) = sync_directory(parent) {
+            failures.push(error);
+        }
+    }
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        Err(failures.join("; "))
     }
 }
 
@@ -4020,6 +4054,13 @@ fn parse_claude_status(success: bool, stdout: &str) -> (String, String, String) 
         }
     };
     match parsed.get("loggedIn").and_then(serde_json::Value::as_bool) {
+        Some(true) if !success => {
+            return (
+                "unavailable".to_string(),
+                "-".to_string(),
+                "Claude auth status exited unsuccessfully".to_string(),
+            );
+        }
         Some(true) => {}
         Some(false) => {
             return (
@@ -4102,6 +4143,13 @@ fn parse_codex_status(success: bool, stdout: &str) -> (String, String, String) {
         .lines()
         .find_map(|line| line.trim().strip_prefix("Logged in using "))
     {
+        if !success {
+            return (
+                "unavailable".to_string(),
+                "-".to_string(),
+                "Codex login status exited unsuccessfully".to_string(),
+            );
+        }
         return (
             "authenticated".to_string(),
             normalize_codex_auth(auth_type).to_string(),
@@ -4906,6 +4954,18 @@ auth_dir = "{}"
         assert_eq!(status, "not authenticated");
         assert_eq!(parse_claude_status(true, "{}").0, "unknown");
         assert_eq!(parse_codex_status(true, "changed output").0, "unknown");
+        assert_eq!(
+            parse_claude_status(
+                false,
+                r#"{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}"#
+            )
+            .0,
+            "unavailable"
+        );
+        assert_eq!(
+            parse_codex_status(false, "Logged in using ChatGPT").0,
+            "unavailable"
+        );
     }
 
     #[test]
