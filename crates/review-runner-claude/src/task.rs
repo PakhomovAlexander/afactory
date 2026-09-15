@@ -3,6 +3,7 @@ use super::*;
 use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
 
 mod model_usage;
+mod structured;
 
 pub struct ClaudeTaskAdapter {
     program: String,
@@ -90,7 +91,23 @@ impl ClaudeTaskAdapter {
                 raw_artifact_ids: vec![],
             };
         }
+        let output_schema = match structured::output_schema(&input) {
+            Ok(schema) => schema,
+            Err(error) => {
+                return ModelWorkerReturn {
+                    usage_observation: None,
+                    message: Err(error),
+                    usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
+                    raw_artifact_ids: vec![],
+                };
+            }
+        };
         let mut command = claude_command(&self.program, &self.model_flags);
+        if let Some(schema) = &output_schema {
+            command
+                .args
+                .extend([Arg::literal("--json-schema"), Arg::literal(schema)]);
+        }
         if writable {
             // The same restricted root and customization isolation as review. The write role
             // adds only native file edits; a package cannot supply Bash, MCP or permission flags.
@@ -125,13 +142,10 @@ impl ClaudeTaskAdapter {
                 v.get("is_error").and_then(serde_json::Value::as_bool) == Some(false)
             });
         let message = if success {
-            parsed
-                .as_ref()
-                .and_then(|v| v.get("result"))
-                .and_then(serde_json::Value::as_str)
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| s.as_bytes().to_vec())
-                .ok_or_else(|| "Claude Worker returned no final message".into())
+            structured::message(
+                parsed.as_ref().expect("successful envelope"),
+                output_schema.is_some(),
+            )
         } else if let Some(error) = accounting.error {
             Err(error.into())
         } else {

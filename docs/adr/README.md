@@ -183,3 +183,5 @@ Record the options you rejected and why — that is the part future readers need
   boundaries](0101-reuse-review-structure-with-fresh-task-boundaries.md)
 - [0102 — Account for every reported Claude Task
   model](0102-account-for-every-reported-claude-task-model.md)
+- [0103 — Constrain native Claude Task
+  replies](0103-constrain-native-claude-task-replies.md)
