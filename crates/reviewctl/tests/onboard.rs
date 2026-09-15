@@ -96,6 +96,34 @@ fn preview_preserves_explicit_gate_quoting_in_the_printed_apply_command() {
     assert_eq!(words.last().map(String::as_str), Some("--apply"));
 }
 
+#[test]
+fn preview_preserves_the_explicit_af_release_in_the_printed_apply_command() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = repo(root.path());
+
+    let output = af(
+        &repo,
+        &[
+            "--gate",
+            "check=true",
+            "--af",
+            env!("CARGO_PKG_VERSION"),
+            "--json",
+        ],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let apply = report["next_steps"][0].as_str().unwrap();
+    let command = apply.split('`').nth(1).unwrap();
+    let words = shell_words::split(command).unwrap();
+    assert!(
+        words
+            .windows(2)
+            .any(|pair| pair == ["--af", env!("CARGO_PKG_VERSION")]),
+        "the copied apply must run under the release that produced the preview: {apply}"
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn preview_rejects_a_repository_path_that_cannot_be_copied_as_utf8() {
@@ -111,6 +139,31 @@ fn preview_rejects_a_repository_path_that_cannot_be_copied_as_utf8() {
         .arg("--repo")
         .arg(&repo)
         .args(["--gate", "check=true", "--json"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("not valid UTF-8"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!repo.join(".af").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn preview_rejects_a_non_utf8_canonical_repository_reached_as_dot() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = root
+        .path()
+        .join(std::ffi::OsString::from_vec(b"repo-\xff".to_vec()));
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .args(["onboard", "--repo", ".", "--gate", "check=true", "--json"])
+        .current_dir(&repo)
         .output()
         .unwrap();
 

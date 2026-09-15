@@ -160,6 +160,25 @@ fn legacy_policy_previews_its_af_conversion_and_writes_nothing() {
 }
 
 #[test]
+fn legacy_preview_preserves_the_explicit_af_release_in_the_migration_command() {
+    let root = tempfile::tempdir().unwrap();
+    let repo = legacy_repo(root.path());
+    let report = json(&onboard(
+        &repo,
+        &["--af", env!("CARGO_PKG_VERSION"), "--json"],
+    ));
+    let next = report["next_steps"][0].as_str().unwrap();
+    let command = next.split('`').nth(1).unwrap();
+    let words = shell_words::split(command).unwrap();
+    assert!(
+        words
+            .windows(2)
+            .any(|pair| pair == ["--af", env!("CARGO_PKG_VERSION")]),
+        "the copied migration must run under the release that produced the preview: {next}"
+    );
+}
+
+#[test]
 fn an_outdated_legacy_pipeline_is_upgraded_on_the_way() {
     let root = tempfile::tempdir().unwrap();
     let repo = legacy_repo(root.path());
