@@ -57,6 +57,7 @@ fn integration_is_captured_only_in_v4_with_its_original_dormant_allowance() {
             .unwrap();
         let revision = artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
         let (plan, captured) = compiler.compile(&cas, &revision).unwrap();
+        assert_cached_authority_is_fresh(&cas, &cas_root, &compiler, &task, &plan);
         let graph = &captured.compilation.graph;
         if generation == 4 && mode == "heavy" {
             assert_eq!(

@@ -2,6 +2,9 @@
 use super::*;
 use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
 
+mod model_usage;
+mod structured;
+
 pub struct ClaudeTaskAdapter {
     program: String,
     model_flags: Vec<String>,
@@ -88,7 +91,23 @@ impl ClaudeTaskAdapter {
                 raw_artifact_ids: vec![],
             };
         }
+        let output_schema = match structured::output_schema(&input) {
+            Ok(schema) => schema,
+            Err(error) => {
+                return ModelWorkerReturn {
+                    usage_observation: None,
+                    message: Err(error),
+                    usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
+                    raw_artifact_ids: vec![],
+                };
+            }
+        };
         let mut command = claude_command(&self.program, &self.model_flags);
+        if let Some(schema) = &output_schema {
+            command
+                .args
+                .extend([Arg::literal("--json-schema"), Arg::literal(schema)]);
+        }
         if writable {
             // The same restricted root and customization isolation as review. The write role
             // adds only native file edits; a package cannot supply Bash, MCP or permission flags.
@@ -98,34 +117,44 @@ impl ClaudeTaskAdapter {
                 }
             }
         }
-        let mut runner = ModelRunner::new(workdir, timeout);
+        // Native 2.1.272 uses these guards to latch automatic title generation before its
+        // auxiliary inference. They preserve OAuth/auth grants, unlike --bare. This is a
+        // bounded client mitigation, not proof that every internal model request is disabled.
+        let mut runner = ModelRunner::new(workdir, timeout)
+            .with_env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
+            .with_env("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1");
         for (name, value) in &self.grants {
             runner = runner.with_env(name, value);
         }
         let capture =
             runner.capture_settled_with_stdin_controlled(cas, &command, input, cancellation);
         let parsed = serde_json::from_slice::<serde_json::Value>(&capture.stdout).ok();
-        let (usage, usage_observation) = parse_usage(parsed.as_ref());
-        let success = usage_observation.is_none()
+        let selected_model = self
+            .model_flags
+            .chunks_exact(2)
+            .find(|pair| pair[0] == "--model")
+            .map(|pair| pair[1].as_str());
+        let accounting = model_usage::account(parsed.as_ref(), selected_model);
+        let success = accounting.error.is_none()
+            && accounting.observation.is_none()
             && capture.status.as_ref().is_ok_and(|status| status.success())
             && parsed.as_ref().is_some_and(|v| {
                 v.get("is_error").and_then(serde_json::Value::as_bool) == Some(false)
             });
         let message = if success {
-            parsed
-                .as_ref()
-                .and_then(|v| v.get("result"))
-                .and_then(serde_json::Value::as_str)
-                .filter(|s| !s.trim().is_empty())
-                .map(|s| s.as_bytes().to_vec())
-                .ok_or_else(|| "Claude Worker returned no final message".into())
+            structured::message(
+                parsed.as_ref().expect("successful envelope"),
+                output_schema.is_some(),
+            )
+        } else if let Some(error) = accounting.error {
+            Err(error.into())
         } else {
             Err(format!("Claude Worker failed with {:?}", capture.status))
         };
         ModelWorkerReturn {
-            usage_observation,
+            usage_observation: accounting.observation,
             message,
-            usage,
+            usage: accounting.usage,
             raw_artifact_ids: capture.raw_artifact_ids,
         }
     }

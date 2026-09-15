@@ -249,3 +249,65 @@ fn adf_preserves_order_links_and_code_and_refuses_unknown_semantics() {
     }
     assert!(adf::plain_text(&json!({"type":"doc","version":1,"content":[deep]})).is_err());
 }
+
+#[test]
+fn adf_list_continuations_preserve_nesting_and_ordered_marker_width() {
+    let paragraph =
+        |text: &str| json!({"type":"paragraph","content":[{"type":"text","text":text}]});
+    let item = |content: Vec<Value>| json!({"type":"listItem","content":content});
+    let bullet = |content: Vec<Value>| json!({"type":"bulletList","content":content});
+    let document = |content: Vec<Value>| json!({"type":"doc","version":1,"content":content});
+    let flat = document(vec![bullet(vec![
+        item(vec![paragraph("a")]),
+        item(vec![paragraph("b")]),
+    ])]);
+    let nested = document(vec![bullet(vec![item(vec![
+        paragraph("a"),
+        bullet(vec![item(vec![paragraph("b")])]),
+    ])])]);
+    assert_eq!(adf::plain_text(&flat).unwrap(), "- a\n- b");
+    assert_eq!(adf::plain_text(&nested).unwrap(), "- a\n  - b");
+    let ordered = document(vec![
+        json!({"type":"orderedList","attrs":{"order":9},"content":[
+            item(vec![paragraph("outer"), paragraph("continued"), bullet(vec![item(vec![paragraph("nested")])])]),
+            item(vec![paragraph("next"), paragraph("still next")])
+        ]}),
+    ]);
+    assert_eq!(
+        adf::plain_text(&ordered).unwrap(),
+        "9. outer\n   continued\n   - nested\n10. next\n    still next"
+    );
+
+    let cancelled = AtomicBool::new(false);
+    let control = SourceControl {
+        deadline: Instant::now() + Duration::from_secs(5),
+        cancelled: &cancelled,
+    };
+    let select = selector();
+    let root = tempfile::tempdir().unwrap();
+    let cas = Cas::open(root.path()).unwrap();
+    let mut captures = vec![];
+    for description in [flat, nested] {
+        let mut body = response();
+        body["fields"]["description"] = description;
+        let recorded = Recorded {
+            status: 200,
+            body: serde_json::to_vec(&body).unwrap(),
+        };
+        let data = JiraSource {
+            selector: &select,
+            transport: &recorded,
+        }
+        .read(&control)
+        .unwrap();
+        captures.push(data.capture(&cas).unwrap());
+    }
+    assert_ne!(
+        captures[0].fields["description"].text_id,
+        captures[1].fields["description"].text_id
+    );
+    assert_eq!(
+        cas.get(&captures[1].fields["description"].text_id).unwrap(),
+        b"- a\n  - b"
+    );
+}

@@ -1792,6 +1792,16 @@ fn read_package_files(name: &str, root: &Path) -> Result<BTreeMap<String, Vec<u8
     Ok(files)
 }
 
+fn migration_minimum_af(running: &semver::Version) -> String {
+    if running.pre.is_empty() {
+        format!("{}.{}", running.major, running.minor)
+    } else {
+        // A prerelease sorts below its stable version. Dropping the suffix would
+        // produce authority that the migrating executable itself cannot read.
+        running.to_string()
+    }
+}
+
 fn migrated_project_file(project_name: &str, pipeline: &str, workers: &BTreeSet<String>) -> String {
     #[derive(Serialize)]
     struct ProjectFile<'a> {
@@ -1818,7 +1828,7 @@ fn migrated_project_file(project_name: &str, pipeline: &str, workers: &BTreeSet<
         version: 1,
         project: Project {
             name: project_name,
-            min_af: format!("{}.{}", running.major, running.minor),
+            min_af: migration_minimum_af(&running),
         },
         defaults: Defaults { pipeline },
         worker: workers
@@ -2104,6 +2114,21 @@ fn validate_migration(bundle: &Bundle) -> Result<(), String> {
 mod tests {
     use super::{build_definition, runner_model, validate_budget_arithmetic};
     use review_core::{Arg, Command};
+
+    #[test]
+    fn migration_minimum_preserves_prerelease_compatibility() {
+        let candidate = semver::Version::parse("0.9.0-rc.1").unwrap();
+        let minimum = super::migration_minimum_af(&candidate);
+        let required = semver::Version::parse(&minimum).unwrap();
+        assert_eq!(minimum, "0.9.0-rc.1");
+        assert!(semver::Version::parse("0.9.0-rc.0").unwrap() < required);
+        assert!(candidate >= required);
+        assert!(semver::Version::parse("0.9.0").unwrap() >= required);
+        assert_eq!(
+            super::migration_minimum_af(&semver::Version::parse("0.8.3").unwrap()),
+            "0.8"
+        );
+    }
 
     #[test]
     fn model_summary_understands_codex_short_flag() {

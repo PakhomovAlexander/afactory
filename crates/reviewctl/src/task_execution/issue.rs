@@ -218,13 +218,10 @@ pub(super) fn capture_fresh(
             if !review_config::task::shared::safe_relative_path(path) {
                 return Err("Invalid captured local issue path".into());
             }
-            let path = local_file
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| repo.join(path));
-            let path = if path.is_absolute() {
-                path
-            } else {
-                repo.join(path)
+            let path = match local_file {
+                Some(path) => std::path::absolute(path)
+                    .map_err(|_| "Cannot resolve explicit local issue source")?,
+                None => repo.join(path),
             };
             let meta = std::fs::symlink_metadata(&path)
                 .map_err(|_| "Cannot inspect local issue source")?;

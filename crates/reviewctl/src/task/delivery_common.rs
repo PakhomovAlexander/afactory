@@ -71,19 +71,7 @@ impl CommonDelivery {
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
                 let mut store = heartbeat_store.lock().expect("Delivery Store");
-                let task = store
-                    .task_projection(&heartbeat_cas, heartbeat_lease.task_id())
-                    .map_err(|e| e.to_string())?
-                    .ok_or("Unknown Task")?;
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .map_err(|e| e.to_string())?
-                    .as_millis() as u64;
-                if task.lease_until_unix_ms() < now.saturating_add(10_000) {
-                    store
-                        .renew_task_lease(&heartbeat_cas, &heartbeat_lease, 15_000)
-                        .map_err(|e| e.to_string())?;
-                }
+                heartbeat_tick(&mut store, &heartbeat_cas, &heartbeat_lease)?;
             }
         });
         Ok(Self {
@@ -96,6 +84,21 @@ impl CommonDelivery {
         })
     }
 }
+
+fn heartbeat_tick(store: &mut EventStore, cas: &Cas, lease: &TaskLease) -> Result<(), String> {
+    let lease_until = store.task_lease_state(lease).map_err(|e| e.to_string())?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_millis() as u64;
+    if lease_until < now.saturating_add(10_000) {
+        store
+            .renew_task_lease(cas, lease, 15_000)
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 impl Drop for CommonDelivery {
     fn drop(&mut self) {
         let _ = self.stop.send(());
@@ -269,4 +272,58 @@ pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets,
         source_manifest,
         derived_manifest,
     })
+}
+
+#[cfg(test)]
+mod heartbeat_tests {
+    use super::*;
+
+    #[test]
+    fn delivery_tick_refuses_replaced_writer_before_renewal_threshold() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+        let mut task: review_core::task::TaskRevisionV1 = serde_json::from_str(include_str!(
+            "../../../../fixtures/task-contracts/v1/task-revision.json"
+        ))
+        .unwrap();
+        let policy = cas
+            .put_json(&serde_json::json!({"fixture":"delivery lease"}))
+            .unwrap();
+        task.inputs.clear();
+        task.provenance.input_artifact_ids.clear();
+        task.provenance.adapter_id = policy.clone();
+        task.authority.policy_id = policy.clone();
+        task.acceptance.get_mut("checked").unwrap().verifier_policy = policy;
+        let revision = cas
+            .put_artifact(
+                review_core::task::TASK_REVISION_V1,
+                review_core::Producer::KernelOperation {
+                    run_id: "fixture".into(),
+                    node_id: None,
+                    operation_id: "capture".into(),
+                },
+                vec![],
+                None,
+                serde_json::to_value(&task).unwrap(),
+            )
+            .unwrap()
+            .0;
+        let old = store.open_task(&cas, &revision, "old", 60_000).unwrap();
+        heartbeat_tick(&mut store, &cas, &old).unwrap();
+        store.release_task_lease(&cas, &old).unwrap();
+        assert!(heartbeat_tick(&mut store, &cas, &old).is_err());
+        let current = store
+            .take_task_lease(&cas, &task.task_id, "new", 60_000)
+            .unwrap();
+        let run = review_store::store::task::task_run_id(&task.task_id).unwrap();
+        let prefix = store.replay(&run).unwrap();
+        assert!(heartbeat_tick(&mut store, &cas, &old).is_err());
+        heartbeat_tick(&mut store, &cas, &current).unwrap();
+        assert_eq!(
+            store.replay(&run).unwrap(),
+            prefix,
+            "ticks cannot acquire or renew another writer"
+        );
+    }
 }

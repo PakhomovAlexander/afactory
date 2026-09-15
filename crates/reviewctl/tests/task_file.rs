@@ -152,7 +152,11 @@ else:
  value=json.loads(request)
  assert set(value['inputs'])=={'source','subject','history','checks'}
  result=json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'verdict':'approve','summary':'Checked source','reports':[],'benchmark_demands':[],'disputes':[]}]}})
-print(json.dumps({'is_error':False,'result':result,'usage':{'input_tokens':10,'output_tokens':2,'cache_creation_input_tokens':0}}))
+envelope={'is_error':False,'result':result,'usage':{'input_tokens':10,'output_tokens':2,'cache_creation_input_tokens':0}}
+if request!='Reply with exactly: OK\n':
+ assert '--json-schema' in sys.argv
+ envelope['structured_output']=json.loads(result)
+print(json.dumps(envelope))
 "#;
     let codex_stub = r#"#!/usr/bin/python3
 import os,json,sys

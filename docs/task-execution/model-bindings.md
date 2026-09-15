@@ -96,6 +96,18 @@ failure retains its exact charge. The sidecar preserves both facts before CAS pu
 through recovery. Valid native calls retain their previous artifact identities. See
 [ADR-0088](../adr/0088-retain-native-billing-completeness-with-task-usage.md).
 
+Generic Claude Task returns also account for an optional per-model usage breakdown, without
+adding its overlapping top-level summary twice. Malformed or conflicting summaries preserve
+known charge and refuse output. An explicitly selected model refuses other reported model
+activity while retaining its usage; an entirely zero foreign entry is unused metadata. This
+is detection after execution, not prevention of internal client inference or its input delivery.
+The adapter disables native nonessential traffic and terminal-title generation through owned
+environment settings. Static client evidence supports the automatic title path; it does not
+prove suppression of every internal call. Personal authentication grants remain unchanged.
+An absent breakdown retains the previous native format; old settled receipts are unchanged.
+Legacy Review and old smoke parsing remain separate follow-ups. See
+[ADR-0102](../adr/0102-account-for-every-reported-claude-task-model.md).
+
 The native adapter's controlled invocation boundary can stop an owned process group and retain
 cancelled usage through bounded output draining. Unsupported adapters refuse a supplied control.
 Common CLI Task, planning, Review and doctor execution share that control with their writer
