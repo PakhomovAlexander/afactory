@@ -11,7 +11,7 @@ license.workspace = true
 review-attempt = { path = "../review-attempt" }
 review-graph = { path = "../review-graph" }
 review-core = { path = "../review-core" }
-rusqlite = { version = "0.37.0", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 sha2 = "0.10.9"
