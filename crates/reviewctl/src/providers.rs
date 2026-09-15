@@ -2745,7 +2745,18 @@ fn read_registry_with_hooks(
     // A writer may have created the marker after the first check and exchanged the candidate
     // while this read was in flight. Rechecking gives current readers the stronger recovery fence;
     // older readers still see only the complete registry committed by the atomic exchange.
-    ensure_registry_transactions_clear(path, &resolved)?;
+    let current_resolved = resolve_registry(path)?;
+    if let Some(current_resolved) = current_resolved.as_deref() {
+        ensure_registry_transactions_clear(path, current_resolved)?;
+    } else {
+        ensure_no_registry_transaction(path)?;
+    }
+    if current_resolved.as_deref() != Some(resolved.as_path()) {
+        return Err(format!(
+            "provider registry target changed while reading {}; retry",
+            path.display()
+        ));
+    }
     #[cfg(unix)]
     {
         let configured_alias_changed = configured_parent
@@ -5400,6 +5411,39 @@ mod tests {
             "{error}"
         );
         assert!(error.contains(path.to_str().unwrap()), "{error}");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn reader_rechecks_a_leaf_symlink_retargeted_to_a_fenced_registry() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("providers-first.toml");
+        let second = root.path().join("providers-second.toml");
+        let alias = root.path().join("providers-alias.toml");
+        fs::write(&first, "version = 1\n# first\nproviders = []\n").unwrap();
+        fs::write(&second, "version = 1\n# second\nproviders = []\n").unwrap();
+        symlink(&first, &alias).unwrap();
+        let second_transaction = registry_transaction_path(&second);
+        fs::write(&second_transaction, "version = 1\n").unwrap();
+
+        let error = read_registry_with_hooks(
+            &alias,
+            || {},
+            || {
+                fs::remove_file(&alias).unwrap();
+                symlink(&second, &alias).unwrap();
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("unfinished publication transaction"),
+            "{error}"
+        );
+        assert!(error.contains(second.to_str().unwrap()), "{error}");
+        assert!(second_transaction.is_file());
     }
 
     #[cfg(any(
