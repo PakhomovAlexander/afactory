@@ -13,21 +13,10 @@ release pages only.
 
 ### Authority compatibility
 
-Prerelease: new Task executions require versioned .af Task authority; legacy .review consumers require af onboard --migrate --apply. Preserve the old Store and known-good release; migrate and verify release pins before consumer cutover. Live pilot acceptance remains pending.
+This is a prerelease for Task integration and migration validation. Live pilot acceptance
+and complete consumer migration/rollback verification remain pending; this candidate does
+not establish stable-release readiness or replace the known-good consumer installation.
 
-### Changes
-
-- Install the toolchain's declared components in the release build jobs (#73)
-- docs: backlog after the 2026-09-10 review — .review/ drop shipped, three issues remain (#74)
-- Explain a logged-out Provider row in af provider status (#77)
-- Cache cargo dependencies and build artifacts in CI (#78)
-- Make Task execution durable across implementation and review (#75)
-- Build shared Task pipelines with embedded review and reusable packages (#76)
-- Prepare the repository for open source (#79)
-- Retry ETXTBSY on spawn and widen one reservation test's allowance (#88)
-### Authority compatibility
-
-The Task increment is implemented and unreleased.
 New Task execution requires its versioned `.af` catalog, Pipeline/Worker contracts and lock.
 Every generated Execution Plan requires an authorized developer's exact-plan approval.
 Local bindings do not travel with shared definitions. Existing `.review` consumers still
@@ -64,9 +53,20 @@ or reopen completed work. Release-bound migration and rollback evidence are rele
   fallback; the release also ships `LICENSE` (Apache-2.0), `SECURITY.md`, `CONTRIBUTING.md`
   and a restructured `docs/` (architecture, tasks, migration, non-goals, design notes).
 
-Specialist PR reviews, the separately budgeted live pilot, supported boundary checks and the
-checksummed consumer cutover remain required before release completion. See
-[Task execution status](docs/task-execution.md).
+- Account for every model reported by native Claude Task usage; preserve auxiliary charges
+  and refuse unapproved auxiliary activity instead of accepting an Opus selector alone.
+- Use native JSON schemas and structured output for typed Claude Task replies while retaining
+  independent Kernel output validation and the existing legacy text transport.
+- Retry transient executable-busy process starts and correct concurrent Linux test allowances.
+- Explain logged-out Provider status and install declared toolchain components in release jobs.
+
+### Validation boundary
+
+The release workflow checks the tagged source on Linux and macOS, runs consumer fixtures,
+and signs archive checksums. These deterministic checks do not replace specialist reviews,
+live Task measurements or actual consumer migration and rollback rehearsals. See
+[Task execution](docs/task-execution.md) for the contracts; candidate publication does not
+claim those remaining acceptance gates have passed.
 
 ## [0.8.0] - 2026-09-08
 
