@@ -1897,6 +1897,18 @@ fn parse_registry(text: &str, path: &Path) -> Result<Vec<ProviderSpec>, String> 
                 "provider `{id}` auth_dir must be an absolute path without `..`"
             ));
         }
+        let unresolved = fs::symlink_metadata(&auth_dir).map_err(|error| {
+            format!(
+                "provider `{id}` auth_dir {} cannot be inspected: {error}",
+                auth_dir.display()
+            )
+        })?;
+        if unresolved.file_type().is_symlink() {
+            return Err(format!(
+                "provider `{id}` auth_dir {} must not be a symlink",
+                auth_dir.display()
+            ));
+        }
         let auth_dir = fs::canonicalize(&auth_dir).map_err(|error| {
             format!(
                 "provider `{id}` auth_dir {} cannot be resolved: {error}",
@@ -4506,6 +4518,28 @@ auth_dir = "{}"
         assert!(providers.iter().all(|provider| provider.registry_declared));
         assert_eq!(providers[0].id, "claude-ambient");
         assert_eq!(providers[1].id, "codex-ambient");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn registry_rejects_a_symlinked_auth_context_before_canonicalization() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let target = root.path().join("real-auth");
+        let linked = root.path().join("linked-auth");
+        fs::create_dir(&target).unwrap();
+        symlink(&target, &linked).unwrap();
+        let registry = format!(
+            "version = 1\n[[providers]]\nid = \"codex-main\"\nkind = \"codex\"\nauth_dir = {:?}\n",
+            linked.to_str().unwrap()
+        );
+
+        let error = match parse_registry(&registry, Path::new("/registry.toml")) {
+            Ok(_) => panic!("symlinked auth context was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.contains("must not be a symlink"), "{error}");
     }
 
     #[test]
