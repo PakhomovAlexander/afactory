@@ -13,20 +13,25 @@ release pages only.
 
 ### Authority compatibility
 
-Prerelease: Task-file start now previews without executing; confirm the captured plan before running, or explicitly opt into --execute automation. Existing .af authority remains supported; legacy .review migration and exact release pin verification still apply. Generated plans retain signed approval.
+Prerelease: `af task start` now captures and previews without dispatching Workers, including
+with `--json`. Review the plan, then run with `--confirm-plan` and its full captured ID.
+Automation must explicitly opt into `--execute` on start or on the first run of a plan.
+Admitted Tasks can resume and finished Tasks replay as before. This CLI confirmation never
+replaces signed developer approval for a generated plan. Existing `.af` authority remains
+supported; legacy `.review` migration and exact release pin verification still apply.
 
 ### Changes
 
-- Install the toolchain's declared components in the release build jobs (#73)
-- docs: backlog after the 2026-09-10 review — .review/ drop shipped, three issues remain (#74)
-- Explain a logged-out Provider row in af provider status (#77)
-- Cache cargo dependencies and build artifacts in CI (#78)
-- Make Task execution durable across implementation and review (#75)
-- Build shared Task pipelines with embedded review and reusable packages (#76)
-- Prepare the repository for open source (#79)
-- Retry ETXTBSY on spawn and widen one reservation test's allowance (#88)
-- release: v0.9.0-rc.1 (#92)
-- Fix Task refresh and reduce repeated validation work (#91)
+- Render captured Task plans as compact ASCII flows or expanded `task explain --tree` views,
+  with embedded calls, actual Worker models/efforts/accounts, inputs, outputs, effects and limits.
+- Stop new Tasks before execution and refuse stale plan confirmations, including a plan change
+  before the writer lease is acquired. Explicit automation retains existing runtime admission.
+- Keep JSON inspection schemas unchanged, sanitize terminal display text, and document the
+  preview/approval workflow for Claude and Codex.
+
+The live pilot and complete consumer migration/rollback acceptance remain pending. This
+candidate does not declare stable-release readiness or change the active consumer's pin.
+
 ## [0.9.0-rc.1] - 2026-09-15
 
 ### Authority compatibility

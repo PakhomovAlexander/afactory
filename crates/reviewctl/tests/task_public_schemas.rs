@@ -391,7 +391,14 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
     let listed = json_output(cli(&repo, &state, &["task", "list"]), 0);
     valid(&list_schema, &listed["tasks"][0]);
     assert!(listed["tasks"][0]["outcome"].is_null());
-    let finished = json_output(cli(&repo, &state, &["task", "run", "pagination-cli"]), 0);
+    let finished = json_output(
+        cli(
+            &repo,
+            &state,
+            &["task", "run", "--execute", "pagination-cli"],
+        ),
+        0,
+    );
     valid(&inspection_schema, &finished);
     let listed = json_output(cli(&repo, &state, &["task", "list"]), 0);
     let entry = &listed["tasks"][0];

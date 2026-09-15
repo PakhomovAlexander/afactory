@@ -54,7 +54,14 @@ fn review_file_uses_common_task_state_and_keeps_changes_requested_exit() {
     assert!(!state.join("tasks.sqlite").exists());
     let replay = Command::new(env!("CARGO_BIN_EXE_af"))
         .current_dir(&repo)
-        .args(["task", "run", "review-cli", "--json", "--state"])
+        .args([
+            "task",
+            "run",
+            "--execute",
+            "review-cli",
+            "--json",
+            "--state",
+        ])
         .arg(&state)
         .output()
         .unwrap();
@@ -266,11 +273,11 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
         "Identical capabilities did not share admission"
     );
     std::fs::write(&email, "changed@example.test").unwrap();
-    let changed = run(&["task", "run", "review-cli"]);
+    let changed = run(&["task", "run", "--execute", "review-cli"]);
     assert!(!changed.status.success());
     assert!(!calls.exists(), "Changed account reached model dispatch");
     std::fs::write(&email, "developer@example.test").unwrap();
-    let output = run(&["task", "run", "review-cli"]);
+    let output = run(&["task", "run", "--execute", "review-cli"]);
     if let Some(after) = switch_after {
         assert_eq!(
             output.status.code(),
@@ -398,7 +405,11 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     assert_eq!(result["chargeable_tokens"], "36");
     assert_eq!(result["result"]["domain_conclusion"], "pass");
     assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 3);
-    assert!(run(&["task", "run", "review-cli"]).status.success());
+    assert!(
+        run(&["task", "run", "--execute", "review-cli"])
+            .status
+            .success()
+    );
     assert_eq!(std::fs::read_to_string(calls).unwrap().lines().count(), 3);
 }
 
@@ -491,7 +502,7 @@ fn captured_task_kind_packages_keep_business_names_and_domain_acceptance() {
         std::fs::write(package.join("kind.toml"), "modified after capture").unwrap();
         let output = Command::new(env!("CARGO_BIN_EXE_af"))
             .current_dir(&repo)
-            .args(["task", "run", task_id, "--json", "--state"])
+            .args(["task", "run", "--execute", task_id, "--json", "--state"])
             .arg(&state)
             .output()
             .unwrap();
@@ -615,6 +626,7 @@ fn embedded_review_never_accepts_findings_missing_reviewers_or_failed_checks() {
             .args([
                 "task",
                 "start",
+                "--execute",
                 "--file",
                 "ticket.json",
                 "--json",
@@ -664,7 +676,7 @@ fn implementation_embeds_the_same_locked_review_and_one_task_budget() {
         "fixture/review"
     );
     assert_eq!(plan["attempts"], 0);
-    let result = af(&repo, &state, &["run", "pagination-cli"]);
+    let result = af(&repo, &state, &["run", "--execute", "pagination-cli"]);
     assert_eq!(
         result["attempts"], 5,
         "Implementation, checks, two reviewers and goal evaluation share five Attempts"
@@ -699,7 +711,11 @@ fn implementation_embeds_the_same_locked_review_and_one_task_budget() {
         standalone_plan["plan"]["pipeline_id"],
         plan["plan"]["dependencies"]["fixture/review"]["artifact_id"]
     );
-    let standalone = af(&delivered, &standalone_state, &["run", "standalone-cli"]);
+    let standalone = af(
+        &delivered,
+        &standalone_state,
+        &["run", "--execute", "standalone-cli"],
+    );
     assert_eq!(standalone["attempts"], 3);
     assert_eq!(standalone["result"]["domain_conclusion"], "pass");
     let review = &result["review_rounds"][0];
@@ -811,7 +827,7 @@ fn two_developers_share_one_pipeline_with_captured_private_worker_bindings() {
         )
         .unwrap();
         std::fs::write(&bindings, "invalid after capture").unwrap();
-        let run = af(&repo, &state, &["run", "pagination-cli"]);
+        let run = af(&repo, &state, &["run", "--execute", "pagination-cli"]);
         assert_eq!(run["plan_id"], plan["plan_id"]);
         assert_eq!(run["result"]["acceptance"], "satisfied");
         assert_eq!(run["attempts"], 3);
@@ -839,7 +855,7 @@ fn plan_then_run_uses_captured_inputs_and_does_not_repeat_finished_attempts() {
         "raise Exception('live Worker must not run')",
     )
     .unwrap();
-    let run = af(&repo, &state, &["run", "pagination-cli"]);
+    let run = af(&repo, &state, &["run", "--execute", "pagination-cli"]);
     assert_eq!(run["attempts"], 3);
     assert_eq!(run["result"]["acceptance"], "satisfied");
     assert_eq!(run["plan_id"], planned["plan_id"]);
@@ -847,7 +863,7 @@ fn plan_then_run_uses_captured_inputs_and_does_not_repeat_finished_attempts() {
         std::fs::read_to_string(repo.join("pagination.py")).unwrap(),
         "live source changed\n"
     );
-    let resumed = af(&repo, &state, &["run", "pagination-cli"]);
+    let resumed = af(&repo, &state, &["run", "--execute", "pagination-cli"]);
     assert_eq!(resumed, run);
     let explained = af(&repo, &state, &["explain", "pagination-cli"]);
     assert_eq!(explained["plan"], planned["plan"]);
@@ -863,7 +879,11 @@ fn plan_then_run_uses_captured_inputs_and_does_not_repeat_finished_attempts() {
 fn task_start_accepts_a_file_without_legacy_goal_or_kind_flags() {
     let temp = tempfile::tempdir().unwrap();
     let (repo, state) = fixture(temp.path());
-    let run = af(&repo, &state, &["start", "--file", "ticket.json"]);
+    let run = af(
+        &repo,
+        &state,
+        &["start", "--execute", "--file", "ticket.json"],
+    );
     assert_eq!(run["result"]["acceptance"], "satisfied");
     assert_eq!(run["attempts"], 3);
     assert!(!state.join("tasks.sqlite").exists());
@@ -963,7 +983,11 @@ fn task_file_legacy_workers_receive_bound_metadata_with_zero_command_reservation
         }
         assert!(cmd.status().unwrap().success());
     }
-    let run = af(&repo, &state, &["start", "--file", "ticket.json"]);
+    let run = af(
+        &repo,
+        &state,
+        &["start", "--execute", "--file", "ticket.json"],
+    );
     assert_eq!(run["result"]["acceptance"], "satisfied");
     assert_eq!(run["attempts"], 3);
     let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
@@ -1011,7 +1035,10 @@ fn task_file_legacy_workers_receive_bound_metadata_with_zero_command_reservation
     }
     assert_eq!(reservations, 3);
     assert_eq!(workers, 2);
-    assert_eq!(af(&repo, &state, &["run", "pagination-cli"]), run);
+    assert_eq!(
+        af(&repo, &state, &["run", "--execute", "pagination-cli"]),
+        run
+    );
 }
 
 #[test]
@@ -1048,5 +1075,5 @@ fn current_review_catalog_uses_exact_assignments_and_reopens_without_dispatch() 
     assert!(graph.contains("af/TaskReviewSubject@2"));
     assert!(graph.contains("af/TaskReviewAssignment@1"));
     assert!(graph.contains("review.kernel/ReviewerResult@2"));
-    assert_eq!(invoke(&["task", "run", "review-cli"]), result);
+    assert_eq!(invoke(&["task", "run", "--execute", "review-cli"]), result);
 }

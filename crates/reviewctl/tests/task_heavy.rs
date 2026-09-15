@@ -217,7 +217,7 @@ fn full_s2_review_retains_original_round_and_consumes_independent_fix_receipts()
     let (code, plan) = run(&repo, &state, &["task", "plan", "--file", "ticket.json"]);
     assert_eq!(code, 0, "{plan:#}");
     assert_eq!(plan["attempts"], 0);
-    let (code, result) = run(&repo, &state, &["task", "run", "repair-cli"]);
+    let (code, result) = run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
     assert_eq!(code, 0, "{result:#}");
     assert_eq!(result["attempts"], 11);
     assert_eq!(result["result"]["acceptance"], "satisfied");
@@ -249,7 +249,7 @@ fn full_s2_review_retains_original_round_and_consumes_independent_fix_receipts()
         .unwrap();
     assert_eq!(verification["type"], "af/ReviewedImplementation@1");
     assert_eq!(verification["payload"]["scope"], "complete_review");
-    let (code, replay) = run(&repo, &state, &["task", "run", "repair-cli"]);
+    let (code, replay) = run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
     assert_eq!(code, 0);
     assert_eq!(replay, result);
     review_memo::refuses_changed_history(&state, &rounds[1]["invocation"], &rounds[0]);
@@ -261,7 +261,11 @@ fn heavy_review_cannot_erase_negative_missing_stale_or_rediscovered_claims() {
         let dir = tempfile::tempdir().unwrap();
         let (repo, state) = task_cli::fixture_named(dir.path(), "bounded-repair");
         configure(&repo, case);
-        let (code, result) = run(&repo, &state, &["task", "start", "--file", "ticket.json"]);
+        let (code, result) = run(
+            &repo,
+            &state,
+            &["task", "start", "--execute", "--file", "ticket.json"],
+        );
         assert_eq!(code, 3, "{case}: {result:#}");
         assert_eq!(
             result["result"]["acceptance"], "unsatisfied",
@@ -273,7 +277,7 @@ fn heavy_review_cannot_erase_negative_missing_stale_or_rediscovered_claims() {
             result["review_rounds"][1]["conclusion"],
             "convergence_exhausted"
         );
-        let (code, replay) = run(&repo, &state, &["task", "run", "repair-cli"]);
+        let (code, replay) = run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
         assert_eq!(code, 3);
         assert_eq!(replay, result);
     }

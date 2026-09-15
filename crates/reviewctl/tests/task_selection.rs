@@ -143,11 +143,21 @@ fn incompatible_small_selects_existing_heavy_and_resume_ignores_edited_catalog()
     assert!(planned["execution_records"].as_array().unwrap().is_empty());
     std::fs::write(repo.join(".af/task-catalog.toml"), "invalid edited policy").unwrap();
     std::fs::remove_dir_all(repo.join(".af/task-packages/fixture/heavy")).unwrap();
-    let finished = run(&repo, &state, &["task", "run", "pagination-cli"], 0);
+    let finished = run(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "pagination-cli"],
+        0,
+    );
     assert_eq!(finished["attempts"], 3);
     assert_eq!(finished["result"]["acceptance"], "satisfied");
     assert_eq!(finished["selection"], planned["selection"]);
-    let replay = run(&repo, &state, &["task", "run", "pagination-cli"], 0);
+    let replay = run(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "pagination-cli"],
+        0,
+    );
     assert_eq!(replay, finished);
 }
 
@@ -249,7 +259,7 @@ fn selection_refusals_are_persisted_distinct_and_dispatch_nothing() {
         let result = run(
             &repo,
             &state,
-            &["task", "start", "--file", "ticket.json"],
+            &["task", "start", "--execute", "--file", "ticket.json"],
             1,
         );
         assert_eq!(
@@ -318,7 +328,12 @@ fn trusted_ranking_and_over_budget_fallback_choose_only_feasible_definitions() {
                 "infeasible"
             );
         }
-        let finished = run(&repo, &state, &["task", "run", "pagination-cli"], 0);
+        let finished = run(
+            &repo,
+            &state,
+            &["task", "run", "--execute", "pagination-cli"],
+            0,
+        );
         assert_eq!(finished["attempts"], 3);
     }
 }

@@ -130,12 +130,22 @@ fn signed_approval_is_exact_idempotent_and_survives_process_and_catalog_changes(
         "untrusted edited developer keys",
     )
     .unwrap();
-    let finished = run(&repo, &state, &["task", "run", "pagination-cli"], 0);
+    let finished = run(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "pagination-cli"],
+        0,
+    );
     assert_eq!(finished["attempts"], 3);
     assert_eq!(finished["result"]["acceptance"], "satisfied");
     assert_eq!(finished["plan_decisions"], approved["plan_decisions"]);
     assert_eq!(
-        run(&repo, &state, &["task", "run", "pagination-cli"], 0),
+        run(
+            &repo,
+            &state,
+            &["task", "run", "--execute", "pagination-cli"],
+            0
+        ),
         finished
     );
 }
@@ -265,7 +275,12 @@ fn signed_rejection_prevents_dispatch_after_restart() {
         rejected["plan_decisions"][0]["decision"]["decision"],
         "rejected"
     );
-    run(&repo, &state, &["task", "run", "pagination-cli"], 1);
+    run(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "pagination-cli"],
+        1,
+    );
     let inspected = run(&repo, &state, &["task", "explain", "pagination-cli"], 0);
     assert_eq!(inspected["attempts"], 0);
     assert_eq!(decisions(&inspected), 1);
