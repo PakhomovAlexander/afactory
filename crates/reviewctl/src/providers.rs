@@ -30,7 +30,7 @@ use sha2::{Digest, Sha256};
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
 #[cfg(unix)]
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
@@ -404,6 +404,15 @@ fn resolve_auth_dir(
     {
         return Err("--auth-dir must be an absolute path without `..`".into());
     }
+    // The registry format is TOML and therefore cannot represent an arbitrary Unix byte path.
+    // Reject it before directory creation, status probes, or an interactive login can have side
+    // effects that the command would then be unable to publish.
+    if auth_dir.to_str().is_none() {
+        return Err(format!(
+            "auth directory {} is not valid UTF-8 and cannot be stored in TOML",
+            auth_dir.display()
+        ));
+    }
     match fs::symlink_metadata(&auth_dir) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(format!(
@@ -441,6 +450,12 @@ fn resolve_auth_dir(
             auth_dir.display()
         )
     })?;
+    if auth_dir.to_str().is_none() {
+        return Err(format!(
+            "auth directory {} is not valid UTF-8 and cannot be stored in TOML",
+            auth_dir.display()
+        ));
+    }
     if !auth_dir.is_dir() {
         return Err(format!(
             "auth directory {} is not a directory",
@@ -453,8 +468,6 @@ fn resolve_auth_dir(
 
 #[cfg(unix)]
 fn validate_private_auth_directory(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::MetadataExt;
-
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("cannot inspect auth directory {}: {error}", path.display()))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -868,6 +881,7 @@ fn registry_lock(path: &Path) -> Result<File, String> {
         .parent()
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
     create_dir_all_durable(parent)?;
+    validate_registry_directory(parent)?;
     let mut lock_name = path.as_os_str().to_os_string();
     lock_name.push(".lock");
     let lock_path = PathBuf::from(lock_name);
@@ -895,6 +909,17 @@ fn registry_lock(path: &Path) -> Result<File, String> {
             lock_path.display()
         ));
     }
+    #[cfg(unix)]
+    {
+        validate_owned_not_writable_by_others(&lock_path, &metadata, "provider registry lock")?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| {
+                format!(
+                    "securing provider registry lock {}: {error}",
+                    lock_path.display()
+                )
+            })?;
+    }
     fs2::FileExt::lock_exclusive(&file)
         .map_err(|error| format!("locking provider registry {}: {error}", lock_path.display()))?;
     Ok(file)
@@ -909,6 +934,8 @@ fn write_registry(
         .parent()
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
     create_dir_all_durable(parent)?;
+    validate_registry_directory(parent)?;
+    #[cfg(not(unix))]
     let permissions = fs::metadata(path)
         .ok()
         .map(|metadata| metadata.permissions());
@@ -917,7 +944,7 @@ fn write_registry(
     #[cfg(unix)]
     temporary
         .as_file()
-        .set_permissions(permissions.unwrap_or_else(|| fs::Permissions::from_mode(0o600)))
+        .set_permissions(fs::Permissions::from_mode(0o600))
         .map_err(|error| format!("setting provider registry permissions: {error}"))?;
     #[cfg(not(unix))]
     if let Some(permissions) = permissions {
@@ -981,7 +1008,7 @@ fn create_dir_all_durable(path: &Path) -> Result<(), String> {
         }
     }
     for directory in missing.into_iter().rev() {
-        match fs::create_dir(&directory) {
+        match create_registry_directory(&directory) {
             Ok(()) => {}
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                 if !fs::metadata(&directory)
@@ -1011,6 +1038,69 @@ fn create_dir_all_durable(path: &Path) -> Result<(), String> {
         sync_directory(parent)?;
     }
     Ok(())
+}
+
+#[cfg(unix)]
+fn create_registry_directory(path: &Path) -> std::io::Result<()> {
+    fs::DirBuilder::new().mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_registry_directory(path: &Path) -> std::io::Result<()> {
+    fs::create_dir(path)
+}
+
+#[cfg(unix)]
+fn validate_owned_not_writable_by_others(
+    path: &Path,
+    metadata: &fs::Metadata,
+    what: &str,
+) -> Result<(), String> {
+    let effective_uid = nix::unistd::geteuid().as_raw();
+    if metadata.uid() != effective_uid {
+        return Err(format!(
+            "{what} {} is owned by uid {}, not the current uid {effective_uid}",
+            path.display(),
+            metadata.uid()
+        ));
+    }
+    if metadata.mode() & 0o022 != 0 {
+        return Err(format!(
+            "{what} {} is writable by another user; fix: chmod go-w {}",
+            path.display(),
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_registry_directory(path: &Path) -> Result<(), String> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        format!(
+            "cannot inspect provider registry directory {}: {error}",
+            path.display()
+        )
+    })?;
+    if !metadata.is_dir() {
+        return Err(format!(
+            "provider registry directory {} is not a directory",
+            path.display()
+        ));
+    }
+    validate_owned_not_writable_by_others(path, &metadata, "provider registry directory")
+}
+
+#[cfg(not(unix))]
+fn validate_registry_directory(path: &Path) -> Result<(), String> {
+    if path.is_dir() {
+        Ok(())
+    } else {
+        Err(format!(
+            "provider registry directory {} is not a directory",
+            path.display()
+        ))
+    }
 }
 
 #[cfg(unix)]
@@ -1676,6 +1766,11 @@ fn read_registry_with_hooks(
     before_read: impl FnOnce(),
     after_read: impl FnOnce(),
 ) -> Result<Option<String>, String> {
+    if let Some(parent) = path.parent()
+        && parent.exists()
+    {
+        validate_registry_directory(parent)?;
+    }
     // Check beside the configured pathname even when the registry is absent. A writer may have
     // created its marker before publishing the first file, or the pathname may have been swapped
     // between a regular file and a symlink.
@@ -1757,6 +1852,8 @@ fn read_registry_resolved(path: &Path, resolved: &Path) -> Result<String, String
             path.display()
         ));
     }
+    #[cfg(unix)]
+    validate_owned_not_writable_by_others(path, &metadata, "provider registry")?;
     if metadata.len() > MAX_REGISTRY_BYTES {
         return Err(format!(
             "provider registry {} exceeds {MAX_REGISTRY_BYTES} bytes",

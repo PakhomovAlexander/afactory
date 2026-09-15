@@ -19,7 +19,10 @@ non-cooperating replacement is reported separately and never destroys the preser
 Interactive setup is serialized by Provider kind and canonical auth-directory identity, independent
 of `AF_PROVIDERS_FILE`, so two registries cannot drive one credential context concurrently. Explicit
 registration rejects symlinked, foreign-owned, or group/world-writable auth directories on Unix,
-and admission revalidates the directory before paid Provider work.
+and admission revalidates the directory before paid Provider work. Registry publication creates
+private directories and `0600` files independent of the caller's umask, and rejects registry state
+that another local user can replace or mutate. Auth paths that cannot be represented in the TOML
+registry are rejected before directory creation, probes, or interactive login.
 
 ## Considered options
 

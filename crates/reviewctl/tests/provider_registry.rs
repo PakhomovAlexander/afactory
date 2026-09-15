@@ -6,6 +6,8 @@ use std::process::{Command, Output};
 use std::sync::{Arc, Barrier};
 
 #[cfg(unix)]
+use std::os::unix::ffi::OsStringExt;
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 fn af(home: &Path, args: &[&str]) -> Output {
@@ -318,6 +320,34 @@ fn setup_rejects_a_symlinked_auth_directory() {
 
 #[cfg(unix)]
 #[test]
+fn setup_rejects_a_non_utf8_auth_directory_before_creating_it() {
+    let root = tempfile::tempdir().unwrap();
+    let auth = root
+        .path()
+        .join(std::ffi::OsString::from_vec(b"codex-auth-\xff".to_vec()));
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .args(["provider", "setup", "codex-main", "--kind", "codex"])
+        .env("HOME", root.path())
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("CODEX_HOME", &auth)
+        .env("AF_SELF_OFFLINE", "1")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("not valid UTF-8 and cannot be stored in TOML"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(
+        !auth.exists(),
+        "setup created an unpublishable auth directory"
+    );
+    assert!(!root.path().join("config/af/providers.toml").exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn setup_rejects_authenticated_output_from_a_failed_status_command() {
     let root = tempfile::tempdir().unwrap();
     let auth = root.path().join("codex-auth");
@@ -488,6 +518,90 @@ fn add_creates_a_machine_local_registry_and_refuses_ambiguous_duplicates() {
         "{}",
         stderr(&duplicate)
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn add_creates_private_registry_state_even_with_a_wide_umask() {
+    let root = tempfile::tempdir().unwrap();
+    let auth = root.path().join("codex-auth");
+    std::fs::create_dir(&auth).unwrap();
+    let output = Command::new("/bin/sh")
+        .args([
+            "-c",
+            "umask 0002; exec \"$1\" provider add codex-main --kind codex --auth-dir \"$2\"",
+            "sh",
+        ])
+        .arg(env!("CARGO_BIN_EXE_af"))
+        .arg(&auth)
+        .env("HOME", root.path())
+        .env("XDG_CONFIG_HOME", root.path().join("config"))
+        .env("AF_SELF_OFFLINE", "1")
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+
+    let directory = root.path().join("config/af");
+    let registry = directory.join("providers.toml");
+    let lock = directory.join("providers.toml.lock");
+    assert_eq!(
+        std::fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(
+        std::fs::metadata(&registry).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        std::fs::metadata(&lock).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn add_rejects_registry_state_writable_by_other_users() {
+    for unsafe_target in ["directory", "registry"] {
+        let root = tempfile::tempdir().unwrap();
+        let auth = root.path().join("codex-auth");
+        let directory = root.path().join("config/af");
+        let registry = directory.join("providers.toml");
+        std::fs::create_dir(&auth).unwrap();
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(&registry, "version = 1\nproviders = []\n").unwrap();
+        let target = if unsafe_target == "directory" {
+            &directory
+        } else {
+            &registry
+        };
+        let mut permissions = std::fs::metadata(target).unwrap().permissions();
+        permissions.set_mode(if unsafe_target == "directory" {
+            0o777
+        } else {
+            0o666
+        });
+        std::fs::set_permissions(target, permissions).unwrap();
+
+        let output = af(
+            root.path(),
+            &[
+                "provider",
+                "add",
+                "codex-main",
+                "--kind",
+                "codex",
+                "--auth-dir",
+                auth.to_str().unwrap(),
+            ],
+        );
+        assert!(!output.status.success());
+        assert!(
+            stderr(&output).contains("writable by another user"),
+            "{}: {}",
+            unsafe_target,
+            stderr(&output)
+        );
+    }
 }
 
 #[test]
