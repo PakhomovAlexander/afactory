@@ -65,17 +65,7 @@ pub fn with_heartbeat_controlled<T>(
                     .map_err(|e| e.to_string())?
                     .as_millis() as u64;
                 let mut store = store.lock().expect("Task Store");
-                let lease_until = if cancellation.is_some() {
-                    store
-                        .check_task_lease_current(cas, lease)
-                        .map_err(|e| e.to_string())?
-                } else {
-                    store
-                        .task_projection(cas, lease.task_id())
-                        .map_err(|e| e.to_string())?
-                        .ok_or("Unknown Task")?
-                        .lease_until_unix_ms()
-                };
+                let lease_until = store.task_lease_state(lease).map_err(|e| e.to_string())?;
                 if lease_until < now.saturating_add(10_000) {
                     store
                         .renew_task_lease(cas, lease, 15_000)

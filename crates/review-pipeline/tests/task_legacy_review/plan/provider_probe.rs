@@ -79,6 +79,7 @@ fn brokered_provider_compiler_captures_independent_policy_and_reopens_read_only(
         .unwrap();
     let revision = artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
     let (plan, compilation) = compiler.compile(&cas, &revision).unwrap();
+    assert_cached_authority_is_fresh(&cas, &cas_root, &compiler, &task, &plan);
     assert_plan_schemas(&cas, &compiler, &plan);
     let graph = &compilation.compilation.graph;
     let admissions: Vec<_> = graph

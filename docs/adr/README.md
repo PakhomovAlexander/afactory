@@ -178,3 +178,10 @@ Record the options you rejected and why — that is the part future readers need
   inputs](0094-bind-task-review-assignments-and-readable-inputs.md)
 - [0099 — Select Task Review generation independently of Provider
   costs](0099-select-task-review-generation-independently-of-provider-costs.md)
+- [0100 — Preserve issue hierarchy and selected-field refresh semantics](0100-preserve-issue-hierarchy-and-selected-field-refresh.md)
+- [0101 — Reuse Review structure with fresh Task
+  boundaries](0101-reuse-review-structure-with-fresh-task-boundaries.md)
+- [0102 — Account for every reported Claude Task
+  model](0102-account-for-every-reported-claude-task-model.md)
+- [0103 — Constrain native Claude Task
+  replies](0103-constrain-native-claude-task-replies.md)

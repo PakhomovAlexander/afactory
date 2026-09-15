@@ -67,7 +67,9 @@ fn same_observation(a: &TaskSourceCaptureV1, b: &TaskSourceCaptureV1) -> bool {
     a.adapter == b.adapter
         && a.external_id == b.external_id
         && a.external_key == b.external_key
-        && a.source_revision == b.source_revision
+        // Jira's updated timestamp also changes for unselected fields. Selected values
+        // and normalized text, not that timestamp, determine whether the plan is stale.
+        && (a.adapter == TaskSourceAdapterV1::JiraCloud || a.source_revision == b.source_revision)
         && a.fields == b.fields
         && (a.adapter != TaskSourceAdapterV1::JiraCloud || a.locator == b.locator)
 }
@@ -290,4 +292,90 @@ pub(crate) fn refresh(
     };
     release(&cas, &mut store, &lease, outcome)?;
     present(&cas, &store, id, inspect.json, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use review_source_task::{SourceControl, SourceError, TaskSource, jira::*};
+    use std::{
+        sync::atomic::AtomicBool,
+        time::{Duration, Instant},
+    };
+
+    struct Recorded(serde_json::Value);
+    impl JiraTransport for Recorded {
+        fn get_issue(
+            &self,
+            _: &JiraSelector,
+            _: &SourceControl<'_>,
+        ) -> Result<HttpResponse, SourceError> {
+            Ok(HttpResponse {
+                status: 200,
+                body: serde_json::to_vec(&self.0).unwrap(),
+            })
+        }
+    }
+
+    #[test]
+    fn jira_timestamp_only_refresh_preserves_the_selected_observation() {
+        let root = tempfile::tempdir().unwrap();
+        let cas = Cas::open(root.path()).unwrap();
+        let cancelled = AtomicBool::new(false);
+        let control = SourceControl {
+            deadline: Instant::now() + Duration::from_secs(5),
+            cancelled: &cancelled,
+        };
+        let selector = JiraSelector {
+            site: "example.atlassian.net".into(),
+            key: "AF-42".into(),
+            acceptance_fields: vec!["customfield_1".into()],
+        };
+        let response = json!({"id":"10042","key":"AF-42","fields":{
+            "summary":"Implement the captured requirement", "description":"Keep the source contract.",
+            "updated":"2026-09-12T10:00:00Z", "customfield_1":"Preserve required checks.", "status":"open"}});
+        let capture = |response| {
+            let transport = Recorded(response);
+            let data = JiraSource {
+                selector: &selector,
+                transport: &transport,
+            }
+            .read(&control)
+            .unwrap();
+            (data.capture(&cas).unwrap(), data.issue.requirements(None))
+        };
+        let (original, requirements) = capture(response.clone());
+        let original_bytes = serde_json::to_vec(&original).unwrap();
+        let mut timestamp_only = response.clone();
+        timestamp_only["fields"]["updated"] = json!("2026-09-13T12:00:00Z");
+        timestamp_only["fields"]["status"] = json!("in progress");
+        let (fresh, unchanged_requirements) = capture(timestamp_only);
+        assert_ne!(original.raw_source_id, fresh.raw_source_id);
+        assert_ne!(original.source_revision, fresh.source_revision);
+        assert_eq!(original.fields, fresh.fields);
+        assert_eq!(requirements, unchanged_requirements);
+        assert!(same_observation(&original, &fresh));
+        for field in ["summary", "description", "customfield_1"] {
+            let mut changed = response.clone();
+            changed["fields"][field] = json!("A changed selected obligation.");
+            let (changed, _) = capture(changed);
+            assert_eq!(original.source_revision, changed.source_revision);
+            assert!(!same_observation(&original, &changed));
+        }
+        for key in ["external_id", "external_key", "locator"] {
+            let mut changed = serde_json::to_value(&fresh).unwrap();
+            changed[key] = json!(format!("changed-{}", changed[key].as_str().unwrap()));
+            assert!(!same_observation(
+                &original,
+                &serde_json::from_value(changed).unwrap()
+            ));
+        }
+        let mut local_original = original.clone();
+        local_original.adapter = TaskSourceAdapterV1::LocalIssue;
+        let mut local_fresh = local_original.clone();
+        local_fresh.source_revision = fresh.source_revision;
+        assert!(!same_observation(&local_original, &local_fresh));
+        assert!(!same_observation(&original, &local_original));
+        assert_eq!(serde_json::to_vec(&original).unwrap(), original_bytes);
+    }
 }

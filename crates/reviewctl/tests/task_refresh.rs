@@ -463,3 +463,66 @@ fn completed_task_refresh_retains_snapshot_and_spend_then_waits_when_capacity_is
         "unrelated live edit\n"
     );
 }
+
+#[test]
+fn explicit_relative_refresh_source_uses_the_callers_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state) = setup(root.path(), None, "implementation-small", 3);
+    let planned = task(&repo, &state, &["task", "plan", "--file", "ticket.json"], 0);
+    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let before = revision(&cas, &planned);
+    let mut selected = issue();
+    selected["revision"] = json!("v2");
+    selected["description"] = json!("Caller-selected fresh requirements.");
+    write(&root.path().join("updated.json"), &selected);
+    let mut stale = selected.clone();
+    stale["description"] = json!("Wrong same-named repository file.");
+    write(&repo.join("updated.json"), &stale);
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(root.path())
+        .args([
+            "task",
+            "refresh",
+            "issue-refresh",
+            "--source-file",
+            "updated.json",
+            "--repo",
+        ])
+        .arg(&repo)
+        .arg("--state")
+        .arg(&state)
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let refreshed: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let after = revision(&cas, &refreshed);
+    assert_ne!(refreshed["revision_id"], planned["revision_id"]);
+    assert_eq!(after["limits"], before["limits"]);
+    assert_eq!(after["authority"], before["authority"]);
+    assert_eq!(after["inputs"]["source"], before["inputs"]["source"]);
+    assert_eq!(refreshed["attempts"], 0);
+    let requirements = cas
+        .get_json(
+            after["inputs"]["requirements"]["artifact_ids"][0]
+                .as_str()
+                .unwrap(),
+        )
+        .unwrap();
+    let text = requirements["payload"]["text"].as_str().unwrap();
+    assert!(text.contains("Caller-selected fresh requirements."));
+    assert!(!text.contains("Wrong same-named repository file."));
+    assert_eq!(
+        serde_json::from_slice::<Value>(&std::fs::read(repo.join("updated.json")).unwrap())
+            .unwrap(),
+        stale
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&std::fs::read(repo.join("issue.json")).unwrap()).unwrap(),
+        issue()
+    );
+}

@@ -23,6 +23,7 @@ mod tests;
 
 mod delivery;
 pub mod execution;
+mod lease;
 pub mod planning;
 mod recording;
 mod report;
@@ -260,6 +261,7 @@ struct Decision {
     value: PlanDecisionV1,
     valid_until: u64,
     revoked: bool,
+    revocation: Option<(Option<PlanDecisionV1>, RunEvent)>,
     event: RunEvent,
 }
 
@@ -288,6 +290,35 @@ pub struct TaskProjection {
     pub deliveries: Vec<(String, task::delivery::TaskDeliveryRecordV1)>,
     pub run_reports: Vec<String>,
     pub review_handoffs: Vec<(String, task::review_handoff::TaskReviewHandoffV1)>,
+}
+
+#[cfg(test)]
+thread_local! {
+    static PROJECTION_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static REVIEW_REPLAY_LOADS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// A single projection's canonical event reads. Never survives a public Store operation.
+/// A changed append prefix forces a new replay even within this operation.
+#[derive(Default)]
+struct ReviewReplays(BTreeMap<String, std::sync::Arc<Vec<RunEvent>>>);
+impl ReviewReplays {
+    fn read(
+        &mut self,
+        store: &EventStore,
+        run: &str,
+    ) -> Result<std::sync::Arc<Vec<RunEvent>>, StoreError> {
+        if let Some(events) = self.0.get(run)
+            && events.len() as u64 == store.len(run)?
+        {
+            return Ok(events.clone());
+        }
+        #[cfg(test)]
+        REVIEW_REPLAY_LOADS.with(|loads| loads.set(loads.get() + 1));
+        let events = std::sync::Arc::new(store.replay(run)?);
+        self.0.insert(run.into(), events.clone());
+        Ok(events)
+    }
 }
 
 /// Created after replay/transition validation; the shared transaction then compares sequence
@@ -811,6 +842,7 @@ impl TaskProjection {
                             value: decision,
                             valid_until: *valid_until_unix_ms,
                             revoked: false,
+                            revocation: None,
                             event: event.clone(),
                         },
                     );
@@ -825,6 +857,7 @@ impl TaskProjection {
                         .values_mut()
                         .find(|d| &d.artifact_id == decision_id)
                         .ok_or_else(|| conflict("Unknown Task approval"))?;
+                    let mut proof = None;
                     if let Some(id) = revocation_id {
                         let revocation: PlanDecisionV1 = payload(cas, id, task::PLAN_DECISION_V1)?;
                         revocation.validate().map_err(conflict)?;
@@ -838,7 +871,9 @@ impl TaskProjection {
                                 "Revocation proof changed its exact plan, Task, authority or reason",
                             ));
                         }
+                        proof = Some(revocation);
                     }
+                    decision.revocation = Some((proof, event.clone()));
                     decision.revoked = true;
                     if self.plan_id.as_ref() == Some(&decision.value.plan_id) {
                         self.admitted = false;
@@ -1118,6 +1153,8 @@ impl EventStore {
         cas: &Cas,
         task_id: &str,
     ) -> Result<Option<TaskProjection>, StoreError> {
+        #[cfg(test)]
+        PROJECTION_CALLS.with(|calls| calls.set(calls.get() + 1));
         let mut state = self
             .task_cache
             .borrow()
@@ -1128,8 +1165,6 @@ impl EventStore {
         // Cached prefix is only a parse memo. Revalidate current revision/plan bytes on every
         // access; a removed or corrupted active artifact must never inherit cached authority.
         if let Some(state) = &state {
-            review_handoff::validate_cached(self, cas, state)?;
-            review_integration::validate_cached(self, cas, state)?;
             execution::broker::validate_cached(cas, state)?;
             execution::owned::validate_cached(cas, state)?;
             if state.planning.is_some() {
@@ -1203,6 +1238,7 @@ impl EventStore {
                 verified.insert(id);
             }
         }
+        let mut replays = ReviewReplays::default();
         let first = state.as_ref().map_or(0, |state| state.next_sequence);
         for event in self.replay_from(&task_run_id(task_id)?, first)? {
             if event.event_type == EventType::TaskBrokerTransitionV1 {
@@ -1224,10 +1260,11 @@ impl EventStore {
             }
             let transition = read_task_transition(&event)?;
             if let TaskChangeV1::ReviewContinued { handoff_id } = &transition.change {
-                review_handoff::validate_evidence(
+                review_handoff::validate_evidence_with_replays(
                     self,
                     cas,
                     &review_handoff::read_task_review_handoff(cas, handoff_id)?,
+                    &mut replays,
                 )?;
             }
             let expected = references(cas, &transition.change, state.as_ref())?;
@@ -1284,10 +1321,9 @@ impl EventStore {
                 return Err(conflict("Task transition precedes genesis"));
             }
         }
-        if let Some(state) = &state
-            && state.next_sequence != first
-        {
-            review_integration::validate_cached(self, cas, state)?;
+        if let Some(state) = &state {
+            review_handoff::validate_cached(self, cas, state, &mut replays)?;
+            review_integration::validate_cached(self, cas, state, &mut replays)?;
         }
         if let Some(state) = &mut state {
             state.artifact_refs = verified;
@@ -1312,8 +1348,21 @@ impl EventStore {
         transition: TaskTransitionV1,
         owned_prefix: Option<(u64, Option<(String, u64)>)>,
     ) -> Result<RunEvent, StoreError> {
-        let (event_type, value) = review_handoff::encode_transition(&transition)?;
         let state = self.task_projection(cas, task_id)?;
+        self.append_task_transition_from_state(cas, task_id, transition, owned_prefix, state)
+    }
+
+    // The caller supplies only a projection checked in this operation, after its last domain
+    // callback. Publication still verifies new references and fences the exact SQL prefix.
+    fn append_task_transition_from_state(
+        &mut self,
+        cas: &Cas,
+        task_id: &str,
+        transition: TaskTransitionV1,
+        owned_prefix: Option<(u64, Option<(String, u64)>)>,
+        state: Option<TaskProjection>,
+    ) -> Result<RunEvent, StoreError> {
+        let (event_type, value) = review_handoff::encode_transition(&transition)?;
         let first = state.as_ref().map_or(0, |s| s.next_sequence);
         if owned_prefix
             .as_ref()
@@ -1746,11 +1795,15 @@ impl EventStore {
             .decisions
             .get(plan_id)
             .ok_or_else(|| conflict("Unknown Task approval"))?;
+        if decision.value.decision != PlanDecisionKindV1::Approved {
+            return Err(conflict("Only an approved Task plan can be revoked"));
+        }
         // The host authenticates revocation too. Knowing a recorded decision ID is not authority.
         let grant = authority
             .authorize_decision(&state.revision, plan_id, PlanDecisionKindV1::Rejected)
             .map_err(conflict)?;
-        if now()? >= grant.valid_until_unix_ms {
+        let time = now()?;
+        if time >= grant.valid_until_unix_ms {
             return Err(conflict("Developer revocation authorization has expired"));
         }
         let revocation = PlanDecisionV1 {
@@ -1766,6 +1819,20 @@ impl EventStore {
         authority
             .authorization_current(&revocation)
             .map_err(conflict)?;
+        state.check_lease(&TaskTransitionV1 {
+            writer: lease.writer.clone(),
+            epoch: lease.epoch,
+            now_unix_ms: time,
+            change: TaskChangeV1::Resumed {},
+        })?;
+        if decision.revoked {
+            if let Some((Some(previous), event)) = &decision.revocation
+                && previous == &revocation
+            {
+                return Ok(event.clone());
+            }
+            return Err(conflict("Task approval already has a different revocation"));
+        }
         let (revocation_id, _) = cas
             .put_artifact(
                 task::PLAN_DECISION_V1,

@@ -186,9 +186,18 @@ impl EventStore {
         cas: &Cas,
         phase: &TaskReviewIntegrationPhaseV1,
     ) -> Result<TaskReviewIntegrationEvidence, StoreError> {
+        self.integration_evidence_with_replays(cas, phase, &mut ReviewReplays::default())
+    }
+
+    fn integration_evidence_with_replays(
+        &self,
+        cas: &Cas,
+        phase: &TaskReviewIntegrationPhaseV1,
+        replays: &mut ReviewReplays,
+    ) -> Result<TaskReviewIntegrationEvidence, StoreError> {
         let round: LegacyReviewRoundV1 = payload(cas, &phase.round_id, LEGACY_REVIEW_ROUND_V1)?;
         round.validate().map_err(conflict)?;
-        let events = self.replay(&round.campaign_id)?;
+        let events = replays.read(self, &round.campaign_id)?;
         let closing = events
             .iter()
             .find(|e| e.event_id == phase.closing_report_event_id)
@@ -250,7 +259,7 @@ impl EventStore {
         Ok(TaskReviewIntegrationEvidence {
             round,
             closing_report: closing,
-            events,
+            events: events.as_ref().clone(),
             finding_set_id,
             demand_set_id,
             semantic_closure_id,
@@ -1252,6 +1261,7 @@ pub(super) fn validate_handoff(
     event: &RunEvent,
     next: &LegacyReviewRoundV1,
     next_started: &review_core::RoundStartedPayloadV1,
+    replays: &mut ReviewReplays,
 ) -> Result<(), StoreError> {
     let task::review_handoff::TaskReviewHandoffEvidenceV1::IntegratedRound {
         report_event_id,
@@ -1274,7 +1284,7 @@ pub(super) fn validate_handoff(
             "Integrated handoff changed its exact closed phase",
         ));
     }
-    let evidence = store.integration_evidence(cas, &phase)?;
+    let evidence = store.integration_evidence_with_replays(cas, &phase, replays)?;
     if evidence.closing_report.sequence >= event.sequence {
         return Err(conflict("Integration commit precedes its passing report"));
     }
@@ -1303,7 +1313,7 @@ pub(super) fn validate_handoff(
             "Integrated handoff changed its checked head or selected lineage",
         ));
     }
-    let task_events = store.replay(&task_run_id(&handoff.task_id)?)?;
+    let task_events = replays.read(store, &task_run_id(&handoff.task_id)?)?;
     let finishes:Vec<_>=task_events.iter().filter(|e|e.event_type==EventType::TaskTransitionV3).map(super::read_task_transition).collect::<Result<Vec<_>,_>>()?.into_iter().filter(|t|matches!(&t.change,TaskChangeV1::ReviewIntegrationFinished{phase_id:p,integration_committed_event_id:Some(id),..} if p==phase_id && id==integration_committed_event_id)).collect();
     if finishes.len() != 1 {
         return Err(conflict(
@@ -1316,6 +1326,7 @@ pub(super) fn validate_cached(
     store: &EventStore,
     cas: &Cas,
     state: &TaskProjection,
+    replays: &mut ReviewReplays,
 ) -> Result<(), StoreError> {
     let Some(execution) = &state.execution else {
         return Ok(());
@@ -1324,7 +1335,7 @@ pub(super) fn validate_cached(
         if read_task_review_integration(cas, &phase.id)? != phase.phase {
             return Err(conflict("Cached Integration phase changed identity"));
         }
-        let evidence = store.integration_evidence(cas, &phase.phase)?;
+        let evidence = store.integration_evidence_with_replays(cas, &phase.phase, replays)?;
         let original_plan: ExecutionPlanV1 =
             payload(cas, &phase.phase.plan_id, task::EXECUTION_PLAN_V1)?;
         let original_graph: CompiledTask =

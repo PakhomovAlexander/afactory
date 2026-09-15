@@ -16,6 +16,7 @@ serde_json = { version = "1.0.149", features = ["preserve_order"] }
 [dev-dependencies]
 # Tests build real locked packages; the library itself never touches the config layer.
 review-config = { path = "../review-config" }
+jsonschema = { version = "0.26.1", default-features = false }
 tempfile = "3.27.0"
 
 [lints]

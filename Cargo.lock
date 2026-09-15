@@ -1410,6 +1410,7 @@ dependencies = [
 name = "review-runner-claude"
 version = "0.9.0-rc.1"
 dependencies = [
+ "jsonschema",
  "review-config",
  "review-core",
  "review-runner",

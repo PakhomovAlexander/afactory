@@ -53,6 +53,12 @@ or reopen completed work. Release-bound migration and rollback evidence are rele
   delivery to a new local worktree.
 - Preserve Provider usage and recovery evidence across cancellation, writer loss and storage
   failures, and capture explicit admission allowances in Task catalog V2.
+- Preserve nested Jira requirements, resolve explicit relative refresh files from the caller's
+  directory, and retain plans when only unselected Jira fields or update timestamps change.
+- Make identical authenticated plan-revocation requests idempotent and refuse revocation of
+  decisions that were never approved.
+- Reduce repeated captured Review validation, heartbeat and receipt-query work while retaining
+  fresh artifact, lease, approval and usage checks; stream raw usage transcripts with bounded memory.
 - Open the repository: `install.sh` installs from a public release with `curl` alone, verifies
   the release signature by default when `minisign` is present, and keeps `gh` only as a
   fallback; the release also ships `LICENSE` (Apache-2.0), `SECURITY.md`, `CONTRIBUTING.md`

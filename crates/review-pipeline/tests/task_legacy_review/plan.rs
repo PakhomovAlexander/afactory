@@ -94,6 +94,100 @@ fn path(root: &std::path::Path, id: &str) -> std::path::PathBuf {
     root.join("objects").join(&hex[..2]).join(&hex[2..])
 }
 
+fn assert_cached_authority_is_fresh(
+    cas: &Cas,
+    root: &std::path::Path,
+    compiler: &LegacyReviewPlanCompiler,
+    task: &TaskRevisionV1,
+    plan: &ExecutionPlanV1,
+) {
+    let manifest_id = &compiler.round().binding().campaign_manifest_id;
+    let manifest: review_core::CampaignManifestV1 =
+        serde_json::from_value(cas.get_json(manifest_id).unwrap()).unwrap();
+    let snapshot: review_core::SourceSnapshot =
+        serde_json::from_value(cas.get_json(&manifest.authority_snapshot_id).unwrap()).unwrap();
+    let mut ids = std::collections::BTreeSet::from([
+        plan.engine_id.clone(),
+        plan.task_revision_id.clone(),
+        plan.compiled_graph_id.clone(),
+        compiler.policy_id().into(),
+        manifest_id.clone(),
+        manifest.pipeline.artifact_id,
+        manifest.reviewer_lock.artifact_id,
+        manifest.authority_snapshot_id,
+        manifest.finding_genesis_id,
+        manifest.demand_genesis_id,
+        snapshot.artifact_manifest.unwrap(),
+    ]);
+    ids.extend(manifest.project_policy_ids);
+    for reviewer in manifest.reviewers {
+        ids.insert(reviewer.package_artifact_id.clone());
+        let package: review_core::ReviewerPackageV1 =
+            serde_json::from_value(cas.get_json(&reviewer.package_artifact_id).unwrap()).unwrap();
+        ids.extend(package.files.into_values());
+    }
+    let wrappers = plan
+        .dependencies
+        .values()
+        .map(|value| value.artifact_id.clone())
+        .chain(
+            plan.bindings
+                .values()
+                .map(|value| value.invocation_policy_id.clone()),
+        )
+        .chain(
+            task.inputs
+                .values()
+                .flat_map(|value| value.artifact_ids.iter().cloned()),
+        );
+    for id in wrappers {
+        ids.extend(cas.get_artifact(&id).unwrap().input_artifacts);
+        ids.insert(id);
+    }
+    compiler.validate_plan(cas, task, plan).unwrap();
+    for id in &ids {
+        let location = path(root, id);
+        let bytes = std::fs::read(&location).unwrap();
+        for replacement in [Some(b"corrupt authority".as_slice()), None] {
+            if let Some(bytes) = replacement {
+                std::fs::write(&location, bytes).unwrap();
+            } else {
+                std::fs::remove_file(&location).unwrap();
+            }
+            assert!(
+                compiler.validate_plan(cas, task, plan).is_err(),
+                "cached authority accepted {id}"
+            );
+            if replacement.is_none() {
+                assert!(!location.exists(), "validation recreated authority");
+            }
+            std::fs::write(&location, &bytes).unwrap();
+            compiler.validate_plan(cas, task, plan).unwrap();
+        }
+    }
+    let count = 16;
+    let measure = |memo: bool| {
+        let mut samples = Vec::new();
+        for _ in 0..count {
+            let start = std::time::Instant::now();
+            if memo {
+                compiler.validate_plan(cas, task, plan).unwrap();
+            } else {
+                compiler.recompile(cas, task, plan).unwrap();
+            }
+            samples.push(start.elapsed().as_micros());
+        }
+        samples.sort_unstable();
+        (samples.iter().sum::<u128>(), samples[8], samples[15])
+    };
+    let full = measure(false);
+    let memo = measure(true);
+    eprintln!(
+        "review-plan-validation: repetitions={count} authority_objects={} full_total_p50_p95_us={full:?} memo_total_p50_p95_us={memo:?}",
+        ids.len()
+    );
+}
+
 #[test]
 fn captured_review_plan_admits_reopens_and_refuses_changed_or_missing_authority() {
     let directory = tempfile::tempdir().unwrap();
@@ -120,6 +214,7 @@ fn captured_review_plan_admits_reopens_and_refuses_changed_or_missing_authority(
     let revision = artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
     let (plan, captured) = compiler.compile(&cas, &revision).unwrap();
     assert_plan_schemas(&cas, &compiler, &plan);
+    assert_cached_authority_is_fresh(&cas, &cas_root, &compiler, &task, &plan);
     assert_eq!(plan.dependencies.len(), 2);
     assert_eq!(plan.bindings.len(), 1);
     assert!(plan.generated_origins.is_empty());

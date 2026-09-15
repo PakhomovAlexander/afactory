@@ -119,11 +119,17 @@ af task refresh implementation-reviewed \
   --source-bindings /absolute/local/path/source-bindings.toml --json
 ```
 
-Refresh captures and plans without running Workers. A changed selected field or source revision
+An explicit relative `--source-file` is resolved from the caller's working directory, even
+when `--repo` selects another directory. Without that option, the captured issue path remains
+relative to the selected repository.
+
+Refresh captures and plans without running Workers. A changed selected field or local source revision
 creates a new Task revision. It preserves the original action, structured specification, code
 Snapshot, permissions, verification, selection facts, total budget and absolute deadline. Live
 edits to the Task file, source code or catalog do not become execution authority. Formatting or
-unselected-field changes alone preserve the existing observation and approval.
+unselected-field changes alone preserve the existing observation and approval. In particular,
+Jira's `updated` timestamp alone does not invalidate approval when all selected field value/text
+identities and the issue locator still match.
 
 ```text
 new issue observation
