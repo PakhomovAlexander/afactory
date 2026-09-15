@@ -9,6 +9,22 @@ release pages only.
 
 ## [Unreleased]
 
+## [0.9.0-rc.1] - 2026-09-15
+
+### Authority compatibility
+
+Prerelease: new Task executions require versioned .af Task authority; legacy .review consumers require af onboard --migrate --apply. Preserve the old Store and known-good release; migrate and verify release pins before consumer cutover. Live pilot acceptance remains pending.
+
+### Changes
+
+- Install the toolchain's declared components in the release build jobs (#73)
+- docs: backlog after the 2026-09-10 review — .review/ drop shipped, three issues remain (#74)
+- Explain a logged-out Provider row in af provider status (#77)
+- Cache cargo dependencies and build artifacts in CI (#78)
+- Make Task execution durable across implementation and review (#75)
+- Build shared Task pipelines with embedded review and reusable packages (#76)
+- Prepare the repository for open source (#79)
+- Retry ETXTBSY on spawn and widen one reservation test's allowance (#88)
 ### Authority compatibility
 
 The Task increment is implemented and unreleased.
