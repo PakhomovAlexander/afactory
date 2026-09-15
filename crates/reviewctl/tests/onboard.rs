@@ -96,6 +96,33 @@ fn preview_preserves_explicit_gate_quoting_in_the_printed_apply_command() {
     assert_eq!(words.last().map(String::as_str), Some("--apply"));
 }
 
+#[cfg(unix)]
+#[test]
+fn preview_rejects_a_repository_path_that_cannot_be_copied_as_utf8() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let root = tempfile::tempdir().unwrap();
+    let repo = root
+        .path()
+        .join(std::ffi::OsString::from_vec(b"repo-\xff".to_vec()));
+    std::fs::create_dir_all(repo.join(".git")).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_af"))
+        .arg("onboard")
+        .arg("--repo")
+        .arg(&repo)
+        .args(["--gate", "check=true", "--json"])
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    assert!(
+        stderr(&output).contains("not valid UTF-8"),
+        "{}",
+        stderr(&output)
+    );
+    assert!(!repo.join(".af").exists());
+}
+
 #[test]
 fn apply_creates_valid_authority_and_never_overwrites_it() {
     let root = tempfile::tempdir().unwrap();

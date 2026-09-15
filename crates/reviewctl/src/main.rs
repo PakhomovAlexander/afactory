@@ -1144,10 +1144,22 @@ fn help_command(words: &[String]) -> Result<i32, String> {
 
 fn main() {
     use clap::{CommandFactory as _, Parser as _};
-    let argv: Vec<String> = std::env::args().collect();
+    let argv: Vec<String> = match std::env::args_os()
+        .map(|argument| argument.into_string())
+        .collect()
+    {
+        Ok(argv) => argv,
+        Err(argument) => {
+            eprintln!(
+                "af: command-line argument {} is not valid UTF-8",
+                argument.to_string_lossy()
+            );
+            std::process::exit(2);
+        }
+    };
     clap_complete::CompleteEnv::with_factory(cli::Af::command).complete();
     selfmgmt::maybe_dispatch(&argv);
-    let parsed = cli::Af::parse();
+    let parsed = cli::Af::parse_from(&argv);
     if parsed.version {
         if let Err(error) = selfmgmt::print_version(parsed.json) {
             eprintln!("af: {error}");

@@ -245,7 +245,11 @@ pub fn print_status() {
     let mut ids = BTreeSet::new();
     for provider in inventory.providers {
         ids.insert(provider.id.clone());
-        if matches!(provider.id.as_str(), "claude-ambient" | "codex-ambient") {
+        if matches!(provider.id.as_str(), "claude-ambient" | "codex-ambient")
+            && provider
+                .source
+                .starts_with("ambient CLI candidate; unstable local context label")
+        {
             ambient.insert(provider.kind.clone());
         }
         println!(
@@ -1435,11 +1439,6 @@ fn parse_registry(text: &str, path: &Path) -> Result<Vec<ProviderSpec>, String> 
             .and_then(toml::Value::as_str)
             .ok_or_else(|| format!("provider entry {} has no string `id`", index + 1))?;
         safe_id(id)?;
-        if matches!(id, "claude-ambient" | "codex-ambient") {
-            return Err(format!(
-                "provider id `{id}` is reserved for ambient discovery"
-            ));
-        }
         if !ids.insert(id.to_string()) {
             return Err(format!("provider id `{id}` is duplicated"));
         }
@@ -4029,6 +4028,35 @@ auth_dir = "/profiles/claude-personal"
                 .iter()
                 .all(|provider| provider.kind == ProviderKind::Claude)
         );
+    }
+
+    #[test]
+    fn registry_preserves_legacy_ambient_ids_as_explicit_providers() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join("claude");
+        let codex = root.path().join("codex");
+        fs::create_dir_all(&claude).unwrap();
+        fs::create_dir_all(&codex).unwrap();
+        let registry = format!(
+            r#"version = 1
+[[providers]]
+id = "claude-ambient"
+kind = "claude"
+auth_dir = "{}"
+[[providers]]
+id = "codex-ambient"
+kind = "codex"
+auth_dir = "{}"
+"#,
+            claude.display(),
+            codex.display()
+        );
+
+        let providers = parse_registry(&registry, Path::new("/registry.toml")).unwrap();
+        assert_eq!(providers.len(), 2);
+        assert!(providers.iter().all(|provider| provider.registry_declared));
+        assert_eq!(providers[0].id, "claude-ambient");
+        assert_eq!(providers[1].id, "codex-ambient");
     }
 
     #[test]
