@@ -57,6 +57,7 @@ or reopen completed work. Release-bound migration and rollback evidence are rele
   and refuse unapproved auxiliary activity instead of accepting an Opus selector alone.
 - Use native JSON schemas and structured output for typed Claude Task replies while retaining
   independent Kernel output validation and the existing legacy text transport.
+- Preserve prerelease versions in migrated authority so the candidate can read its own output.
 - Retry transient executable-busy process starts and correct concurrent Linux test allowances.
 - Explain logged-out Provider status and install declared toolchain components in release jobs.
 
