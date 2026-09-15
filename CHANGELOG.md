@@ -9,6 +9,24 @@ release pages only.
 
 ## [Unreleased]
 
+## [0.9.0-rc.2] - 2026-09-15
+
+### Authority compatibility
+
+Prerelease: Task-file start now previews without executing; confirm the captured plan before running, or explicitly opt into --execute automation. Existing .af authority remains supported; legacy .review migration and exact release pin verification still apply. Generated plans retain signed approval.
+
+### Changes
+
+- Install the toolchain's declared components in the release build jobs (#73)
+- docs: backlog after the 2026-09-10 review — .review/ drop shipped, three issues remain (#74)
+- Explain a logged-out Provider row in af provider status (#77)
+- Cache cargo dependencies and build artifacts in CI (#78)
+- Make Task execution durable across implementation and review (#75)
+- Build shared Task pipelines with embedded review and reusable packages (#76)
+- Prepare the repository for open source (#79)
+- Retry ETXTBSY on spawn and widen one reservation test's allowance (#88)
+- release: v0.9.0-rc.1 (#92)
+- Fix Task refresh and reduce repeated validation work (#91)
 ## [0.9.0-rc.1] - 2026-09-15
 
 ### Authority compatibility
