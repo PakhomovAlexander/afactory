@@ -391,6 +391,13 @@ pub fn recover() -> Result<(), String> {
 }
 
 fn recover_configured_registry(configured: &Path) -> Result<(), String> {
+    recover_configured_registry_with_hook(configured, || {})
+}
+
+fn recover_configured_registry_with_hook(
+    configured: &Path,
+    after_locks: impl FnOnce(),
+) -> Result<(), String> {
     let configured_parent = configured
         .parent()
         .ok_or_else(|| format!("provider registry {} has no parent", configured.display()))?;
@@ -413,16 +420,15 @@ fn recover_configured_registry(configured: &Path) -> Result<(), String> {
         }
     }
     let resolved = resolve_registry(configured)?;
-    let mut locations = BTreeSet::new();
-    locations.insert(canonical_registry_location(configured)?);
-    if let Some(resolved) = resolved.as_deref() {
-        locations.insert(canonical_registry_location(resolved)?);
-    }
+    let locations = canonical_registry_locations(configured, resolved.as_deref())?;
     let mut locks = Vec::with_capacity(locations.len());
     for location in &locations {
         locks.push(registry_lock(location)?);
     }
-    if resolve_registry(configured)? != resolved {
+    after_locks();
+    let current_resolved = resolve_registry(configured)?;
+    let current_locations = canonical_registry_locations(configured, current_resolved.as_deref())?;
+    if current_resolved != resolved || current_locations != locations {
         return Err(format!(
             "provider registry alias {} changed while recovery locks were acquired; retry",
             configured.display()
@@ -450,6 +456,18 @@ fn recover_configured_registry(configured: &Path) -> Result<(), String> {
         configured.display()
     );
     Ok(())
+}
+
+fn canonical_registry_locations(
+    configured: &Path,
+    resolved: Option<&Path>,
+) -> Result<BTreeSet<PathBuf>, String> {
+    let mut locations = BTreeSet::new();
+    locations.insert(canonical_registry_location(configured)?);
+    if let Some(resolved) = resolved {
+        locations.insert(canonical_registry_location(resolved)?);
+    }
+    Ok(locations)
 }
 
 fn canonical_registry_location(path: &Path) -> Result<PathBuf, String> {
@@ -5768,6 +5786,36 @@ mod tests {
         assert!(!transaction.exists());
         assert!(recovery.archived_marker.is_file());
         assert_eq!(read_registry(&alias).unwrap().as_deref(), Some(original));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_revalidates_a_symlinked_ancestor_after_acquiring_locks() {
+        use std::os::unix::fs::symlink;
+
+        let root = tempfile::tempdir().unwrap();
+        let first = root.path().join("registry-first");
+        let second = root.path().join("registry-second");
+        let alias_directory = root.path().join("registry-alias");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+        symlink(&first, &alias_directory).unwrap();
+        let alias = alias_directory.join("providers.toml");
+        let second_registry = second.join("providers.toml");
+        let second_transaction = registry_transaction_path(&second_registry);
+        fs::write(&second_transaction, "version = 1\n").unwrap();
+
+        let error = recover_configured_registry_with_hook(&alias, || {
+            fs::remove_file(&alias_directory).unwrap();
+            symlink(&second, &alias_directory).unwrap();
+        })
+        .unwrap_err();
+
+        assert!(
+            error.contains("changed while recovery locks were acquired"),
+            "{error}"
+        );
+        assert!(second_transaction.is_file());
     }
 
     #[cfg(unix)]

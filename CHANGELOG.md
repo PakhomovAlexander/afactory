@@ -9,6 +9,18 @@ release pages only.
 
 ## [Unreleased]
 
+### Changes
+
+- Make fresh Provider bootstrap one command with `af provider setup`, keep `af provider add` for
+  already-authenticated contexts, isolate login environment and auth-directory ownership, make
+  setup serialize by canonical auth context, distinguish ambient discovery labels from selectable
+  registry IDs, preserve every Gate and executing release in onboarding's copyable apply command,
+  make registry publication serialized, conditional, durable and atomic across pinned releases,
+  secure its directories and files independently of `umask`, reject unpublishable auth paths before
+  login, bind security-sensitive operations to stable directory handles, provide hash-validating
+  fail-closed recovery with `af provider recover`, and make the README's Codex-only quickstart
+  complete.
+
 ## [0.9.0-rc.1] - 2026-09-15
 
 ### Authority compatibility
@@ -31,15 +43,6 @@ or reopen completed work. Release-bound migration and rollback evidence are rele
 
 ### Changes
 
-- Make fresh Provider bootstrap one command with `af provider setup`, keep `af provider add` for
-  already-authenticated contexts, isolate login environment and auth-directory ownership, make
-  setup serialize by canonical auth context, distinguish ambient discovery labels from selectable
-  registry IDs, preserve every Gate and executing release in onboarding's copyable apply command,
-  make registry publication serialized, conditional, durable and atomic across pinned releases,
-  secure its directories and files independently of `umask`, reject unpublishable auth paths before
-  login, bind security-sensitive operations to stable directory handles, provide hash-validating
-  fail-closed recovery with `af provider recover`, and make the README's Codex-only quickstart
-  complete.
 - Make Task the common durable execution model for implementation, Review and documents,
   with typed Pipeline input/output contracts, captured context and shared budget accounting.
 - Compose reusable Review Pipelines inside implementation, with independent acceptance and
