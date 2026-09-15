@@ -3682,10 +3682,24 @@ fn append_transition(
 }
 
 fn continuation_error(spec: &ProviderSpec, operation_id: &str, epoch: u64) -> String {
-    let login = login_command(spec);
+    let login = authentication_command(spec);
     format!(
         "provider operation `{operation_id}` is waiting_for_human; run `{login}` in a persistent terminal, then rerun with --resume-provider {operation_id}:{epoch}"
     )
+}
+
+fn authentication_command(spec: &ProviderSpec) -> String {
+    if spec.registry_declared
+        && let Some(auth_dir) = spec.auth_dir.as_deref().and_then(Path::to_str)
+    {
+        return format!(
+            "af provider setup {} --kind {} --auth-dir {}",
+            shell_words::quote(&spec.id),
+            spec.kind.name(),
+            shell_words::quote(auth_dir)
+        );
+    }
+    login_command(spec)
 }
 
 /// The harness login command that writes credentials into exactly the context `spec` probes.
@@ -3720,7 +3734,7 @@ fn logged_out_detail(spec: &ProviderSpec) -> String {
         .unwrap_or_else(|| "the CLI default directory".to_string());
     let mut detail = format!(
         "no {harness} login in {context}; fix: {}",
-        login_command(spec)
+        authentication_command(spec)
     );
     if spec.registry_declared {
         detail.push_str(", or point auth_dir at the directory that holds the intended login");
@@ -4980,7 +4994,7 @@ auth_dir = "{}"
         };
         assert_eq!(
             logged_out_detail(&declared),
-            "no Claude login in /profiles/claude-personal; fix: CLAUDE_CONFIG_DIR=/profiles/claude-personal claude auth login, or point auth_dir at the directory that holds the intended login"
+            "no Claude login in /profiles/claude-personal; fix: af provider setup claude-personal --kind claude --auth-dir /profiles/claude-personal, or point auth_dir at the directory that holds the intended login"
         );
         let ambient = ProviderSpec {
             id: "claude-ambient".to_string(),
@@ -5007,7 +5021,9 @@ auth_dir = "{}"
             "no Codex login in /profiles/codex; fix: CODEX_HOME=/profiles/codex codex login"
         );
         // The admission continuation names the same command, so the two surfaces cannot drift.
-        assert!(continuation_error(&declared, "op", 1).contains(&login_command(&declared)));
+        assert!(
+            continuation_error(&declared, "op", 1).contains(&authentication_command(&declared))
+        );
     }
 
     #[test]
