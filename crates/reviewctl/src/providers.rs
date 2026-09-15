@@ -1909,6 +1909,11 @@ fn parse_registry(text: &str, path: &Path) -> Result<Vec<ProviderSpec>, String> 
             .and_then(toml::Value::as_str)
             .ok_or_else(|| format!("provider entry {} has no string `id`", index + 1))?;
         safe_id(id)?;
+        if matches!(id, "claude-ambient" | "codex-ambient") {
+            return Err(format!(
+                "provider id `{id}` is reserved for ambient discovery"
+            ));
+        }
         if !ids.insert(id.to_string()) {
             return Err(format!("provider id `{id}` is duplicated"));
         }
@@ -4554,32 +4559,19 @@ auth_dir = "/profiles/claude-personal"
     }
 
     #[test]
-    fn registry_preserves_legacy_ambient_ids_as_explicit_providers() {
+    fn registry_rejects_ids_reserved_for_ambient_discovery() {
         let root = tempfile::tempdir().unwrap();
-        let claude = root.path().join("claude");
-        let codex = root.path().join("codex");
-        fs::create_dir_all(&claude).unwrap();
-        fs::create_dir_all(&codex).unwrap();
-        let registry = format!(
-            r#"version = 1
-[[providers]]
-id = "claude-ambient"
-kind = "claude"
-auth_dir = "{}"
-[[providers]]
-id = "codex-ambient"
-kind = "codex"
-auth_dir = "{}"
-"#,
-            claude.display(),
-            codex.display()
-        );
-
-        let providers = parse_registry(&registry, Path::new("/registry.toml")).unwrap();
-        assert_eq!(providers.len(), 2);
-        assert!(providers.iter().all(|provider| provider.registry_declared));
-        assert_eq!(providers[0].id, "claude-ambient");
-        assert_eq!(providers[1].id, "codex-ambient");
+        for (id, kind) in [("claude-ambient", "claude"), ("codex-ambient", "codex")] {
+            let registry = format!(
+                "version = 1\n[[providers]]\nid = {id:?}\nkind = {kind:?}\nauth_dir = {:?}\n",
+                root.path().to_str().unwrap()
+            );
+            let error = match parse_registry(&registry, Path::new("/registry.toml")) {
+                Ok(_) => panic!("reserved ambient id was accepted"),
+                Err(error) => error,
+            };
+            assert!(error.contains("reserved for ambient discovery"), "{error}");
+        }
     }
 
     #[cfg(unix)]
