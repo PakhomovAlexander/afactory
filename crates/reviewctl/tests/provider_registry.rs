@@ -610,7 +610,9 @@ fn add_creates_private_registry_state_even_with_a_wide_umask() {
     for umask in ["0002", "0177", "0777"] {
         let root = tempfile::tempdir().unwrap();
         let auth = root.path().join("codex-auth");
+        let second_auth = root.path().join("second-codex-auth");
         std::fs::create_dir(&auth).unwrap();
+        std::fs::create_dir(&second_auth).unwrap();
         let script = format!(
             "umask {umask}; exec \"$1\" provider add codex-main --kind codex --auth-dir \"$2\""
         );
@@ -627,6 +629,23 @@ fn add_creates_private_registry_state_even_with_a_wide_umask() {
             output.status.success(),
             "umask {umask}: {}",
             stderr(&output)
+        );
+        let second_script = format!(
+            "umask {umask}; exec \"$1\" provider add codex-second --kind codex --auth-dir \"$2\""
+        );
+        let second = Command::new("/bin/sh")
+            .args(["-c", &second_script, "sh"])
+            .arg(env!("CARGO_BIN_EXE_af"))
+            .arg(&second_auth)
+            .env("HOME", root.path())
+            .env("XDG_CONFIG_HOME", root.path().join("config"))
+            .env("AF_SELF_OFFLINE", "1")
+            .output()
+            .unwrap();
+        assert!(
+            second.status.success(),
+            "second update under umask {umask}: {}",
+            stderr(&second)
         );
 
         let directory = root.path().join("config/af");
@@ -647,6 +666,36 @@ fn add_creates_private_registry_state_even_with_a_wide_umask() {
             0o600,
             "umask {umask}"
         );
+        let registry_text = std::fs::read_to_string(&registry).unwrap();
+        assert!(registry_text.contains("codex-main"));
+        assert!(registry_text.contains("codex-second"));
+        let recovery = std::fs::read_dir(&directory)
+            .unwrap()
+            .filter_map(Result::ok)
+            .find(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".af-provider-recovery-")
+            })
+            .expect("second update creates a recovery directory")
+            .path();
+        assert_eq!(
+            std::fs::metadata(&recovery).unwrap().permissions().mode() & 0o777,
+            0o700,
+            "recovery directory under umask {umask}"
+        );
+        for name in ["candidate", "displaced"] {
+            assert_eq!(
+                std::fs::metadata(recovery.join(name))
+                    .unwrap()
+                    .permissions()
+                    .mode()
+                    & 0o777,
+                0o600,
+                "recovery {name} under umask {umask}"
+            );
+        }
     }
 }
 
