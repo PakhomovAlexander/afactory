@@ -41,7 +41,7 @@ git init
 git add .
 git commit -m 'Configure the document Task starter'
 af catalog test --source . --json
-af task start --file document.json --json
+af task start --execute --file document.json --json
 af task output release-notes --port document --format markdown --output release-notes.md --json
 ```
 
@@ -89,7 +89,7 @@ Workers start in a fresh empty environment and cannot publish filesystem changes
 
 ```sh
 af task explain release-notes --json
-af task run release-notes --json
+af task run release-notes --execute --json
 af task output release-notes --port verification --format json --output verification.json --json
 ```
 

@@ -5,7 +5,7 @@ The versioned Task-file entry point runs standalone Review through the common Ta
 ```text
 af review plan --file review.json --state /tmp/af-review-state --json
 af task explain review-cli --state /tmp/af-review-state --json
-af task run review-cli --state /tmp/af-review-state --json
+af task run review-cli --execute --state /tmp/af-review-state --json
 ```
 
 `af review run --file review.json` captures, plans and executes in one command. The file must

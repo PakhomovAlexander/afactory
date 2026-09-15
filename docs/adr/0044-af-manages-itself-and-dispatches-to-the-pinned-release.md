@@ -5,7 +5,7 @@
 Part 2's "verifying it against the release checksums" is revised by
 [ADR-0045](0045-one-release-train-and-a-pin-that-binds-bytes.md): under a lock, the lock's own
 per-target digest is what the bytes must match.
-ADR-0104 narrowly supersedes the exhaustive command list below for machine-local
+ADR-0105 narrowly supersedes the exhaustive command list below for machine-local
 `af provider setup` and `af provider recover`; repository-authority and execution commands remain
 pinned.
 

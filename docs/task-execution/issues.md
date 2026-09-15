@@ -48,7 +48,7 @@ for broader prose interpretation.
 
 ```sh
 af task plan --file implementation-reviewed.json --json
-af task run implementation-reviewed --json
+af task run implementation-reviewed --execute --json
 af task explain implementation-reviewed --json
 af task deliver implementation-reviewed --branch af/pagination \
   --worktree ../pagination-result --confirm implementation-reviewed --json

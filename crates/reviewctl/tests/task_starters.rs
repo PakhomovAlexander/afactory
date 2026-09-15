@@ -150,13 +150,16 @@ fn emitted_starters_validate_and_execute_without_credentials_on_one_common_runti
         } else {
             name
         };
-        let result = task(&repo, &state, &["task", "run", id], 0);
+        let result = task(&repo, &state, &["task", "run", "--execute", id], 0);
         assert_eq!(
             result["result"]["acceptance"], "satisfied",
             "{name}: {result:#}"
         );
         assert_eq!(result["attempts"], attempts, "{name}: {result:#}");
-        assert_eq!(task(&repo, &state, &["task", "run", id], 0), result);
+        assert_eq!(
+            task(&repo, &state, &["task", "run", "--execute", id], 0),
+            result
+        );
     }
     // The standalone review sees a real committed implementation of the same source problem.
     std::fs::write(repo.join("pagination.py"),"def paginate(items, offset=0, limit=2):\n    if type(offset) is not int or type(limit) is not int or offset < 0 or limit < 0:\n        raise ValueError('invalid bounds')\n    return items[offset:offset+limit]\n").unwrap();
@@ -196,7 +199,12 @@ fn starter_repairs_use_current_evidence_and_missing_reviewers_remain_incomplete(
             0
         };
         let file = format!("{name}.json");
-        let result = task(&repo, &state, &["task", "start", "--file", &file], code);
+        let result = task(
+            &repo,
+            &state,
+            &["task", "start", "--execute", "--file", &file],
+            code,
+        );
         assert_eq!(result["attempts"], attempts, "{name}: {result:#}");
         assert_eq!(
             result["result"]["acceptance"],
@@ -206,7 +214,10 @@ fn starter_repairs_use_current_evidence_and_missing_reviewers_remain_incomplete(
                 "inconclusive"
             }
         );
-        assert_eq!(task(&repo, &state, &["task", "run", name], code), result);
+        assert_eq!(
+            task(&repo, &state, &["task", "run", "--execute", name], code),
+            result
+        );
         if code == 0 {
             assert_eq!(
                 result["review_rounds"][0]["conclusion"],
@@ -230,7 +241,12 @@ fn starter_planner_waits_for_a_signed_decision_then_exports_for_a_second_develop
         0,
     );
     assert_eq!(planned["attempts"], 0);
-    let waiting = task(&repo, &state, &["task", "run", "generated-pagination"], 0);
+    let waiting = task(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "generated-pagination"],
+        0,
+    );
     assert_eq!(
         waiting["phase"]["reason"], "needs_plan_review",
         "{waiting:#}"
@@ -333,7 +349,12 @@ fn starter_planner_waits_for_a_signed_decision_then_exports_for_a_second_develop
         ],
         0,
     );
-    let done = task(&repo, &state, &["task", "run", "generated-pagination"], 0);
+    let done = task(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "generated-pagination"],
+        0,
+    );
     assert_eq!(done["attempts"], 6);
     assert_eq!(done["result"]["acceptance"], "satisfied");
     let second = root.path().join("second");
@@ -373,7 +394,7 @@ fn starter_planner_waits_for_a_signed_decision_then_exports_for_a_second_develop
     let reused = task(
         &consumer,
         &consumer_state,
-        &["task", "start", "--file", "planning.json"],
+        &["task", "start", "--execute", "--file", "planning.json"],
         0,
     );
     assert_eq!(reused["attempts"], 5);
@@ -473,7 +494,13 @@ fn reviewed_implementation_preserves_evidence_when_independent_work_fails() {
         let result = task(
             &repo,
             &state,
-            &["task", "start", "--file", "implementation-reviewed.json"],
+            &[
+                "task",
+                "start",
+                "--execute",
+                "--file",
+                "implementation-reviewed.json",
+            ],
             code,
         );
         assert_eq!(result["attempts"], 6, "{result:#}");
@@ -499,7 +526,7 @@ fn reviewed_implementation_preserves_evidence_when_independent_work_fails() {
             task(
                 &repo,
                 &state,
-                &["task", "run", "implementation-reviewed"],
+                &["task", "run", "--execute", "implementation-reviewed"],
                 code
             ),
             result

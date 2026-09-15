@@ -199,7 +199,7 @@ fn captured_admission_cost_survives_checkout_changes_and_fresh_store_replay() {
         std::fs::write(f.repo.join("document.json"), b"changed input and limits").unwrap();
         std::fs::write(f.repo.join("sources.json"), b"changed sources").unwrap();
         commit(&f.repo);
-        let out = f.cli(&["task", "run", "release-notes"]);
+        let out = f.cli(&["task", "run", "--execute", "release-notes"]);
         assert_eq!(
             out.status.code(),
             Some(if accepted { 0 } else { 4 }),
@@ -267,7 +267,7 @@ fn captured_admission_cost_survives_checkout_changes_and_fresh_store_replay() {
             accepted
         );
         drop(store);
-        let replay = f.cli(&["task", "run", "release-notes"]);
+        let replay = f.cli(&["task", "run", "--execute", "release-notes"]);
         assert_eq!(
             serde_json::from_slice::<Value>(&replay.stdout).unwrap(),
             done

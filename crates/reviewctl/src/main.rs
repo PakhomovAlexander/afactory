@@ -1278,6 +1278,7 @@ fn main() {
                     kind: _,
                     goal,
                     file,
+                    execute,
                     bindings,
                     source_bindings,
                     repo,
@@ -1298,7 +1299,7 @@ fn main() {
                             authority,
                             uncommitted,
                             json,
-                            plan_only: false,
+                            plan_only: !execute,
                             timeout_secs,
                         })
                     } else {
@@ -1314,7 +1315,7 @@ fn main() {
                         )
                         .and_then(|options| {
                             init_review_workers();
-                            task_execution::start_legacy(options)
+                            task_execution::start_legacy(options, !execute)
                         })
                     }
                 }
@@ -1393,11 +1394,18 @@ fn main() {
                     source_bindings.as_deref(),
                     &inspect,
                 ),
-                cli::TaskCommand::Run { task_id, inspect } => task_execution::run(
+                cli::TaskCommand::Run {
+                    task_id,
+                    confirm_plan,
+                    execute,
+                    inspect,
+                } => task_execution::run(
                     &task_id,
                     &inspect.repo,
                     inspect.state.as_deref(),
                     inspect.json,
+                    confirm_plan.as_deref(),
+                    execute,
                 ),
                 cli::TaskCommand::Output {
                     task_id,
@@ -1429,6 +1437,7 @@ fn main() {
                 ),
                 cli::TaskCommand::Explain {
                     task_id,
+                    tree,
                     plan,
                     inspect,
                 } => task_execution::explain(
@@ -1437,6 +1446,7 @@ fn main() {
                     inspect.state.as_deref(),
                     inspect.json,
                     plan.as_deref(),
+                    tree,
                 ),
                 cli::TaskCommand::Deliver {
                     task_id,

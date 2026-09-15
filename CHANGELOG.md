@@ -21,6 +21,29 @@ release pages only.
   fail-closed recovery with `af provider recover`, and make the README's Codex-only quickstart
   complete.
 
+## [0.9.0-rc.2] - 2026-09-15
+
+### Authority compatibility
+
+Prerelease: `af task start` now captures and previews without dispatching Workers, including
+with `--json`. Review the plan, then run with `--confirm-plan` and its full captured ID.
+Automation must explicitly opt into `--execute` on start or on the first run of a plan.
+Admitted Tasks can resume and finished Tasks replay as before. This CLI confirmation never
+replaces signed developer approval for a generated plan. Existing `.af` authority remains
+supported; legacy `.review` migration and exact release pin verification still apply.
+
+### Changes
+
+- Render captured Task plans as compact ASCII flows or expanded `task explain --tree` views,
+  with embedded calls, actual Worker models/efforts/accounts, inputs, outputs, effects and limits.
+- Stop new Tasks before execution and refuse stale plan confirmations, including a plan change
+  before the writer lease is acquired. Explicit automation retains existing runtime admission.
+- Keep JSON inspection schemas unchanged, sanitize terminal display text, and document the
+  preview/approval workflow for Claude and Codex.
+
+The live pilot and complete consumer migration/rollback acceptance remain pending. This
+candidate does not declare stable-release readiness or change the active consumer's pin.
+
 ## [0.9.0-rc.1] - 2026-09-15
 
 ### Authority compatibility

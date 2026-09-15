@@ -128,11 +128,14 @@ fn local_json_and_toml_capture_equivalent_issue_requirements_then_review_and_del
             "changed and invalid input",
         )
         .unwrap();
-        let result = task(&repo, &state, &["task", "run", &id], 0);
+        let result = task(&repo, &state, &["task", "run", "--execute", &id], 0);
         assert_eq!(result["attempts"], 5);
         assert_eq!(result["result"]["acceptance"], "satisfied");
         assert_eq!(result["review_rounds"].as_array().unwrap().len(), 1);
-        assert_eq!(task(&repo, &state, &["task", "run", &id], 0), result);
+        assert_eq!(
+            task(&repo, &state, &["task", "run", "--execute", &id], 0),
+            result
+        );
         git(&repo, &["restore", &format!("issue.{format}")]);
     }
     assert_eq!(requirements[0], requirements[1]);
@@ -177,6 +180,7 @@ fn local_json_and_toml_capture_equivalent_issue_requirements_then_review_and_del
         &[
             "task",
             "start",
+            "--execute",
             "--file",
             "issue-review.json",
             "--uncommitted",

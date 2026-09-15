@@ -9,6 +9,7 @@ pub(super) fn explain_plan(
     task_id: &str,
     plan_id: &str,
     json_output: bool,
+    tree: bool,
 ) -> Result<i32, String> {
     if !review_core::is_digest(plan_id) {
         return Err("--plan requires an exact recorded plan artifact ID".into());
@@ -74,10 +75,31 @@ pub(super) fn explain_plan(
             serde_json::to_string(&value).map_err(|e| e.to_string())?
         );
     } else {
-        println!("Task {task_id}: recorded plan {plan_id}");
-        println!(
+        print!(
             "{}",
-            serde_json::to_string_pretty(&value).map_err(|e| e.to_string())?
+            preview::render(
+                cas,
+                &revision,
+                plan_id,
+                &plan,
+                &graph,
+                if state.plan_id.as_deref() == Some(plan_id) {
+                    if matches!(state.phase, TaskPhaseV1::Finished { .. }) {
+                        "finished"
+                    } else if state.phase
+                        == (TaskPhaseV1::Waiting {
+                            reason: TaskWaitingReasonV1::NeedsPlanReview,
+                        })
+                    {
+                        "needs signed plan approval"
+                    } else {
+                        "current recorded plan"
+                    }
+                } else {
+                    "historical plan (not current)"
+                },
+                tree
+            )?
         );
     }
     Ok(0)

@@ -71,7 +71,7 @@ fn passing_review_cannot_mask_failed_or_missing_requirements_acceptance() {
         let result = run(
             &repo,
             &state,
-            &["task", "start", "--file", "ticket.json"],
+            &["task", "start", "--execute", "--file", "ticket.json"],
             exit,
         );
         assert_eq!(result["attempts"], 5);
@@ -86,7 +86,12 @@ fn passing_review_cannot_mask_failed_or_missing_requirements_acceptance() {
         );
         assert_eq!(result["result"]["missing_obligations"], json!(["goal"]));
         assert_eq!(
-            run(&repo, &state, &["task", "run", "pagination-cli"], exit),
+            run(
+                &repo,
+                &state,
+                &["task", "run", "--execute", "pagination-cli"],
+                exit
+            ),
             result
         );
         let target = root.path().join("must-not-deliver");
@@ -176,7 +181,7 @@ fn requirements_retention_and_final_snapshot_are_proved_before_attempts() {
         let result = run(
             &repo,
             &state,
-            &["task", "start", "--file", "ticket.json"],
+            &["task", "start", "--execute", "--file", "ticket.json"],
             1,
         );
         let text = result.to_string();

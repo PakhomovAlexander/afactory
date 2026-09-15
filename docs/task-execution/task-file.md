@@ -15,7 +15,7 @@ data; it cannot change those committed execution permissions.
 af task plan --file ticket.json --state /tmp/pagination-state --json
 af task explain pagination-cli --state /tmp/pagination-state --json
 af task explain pagination-cli --plan PLAN_ID --state /tmp/pagination-state --json
-af task run pagination-cli --state /tmp/pagination-state --json
+af task run pagination-cli --execute --state /tmp/pagination-state --json
 af task show pagination-cli --state /tmp/pagination-state --json
 af task list --state /tmp/pagination-state --json
 ```
@@ -26,7 +26,7 @@ including after local files change. Inspection remains possible with a newer exe
 execution currently requires the exact recorded engine. A finished Task returns its recorded
 result on another `run`, with unchanged Attempt count and spend.
 
-`af task start --file ticket.json` combines planning and execution. Without an explicit Pipeline,
+`af task start --execute --file ticket.json` combines planning and execution. Without an explicit Pipeline,
 selection uses captured applicability facts, strategy priorities and resource feasibility.
 Generation requires a captured Planner and developer signing policy; its exact proposed plan
 waits for signed approval before execution. See the public [Task file](../../schemas/task-file-v1.json)

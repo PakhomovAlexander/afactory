@@ -77,7 +77,7 @@ rejected proposal and bounded compiler diagnostics as durable Attempt inputs.
 
 ```sh
 af task plan --file ticket.json --json
-af task run pagination-cli --json
+af task run pagination-cli --execute --json
 af task explain pagination-cli --json
 ```
 
@@ -96,7 +96,7 @@ af task decision-payload pagination-cli --developer owner --decision approved \
   --output approval.payload
 # Sign approval.payload with your existing minisign key, producing approval.minisig.
 af task approve pagination-cli --payload approval.payload --signature approval.minisig
-af task run pagination-cli --json
+af task run pagination-cli --execute --json
 ```
 
 The payload uses an absent destination and binds exact Task revision, plan, policy, developer,
