@@ -170,6 +170,7 @@ pub(super) fn resume(
         )
         .map_err(|e| e.to_string())?;
     let outcome = (|| {
+        confirm_current_plan(&cas, &store, &state.task_id, state.plan_id.as_deref())?;
         store
             .recover_task_attempts(&cas, &lease)
             .map_err(|e| e.to_string())?;

@@ -129,7 +129,12 @@ fn document_starter_runs_without_credentials_code_artifacts_or_code_checks_and_r
     )
     .unwrap();
     std::fs::write(repo.join(".af/task-catalog.toml"), "changed authority").unwrap();
-    let done = run(&repo, &state, &["task", "run", "release-notes"], 0);
+    let done = run(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "release-notes"],
+        0,
+    );
     assert_eq!(done["attempts"], 3);
     assert_eq!(done["result"]["acceptance"], "satisfied");
     assert!(done["result"]["outputs"]["snapshot"].is_null());
@@ -182,7 +187,12 @@ fn document_starter_runs_without_credentials_code_artifacts_or_code_checks_and_r
     assert!(!refused.status.success());
     assert_eq!(std::fs::read_to_string(&file).unwrap(), text);
     assert_eq!(
-        run(&repo, &state, &["task", "run", "release-notes"], 0),
+        run(
+            &repo,
+            &state,
+            &["task", "run", "--execute", "release-notes"],
+            0
+        ),
         done
     );
 }
@@ -276,7 +286,7 @@ fn document_failures_keep_negative_or_missing_evidence_and_never_accept_a_stale_
         let done = run(
             &repo,
             &state,
-            &["task", "start", "--file", "document.json"],
+            &["task", "start", "--execute", "--file", "document.json"],
             code,
         );
         assert_ne!(done["result"]["acceptance"], "satisfied", "{case}");
@@ -290,7 +300,12 @@ fn document_failures_keep_negative_or_missing_evidence_and_never_accept_a_stale_
             "{case}"
         );
         assert_eq!(
-            run(&repo, &state, &["task", "run", "release-notes"], code),
+            run(
+                &repo,
+                &state,
+                &["task", "run", "--execute", "release-notes"],
+                code
+            ),
             done,
             "{case}"
         );

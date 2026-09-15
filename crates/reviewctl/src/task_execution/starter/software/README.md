@@ -9,8 +9,11 @@ git init
 git add .
 git commit -m 'Configure software Task starters'
 af catalog test --source . --json
-af task plan --file implementation-reviewed.json --json
-af task run implementation-reviewed --json
+af task start --file implementation-reviewed.json
+# Review the compact preview; use --tree for the embedded Pipeline hierarchy.
+af task explain implementation-reviewed --tree
+# Replace PLAN_ID with the full captured identity printed above.
+af task run implementation-reviewed --confirm-plan PLAN_ID
 ```
 
 The Task implements pagination, seals its output and calls the shared Review Pipeline with
@@ -41,13 +44,13 @@ create the starter with `--developer-public-key` pointing to an existing minisig
 That key is assigned the developer label `owner`; the signing key stays outside Afactory.
 
 ```sh
-af task start --file planning.json --json
+af task start --execute --file planning.json --json
 af task explain generated-pagination --json
 af task decision-payload generated-pagination --developer owner --decision approved \
   --reason 'Reviewed the generated stages and verification' --output approval.payload
 # Sign approval.payload externally with your existing key, producing approval.minisig.
 af task approve generated-pagination --payload approval.payload --signature approval.minisig
-af task run generated-pagination --json
+af task run generated-pagination --execute --json
 af task export generated-pagination --name team/pagination --destination exported --json
 ```
 

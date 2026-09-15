@@ -45,7 +45,7 @@ are determined before compilation; both must pass.
 
 ```sh
 af task plan --file ticket.json --state /tmp/reviewed-pagination --json
-af task run pagination-cli --state /tmp/reviewed-pagination --json
+af task run pagination-cli --execute --state /tmp/reviewed-pagination --json
 af task deliver pagination-cli --state /tmp/reviewed-pagination \
   --branch task/reviewed-pagination --worktree /tmp/reviewed-pagination-result \
   --confirm pagination-cli --json

@@ -26,7 +26,7 @@ fn bounded_repair_preserves_one_round_and_delivers_verified_s2() {
     let (code, plan) = run(&repo, &state, &["task", "plan", "--file", "ticket.json"]);
     assert_eq!(code, 0, "{plan:#}");
     assert_eq!(plan["attempts"], 0);
-    let (code, result) = run(&repo, &state, &["task", "run", "repair-cli"]);
+    let (code, result) = run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
     assert_eq!(code, 0, "{result:#}");
     assert_eq!(result["result"]["acceptance"], "satisfied");
     assert_eq!(result["attempts"], 8);
@@ -67,7 +67,7 @@ fn bounded_repair_preserves_one_round_and_delivers_verified_s2() {
         .get_json(history["payload"]["round_report_id"].as_str().unwrap())
         .unwrap();
     assert_eq!(original_round["payload"], result["review_rounds"][0]);
-    let (code, resumed) = run(&repo, &state, &["task", "run", "repair-cli"]);
+    let (code, resumed) = run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
     assert_eq!(code, 0, "{resumed:#}");
     assert_eq!(resumed, result);
     review_memo::refuses_changed_history(
@@ -168,7 +168,11 @@ fn repair_rejects_missing_stale_and_negative_receipts_and_current_check_failures
         };
         std::fs::write(path, replacement).unwrap();
         commit_fixture(&repo);
-        let (code, value) = run(&repo, &state, &["task", "start", "--file", "ticket.json"]);
+        let (code, value) = run(
+            &repo,
+            &state,
+            &["task", "start", "--execute", "--file", "ticket.json"],
+        );
         let expected = if matches!(case, "negative" | "failed_checks") {
             3
         } else {
@@ -186,7 +190,8 @@ fn repair_rejects_missing_stale_and_negative_receipts_and_current_check_failures
             1,
             "{case}"
         );
-        let (replay_code, replayed) = run(&repo, &state, &["task", "run", "repair-cli"]);
+        let (replay_code, replayed) =
+            run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
         assert_eq!(replay_code, code, "{case}");
         assert_eq!(
             replayed, value,
@@ -272,7 +277,11 @@ fn clean_review_selects_s1_without_spending_the_repair_allowance() {
     )
     .unwrap();
     commit_fixture(&repo);
-    let (code, result) = run(&repo, &state, &["task", "start", "--file", "ticket.json"]);
+    let (code, result) = run(
+        &repo,
+        &state,
+        &["task", "start", "--execute", "--file", "ticket.json"],
+    );
     assert_eq!(code, 0, "{result:#}");
     assert_eq!(result["attempts"], 5);
     assert_eq!(result["result"]["acceptance"], "satisfied");
@@ -315,7 +324,14 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
     assert_eq!(code, 0, "{plan:#}");
     let mut child = Command::new(env!("CARGO_BIN_EXE_af"))
         .current_dir(&repo)
-        .args(["task", "run", "repair-cli", "--json", "--state"])
+        .args([
+            "task",
+            "run",
+            "--execute",
+            "repair-cli",
+            "--json",
+            "--state",
+        ])
         .arg(&state)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -415,7 +431,7 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let (code, result) = run(&repo, &state, &["task", "run", "repair-cli"]);
+    let (code, result) = run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
     assert_eq!(code, 0, "{result:#}");
     assert_eq!(
         result["attempts"], 9,
@@ -427,7 +443,7 @@ fn interrupted_fix_verification_resumes_same_continuation_and_charges_the_lost_a
     assert_eq!(outputs["root.nodes.review.nodes.reduce"], original);
     assert_eq!(result["review_rounds"].as_array().unwrap().len(), 1);
     assert_eq!(result["repair_assessments"].as_array().unwrap().len(), 1);
-    let (code, again) = run(&repo, &state, &["task", "run", "repair-cli"]);
+    let (code, again) = run(&repo, &state, &["task", "run", "--execute", "repair-cli"]);
     assert_eq!(code, 0);
     assert_eq!(again, result);
 }

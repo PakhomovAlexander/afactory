@@ -446,7 +446,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
     };
     files.extend(BTreeMap::from([(".af/task-catalog.toml".into(),toml_bytes(&catalog)?),("catalog.toml".into(),toml_bytes(&shared)?),
         ("contracts.json".into(),json_bytes(&contracts)?),("document.json".into(),json_bytes(&task)?),("sources.json".into(),json_bytes(&sources)?),
-        ("README.md".into(),b"# Document Task tutorial\n\nReview these files, initialize this directory as a Git repository, and commit them.\nRun `af catalog test --source . --json`, then `af task start --file document.json --json`.\nThe Python command substitutes support exactly the supplied release-note goal, preserve captured changes,\nand independently verify their inclusion and source revisions. Other goals fail acceptance.\nNo network link check or model inference runs. Replace the captured Workers for broader authoring.\n".to_vec()),
+        ("README.md".into(),b"# Document Task tutorial\n\nReview these files, initialize this directory as a Git repository, and commit them.\nRun `af catalog test --source . --json`, then `af task start --execute --file document.json --json`.\nThe Python command substitutes support exactly the supplied release-note goal, preserve captured changes,\nand independently verify their inclusion and source revisions. Other goals fail acceptance.\nNo network link check or model inference runs. Replace the captured Workers for broader authoring.\n".to_vec()),
     ]));
     Ok(files)
 }
@@ -495,7 +495,7 @@ fn merge_files(
     software.insert(".af/task-catalog.toml".into(), toml_bytes(&catalog)?);
     software.insert("catalog.toml".into(), toml_bytes(&shared)?);
     software.insert("contracts.json".into(), json_bytes(&contracts)?);
-    software.get_mut("README.md").ok_or("Starter guide missing")?.extend_from_slice(b"\nThe document starter is also installed: run `af task start --file document.json --json`.\nSave its output with `af task output release-notes --port document --format markdown --output release-notes.md --json`.\n");
+    software.get_mut("README.md").ok_or("Starter guide missing")?.extend_from_slice(b"\nThe document starter is also installed: run `af task start --execute --file document.json --json`.\nSave its output with `af task output release-notes --port document --format markdown --output release-notes.md --json`.\n");
     Ok(software)
 }
 

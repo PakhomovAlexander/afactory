@@ -41,11 +41,13 @@ so this bundle is produced per repository. `af onboard` generates a repository's
 pull-request review authority ([ADR-0032](adr/0032-generate-review-authority-with-af-onboard.md));
 the implementer/evaluator pipeline is maintainer-reviewed rather than generated.
 
-Trusting that committed authority and running `af task start` authorizes Afactory to deliver the
+Trusting that committed authority and running `af task start --execute` authorizes Afactory to deliver the
 implementer and evaluator their exact declared inputs for every stage of the Task
 ([ADR-0033](adr/0033-configured-workers-authorize-declared-input-delivery.md)). There is no
 additional per-Worker or per-call consent prompt. Delivery, Provider rebinding and any other
 remote side effect remain separate explicit operations.
+
+The [ASCII preview guide](task-execution/preview.md) covers the two views and agent approval.
 
 ## Start and inspect a Task
 
@@ -55,7 +57,9 @@ repository under the user's XDG state directory; `--state` selects another exter
 ```sh
 af provider status
 af task start --kind implement --goal "describe one bounded change and its acceptance" \
-  --authority HEAD --json
+  --authority HEAD
+# Review the preview and copy its Task and Plan identities.
+af task run TASK_ID --confirm-plan PLAN_ID
 af task list
 af task show task-0123456789abcdef0123
 ```

@@ -192,6 +192,7 @@ fn run_task(repo: &Path, home: &Path, state: &Path) -> (i32, String, String) {
         .args([
             "task",
             "start",
+            "--execute",
             "--kind",
             "implement",
             "--goal",
@@ -905,4 +906,49 @@ fn checked_in_task_authority_is_fully_pinned() {
         lock["pipelines"]["implement"]["digest"].as_str(),
         Some(pipeline.as_str())
     );
+}
+
+#[test]
+fn goal_entry_point_previews_before_any_worker_attempt() {
+    let directory = tempfile::tempdir().unwrap();
+    let (repo, home, state) = fixture(directory.path(), true);
+    let (code, stdout, stderr) = run_af(
+        &repo,
+        &home,
+        &[
+            "task",
+            "start",
+            "--kind",
+            "implement",
+            "--goal",
+            "create implemented.txt",
+            "--authority",
+            "HEAD",
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
+    let preview: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(preview["attempts"], 0);
+    assert_eq!(preview["chargeable_tokens"], "0");
+    assert!(preview.get("result").is_none());
+    let (code, stdout, stderr) = run_af(
+        &repo,
+        &home,
+        &[
+            "task",
+            "run",
+            preview["task_id"].as_str().unwrap(),
+            "--confirm-plan",
+            preview["plan_id"].as_str().unwrap(),
+            "--state",
+            state.to_str().unwrap(),
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "{stderr}\n{stdout}");
+    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(result["result"]["acceptance"], "satisfied");
 }

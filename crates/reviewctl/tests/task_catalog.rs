@@ -160,6 +160,7 @@ fn git_catalog_sync_is_exact_transitive_absent_only_and_runs_offline_after_captu
         &[
             "task",
             "run",
+            "--execute",
             "pagination-cli",
             "--state",
             state.to_str().unwrap(),

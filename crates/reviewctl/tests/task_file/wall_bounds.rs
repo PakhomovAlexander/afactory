@@ -68,9 +68,13 @@ fn zero_file_wall_refuses_before_state_and_does_not_consume_the_task_id() {
     zero["task_id"] = "another-id".into();
     write_file(&repo, &zero);
     assert!(
-        !invoke(&repo, &state, &["task", "start", "--file", "ticket.json"])
-            .status
-            .success()
+        !invoke(
+            &repo,
+            &state,
+            &["task", "start", "--execute", "--file", "ticket.json"]
+        )
+        .status
+        .success()
     );
     assert_eq!(
         inventory(&state),
@@ -89,6 +93,7 @@ fn task_timeout_zero_is_a_usage_error_but_review_file_is_validated_by_its_adapte
         &[
             "task",
             "start",
+            "--execute",
             "--file",
             "ticket.json",
             "--timeout-secs",
@@ -104,6 +109,7 @@ fn task_timeout_zero_is_a_usage_error_but_review_file_is_validated_by_its_adapte
         &[
             "task",
             "start",
+            "--execute",
             "--file",
             "ticket.json",
             "--timeout-secs",
@@ -152,6 +158,7 @@ fn smallest_positive_file_and_cli_durations_reach_source_validation() {
         &[
             "task",
             "start",
+            "--execute",
             "--file",
             "ticket.json",
             "--timeout-secs",

@@ -10,7 +10,9 @@ git init
 git add .
 git commit -m 'Configure Task starter catalog'
 af catalog test --source . --json
-af task start --file implementation-reviewed.json --json
+af task start --file implementation-reviewed.json
+# Review the preview; copy its complete PLAN identity.
+af task run implementation-reviewed --confirm-plan PLAN_ID
 ```
 
 The factory runs no Workers and commits nothing. It creates supported typed definitions, actual

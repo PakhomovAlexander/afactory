@@ -185,3 +185,5 @@ Record the options you rejected and why — that is the part future readers need
   model](0102-account-for-every-reported-claude-task-model.md)
 - [0103 — Constrain native Claude Task
   replies](0103-constrain-native-claude-task-replies.md)
+- [0104 — Preview captured Task plans before first
+  execution](0104-preview-captured-task-plans-before-first-execution.md)

@@ -4,7 +4,10 @@ use super::*;
 use review_core::task::pipeline::{PipelineDefinitionV1, TaskOperatorV1};
 use review_runner::task::legacy::LegacyTaskProtocol;
 
-pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, String> {
+pub(crate) fn start_legacy(
+    options: crate::task::TaskOptions,
+    plan_only: bool,
+) -> Result<i32, String> {
     let started = clock()?;
     let (repo, state) = state_path(&options.repo, options.state.as_deref())?;
     std::fs::create_dir_all(&state).map_err(|e| e.to_string())?;
@@ -282,7 +285,7 @@ pub(crate) fn start_legacy(options: crate::task::TaskOptions) -> Result<i32, Str
         authority: options.authority,
         uncommitted: options.uncommitted,
         json: options.json,
-        plan_only: false,
+        plan_only,
         timeout_secs: None,
     };
     start_captured(

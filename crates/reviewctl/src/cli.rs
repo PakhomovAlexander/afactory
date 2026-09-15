@@ -845,13 +845,10 @@ pub(crate) enum CatalogCommand {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum TaskCommand {
-    /// Start an implement Task from a goal
+    /// Capture a Task and preview its plan before execution
     #[command(
-        long_about = "Start an implement Task.\n\nCaptures the source Snapshot (HEAD, an explicit \
---authority, or the working tree with --uncommitted), runs the sequential implement pipeline, and \
-records a verified or unverified derived Snapshot. Exit 3 when the evaluator does not accept.\n\n\
-Never: writes to the repository, commits, pushes, or delivers — see `af task deliver`.",
-        after_long_help = "Examples:\n  af task start --kind implement --goal \"add --json to ledger\" --json\n  af task start --kind implement --goal \"…\" --uncommitted --timeout-secs 1800"
+        long_about = "Capture a Task and show its execution plan before any Worker runs.\n\nInspect the compact ASCII preview, or use `af task explain TASK_ID --tree` for the expanded hierarchy. Run with `--confirm-plan PLAN_ID` after reviewing the captured plan. `--execute` explicitly opts into immediate automation. JSON output also previews by default. Generated plans still require signed developer approval.\n\nExecution never writes to the original repository, commits, pushes, or delivers; see `af task deliver`.",
+        after_long_help = "Examples:\n  af task start --file ticket.json\n  af task explain TASK_ID --tree\n  af task run TASK_ID --confirm-plan sha256:...\n  af task start --file ticket.json --execute --json"
     )]
     Start {
         /// Task kind (v2 supports exactly `implement`)
@@ -868,6 +865,9 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
         /// Versioned Task JSON/TOML file, processed by the common Task runtime
         #[arg(long, value_name = "FILE")]
         file: Option<PathBuf>,
+        /// Explicitly execute immediately instead of stopping at the captured plan preview
+        #[arg(long)]
+        execute: bool,
         /// Capture local Worker tuning for this Task
         #[arg(long, value_name = "FILE", requires = "file")]
         bindings: Option<PathBuf>,
@@ -988,12 +988,21 @@ Never: writes to the repository, commits, pushes, or delivers — see `af task d
     /// Run or resume a captured Task using its exact recorded plan and authority
     Run {
         task_id: String,
+        /// Confirm the exact plan shown by plan/start/explain; stale identities refuse
+        #[arg(long, value_name = "PLAN_ID", conflicts_with = "execute")]
+        confirm_plan: Option<String>,
+        /// Explicit automation opt-in: run the current plan without preview confirmation
+        #[arg(long)]
+        execute: bool,
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
     /// Explain a captured Task's ports, hierarchy, bindings, coverage and budgets
     Explain {
         task_id: String,
+        /// Render the expanded Pipeline hierarchy as an ASCII tree
+        #[arg(long, conflicts_with = "json")]
+        tree: bool,
         /// Inspect an exact recorded plan, including an earlier revision's plan
         #[arg(long, value_name = "PLAN_ID")]
         plan: Option<String>,

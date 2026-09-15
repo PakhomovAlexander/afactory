@@ -87,7 +87,7 @@ then run these commands with a build supporting the Task increment:
 
 ```sh
 af task plan --file ticket.json --json
-af task run repair-cli --json
+af task run repair-cli --execute --json
 af task deliver repair-cli --confirm repair-cli \
   --branch pagination-fixed --worktree ../pagination-fixed
 ```

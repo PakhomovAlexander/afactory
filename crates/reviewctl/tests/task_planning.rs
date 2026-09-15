@@ -295,7 +295,12 @@ fn export_refuses_preparation_private_task_values_and_unsafe_destinations() {
         String::from_utf8(output.stderr).unwrap()
     };
     assert!(rejected("shared").contains("not produced"));
-    run(&repo, &state, &["task", "run", "pagination-cli"], 0);
+    run(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "pagination-cli"],
+        0,
+    );
     let waiting = run(&repo, &state, &["task", "explain", "pagination-cli"], 0);
     assert!(rejected("shared").contains("embeds originating Task state"));
     assert!(!repo.join("shared").exists());
@@ -321,7 +326,7 @@ fn generated_definition_exports_without_approval_and_a_second_developer_reuses_i
     let waiting = run(
         &repo,
         &state,
-        &["task", "start", "--file", "ticket.json"],
+        &["task", "start", "--execute", "--file", "ticket.json"],
         0,
     );
     assert_eq!(waiting["attempts"], 1);
@@ -411,7 +416,12 @@ fn generated_definition_exports_without_approval_and_a_second_developer_reuses_i
     assert_eq!(checked["prerequisites"].as_array().unwrap().len(), 1);
     approve(&repo, &state, root.path(), &key);
     assert_eq!(
-        run(&repo, &state, &["task", "run", "pagination-cli"], 0)["result"]["acceptance"],
+        run(
+            &repo,
+            &state,
+            &["task", "run", "--execute", "pagination-cli"],
+            0
+        )["result"]["acceptance"],
         "satisfied"
     );
 
@@ -454,7 +464,7 @@ fn generated_definition_exports_without_approval_and_a_second_developer_reuses_i
     let done = run(
         &consumer,
         &consumer_state,
-        &["task", "start", "--file", "ticket.json"],
+        &["task", "start", "--execute", "--file", "ticket.json"],
         0,
     );
     assert_eq!(done["result"]["acceptance"], "satisfied");
@@ -477,7 +487,12 @@ fn generated_nested_plan_waits_for_exact_approval_then_resumes_with_shared_accou
     let planned = run(&repo, &state, &["task", "plan", "--file", "ticket.json"], 0);
     assert_eq!(planned["attempts"], 0);
     assert_eq!(planned["plan"]["preparation"], json!({"kind":"planning"}));
-    let waiting = run(&repo, &state, &["task", "run", "pagination-cli"], 0);
+    let waiting = run(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "pagination-cli"],
+        0,
+    );
     assert_eq!(waiting["attempts"], 1);
     assert_eq!(
         waiting["phase"],
@@ -493,7 +508,7 @@ fn generated_nested_plan_waits_for_exact_approval_then_resumes_with_shared_accou
     assert!(waiting["result"].is_null());
     let denied = Command::new(env!("CARGO_BIN_EXE_af"))
         .current_dir(&repo)
-        .args(["task", "run", "pagination-cli", "--state"])
+        .args(["task", "run", "--execute", "pagination-cli", "--state"])
         .arg(&state)
         .output()
         .unwrap();
@@ -509,13 +524,23 @@ fn generated_nested_plan_waits_for_exact_approval_then_resumes_with_shared_accou
     std::fs::remove_dir_all(repo.join(".af/task-packages")).unwrap();
     let approved = approve(&repo, &state, root.path(), &key);
     assert_eq!(approved["attempts"], 1);
-    let done = run(&repo, &state, &["task", "run", "pagination-cli"], 0);
+    let done = run(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "pagination-cli"],
+        0,
+    );
     assert_eq!(done["attempts"], 4);
     assert_eq!(done["result"]["acceptance"], "satisfied");
     assert_eq!(done["plan_id"], waiting["plan_id"]);
     assert_eq!(done["plan_decisions"], approved["plan_decisions"]);
     assert_eq!(
-        run(&repo, &state, &["task", "run", "pagination-cli"], 0),
+        run(
+            &repo,
+            &state,
+            &["task", "run", "--execute", "pagination-cli"],
+            0
+        ),
         done
     );
 }
@@ -527,7 +552,7 @@ fn planner_repairs_once_from_durable_compiler_feedback_and_never_runs_its_propos
     let waiting = run(
         &repo,
         &state,
-        &["task", "start", "--file", "ticket.json"],
+        &["task", "start", "--execute", "--file", "ticket.json"],
         0,
     );
     assert_eq!(waiting["attempts"], 2);
@@ -543,7 +568,12 @@ fn planner_repairs_once_from_durable_compiler_feedback_and_never_runs_its_propos
     let artifact = cas.get_json(feedback[0]).unwrap();
     assert_eq!(artifact["payload"]["code"], "compiler_rejected");
     approve(&repo, &state, root.path(), &key);
-    let done = run(&repo, &state, &["task", "run", "pagination-cli"], 0);
+    let done = run(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "pagination-cli"],
+        0,
+    );
     assert_eq!(done["attempts"], 5);
     assert_eq!(done["result"]["acceptance"], "satisfied");
     let prepared: Vec<_> = done["execution_records"]
@@ -578,7 +608,7 @@ fn generated_implementation_embeds_review_and_adds_only_its_admitted_history_con
     let waiting = run(
         &repo,
         &state,
-        &["task", "start", "--file", "ticket.json"],
+        &["task", "start", "--execute", "--file", "ticket.json"],
         0,
     );
     assert_eq!(waiting["phase"]["reason"], "needs_plan_review");
@@ -601,7 +631,12 @@ fn generated_implementation_embeds_review_and_adds_only_its_admitted_history_con
     );
     assert_eq!(after["payload"]["limits"], before["payload"]["limits"]);
     approve(&repo, &state, root.path(), &key);
-    let done = run(&repo, &state, &["task", "run", "pagination-cli"], 0);
+    let done = run(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "pagination-cli"],
+        0,
+    );
     assert_eq!(done["attempts"], 6);
     assert_eq!(done["result"]["acceptance"], "satisfied");
     assert_eq!(done["review_rounds"].as_array().unwrap().len(), 1);
@@ -642,7 +677,7 @@ fn bounded_planner_failures_and_remaining_budget_refusals_never_dispatch_generat
         let done = run(
             &repo,
             &state,
-            &["task", "start", "--file", "ticket.json"],
+            &["task", "start", "--execute", "--file", "ticket.json"],
             4,
         );
         assert_eq!(
@@ -671,7 +706,12 @@ fn bounded_planner_failures_and_remaining_budget_refusals_never_dispatch_generat
                 .iter()
                 .any(|e| e["transition"]["change"]["kind"] == "planning_completed")
         );
-        let replay = run(&repo, &state, &["task", "run", "pagination-cli"], 4);
+        let replay = run(
+            &repo,
+            &state,
+            &["task", "run", "--execute", "pagination-cli"],
+            4,
+        );
         assert_eq!(replay["attempts"], done["attempts"]);
         assert_eq!(replay["plan_id"], done["plan_id"]);
     }
@@ -685,7 +725,7 @@ fn signed_rejection_and_revocation_survive_reopen_and_block_generated_execution(
         let waiting = run(
             &repo,
             &state,
-            &["task", "start", "--file", "ticket.json"],
+            &["task", "start", "--execute", "--file", "ticket.json"],
             0,
         );
         if revoked {
@@ -715,7 +755,7 @@ fn signed_rejection_and_revocation_survive_reopen_and_block_generated_execution(
         }
         let out = Command::new(env!("CARGO_BIN_EXE_af"))
             .current_dir(&repo)
-            .args(["task", "run", "pagination-cli", "--state"])
+            .args(["task", "run", "--execute", "pagination-cli", "--state"])
             .arg(&state)
             .output()
             .unwrap();
@@ -724,4 +764,52 @@ fn signed_rejection_and_revocation_survive_reopen_and_block_generated_execution(
         assert_eq!(shown["attempts"], 1);
         assert_eq!(shown["plan_id"], waiting["plan_id"]);
     }
+}
+
+#[test]
+fn preview_confirmation_runs_only_the_bootstrap_and_cannot_approve_generated_work() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, state, _) = setup(temp.path(), false, true);
+    let preview = run(
+        &repo,
+        &state,
+        &["task", "start", "--file", "ticket.json"],
+        0,
+    );
+    assert_eq!(preview["attempts"], 0);
+    assert!(preview["plan"]["preparation"].is_object());
+    let generated = run(
+        &repo,
+        &state,
+        &[
+            "task",
+            "run",
+            "pagination-cli",
+            "--confirm-plan",
+            preview["plan_id"].as_str().unwrap(),
+        ],
+        0,
+    );
+    assert_eq!(generated["phase"]["reason"], "needs_plan_review");
+    let out = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(&repo)
+        .args([
+            "task",
+            "run",
+            "pagination-cli",
+            "--confirm-plan",
+            generated["plan_id"].as_str().unwrap(),
+            "--state",
+        ])
+        .arg(&state)
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "A preview confirmation is not a signed developer decision"
+    );
+    let after = run(&repo, &state, &["task", "explain", "pagination-cli"], 0);
+    assert_eq!(after["attempts"], generated["attempts"]);
+    assert_eq!(after["chargeable_tokens"], generated["chargeable_tokens"]);
+    assert_eq!(after["phase"]["reason"], "needs_plan_review");
 }

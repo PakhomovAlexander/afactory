@@ -258,7 +258,7 @@ fn generated_issue_refresh_reuses_definition_but_requires_a_new_exact_signature(
     let waiting = task(
         &repo,
         &state,
-        &["task", "start", "--file", "ticket.json"],
+        &["task", "start", "--execute", "--file", "ticket.json"],
         0,
     );
     assert_eq!(waiting["phase"]["reason"], "needs_plan_review");
@@ -333,7 +333,7 @@ fn generated_issue_refresh_reuses_definition_but_requires_a_new_exact_signature(
         refreshed
     );
     for args in [
-        vec!["task", "run", "issue-refresh"],
+        vec!["task", "run", "--execute", "issue-refresh"],
         vec![
             "task",
             "approve",
@@ -352,11 +352,21 @@ fn generated_issue_refresh_reuses_definition_but_requires_a_new_exact_signature(
         1
     );
     approve(&repo, &state, root.path(), &key, "fresh");
-    let done = task(&repo, &state, &["task", "run", "issue-refresh"], 0);
+    let done = task(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "issue-refresh"],
+        0,
+    );
     assert_eq!(done["attempts"], 6);
     assert_eq!(done["result"]["acceptance"], "satisfied");
     assert_eq!(
-        task(&repo, &state, &["task", "run", "issue-refresh"], 0),
+        task(
+            &repo,
+            &state,
+            &["task", "run", "--execute", "issue-refresh"],
+            0
+        ),
         done
     );
 }
@@ -367,7 +377,7 @@ fn completed_task_refresh_retains_snapshot_and_spend_then_waits_when_capacity_is
     let first = task(
         &repo,
         &state,
-        &["task", "start", "--file", "ticket.json"],
+        &["task", "start", "--execute", "--file", "ticket.json"],
         0,
     );
     assert_eq!(first["attempts"], 5);
@@ -407,7 +417,12 @@ fn completed_task_refresh_retains_snapshot_and_spend_then_waits_when_capacity_is
     assert_eq!(next["limits"], original["limits"]);
     assert_eq!(next["authority"], original["authority"]);
     assert!(refreshed["result"].is_null());
-    let second = task(&repo, &state, &["task", "run", "issue-refresh"], 0);
+    let second = task(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "issue-refresh"],
+        0,
+    );
     assert_eq!(second["attempts"], 10);
     assert_eq!(second["result"]["acceptance"], "satisfied");
     assert_ne!(
@@ -452,7 +467,12 @@ fn completed_task_refresh_retains_snapshot_and_spend_then_waits_when_capacity_is
     let last = revision(&cas, &waiting);
     assert_eq!(last["revision"], 3);
     assert_eq!(last["limits"], original["limits"]);
-    let run = task(&repo, &state, &["task", "run", "issue-refresh"], 4);
+    let run = task(
+        &repo,
+        &state,
+        &["task", "run", "--execute", "issue-refresh"],
+        4,
+    );
     assert_eq!(run["attempts"], 10);
     assert_eq!(
         task(&repo, &state, &["task", "refresh", "issue-refresh"], 0),

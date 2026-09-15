@@ -8,6 +8,9 @@ one Task budget and history. This page indexes the runtime's design decisions, c
 walkthroughs; the decisions themselves are
 [ADR-0046](adr/0046-add-versioned-task-contracts-with-exact-plan-approval.md) onward.
 
+See [preview and confirmation](task-execution/preview.md) for the compact ASCII view,
+expanded tree, Claude/Codex workflow and rc2 automation change.
+
 ## Fixed design decisions
 
 - Task is the durable business abstraction; review is a Task kind. Every Pipeline has public

@@ -41,6 +41,7 @@ mod inspection;
 mod issue;
 mod legacy;
 mod planning;
+mod preview;
 mod provider_admission;
 pub(super) mod refresh;
 mod selection;
@@ -1276,7 +1277,32 @@ fn execute(
     runtime.finish(&result_id)
 }
 
-pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Result<i32, String> {
+fn confirm_current_plan(
+    cas: &Cas,
+    store: &EventStore,
+    id: &str,
+    expected: Option<&str>,
+) -> Result<(), String> {
+    let current = store
+        .task_projection(cas, id)
+        .map_err(|e| e.to_string())?
+        .ok_or("Unknown Task")?;
+    if current.plan_id.as_deref() != expected {
+        return Err(
+            "Captured plan changed before execution; inspect and confirm the new plan".into(),
+        );
+    }
+    Ok(())
+}
+
+pub(super) fn run(
+    id: &str,
+    repo: &Path,
+    state: Option<&Path>,
+    json: bool,
+    confirm_plan: Option<&str>,
+    execute_now: bool,
+) -> Result<i32, String> {
     let (_, state) = state_path(repo, state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     if !state.join("events.sqlite").is_file() {
@@ -1287,6 +1313,24 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
         .task_projection(&cas, id)
         .map_err(|e| e.to_string())?
         .ok_or("Unknown Task")?;
+    if let Some(expected) = confirm_plan {
+        if !review_core::is_digest(expected) || projection.plan_id.as_deref() != Some(expected) {
+            return Err(
+                "Plan confirmation differs from the current captured plan; inspect it again".into(),
+            );
+        }
+    }
+    if !execute_now
+        && confirm_plan.is_none()
+        && !projection.admitted
+        && !matches!(projection.phase, TaskPhaseV1::Finished { .. })
+        && projection.plan_id.is_some()
+    {
+        if !json {
+            present(&cas, &store, id, false, true)?;
+        }
+        return Err("Confirm the captured plan with --confirm-plan PLAN_ID (or explicitly opt into --execute automation)".into());
+    }
     if matches!(projection.phase, TaskPhaseV1::Finished { .. }) {
         return present(&cas, &store, id, json, false);
     }
@@ -1373,6 +1417,7 @@ pub(super) fn run(id: &str, repo: &Path, state: Option<&Path>, json: bool) -> Re
         .take_task_lease(&cas, id, &format!("cli-{}", std::process::id()), 15_000)
         .map_err(|e| e.to_string())?;
     let outcome = (|| {
+        confirm_current_plan(&cas, &store, id, projection.plan_id.as_deref())?;
         store
             .recover_task_attempts(&cas, &lease)
             .map_err(|e| e.to_string())?;
@@ -1402,15 +1447,16 @@ pub(super) fn explain(
     state: Option<&Path>,
     json: bool,
     plan: Option<&str>,
+    tree: bool,
 ) -> Result<i32, String> {
     let (_, state) = state_path(repo, state)?;
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let store =
         EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
     if let Some(plan_id) = plan {
-        return inspection::explain_plan(&cas, &store, id, plan_id, json);
+        return inspection::explain_plan(&cas, &store, id, plan_id, json, tree);
     }
-    present(&cas, &store, id, json, true)
+    present_with_format(&cas, &store, id, json, true, tree)
 }
 
 pub(super) fn show_if_common(id: &str, state: &Path, json: bool) -> Result<bool, String> {
@@ -1457,6 +1503,17 @@ fn present(
     id: &str,
     json_output: bool,
     explain: bool,
+) -> Result<i32, String> {
+    present_with_format(cas, store, id, json_output, explain, false)
+}
+
+fn present_with_format(
+    cas: &Cas,
+    store: &EventStore,
+    id: &str,
+    json_output: bool,
+    explain: bool,
+    tree: bool,
 ) -> Result<i32, String> {
     let state: TaskProjection = store
         .task_projection(cas, id)
@@ -1667,6 +1724,8 @@ fn present(
             "{}",
             serde_json::to_string(&value).map_err(|e| e.to_string())?
         );
+    } else if explain && state.plan_id.is_some() {
+        print!("{}", preview::current(cas, &state, tree)?);
     } else {
         println!(
             "Task {}: {}",
