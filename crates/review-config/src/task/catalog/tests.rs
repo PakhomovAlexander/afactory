@@ -72,18 +72,19 @@ fn export_uses_shared_defaults_and_checked_renaming_without_local_authority() {
     let schema = |name: &str| -> serde_json::Value {
         serde_json::from_slice(&std::fs::read(root.join("schemas").join(name)).unwrap()).unwrap()
     };
-    let mut options = jsonschema::options();
+    let mut registry = jsonschema::Registry::new();
     for name in [
         "task-contracts-v1.json",
         "task-operator-signature-v1.json",
         "task-kind-v1.json",
     ] {
         let value = schema(name);
-        options.with_resource(
-            value["$id"].as_str().unwrap().to_owned(),
-            jsonschema::Resource::from_contents(value).unwrap(),
-        );
+        let id = value["$id"].as_str().unwrap().to_owned();
+        registry = registry
+            .add(id, jsonschema::Resource::from_contents(value))
+            .unwrap();
     }
+    let registry = registry.prepare().unwrap();
     for (name, value) in [
         (
             "catalog-contract-fixtures-v1.json",
@@ -94,7 +95,10 @@ fn export_uses_shared_defaults_and_checked_renaming_without_local_authority() {
             serde_json::to_value(&exported.catalog).unwrap(),
         ),
     ] {
-        let validator = options.build(&schema(name)).unwrap();
+        let validator = jsonschema::options()
+            .with_registry(&registry)
+            .build(&schema(name))
+            .unwrap();
         assert!(
             validator.is_valid(&value),
             "{name}: {:?}",
@@ -901,7 +905,7 @@ fn installed_planner_bootstrap_is_exact_fixed_and_cannot_be_reclassified_by_wire
         );
         f.compiler.validate_plan(&f.cas, &f.task, &plan).unwrap();
         let request = f.compiler.planning_request(&f.task).unwrap();
-        let mut options = jsonschema::options();
+        let mut registry = jsonschema::Registry::new();
         let root = std::env::var_os("AF_WORKSPACE_ROOT")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."));
@@ -911,12 +915,18 @@ fn installed_planner_bootstrap_is_exact_fixed_and_cannot_be_reclassified_by_wire
         };
         for name in ["task-contracts-v1.json", "task-operator-signature-v1.json"] {
             let value = schema(name);
-            options.with_resource(
-                value["$id"].as_str().unwrap().to_owned(),
-                jsonschema::Resource::from_contents(value).unwrap(),
-            );
+            let id = value["$id"].as_str().unwrap().to_owned();
+            registry = registry
+                .add(id, jsonschema::Resource::from_contents(value))
+                .unwrap();
         }
-        let validator = options.build(&schema("planning-request-v1.json")).unwrap();
+        let validator = {
+            let registry = registry.prepare().unwrap();
+            jsonschema::options()
+                .with_registry(&registry)
+                .build(&schema("planning-request-v1.json"))
+                .unwrap()
+        };
         assert!(
             validator.is_valid(&request),
             "{:?}",

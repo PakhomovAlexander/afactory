@@ -20,7 +20,7 @@ notify = "8.2.0"
 reflink-copy = "0.1.19"
 
 [dev-dependencies]
-jsonschema = { version = "0.26.1", default-features = false }
+jsonschema = { version = "0.56.0", default-features = false }
 
 [lints]
 workspace = true

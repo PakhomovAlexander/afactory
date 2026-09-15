@@ -181,7 +181,7 @@ fn every_converted_report_validates_against_the_schema() {
             if !validator.is_valid(&value) {
                 let errors: Vec<String> = validator
                     .iter_errors(&value)
-                    .map(|e| format!("{} at {}", e, e.instance_path))
+                    .map(|e| format!("{} at {}", e, e.instance_path()))
                     .collect();
                 panic!(
                     "{name} finding {index} fails FindingReport@1: {}",
