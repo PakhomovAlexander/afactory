@@ -221,7 +221,7 @@ hook, and an `AGENTS.md` rule — nothing else.
 ```sh
 brew install af            # or the release install script
 cd myrepo && af init       # .af/af.toml, two review workers, the review pipeline; embedded Store
-af provider add claude     # names the ambient Claude Code login; bounded preflight
+af provider setup claude-main --kind claude  # login + explicit machine-local binding
 af connect claude          # MCP server + stop hook + AGENTS.md rule
 af doctor                  # every entity green, or the exact next action
 ```

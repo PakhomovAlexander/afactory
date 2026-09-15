@@ -26,6 +26,7 @@ use review_core::{
 };
 use review_pipeline::RoundAuthority;
 use review_store::{Cas, EventStore, NewEvent};
+use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
@@ -378,6 +379,13 @@ pub fn setup(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String
     Ok(())
 }
 
+/// Resolve an interrupted registry publication without guessing which version committed.
+pub fn recover() -> Result<(), String> {
+    let path = registry_path()?.ok_or("no provider registry path is available")?;
+    let _lock = registry_lock(&path)?;
+    recover_registry(&path)
+}
+
 fn validate_explicit_id(id: &str) -> Result<(), String> {
     safe_id(id)?;
     if matches!(id, "claude-ambient" | "codex-ambient") {
@@ -405,14 +413,9 @@ fn resolve_auth_dir(
         return Err("--auth-dir must be an absolute path without `..`".into());
     }
     // The registry format is TOML and therefore cannot represent an arbitrary Unix byte path.
-    // Reject it before directory creation, status probes, or an interactive login can have side
-    // effects that the command would then be unable to publish.
-    if auth_dir.to_str().is_none() {
-        return Err(format!(
-            "auth directory {} is not valid UTF-8 and cannot be stored in TOML",
-            auth_dir.display()
-        ));
-    }
+    // Resolve the deepest existing ancestor first: a printable alias can otherwise point through
+    // a symlink to a non-UTF-8 parent and create an unpublishable leaf before canonicalization.
+    validate_utf8_destination(&auth_dir)?;
     match fs::symlink_metadata(&auth_dir) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
             return Err(format!(
@@ -444,6 +447,7 @@ fn resolve_auth_dir(
             auth_dir.display()
         ));
     }
+    validate_secure_directory_chain(&auth_dir, "auth directory")?;
     let auth_dir = fs::canonicalize(&auth_dir).map_err(|error| {
         format!(
             "auth directory {} cannot be resolved: {error}",
@@ -476,6 +480,7 @@ fn validate_private_auth_directory(path: &Path) -> Result<(), String> {
             path.display()
         ));
     }
+    validate_secure_directory_chain(path, "auth directory")?;
     let effective_uid = nix::unistd::geteuid().as_raw();
     if metadata.uid() != effective_uid {
         return Err(format!(
@@ -485,13 +490,141 @@ fn validate_private_auth_directory(path: &Path) -> Result<(), String> {
         ));
     }
     if metadata.mode() & 0o022 != 0 {
+        let fix = chmod_fix(path, "go-w");
         return Err(format!(
-            "auth directory {} is writable by another user; fix: chmod go-w {}",
+            "auth directory {} is writable by another user; fix: {fix}",
             path.display(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_utf8_destination(path: &Path) -> Result<(), String> {
+    if path.to_str().is_none() {
+        return Err(format!(
+            "auth directory {} is not valid UTF-8 and cannot be stored in TOML",
+            path.display()
+        ));
+    }
+    let mut suffix = Vec::new();
+    let mut ancestor = path;
+    let mut resolved = loop {
+        match fs::symlink_metadata(ancestor) {
+            Ok(_) => {
+                break fs::canonicalize(ancestor).map_err(|error| {
+                    format!(
+                        "auth directory ancestor {} cannot be resolved: {error}",
+                        ancestor.display()
+                    )
+                })?;
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                let name = ancestor.file_name().ok_or_else(|| {
+                    format!("auth directory {} has no existing ancestor", path.display())
+                })?;
+                suffix.push(name.to_os_string());
+                ancestor = ancestor.parent().ok_or_else(|| {
+                    format!("auth directory {} has no existing ancestor", path.display())
+                })?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect auth directory ancestor {}: {error}",
+                    ancestor.display()
+                ));
+            }
+        }
+    };
+    for component in suffix.into_iter().rev() {
+        resolved.push(component);
+    }
+    if resolved.to_str().is_none() {
+        return Err(format!(
+            "auth directory {} resolves through a non-UTF-8 path and cannot be stored in TOML",
             path.display()
         ));
     }
     Ok(())
+}
+
+fn missing_directories(path: &Path, what: &str) -> Result<Vec<PathBuf>, String> {
+    let mut missing = Vec::new();
+    let mut cursor = path;
+    loop {
+        match fs::metadata(cursor) {
+            Ok(metadata) if metadata.is_dir() => break,
+            Ok(_) => {
+                return Err(format!("{what} {} is not a directory", cursor.display()));
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                missing.push(cursor.to_path_buf());
+                cursor = cursor
+                    .parent()
+                    .ok_or_else(|| format!("{what} {} has no existing ancestor", path.display()))?;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "cannot inspect {what} {}: {error}",
+                    cursor.display()
+                ));
+            }
+        }
+    }
+    Ok(missing)
+}
+
+#[cfg(unix)]
+fn validate_secure_directory_chain(path: &Path, what: &str) -> Result<(), String> {
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| format!("cannot resolve {what} {}: {error}", path.display()))?;
+    let mut roots = vec![path.to_path_buf()];
+    if canonical != path {
+        roots.push(canonical);
+    }
+    let mut checked = BTreeSet::new();
+    for root in roots {
+        let mut current = Some(root.as_path());
+        let mut leaf = true;
+        while let Some(directory) = current {
+            if checked.insert(directory.to_path_buf()) {
+                let metadata = fs::metadata(directory).map_err(|error| {
+                    format!(
+                        "cannot inspect rename-controlling directory {} for {what}: {error}",
+                        directory.display()
+                    )
+                })?;
+                if !metadata.is_dir() {
+                    return Err(format!(
+                        "rename-controlling path {} for {what} is not a directory",
+                        directory.display()
+                    ));
+                }
+                if leaf {
+                    validate_owned_not_writable_by_others(directory, &metadata, what)?;
+                } else if metadata.mode() & 0o022 != 0 && metadata.mode() & 0o1000 == 0 {
+                    return Err(format!(
+                        "rename-controlling directory {} for {what} is writable by another user without the sticky bit; fix: secure that directory or move {what} under a private parent",
+                        directory.display()
+                    ));
+                }
+            }
+            leaf = false;
+            current = directory.parent();
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_secure_directory_chain(_path: &Path, _what: &str) -> Result<(), String> {
+    Ok(())
+}
+
+fn chmod_fix(path: &Path, mode: &str) -> String {
+    path.to_str().map_or_else(
+        || format!("remove the unsafe permission bits from {}", path.display()),
+        |path| format!("chmod {mode} -- {}", shell_words::quote(path)),
+    )
 }
 
 #[cfg(not(unix))]
@@ -508,16 +641,63 @@ fn validate_private_auth_directory(path: &Path) -> Result<(), String> {
 
 #[cfg(unix)]
 fn create_private_directory(path: &Path) -> Result<(), String> {
-    use std::os::unix::fs::DirBuilderExt;
-
-    let mut builder = fs::DirBuilder::new();
-    builder.recursive(true).mode(0o700);
-    builder
-        .create(path)
-        .map_err(|error| format!("cannot create auth directory {}: {error}", path.display()))
+    let missing = missing_directories(path, "auth directory")?;
+    for directory in missing.into_iter().rev() {
+        match fs::DirBuilder::new().mode(0o700).create(&directory) {
+            Ok(()) => {}
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(format!(
+                    "cannot create auth directory {}: {error}",
+                    directory.display()
+                ));
+            }
+        }
+        // Directory creation modes are still filtered by umask. Repair owner access before the
+        // next descendant is created, including under restrictive 0177/0777 umasks.
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            format!(
+                "cannot secure auth directory {}: {error}",
+                directory.display()
+            )
+        })?;
+    }
+    validate_secure_directory_chain(path, "auth directory")
 }
 
-fn auth_context_lock(kind: ProviderKind, auth_dir: &Path) -> Result<File, String> {
+struct BoundDirectoryLock {
+    _lock: File,
+    #[cfg(unix)]
+    _directory: File,
+}
+
+#[cfg(unix)]
+fn bind_directory(path: &Path, what: &str) -> Result<File, String> {
+    validate_secure_directory_chain(path, what)?;
+    let directory =
+        File::open(path).map_err(|error| format!("opening {what} {}: {error}", path.display()))?;
+    if !bound_directory_is_current(path, &directory).unwrap_or(false) {
+        return Err(format!(
+            "{what} {} changed while it was being secured; retry",
+            path.display()
+        ));
+    }
+    Ok(directory)
+}
+
+#[cfg(unix)]
+fn bound_directory_is_current(path: &Path, directory: &File) -> std::io::Result<bool> {
+    let path = fs::metadata(path)?;
+    let directory = directory.metadata()?;
+    Ok(path.is_dir()
+        && directory.is_dir()
+        && path.dev() == directory.dev()
+        && path.ino() == directory.ino())
+}
+
+fn auth_context_lock(kind: ProviderKind, auth_dir: &Path) -> Result<BoundDirectoryLock, String> {
+    #[cfg(unix)]
+    let directory = bind_directory(auth_dir, "auth directory")?;
     let lock_path = auth_dir.join(format!(".af-{}-setup.lock", kind.name()));
     let mut options = OpenOptions::new();
     options.read(true).write(true).create(true).truncate(false);
@@ -546,6 +726,31 @@ fn auth_context_lock(kind: ProviderKind, auth_dir: &Path) -> Result<File, String
             lock_path.display()
         ));
     }
+    #[cfg(unix)]
+    {
+        file.set_permissions(fs::Permissions::from_mode(0o600))
+            .map_err(|error| {
+                format!(
+                    "securing {} auth-context lock {}: {error}",
+                    kind.name(),
+                    lock_path.display()
+                )
+            })?;
+        let secured_metadata = file.metadata().map_err(|error| {
+            format!(
+                "re-inspecting {} auth-context lock {}: {error}",
+                kind.name(),
+                lock_path.display()
+            )
+        })?;
+        validate_owned_not_writable_by_others(&lock_path, &secured_metadata, "auth-context lock")?;
+        if !bound_directory_is_current(auth_dir, &directory).unwrap_or(false) {
+            return Err(format!(
+                "auth directory {} changed while its setup lock was opened; retry",
+                auth_dir.display()
+            ));
+        }
+    }
     fs2::FileExt::lock_exclusive(&file).map_err(|error| {
         format!(
             "locking {} auth context {}: {error}",
@@ -553,7 +758,11 @@ fn auth_context_lock(kind: ProviderKind, auth_dir: &Path) -> Result<File, String
             auth_dir.display()
         )
     })?;
-    Ok(file)
+    Ok(BoundDirectoryLock {
+        _lock: file,
+        #[cfg(unix)]
+        _directory: directory,
+    })
 }
 
 #[cfg(not(unix))]
@@ -876,12 +1085,14 @@ fn normalize_provider_tables(document: &mut DocumentMut, path: &Path) -> Result<
     Ok(())
 }
 
-fn registry_lock(path: &Path) -> Result<File, String> {
+fn registry_lock(path: &Path) -> Result<BoundDirectoryLock, String> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
     create_dir_all_durable(parent)?;
     validate_registry_directory(parent)?;
+    #[cfg(unix)]
+    let directory = bind_directory(parent, "provider registry directory")?;
     let mut lock_name = path.as_os_str().to_os_string();
     lock_name.push(".lock");
     let lock_path = PathBuf::from(lock_name);
@@ -919,10 +1130,20 @@ fn registry_lock(path: &Path) -> Result<File, String> {
                     lock_path.display()
                 )
             })?;
+        if !bound_directory_is_current(parent, &directory).unwrap_or(false) {
+            return Err(format!(
+                "provider registry directory {} changed while its lock was opened; retry",
+                parent.display()
+            ));
+        }
     }
     fs2::FileExt::lock_exclusive(&file)
         .map_err(|error| format!("locking provider registry {}: {error}", lock_path.display()))?;
-    Ok(file)
+    Ok(BoundDirectoryLock {
+        _lock: file,
+        #[cfg(unix)]
+        _directory: directory,
+    })
 }
 
 fn write_registry(
@@ -935,6 +1156,8 @@ fn write_registry(
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
     create_dir_all_durable(parent)?;
     validate_registry_directory(parent)?;
+    #[cfg(unix)]
+    let directory = bind_directory(parent, "provider registry directory")?;
     #[cfg(not(unix))]
     let permissions = fs::metadata(path)
         .ok()
@@ -957,6 +1180,13 @@ fn write_registry(
         .write_all(bytes)
         .and_then(|()| temporary.as_file().sync_all())
         .map_err(|error| format!("writing provider registry: {error}"))?;
+    #[cfg(unix)]
+    if !bound_directory_is_current(parent, &directory).unwrap_or(false) {
+        return Err(format!(
+            "provider registry directory {} changed before publication; retry",
+            parent.display()
+        ));
+    }
     let preserved = match expected {
         None => {
             temporary.persist_noclobber(path).map_err(|error| {
@@ -970,6 +1200,13 @@ fn write_registry(
         }
         Some(expected) => Some(replace_registry_if_unchanged(path, temporary, expected)?),
     };
+    #[cfg(unix)]
+    if !bound_directory_is_current(parent, &directory).unwrap_or(false) {
+        eprintln!(
+            "warning: provider registry committed, but its directory {} changed during publication; inspect the registry and its preserved versions",
+            parent.display()
+        );
+    }
     if let Err(error) = sync_directory(parent) {
         eprintln!(
             "warning: provider registry committed, but durability could not be confirmed: {error}"
@@ -979,34 +1216,7 @@ fn write_registry(
 }
 
 fn create_dir_all_durable(path: &Path) -> Result<(), String> {
-    let mut missing = Vec::new();
-    let mut cursor = path;
-    loop {
-        match fs::metadata(cursor) {
-            Ok(metadata) if metadata.is_dir() => break,
-            Ok(_) => {
-                return Err(format!(
-                    "provider registry directory {} is not a directory",
-                    cursor.display()
-                ));
-            }
-            Err(error) if error.kind() == ErrorKind::NotFound => {
-                missing.push(cursor.to_path_buf());
-                cursor = cursor.parent().ok_or_else(|| {
-                    format!(
-                        "provider registry directory {} has no existing ancestor",
-                        path.display()
-                    )
-                })?;
-            }
-            Err(error) => {
-                return Err(format!(
-                    "cannot inspect provider registry directory {}: {error}",
-                    cursor.display()
-                ));
-            }
-        }
-    }
+    let missing = missing_directories(path, "provider registry directory")?;
     for directory in missing.into_iter().rev() {
         match create_registry_directory(&directory) {
             Ok(()) => {}
@@ -1028,6 +1238,13 @@ fn create_dir_all_durable(path: &Path) -> Result<(), String> {
                 ));
             }
         }
+        #[cfg(unix)]
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            format!(
+                "securing provider registry directory {}: {error}",
+                directory.display()
+            )
+        })?;
         let parent = directory.parent().ok_or_else(|| {
             format!(
                 "provider registry directory {} has no parent",
@@ -1065,10 +1282,10 @@ fn validate_owned_not_writable_by_others(
         ));
     }
     if metadata.mode() & 0o022 != 0 {
+        let fix = chmod_fix(path, "go-w");
         return Err(format!(
-            "{what} {} is writable by another user; fix: chmod go-w {}",
+            "{what} {} is writable by another user; fix: {fix}",
             path.display(),
-            path.display()
         ));
     }
     Ok(())
@@ -1088,7 +1305,8 @@ fn validate_registry_directory(path: &Path) -> Result<(), String> {
             path.display()
         ));
     }
-    validate_owned_not_writable_by_others(path, &metadata, "provider registry directory")
+    validate_owned_not_writable_by_others(path, &metadata, "provider registry directory")?;
+    validate_secure_directory_chain(path, "provider registry directory")
 }
 
 #[cfg(not(unix))]
@@ -1513,6 +1731,245 @@ fn registry_transaction_path(path: &Path) -> PathBuf {
     PathBuf::from(name)
 }
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RegistryTransactionMarker {
+    version: u8,
+    stage: String,
+    recovery: String,
+    candidate_copy: String,
+    displaced_copy: String,
+    exchange_stage: String,
+    archived_marker: String,
+    expected_sha256: String,
+    candidate_sha256: String,
+}
+
+fn safe_relative_component(value: &str, field: &str) -> Result<(), String> {
+    let path = Path::new(value);
+    let mut components = path.components();
+    if !matches!(components.next(), Some(Component::Normal(_))) || components.next().is_some() {
+        return Err(format!(
+            "provider registry transaction `{field}` must be one relative path component"
+        ));
+    }
+    Ok(())
+}
+
+fn validate_sha256(value: &str, field: &str) -> Result<(), String> {
+    if value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(format!(
+            "provider registry transaction `{field}` is not a SHA-256 digest"
+        ))
+    }
+}
+
+fn recovery_registry_digest(path: &Path, label: &str) -> Result<String, String> {
+    let text = read_registry_unchecked(path)?.ok_or_else(|| {
+        format!(
+            "provider registry recovery {label} {} is missing",
+            path.display()
+        )
+    })?;
+    parse_registry(&text, path).map_err(|error| {
+        format!(
+            "provider registry recovery {label} {} is invalid: {error}",
+            path.display()
+        )
+    })?;
+    Ok(format!("{:x}", Sha256::digest(text.as_bytes())))
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+))]
+fn recover_registry(path: &Path) -> Result<(), String> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+    let transaction = registry_transaction_path(path);
+    let marker_file = match open_registry(&transaction) {
+        Ok(file) => file,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            println!(
+                "provider registry {} has no unfinished publication",
+                path.display()
+            );
+            return Ok(());
+        }
+        Err(error) => {
+            return Err(format!(
+                "opening provider registry transaction {}: {error}",
+                transaction.display()
+            ));
+        }
+    };
+    let metadata = marker_file.metadata().map_err(|error| {
+        format!(
+            "inspecting provider registry transaction {}: {error}",
+            transaction.display()
+        )
+    })?;
+    if !metadata.is_file() || metadata.len() > MAX_REGISTRY_BYTES {
+        return Err(format!(
+            "provider registry transaction {} must be a bounded regular file",
+            transaction.display()
+        ));
+    }
+    validate_owned_not_writable_by_others(
+        &transaction,
+        &metadata,
+        "provider registry transaction",
+    )?;
+    let mut marker_bytes = Vec::with_capacity(metadata.len() as usize);
+    marker_file
+        .try_clone()
+        .and_then(|file| {
+            file.take(MAX_REGISTRY_BYTES + 1)
+                .read_to_end(&mut marker_bytes)
+        })
+        .map_err(|error| {
+            format!(
+                "reading provider registry transaction {}: {error}",
+                transaction.display()
+            )
+        })?;
+    if marker_bytes.len() as u64 > MAX_REGISTRY_BYTES {
+        return Err(format!(
+            "provider registry transaction {} exceeds {MAX_REGISTRY_BYTES} bytes",
+            transaction.display()
+        ));
+    }
+    let marker_text = std::str::from_utf8(&marker_bytes).map_err(|_| {
+        format!(
+            "provider registry transaction {} is not UTF-8",
+            transaction.display()
+        )
+    })?;
+    let marker: RegistryTransactionMarker = toml::from_str(marker_text).map_err(|error| {
+        format!(
+            "provider registry transaction {} is invalid: {error}",
+            transaction.display()
+        )
+    })?;
+    if marker.version != 1 {
+        return Err(format!(
+            "provider registry transaction {} has unsupported version {}",
+            transaction.display(),
+            marker.version
+        ));
+    }
+    safe_relative_component(&marker.stage, "stage")?;
+    safe_relative_component(&marker.recovery, "recovery")?;
+    if !marker.recovery.starts_with(".af-provider-recovery-") {
+        return Err("provider registry transaction names an unexpected recovery directory".into());
+    }
+    for (field, value, leaf) in [
+        ("candidate_copy", &marker.candidate_copy, "candidate"),
+        ("displaced_copy", &marker.displaced_copy, "displaced"),
+        ("exchange_stage", &marker.exchange_stage, "exchange-stage"),
+        (
+            "archived_marker",
+            &marker.archived_marker,
+            "transaction-marker",
+        ),
+    ] {
+        let expected = Path::new(&marker.recovery).join(leaf);
+        if Path::new(value) != expected {
+            return Err(format!(
+                "provider registry transaction `{field}` does not name its recorded recovery child"
+            ));
+        }
+    }
+    validate_sha256(&marker.expected_sha256, "expected_sha256")?;
+    validate_sha256(&marker.candidate_sha256, "candidate_sha256")?;
+
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
+    let recovery = parent.join(&marker.recovery);
+    validate_registry_directory(&recovery)?;
+    fs::set_permissions(&recovery, fs::Permissions::from_mode(0o700)).map_err(|error| {
+        format!(
+            "making provider registry recovery directory {} inspectable: {error}",
+            recovery.display()
+        )
+    })?;
+    let recovery_directory = bind_directory(&recovery, "provider registry recovery directory")?;
+    let live_digest = recovery_registry_digest(path, "live file")?;
+    let candidate = parent.join(&marker.candidate_copy);
+    let displaced = parent.join(&marker.displaced_copy);
+    let candidate_digest = recovery_registry_digest(&candidate, "candidate copy")?;
+    let displaced_digest = recovery_registry_digest(&displaced, "prior copy")?;
+    if candidate_digest != marker.candidate_sha256 || displaced_digest != marker.expected_sha256 {
+        return Err(format!(
+            "provider registry recovery files in {} do not match the transaction hashes; marker retained",
+            recovery.display()
+        ));
+    }
+    let state = if live_digest == marker.candidate_sha256 {
+        "the committed candidate is live"
+    } else if live_digest == marker.expected_sha256 {
+        "publication did not commit and the prior registry is live"
+    } else {
+        return Err(format!(
+            "provider registry {} matches neither transaction hash; marker retained",
+            path.display()
+        ));
+    };
+    if !bound_directory_is_current(&recovery, &recovery_directory).unwrap_or(false)
+        || !same_file(&transaction, &marker_file).unwrap_or(false)
+    {
+        return Err("provider registry recovery state changed while validating it; retry".into());
+    }
+    let archived = parent.join(&marker.archived_marker);
+    renameat_with(CWD, &transaction, CWD, &archived, RenameFlags::NOREPLACE).map_err(|error| {
+        format!(
+            "archiving validated provider registry transaction {}: {error}",
+            transaction.display()
+        )
+    })?;
+    if !same_file(&archived, &marker_file).unwrap_or(false) {
+        return Err(format!(
+            "archived provider registry transaction {} changed identity; inspect {}",
+            archived.display(),
+            recovery.display()
+        ));
+    }
+    recovery_directory
+        .sync_all()
+        .map_err(|error| format!("syncing provider registry recovery directory: {error}"))?;
+    sync_directory(parent)?;
+    println!(
+        "provider registry recovery complete: {state}; candidate and prior versions remain in {}",
+        recovery.display()
+    );
+    Ok(())
+}
+
+#[cfg(not(any(
+    target_os = "android",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "visionos",
+    target_os = "watchos"
+)))]
+fn recover_registry(path: &Path) -> Result<(), String> {
+    Err(format!(
+        "provider registry recovery is not supported on this platform for {}",
+        path.display()
+    ))
+}
+
 #[cfg(any(
     target_os = "android",
     target_os = "linux",
@@ -1766,11 +2223,14 @@ fn read_registry_with_hooks(
     before_read: impl FnOnce(),
     after_read: impl FnOnce(),
 ) -> Result<Option<String>, String> {
-    if let Some(parent) = path.parent()
-        && parent.exists()
-    {
+    let configured_parent = path.parent().filter(|parent| parent.exists());
+    if let Some(parent) = configured_parent {
         validate_registry_directory(parent)?;
     }
+    #[cfg(unix)]
+    let configured_directory = configured_parent
+        .map(|parent| bind_directory(parent, "provider registry directory"))
+        .transpose()?;
     // Check beside the configured pathname even when the registry is absent. A writer may have
     // created its marker before publishing the first file, or the pathname may have been swapped
     // between a regular file and a symlink.
@@ -1779,6 +2239,12 @@ fn read_registry_with_hooks(
         ensure_no_registry_transaction(path)?;
         return Ok(None);
     };
+    let resolved_parent = resolved
+        .parent()
+        .ok_or_else(|| format!("provider registry {} has no parent", resolved.display()))?;
+    validate_registry_directory(resolved_parent)?;
+    #[cfg(unix)]
+    let resolved_directory = bind_directory(resolved_parent, "provider registry directory")?;
     ensure_registry_transactions_clear(path, &resolved)?;
     before_read();
     let registry = read_registry_resolved(path, &resolved)?;
@@ -1787,6 +2253,21 @@ fn read_registry_with_hooks(
     // while this read was in flight. Rechecking gives current readers the stronger recovery fence;
     // older readers still see only the complete registry committed by the atomic exchange.
     ensure_registry_transactions_clear(path, &resolved)?;
+    #[cfg(unix)]
+    {
+        if configured_parent
+            .zip(configured_directory.as_ref())
+            .is_some_and(|(parent, directory)| {
+                !bound_directory_is_current(parent, directory).unwrap_or(false)
+            })
+            || !bound_directory_is_current(resolved_parent, &resolved_directory).unwrap_or(false)
+        {
+            return Err(format!(
+                "provider registry directory changed while reading {}; retry",
+                path.display()
+            ));
+        }
+    }
     Ok(Some(registry))
 }
 
@@ -1814,7 +2295,7 @@ fn ensure_no_registry_transaction(path: &Path) -> Result<(), String> {
     match fs::symlink_metadata(&transaction) {
         Ok(_) => {
             return Err(format!(
-                "provider registry {} has an unfinished publication transaction at {}; registry reads fail closed until the preserved files are inspected",
+                "provider registry {} has an unfinished publication transaction at {}; registry reads fail closed — fix: af provider recover",
                 path.display(),
                 transaction.display()
             ));
@@ -3814,7 +4295,14 @@ fn login_command(spec: &ProviderSpec) -> String {
         ProviderKind::Codex => ("CODEX_HOME", "codex login"),
     };
     match spec.auth_dir.as_deref() {
-        Some(auth_dir) => format!("{selector}={} {login}", auth_dir.display()),
+        Some(auth_dir) => auth_dir.to_str().map_or_else(
+            || {
+                format!(
+                    "set {selector} to the displayed non-UTF-8 auth directory, then run `{login}`"
+                )
+            },
+            |auth_dir| format!("{selector}={} {login}", shell_words::quote(auth_dir)),
+        ),
         None => login.to_string(),
     }
 }
@@ -4572,6 +5060,101 @@ mod tests {
         assert!(!registry_transaction_path(&path).exists());
     }
 
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "visionos",
+        target_os = "watchos"
+    ))]
+    #[test]
+    fn recovery_archives_only_a_hash_validated_precommit_marker() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("providers.toml");
+        let original = "version = 1\nproviders = []\n";
+        let candidate = "version = 1\n# candidate\nproviders = []\n";
+        fs::write(&path, original).unwrap();
+        let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+        stage.write_all(candidate.as_bytes()).unwrap();
+        stage.as_file().sync_all().unwrap();
+        let recovery =
+            prepare_registry_recovery(&path, stage.path(), stage.as_file(), original, candidate)
+                .unwrap();
+        let (transaction, marker_file) =
+            write_registry_transaction(&path, stage.path(), original, stage.as_file(), &recovery)
+                .unwrap();
+        drop(marker_file);
+
+        recover_registry(&path).unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert!(!transaction.exists());
+        assert!(recovery.archived_marker.is_file());
+        assert_eq!(
+            fs::read_to_string(recovery.candidate_copy).unwrap(),
+            candidate
+        );
+        assert_eq!(
+            fs::read_to_string(recovery.displaced_copy).unwrap(),
+            original
+        );
+    }
+
+    #[cfg(any(
+        target_os = "android",
+        target_os = "linux",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "tvos",
+        target_os = "visionos",
+        target_os = "watchos"
+    ))]
+    #[test]
+    fn recovery_identifies_a_committed_candidate_and_refuses_unknown_live_bytes() {
+        use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+        for tamper in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let path = root.path().join("providers.toml");
+            let original = "version = 1\nproviders = []\n";
+            let candidate = "version = 1\n# candidate\nproviders = []\n";
+            fs::write(&path, original).unwrap();
+            let mut stage = tempfile::NamedTempFile::new_in(root.path()).unwrap();
+            stage.write_all(candidate.as_bytes()).unwrap();
+            stage.as_file().sync_all().unwrap();
+            let stage_path = stage.path().to_path_buf();
+            let recovery =
+                prepare_registry_recovery(&path, &stage_path, stage.as_file(), original, candidate)
+                    .unwrap();
+            let (transaction, marker_file) = write_registry_transaction(
+                &path,
+                &stage_path,
+                original,
+                stage.as_file(),
+                &recovery,
+            )
+            .unwrap();
+            drop(marker_file);
+            renameat_with(CWD, &stage_path, CWD, &path, RenameFlags::EXCHANGE).unwrap();
+            if tamper {
+                fs::write(&path, "version = 1\n# unknown\nproviders = []\n").unwrap();
+                let error = recover_registry(&path).unwrap_err();
+                assert!(
+                    error.contains("matches neither transaction hash"),
+                    "{error}"
+                );
+                assert!(transaction.is_file());
+            } else {
+                recover_registry(&path).unwrap();
+                assert_eq!(fs::read_to_string(&path).unwrap(), candidate);
+                assert!(!transaction.exists());
+                assert!(recovery.archived_marker.is_file());
+            }
+        }
+    }
+
     #[test]
     fn a_marker_beside_a_missing_registry_still_fails_closed() {
         let root = tempfile::tempdir().unwrap();
@@ -5112,6 +5695,18 @@ auth_dir = "{}"
         // The admission continuation names the same command, so the two surfaces cannot drift.
         assert!(
             continuation_error(&declared, "op", 1).contains(&authentication_command(&declared))
+        );
+        let spaced = ProviderSpec {
+            auth_dir: Some(PathBuf::from("/profiles/claude personal;work")),
+            ..declared
+        };
+        assert_eq!(
+            authentication_command(&spaced),
+            "af provider setup claude-personal --kind claude --auth-dir '/profiles/claude personal;work'"
+        );
+        assert_eq!(
+            chmod_fix(Path::new("/profiles/claude personal;work"), "go-w"),
+            "chmod go-w -- '/profiles/claude personal;work'"
         );
     }
 

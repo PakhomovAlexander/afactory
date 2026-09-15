@@ -32,7 +32,9 @@ or reopen completed work. Release-bound migration and rollback evidence are rele
   registry IDs, preserve every Gate and executing release in onboarding's copyable apply command,
   make registry publication serialized, conditional, durable and atomic across pinned releases,
   secure its directories and files independently of `umask`, reject unpublishable auth paths before
-  login, and make the README's Codex-only quickstart complete.
+  login, bind security-sensitive operations to stable directory handles, provide hash-validating
+  fail-closed recovery with `af provider recover`, and make the README's Codex-only quickstart
+  complete.
 - Make Task the common durable execution model for implementation, Review and documents,
   with typed Pipeline input/output contracts, captured context and shared budget accounting.
 - Compose reusable Review Pipelines inside implementation, with independent acceptance and

@@ -777,6 +777,13 @@ CODEX_HOME or ~/.codex). Existing entries and duplicate auth contexts are never 
         #[arg(long, value_name = "DIR")]
         auth_dir: Option<PathBuf>,
     },
+    /// Validate and close an interrupted Provider registry publication
+    #[command(
+        long_about = "Validate and close an interrupted Provider registry publication.\n\n\
+Checks the transaction marker, live registry, and preserved candidate/prior hashes before \
+archiving the marker. It never guesses which version committed and never deletes recovery files."
+    )]
+    Recover,
     /// Run a bounded, charged preflight for the named bindings
     #[command(
         long_about = "Run a bounded, charged preflight for the named provider bindings.\n\n\

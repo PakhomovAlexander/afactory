@@ -1198,6 +1198,7 @@ fn main() {
                     auth_dir.as_deref(),
                 )
                 .map(|()| 0),
+                cli::ProviderCommand::Recover => providers::recover().map(|()| 0),
                 cli::ProviderCommand::Doctor(args) => {
                     if args.task_file.is_some() {
                         Err(

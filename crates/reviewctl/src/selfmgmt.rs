@@ -854,7 +854,7 @@ fn exempt_from_dispatch(argv: &[String]) -> bool {
         None | Some("self" | "help" | "completions" | "config")
     ) || matches!(
         (first, argv.get(2).map(String::as_str)),
-        (Some("provider"), Some("setup"))
+        (Some("provider"), Some("setup" | "recover"))
     ) || argv
         .iter()
         .skip(1)
@@ -1733,6 +1733,7 @@ mod tests {
             "--kind",
             "codex"
         ])));
+        assert!(exempt_from_dispatch(&argv(&["af", "provider", "recover"])));
         assert!(!exempt_from_dispatch(&argv(&["af", "review", "plan"])));
         assert_eq!(
             repo_from_argv(&argv(&["af", "review", "plan", "--repo", "/x"])),

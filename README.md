@@ -63,6 +63,9 @@ not writable by other users, and one canonical auth context admits only one setu
 `setup` is machine-local and therefore does not dispatch to a repository's older pinned `af`;
 registry publication remains atomic for those older readers. `af provider add` registers an already
 authenticated context without opening a login and applies the same auth-directory safety checks.
+If a crash leaves publication fenced, `af provider recover` validates the marker plus the live,
+candidate, and prior hashes before archiving it; it reports which version is live and retains both
+preserved copies. Recovery is machine-local and also bypasses an older project pin.
 Ambient IDs shown by `status` are discovery labels and cannot be selected directly. `af review
 plan` resolves policy, Base, candidate, the exact Change Set, the selected route, Gates, budgets,
 and required Provider bindings without Campaign state, external calls, or tokens — the route line
