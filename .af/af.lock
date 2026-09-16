@@ -14,6 +14,10 @@ x86_64-unknown-linux-musl = "sha256:befe9900ca6e717dbc1510da3b09f9b9bc8e973e3510
 version = "1.0.0"
 digest = "sha256:6dfae1e54d9381547512a5124c4d6d4cb0e5e8cab02d4560a2c49c7552abb311"
 
+[workers.bugs-xhigh]
+version = "1.0.0"
+digest = "sha256:75ddb131f51ba984f2969cd37070df24ef31c87525d859e711342b2af8887a8e"
+
 [workers.correctness]
 version = "1.2.0"
 digest = "sha256:50ab5d7ab98a1b0a5d314008316a82d575f2eeb04904d23b0f97ad515a0431a7"
@@ -29,6 +33,10 @@ digest = "sha256:e67e0ecd6ccb7e20db6b050195600ff1a77679a44df6d535b37dc972307180b
 [workers.performance]
 version = "1.1.0"
 digest = "sha256:0fa2ee413331cd53d1df8f488220c6a0da8c2882dc57cc8b755462768b565265"
+
+[pipelines.design-review]
+version = "1.0.0"
+digest = "sha256:0bf8057a99f68af429db7e4db08aaf86707a301d905da704ea370687f08f4a0a"
 
 [pipelines.implement]
 version = "1.0.0"

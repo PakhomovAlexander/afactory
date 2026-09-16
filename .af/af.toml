@@ -5,7 +5,7 @@ name = "afactory"
 min_af = "0.2"
 
 [defaults]
-pipeline = "review-pr2-whole-tree"
+pipeline = "design-review"
 task_pipeline = "implement"
 
 [worker.correctness]
@@ -22,3 +22,6 @@ package = "bugs"
 
 [worker.performance]
 package = "performance"
+
+[worker.bugs-xhigh]
+package = "bugs-xhigh"
