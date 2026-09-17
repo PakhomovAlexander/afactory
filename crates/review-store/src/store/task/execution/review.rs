@@ -73,7 +73,7 @@ impl WritePermit {
         let sequence: u64 = tx.query_row(
             "SELECT COALESCE(MAX(sequence) + 1, 0) FROM events WHERE run_id = ?1",
             [&self.task_run_id],
-            |row| row.get(0),
+            |row| u64_column(row, 0),
         )?;
         if run_id != self.review_run_id
             || u64::try_from(first).ok() != Some(self.review_sequence)
@@ -424,13 +424,13 @@ pub(in crate::store) fn validate_selection(
             context.review_node,
             context.invocation_event_id
         ],
-        |row| row.get(0),
+        |row| u64_column(row, 0),
     )?;
     let prior: u64 = tx.query_row(
         "SELECT COUNT(*) FROM events WHERE run_id = ?1 AND causation_id = ?2 AND node_id = ?3
          AND type IN ('TaskReviewResultSelected@1', 'AttemptDispatched@1', 'AttemptAdmitted@1', 'NodeOutputReceipt@1')",
         params![run_id, round_id, context.review_node],
-        |row| row.get(0),
+        |row| u64_column(row, 0),
     )?;
     if invocation != 1 || prior != 0 {
         return Err(conflict(

@@ -23,6 +23,21 @@ mod attempt_wall;
 pub mod task;
 pub mod task_legacy;
 
+/// Read a non-negative SQLite integer column as `u64`.
+///
+/// SQLite stores integers as `i64`; a negative value in a column that the schema treats as a
+/// count or sequence is refused as a conversion failure rather than wrapped.
+pub(crate) fn u64_column(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<u64> {
+    let value: i64 = row.get(index)?;
+    u64::try_from(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            index,
+            rusqlite::types::Type::Integer,
+            Box::new(error),
+        )
+    })
+}
+
 #[derive(Debug)]
 pub enum StoreError {
     Sqlite(rusqlite::Error),

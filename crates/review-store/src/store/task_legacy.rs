@@ -122,7 +122,7 @@ impl LegacyStoreOrigin {
                 let events = statement
                     .query_map([record_id], |row| {
                         Ok(LegacyTaskEvent {
-                            sequence: row.get(0)?,
+                            sequence: super::u64_column(row, 0)?,
                             event_type: row.get(1)?,
                             artifact_id: row.get(2)?,
                         })
