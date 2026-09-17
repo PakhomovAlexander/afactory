@@ -108,8 +108,10 @@ pub fn invoke_command_bytes_controlled(
     )
 }
 
+/// The isolated command transport with an already framed input, cooperative cancellation and
+/// sandbox-local variables the kernel resolved for this exact Attempt.
 #[allow(clippy::too_many_arguments)]
-fn invoke_command_bytes_controlled_with_environment(
+pub fn invoke_command_bytes_controlled_with_environment(
     cas: &Cas,
     workdir: &Path,
     runtime_root: &Path,

@@ -32,7 +32,8 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 193] = [
+const SCHEMAS: [&str; 194] = [
+    "build-cache-v1.json",
     "worker-notes-v1.json",
     "head-delta-v1.json",
     "warm-set-v1.json",
@@ -2806,6 +2807,8 @@ fn warm_layer_contracts_roundtrip_and_stay_closed() {
         notes_artifact_id: Some(digest('4')),
         head_delta_artifact_id: Some(digest('5')),
         head_delta_dropped: None,
+        build_cache_artifact_id: None,
+        build_cache_dropped: None,
     };
     set.validate().unwrap();
     let dropped = WarmSetV1 {
@@ -2907,6 +2910,160 @@ fn warm_layer_contracts_roundtrip_and_stay_closed() {
         "a notes record is either an artifact or a drop, never both",
     );
     assert!(validate_event_payload(EventType::WorkerNotesRecordedV1, &both).is_err());
+}
+
+#[test]
+fn build_cache_contracts_are_explicitly_unsafe_bounded_and_closed() {
+    use review_core::event::validate_event_payload;
+    use review_core::{
+        BuildCacheCapturedPayloadV1, BuildCacheDropReasonV1, BuildCacheKindV1, BuildCacheLimitsV1,
+        BuildCacheRefusalReasonV1, BuildCacheTrustV1, BuildCacheV1, WarmLayerV1,
+        WarmSetSelectedPayloadV1, WarmSetV1,
+    };
+    let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let cache = BuildCacheV1 {
+        kind: BuildCacheKindV1::CargoTarget,
+        trust: BuildCacheTrustV1::CandidateBuilt,
+        gate_node: "gate".into(),
+        gate_attempt_id: Some("a".repeat(26)),
+        head_snapshot_id: digest('1'),
+        manifest_id: digest('2'),
+        content_digest: digest('3'),
+        entries: 12,
+        bytes: 4096,
+        limits: BuildCacheLimitsV1::default_v1(),
+    };
+    cache.validate().unwrap();
+    let mut value = serde_json::to_value(&cache).unwrap();
+    assert_valid("build-cache-v1.json", &value);
+    assert_eq!(
+        value["trust"], "candidate_built",
+        "the payload itself says it was built by candidate code"
+    );
+    assert_eq!(
+        serde_json::from_value::<BuildCacheV1>(value.clone()).unwrap(),
+        cache
+    );
+    value["trust"] = json!("administrator_approved");
+    assert_invalid(
+        "build-cache-v1.json",
+        &value,
+        "a Build Cache can never claim Cache Snapshot approval",
+    );
+    assert!(serde_json::from_value::<BuildCacheV1>(value.clone()).is_err());
+    value["trust"] = json!("candidate_built");
+    value["kind"] = json!("cargo");
+    assert_invalid(
+        "build-cache-v1.json",
+        &value,
+        "the registry-only cargo snapshot is not a build cache kind",
+    );
+    value["kind"] = json!("cargo_target");
+    value["source_path"] = json!("/home/operator/.cargo");
+    assert_invalid(
+        "build-cache-v1.json",
+        &value,
+        "a Build Cache never records a host path",
+    );
+    assert!(serde_json::from_value::<BuildCacheV1>(value).is_err());
+    let mut empty = serde_json::to_value(&cache).unwrap();
+    empty["entries"] = json!(0);
+    assert_invalid("build-cache-v1.json", &empty, "an empty capture is refused");
+
+    let captured = BuildCacheCapturedPayloadV1 {
+        gate_node: "gate".into(),
+        gate_attempt_id: None,
+        head_snapshot_id: digest('1'),
+        kind: BuildCacheKindV1::CargoTarget,
+        limits: BuildCacheLimitsV1::default_v1(),
+        build_cache_artifact_id: Some(digest('4')),
+        refused: None,
+        entries: 12,
+        bytes: 4096,
+    };
+    let refused = BuildCacheCapturedPayloadV1 {
+        build_cache_artifact_id: None,
+        refused: Some(BuildCacheRefusalReasonV1::UnsafeContent),
+        entries: 0,
+        bytes: 0,
+        ..captured.clone()
+    };
+    let event = RunEvent {
+        event_id: "b".repeat(26),
+        run_id: "run".into(),
+        sequence: 9,
+        event_type: EventType::BuildCacheCapturedV1,
+        occurred_at: "2026-09-17T00:00:00Z".into(),
+        node_id: Some("gate".into()),
+        attempt_id: None,
+        causation_id: Some("c".repeat(26)),
+        correlation_id: None,
+        artifact_refs: vec![digest('4'), digest('2')],
+        payload: json!({}),
+    };
+    for payload in [&captured, &refused] {
+        payload.validate().unwrap();
+        let payload = serde_json::to_value(payload).unwrap();
+        validate_event_payload(EventType::BuildCacheCapturedV1, &payload).unwrap();
+        let event = RunEvent {
+            payload,
+            ..event.clone()
+        };
+        assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
+    }
+    let both = json!({
+        "gate_node": "gate", "head_snapshot_id": digest('1'), "kind": "cargo_target",
+        "limits": serde_json::to_value(BuildCacheLimitsV1::default_v1()).unwrap(),
+        "build_cache_artifact_id": digest('4'), "refused": "limit_exceeded",
+        "entries": 1, "bytes": 1
+    });
+    let mut event_value = serde_json::to_value(&event).unwrap();
+    event_value["payload"] = both.clone();
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a capture record is either an artifact or a refusal, never both",
+    );
+    assert!(validate_event_payload(EventType::BuildCacheCapturedV1, &both).is_err());
+
+    let set = WarmSetV1 {
+        node: "tdd".into(),
+        round: 1,
+        source_attempt_id: None,
+        notes_artifact_id: None,
+        head_delta_artifact_id: None,
+        head_delta_dropped: None,
+        build_cache_artifact_id: Some(digest('4')),
+        build_cache_dropped: None,
+    };
+    set.validate().unwrap();
+    assert_eq!(set.layers(), vec![WarmLayerV1::BuildCache]);
+    let value = serde_json::to_value(&set).unwrap();
+    assert_valid("warm-set-v1.json", &value);
+    assert_eq!(serde_json::from_value::<WarmSetV1>(value).unwrap(), set);
+    let dropped = WarmSetV1 {
+        build_cache_artifact_id: None,
+        build_cache_dropped: Some(BuildCacheDropReasonV1::Refused),
+        ..set
+    };
+    dropped.validate().unwrap();
+    assert_valid("warm-set-v1.json", &serde_json::to_value(&dropped).unwrap());
+    let selected = WarmSetSelectedPayloadV1 {
+        warm_set_artifact_id: digest('7'),
+        source_attempt_id: None,
+        layers: vec![WarmLayerV1::BuildCache],
+    };
+    selected.validate().unwrap();
+    let payload = serde_json::to_value(&selected).unwrap();
+    validate_event_payload(EventType::WarmSetSelectedV1, &payload).unwrap();
+    let event = RunEvent {
+        event_type: EventType::WarmSetSelectedV1,
+        node_id: Some("tdd".into()),
+        artifact_refs: vec![digest('7')],
+        payload,
+        ..event
+    };
+    assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
 }
 
 #[path = "schema_parity/task_usage.rs"]

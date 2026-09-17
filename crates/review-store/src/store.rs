@@ -983,6 +983,10 @@ struct AuthorityWarm {
     notes: Option<bool>,
     #[serde(default)]
     notes_max_bytes: Option<u64>,
+    /// Package P2: build cache kinds the node's Gate carries; the config crate validates the
+    /// closed vocabulary, the Store only keeps the pinned shape readable.
+    #[serde(default)]
+    build_cache: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -1417,6 +1421,18 @@ fn typed_json_artifacts(
                     snapshot.source_digest,
                     review_core::contract::CACHE_MANIFEST_V1.into(),
                 )?;
+                continue;
+            }
+            EventType::BuildCacheCapturedV1 => {
+                let captured: review_core::BuildCacheCapturedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                if let Some(artifact_id) = captured.build_cache_artifact_id {
+                    insert_artifact_type(
+                        &mut artifacts,
+                        artifact_id,
+                        review_core::contract::BUILD_CACHE_V1.into(),
+                    )?;
+                }
                 continue;
             }
             EventType::RunReportV6 => {
@@ -5303,6 +5319,7 @@ fn round_runtime_event(event_type: EventType) -> bool {
                 | EventType::SemanticClosureCheckedV1
                 | EventType::WarmSetSelectedV1
                 | EventType::WorkerNotesRecordedV1
+                | EventType::BuildCacheCapturedV1
         )
 }
 

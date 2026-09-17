@@ -400,6 +400,8 @@ pub fn compute_head_delta_marks(
 pub enum WarmLayerV1 {
     Notes,
     HeadDelta,
+    /// Package P2: the Gate's candidate-built output cloned into the Attempt's sandbox.
+    BuildCache,
 }
 
 impl WarmLayerV1 {
@@ -407,8 +409,19 @@ impl WarmLayerV1 {
         match self {
             Self::Notes => "notes",
             Self::HeadDelta => "head_delta",
+            Self::BuildCache => "build_cache",
         }
     }
+}
+
+/// Why a node that declared a build cache kind starts this Round without one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildCacheDropReasonV1 {
+    /// No Gate of this Round recorded a capture of the declared kind.
+    NotCaptured,
+    /// The Gate recorded a refusal for the declared kind; the reason is on its event.
+    Refused,
 }
 
 /// Why a Round's Head Delta was computed but not carried.
@@ -439,6 +452,15 @@ pub struct WarmSetV1 {
     /// carried delta.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_delta_dropped: Option<HeadDeltaDropReasonV1>,
+    /// Package P2: the `review.kernel/BuildCache@1` this Round's Gate captured for the kind
+    /// the node declares, carried Gate to Worker within the same Round. Explicitly unsafe and
+    /// admitted only under the trusted-local policy; never a Cache Snapshot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_cache_artifact_id: Option<String>,
+    /// Recorded when the node declared a build cache kind and none was carried; never set
+    /// beside a carried build cache.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_cache_dropped: Option<BuildCacheDropReasonV1>,
 }
 
 impl WarmSetV1 {
@@ -454,7 +476,10 @@ impl WarmSetV1 {
             return Err("WarmSet@1 has an invalid source Attempt ID".into());
         }
         let valid_layer = |id: &Option<String>| id.as_deref().is_none_or(crate::is_digest);
-        if !valid_layer(&self.notes_artifact_id) || !valid_layer(&self.head_delta_artifact_id) {
+        if !valid_layer(&self.notes_artifact_id)
+            || !valid_layer(&self.head_delta_artifact_id)
+            || !valid_layer(&self.build_cache_artifact_id)
+        {
             return Err("WarmSet@1 has an invalid layer artifact ID".into());
         }
         if self.notes_artifact_id.is_some() && self.source_attempt_id.is_none() {
@@ -462,6 +487,9 @@ impl WarmSetV1 {
         }
         if self.head_delta_artifact_id.is_some() && self.head_delta_dropped.is_some() {
             return Err("WarmSet@1 both carries and drops its Head Delta".into());
+        }
+        if self.build_cache_artifact_id.is_some() && self.build_cache_dropped.is_some() {
+            return Err("WarmSet@1 both carries and drops its Build Cache".into());
         }
         Ok(())
     }
@@ -473,6 +501,9 @@ impl WarmSetV1 {
         }
         if self.head_delta_artifact_id.is_some() {
             layers.push(WarmLayerV1::HeadDelta);
+        }
+        if self.build_cache_artifact_id.is_some() {
+            layers.push(WarmLayerV1::BuildCache);
         }
         layers
     }
@@ -507,7 +538,7 @@ impl WarmSetSelectedPayloadV1 {
     }
 }
 
-fn is_monotonic_id(value: &str) -> bool {
+pub(crate) fn is_monotonic_id(value: &str) -> bool {
     value.len() == 26
         && value
             .bytes()
@@ -602,10 +633,44 @@ mod tests {
             notes_artifact_id: None,
             head_delta_artifact_id: Some(digest),
             head_delta_dropped: Some(HeadDeltaDropReasonV1::OverBound),
+            build_cache_artifact_id: None,
+            build_cache_dropped: None,
         };
         assert!(set.validate().is_err());
         let dropped = WarmSetV1 {
             head_delta_artifact_id: None,
+            ..set
+        };
+        dropped.validate().unwrap();
+        assert!(dropped.layers().is_empty());
+    }
+
+    #[test]
+    fn a_warm_set_cannot_both_carry_and_drop_its_build_cache() {
+        let digest = format!("sha256:{}", "b".repeat(64));
+        let set = WarmSetV1 {
+            node: "tdd".into(),
+            round: 1,
+            source_attempt_id: None,
+            notes_artifact_id: None,
+            head_delta_artifact_id: None,
+            head_delta_dropped: None,
+            build_cache_artifact_id: Some(digest),
+            build_cache_dropped: Some(BuildCacheDropReasonV1::Refused),
+        };
+        assert!(set.validate().is_err());
+        let carried = WarmSetV1 {
+            build_cache_dropped: None,
+            ..set.clone()
+        };
+        carried.validate().unwrap();
+        assert_eq!(
+            carried.layers(),
+            vec![WarmLayerV1::BuildCache],
+            "a Round-one Warm Set may carry a build cache and nothing else"
+        );
+        let dropped = WarmSetV1 {
+            build_cache_artifact_id: None,
             ..set
         };
         dropped.validate().unwrap();
@@ -725,6 +790,8 @@ mod tests {
             notes_artifact_id: Some(digest),
             head_delta_artifact_id: None,
             head_delta_dropped: None,
+            build_cache_artifact_id: None,
+            build_cache_dropped: None,
         };
         assert!(set.validate().is_err());
         let set = WarmSetV1 {

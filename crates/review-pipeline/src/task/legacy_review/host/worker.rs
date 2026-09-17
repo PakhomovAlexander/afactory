@@ -313,6 +313,13 @@ impl LegacyReviewTaskHost<'_, '_> {
             )
             .map_err(|e| e.to_string())?;
             let sandbox = self.domain.sandbox(review_sandbox::Mode::EphemeralWrite)?;
+            // The Round's recorded Warm Set names the Build Cache, if any; it is cloned into
+            // this exact sandbox and its location reaches the adapter as sandbox-local
+            // environment, never as rendered context.
+            let warm_set = self.domain.select_warm_set(&node.id)?;
+            let environment =
+                self.domain
+                    .materialize_build_cache(&node.id, warm_set.as_ref(), &sandbox)?;
             let runtime = match self.execution(&node.id)? {
                 WorkerExecutionV1::Command {} => {
                     Some(tempfile::tempdir().map_err(|e| e.to_string())?)
@@ -331,7 +338,7 @@ impl LegacyReviewTaskHost<'_, '_> {
             };
             let returned = match self.execution(&node.id)? {
                 WorkerExecutionV1::Command {} => {
-                    review_runner::task::invoke_command_bytes_controlled(
+                    review_runner::task::invoke_command_bytes_controlled_with_environment(
                         cas,
                         sandbox.root(),
                         runtime.as_ref().expect("command runtime").path(),
@@ -340,13 +347,16 @@ impl LegacyReviewTaskHost<'_, '_> {
                         bytes,
                         timeout,
                         cancellation,
+                        &environment,
                     )
                 }
                 // Preserve the native Review capability profile: ADR-0042 keeps Claude
                 // read-only, while the legacy Codex adapter permits sandbox Proposals.
                 // A different installed backend has no implicit edit authority.
-                WorkerExecutionV1::Model { provider_kind, .. } => {
-                    self.model(&node.id)?.adapter.invoke_controlled(
+                WorkerExecutionV1::Model { provider_kind, .. } => self
+                    .model(&node.id)?
+                    .adapter
+                    .invoke_controlled_with_environment(
                         cas,
                         sandbox.root(),
                         bytes,
@@ -354,9 +364,14 @@ impl LegacyReviewTaskHost<'_, '_> {
                         provider_kind == "codex",
                         broker,
                         cancellation,
-                    )
-                }
+                        &environment,
+                    ),
             };
+            // Build cache bytes leave before the seal: they never enter the sealed diff, a
+            // Proposal, or provenance.
+            if !environment.is_empty() {
+                review_sandbox::remove_materialized_caches(&sandbox)?;
+            }
             result.usage = returned.usage;
             result.usage_observation = returned.usage_observation;
             result.charged_tokens = result

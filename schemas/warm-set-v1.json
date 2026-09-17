@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:review-kernel:schema:warm-set:1",
   "title": "WarmSet@1 payload",
-  "description": "The exact per-node set of carried layers one Round's Attempts start from, selected before the first AttemptDispatched@1 and listed in every Attempt's context manifest. Built only from the previous closed Round's admitted Attempt of the same node; fenced, quarantined, malformed and released Attempts contribute nothing. A retry inherits the Round's Warm Set, never its failed sibling's state. A Head Delta over its bound is dropped at selection with a recorded reason, so no renderer can refuse an already selected Warm Set. Later packages add session, workspace and build-cache layers as optional fields.",
+  "description": "The exact per-node set of carried layers one Round's Attempts start from, selected before the first AttemptDispatched@1 and listed in every Attempt's context manifest. Notes and the Head Delta come only from the previous closed Round's admitted Attempt of the same node; fenced, quarantined, malformed and released Attempts contribute nothing. A retry inherits the Round's Warm Set, never its failed sibling's state. A Head Delta over its bound is dropped at selection with a recorded reason, so no renderer can refuse an already selected Warm Set. Package P2 adds the build cache layer: the explicitly unsafe BuildCache@1 this Round's Gate captured, carried Gate to Worker within the same Round under the trusted-local policy only, or a recorded drop reason. Later packages add session and workspace layers as optional fields.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -35,6 +35,18 @@
         "over_bound"
       ],
       "description": "Recorded when the Round's Head Delta was computed but exceeded its bound; never present beside head_delta_artifact_id."
+    },
+    "build_cache_artifact_id": {
+      "description": "The review.kernel/BuildCache@1 this Round's Gate captured for the kind the node declares. Explicitly unsafe; never a Cache Snapshot.",
+      "$ref": "#/$defs/digest"
+    },
+    "build_cache_dropped": {
+      "type": "string",
+      "enum": [
+        "not_captured",
+        "refused"
+      ],
+      "description": "Recorded when the node declared a build cache kind and none was carried; never present beside build_cache_artifact_id."
     }
   },
   "dependentRequired": {

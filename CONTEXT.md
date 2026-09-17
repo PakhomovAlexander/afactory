@@ -314,6 +314,13 @@ cache, materialized inside one sandbox and discarded with it.
 _Avoid_: "passthrough" — a direct host mapping is not a Cache Snapshot and cannot satisfy safe
 isolation.
 
+**Build Cache**:
+A bounded, explicitly unsafe capture of a Gate's candidate-built output, admitted only under the
+trusted-local policy and cloned into Worker sandboxes that declare its kind within the same
+Round; removed before seal, so it never enters a candidate tree, Proposal or delivered worktree.
+_Avoid_: **Cache Snapshot**; a Build Cache was produced by candidate code and carries no
+administrator approval and no credential-free guarantee.
+
 **News**:
 Whether an in-scope claim was created, reopened, materially escalated, challenged, or moved to
 pending verification inside the clean window, independent of its current status; an exact
@@ -334,9 +341,10 @@ _Avoid_: assuming a successfully completed graph is closed; an unwired Finding o
 the result incomplete.
 
 **Warm Set**:
-The exact, per-node set of carried layers one Round's Attempts start from, selected from the
-previous closed Round's admitted Attempt of the same node, recorded before the first dispatch
-and listed in every Attempt's context manifest.
+The exact, per-node set of carried layers one Round's Attempts start from: Notes and the Head
+Delta selected from the previous closed Round's admitted Attempt of the same node, and the Build
+Cache carried from this Round's Gate, recorded before the first dispatch and listed in every
+Attempt's context manifest.
 _Avoid_: "warm cache" or "the previous session" as ambient state; a Warm Set is an artifact, and
 a retry inherits the Round's Warm Set rather than its failed sibling's state.
 

@@ -12,6 +12,7 @@
 //!   so a value cannot change meaning between producer and consumer.
 
 pub mod broker;
+pub mod build_cache;
 pub mod cache;
 pub mod campaign;
 pub mod change_set;
@@ -36,10 +37,17 @@ pub mod task;
 pub mod warm;
 
 pub use warm::{
-    DEFAULT_WORKER_NOTES_BYTES, HeadDeltaDropReasonV1, HeadDeltaEntryV1, HeadDeltaInputs,
-    HeadDeltaMarkV1, HeadDeltaV1, InspectedPathV1, MAX_HEAD_DELTA_BYTES, MAX_WORKER_NOTES_BYTES,
-    PathHintV1, TreeView, WarmLayerV1, WarmSetSelectedPayloadV1, WarmSetV1,
+    BuildCacheDropReasonV1, DEFAULT_WORKER_NOTES_BYTES, HeadDeltaDropReasonV1, HeadDeltaEntryV1,
+    HeadDeltaInputs, HeadDeltaMarkV1, HeadDeltaV1, InspectedPathV1, MAX_HEAD_DELTA_BYTES,
+    MAX_WORKER_NOTES_BYTES, PathHintV1, TreeView, WarmLayerV1, WarmSetSelectedPayloadV1, WarmSetV1,
     WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1, WorkerNotesV1, compute_head_delta_marks,
+};
+
+pub use build_cache::{
+    BUILD_CACHE_MAX_DEPTH_V1, BUILD_CACHE_MAX_PATH_BYTES_V1, BuildCacheCapturedPayloadV1,
+    BuildCacheKindV1, BuildCacheLimitsV1, BuildCacheRefusalReasonV1, BuildCacheTrustV1,
+    BuildCacheV1, DEFAULT_BUILD_CACHE_BYTES_V1, DEFAULT_BUILD_CACHE_ENTRIES_V1,
+    MAX_BUILD_CACHE_BYTES_V1, MAX_BUILD_CACHE_ENTRIES_V1, validate_build_cache_path_v1,
 };
 
 pub use task::broker::{
@@ -171,4 +179,6 @@ pub mod contract {
     pub const WORKER_NOTES_V1: &str = "review.kernel/WorkerNotes@1";
     pub const HEAD_DELTA_V1: &str = "review.kernel/HeadDelta@1";
     pub const WARM_SET_V1: &str = "review.kernel/WarmSet@1";
+    /// Explicitly unsafe candidate-built output carried Gate to Worker; never a Cache Snapshot.
+    pub const BUILD_CACHE_V1: &str = "review.kernel/BuildCache@1";
 }

@@ -22,6 +22,7 @@
 //! A blocked gate makes every node after it unreachable, so a review that could not build
 //! produces no reviewer artifacts at all — not reviewer artifacts nobody reads.
 
+mod build_cache;
 mod review_domain;
 mod reviewer_inputs;
 mod reviewer_output;
@@ -2166,6 +2167,27 @@ impl<'a> Kernel<'a> {
                     return Err(error);
                 }
             };
+            // The Warm Set's Build Cache, if any, is cloned into this exact sandbox and its
+            // location handed to the adapter as sandbox-local environment. A retry clones the
+            // same artifact into its own fresh sandbox.
+            let build_cache_environment =
+                match self
+                    .domain
+                    .materialize_build_cache(node_id, warm_set.as_ref(), &sandbox)
+                {
+                    Ok(environment) => environment,
+                    Err(error) => {
+                        self.release_prepared_attempt(
+                            node_id,
+                            &attempt,
+                            reservation.as_ref(),
+                            &error,
+                        )?;
+                        return Err(error);
+                    }
+                };
+            let cloned_build_cache = !build_cache_environment.is_empty();
+            inputs.sandbox_environment = build_cache_environment;
 
             let invocation = reviewer_work::invoke(
                 self.domain.cas,
@@ -2278,6 +2300,22 @@ impl<'a> Kernel<'a> {
                             continue;
                         }
                     };
+                    // Build cache bytes leave before the seal: they never enter the sealed
+                    // diff, a Proposal, or provenance.
+                    if cloned_build_cache && let Err(error) = remove_materialized_caches(&sandbox) {
+                        self.fail_started_attempt(
+                            node_id,
+                            &attempt,
+                            reservation.as_ref(),
+                            &error,
+                            returned.cost_tokens.max(broker_charged),
+                            AttemptFailureEvidence {
+                                raw_artifact: Some(&returned.raw_artifact),
+                                refusal_history: None,
+                            },
+                        )?;
+                        return Err(error);
+                    }
                     let artifacts = reviewer_output::capture_result(
                         self.domain.cas,
                         &self.domain.authority,

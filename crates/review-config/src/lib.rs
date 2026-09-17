@@ -209,8 +209,9 @@ pub struct NodeBudgetSpec {
     pub attempt: u64,
 }
 
-/// A reviewer node's warm-layer policy (package P1: Notes and Head Delta). Every layer is a
-/// declared CAS artifact in the Attempt's context manifest, never ambient state.
+/// A reviewer node's warm-layer policy (package P1: Notes and Head Delta; package P2: the
+/// Gate's build cache). Every layer is a declared CAS artifact in the Attempt's context
+/// manifest, never ambient state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WarmSpec {
@@ -223,6 +224,11 @@ pub struct WarmSpec {
     /// reason and the Attempt is still admitted.
     #[serde(default = "default_notes_max_bytes")]
     pub notes_max_bytes: u64,
+    /// Build cache kinds this node's sandboxes receive from the Round's Gate, cloned from the
+    /// explicitly unsafe `BuildCache@1` the Gate captured. Every kind must be declared by a
+    /// `trusted_local` Gate Execution Binding; a safe pipeline refuses the handoff at load.
+    #[serde(default, skip_serializing_if = "BuildCacheKindsSpec::is_empty")]
+    pub build_cache: BuildCacheKindsSpec,
 }
 
 fn default_notes_max_bytes() -> u64 {
@@ -230,14 +236,104 @@ fn default_notes_max_bytes() -> u64 {
 }
 
 impl WarmSpec {
-    fn validate(&self, node: &str) -> Result<(), ConfigError> {
+    fn validate(&self, node: &str, gate: Option<&GateExecutionSpec>) -> Result<(), ConfigError> {
         let maximum = review_core::MAX_WORKER_NOTES_BYTES as u64;
         if self.notes_max_bytes == 0 || self.notes_max_bytes > maximum {
             return Err(ConfigError::Binding(format!(
                 "reviewer `{node}` warm.notes_max_bytes must be between 1 and {maximum}"
             )));
         }
+        for kind in self.build_cache.kinds() {
+            let declared = gate.is_some_and(|gate| gate.build_caches.contains(&kind));
+            if !declared {
+                return Err(ConfigError::Binding(format!(
+                    "reviewer `{node}` warm.build_cache names `{}` but no `trusted_local` `[gate]` Execution Binding declares it in `build_caches`; a candidate-built cache is carried only from a Gate that declares the kind",
+                    kind.as_str()
+                )));
+            }
+        }
         Ok(())
+    }
+}
+
+/// The closed vocabulary of build cache kinds a Gate may capture and a reviewer may receive.
+/// `cargo_target` points `CARGO_TARGET_DIR` at the sandbox-local clone. The registry-only
+/// `cargo` Cache Snapshot under `[gate] caches` keeps its existing meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildCacheKindSpec {
+    CargoTarget,
+}
+
+impl BuildCacheKindSpec {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CargoTarget => "cargo_target",
+        }
+    }
+
+    /// The kernel vocabulary this pipeline spelling names.
+    pub const fn kind(self) -> review_core::BuildCacheKindV1 {
+        match self {
+            Self::CargoTarget => review_core::BuildCacheKindV1::CargoTarget,
+        }
+    }
+}
+
+/// The set of build cache kinds one reviewer node declares, written as a TOML array such as
+/// `build_cache = ["cargo_target"]`. The vocabulary is closed, so the set is a fixed shape
+/// rather than a list: duplicates and unknown kinds are refused at parse time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BuildCacheKindsSpec {
+    cargo_target: bool,
+}
+
+impl BuildCacheKindsSpec {
+    pub fn is_empty(&self) -> bool {
+        !self.cargo_target
+    }
+
+    pub fn contains(&self, kind: BuildCacheKindSpec) -> bool {
+        match kind {
+            BuildCacheKindSpec::CargoTarget => self.cargo_target,
+        }
+    }
+
+    /// The declared kinds in vocabulary order.
+    pub fn kinds(&self) -> Vec<BuildCacheKindSpec> {
+        self.cargo_target
+            .then_some(BuildCacheKindSpec::CargoTarget)
+            .into_iter()
+            .collect()
+    }
+
+    pub fn from_kinds(kinds: &[BuildCacheKindSpec]) -> Result<Self, String> {
+        let mut set = Self::default();
+        for kind in kinds {
+            if set.contains(*kind) {
+                return Err(format!(
+                    "build cache kind `{}` is declared more than once",
+                    kind.as_str()
+                ));
+            }
+            match kind {
+                BuildCacheKindSpec::CargoTarget => set.cargo_target = true,
+            }
+        }
+        Ok(set)
+    }
+}
+
+impl Serialize for BuildCacheKindsSpec {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.kinds().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BuildCacheKindsSpec {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let kinds = Vec::<BuildCacheKindSpec>::deserialize(deserializer)?;
+        Self::from_kinds(&kinds).map_err(serde::de::Error::custom)
     }
 }
 
@@ -979,6 +1075,31 @@ pub struct GateExecutionSpec {
     /// Symbolic cache kinds resolved only through machine-local administrator policy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub caches: Vec<CacheKindSpec>,
+    /// Build cache kinds this Gate captures after its checks pass, as explicitly unsafe
+    /// `BuildCache@1` artifacts for reviewer nodes that declare the same kind. Candidate code
+    /// produces these bytes, so the declaration is admitted only under `trusted_local`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub build_caches: Vec<BuildCacheKindSpec>,
+    /// Byte bound one build cache capture applies; the kernel default when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_cache_max_bytes: Option<u64>,
+    /// Filesystem-entry bound (directories included) one build cache capture applies; the
+    /// kernel default when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_cache_max_entries: Option<u64>,
+}
+
+impl GateExecutionSpec {
+    /// The limits every build cache capture of this Gate applies: declared bounds over the
+    /// kernel defaults, with the fixed depth and path bounds of the closed layout.
+    pub fn build_cache_limits(&self) -> review_core::BuildCacheLimitsV1 {
+        let defaults = review_core::BuildCacheLimitsV1::default_v1();
+        review_core::BuildCacheLimitsV1 {
+            max_bytes: self.build_cache_max_bytes.unwrap_or(defaults.max_bytes),
+            max_entries: self.build_cache_max_entries.unwrap_or(defaults.max_entries),
+            ..defaults
+        }
+    }
 }
 
 /// A whole pipeline definition, as a project writes it.
@@ -1300,6 +1421,34 @@ impl Definition {
                     "Gate cache kinds must be unique".to_string(),
                 ));
             }
+            let unique_build_caches: std::collections::BTreeSet<_> =
+                binding.build_caches.iter().copied().collect();
+            if unique_build_caches.len() != binding.build_caches.len() {
+                return Err(ConfigError::Binding(
+                    "Gate build cache kinds must be unique".to_string(),
+                ));
+            }
+            if !binding.build_caches.is_empty()
+                && (binding.provider != SandboxProviderSpec::TrustedLocal
+                    || binding.required_isolation != IsolationSpec::None)
+            {
+                return Err(ConfigError::Binding(
+                    "`[gate] build_caches` is refused under the safe policy: a candidate-built cache carries no administrator approval and is admitted only from a `trusted_local` Gate with `required_isolation = \"none\"`"
+                        .to_string(),
+                ));
+            }
+            if binding.build_cache_max_bytes.is_some() || binding.build_cache_max_entries.is_some()
+            {
+                if binding.build_caches.is_empty() {
+                    return Err(ConfigError::Binding(
+                        "`[gate]` build cache limits require `build_caches`".to_string(),
+                    ));
+                }
+                binding
+                    .build_cache_limits()
+                    .validate()
+                    .map_err(|error| ConfigError::Binding(format!("`[gate]` {error}")))?;
+            }
             match binding.provider {
                 SandboxProviderSpec::TrustedLocal => {
                     if binding.required_isolation != IsolationSpec::None {
@@ -1502,7 +1651,7 @@ impl Definition {
                         spec.id
                     )));
                 }
-                policy.validate(&spec.id)?;
+                policy.validate(&spec.id, gate.as_ref())?;
                 warm.insert(spec.id.clone(), *policy);
             }
             if reviewer_like {

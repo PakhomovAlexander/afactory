@@ -13,8 +13,8 @@ use std::collections::BTreeSet;
 
 use review_core::event::AttemptAdmittedPayloadV1;
 use review_core::{
-    ArtifactEnvelope, EventType, HeadDeltaInputs, HeadDeltaV1, InspectedPathV1, PathHintV1,
-    PathRenameV1, Producer, RoundStartedPayloadV1, RunEvent, SourceSnapshot, TreeView,
+    ArtifactEnvelope, BuildCacheKindV1, EventType, HeadDeltaInputs, HeadDeltaV1, InspectedPathV1,
+    PathHintV1, PathRenameV1, Producer, RoundStartedPayloadV1, RunEvent, SourceSnapshot, TreeView,
     WarmSetSelectedPayloadV1, WarmSetV1, WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1,
     WorkerNotesV1, compute_head_delta_marks, run_report_closes_round,
 };
@@ -52,11 +52,19 @@ impl ReviewDomainState<'_> {
     }
 
     /// Select and durably record the node's Warm Set for this Round, once. A resumed Round
-    /// finds its recorded selection and reuses it; nothing is recomputed or re-appended. Round
-    /// one and cold nodes have no Warm Set.
+    /// finds its recorded selection and reuses it; nothing is recomputed or re-appended. Cold
+    /// nodes have no Warm Set, and Notes are carried only from Round two on; a node that
+    /// declares a build cache kind selects one in every Round, because that layer travels from
+    /// this Round's Gate rather than from the previous Round.
     pub(crate) fn select_warm_set(&self, node_id: &str) -> Result<Option<WarmSetRecord>, String> {
-        if self.notes_max_bytes(node_id).is_none() || self.authority.round <= 1 {
+        let notes = self.notes_max_bytes(node_id).is_some() && self.authority.round > 1;
+        let build_cache = self.node_build_cache_kind(node_id);
+        if !notes && build_cache.is_none() {
             return Ok(None);
+        }
+        if build_cache.is_some() {
+            // Refused before the node's first Attempt of the Round is reserved or dispatched.
+            self.build_cache_policy_admits()?;
         }
         if let Some(record) = self.warm_sets.lock().expect("warm sets").get(node_id) {
             return Ok(Some(record.clone()));
@@ -72,7 +80,15 @@ impl ReviewDomainState<'_> {
         let record = match recorded {
             Some(record) => record,
             None => {
-                let set = select(self.cas, &events, &self.authority, &self.snapshot, node_id)?;
+                let set = select(
+                    self.cas,
+                    &events,
+                    &self.authority,
+                    &self.snapshot,
+                    node_id,
+                    notes,
+                    build_cache,
+                )?;
                 self.record_warm_set(set)?
             }
         };
@@ -87,6 +103,7 @@ impl ReviewDomainState<'_> {
             .notes_artifact_id
             .iter()
             .chain(set.head_delta_artifact_id.iter())
+            .chain(set.build_cache_artifact_id.iter())
             .cloned()
             .collect();
         let producer = Producer::KernelOperation {
@@ -146,6 +163,9 @@ pub(crate) fn apply_warm_set(
         inputs.head_delta = Some(encode(&delta)?);
         inputs.head_delta_artifact_id = Some(id.clone());
     }
+    // The build cache is never rendered; it reaches the sandbox as bytes when the Attempt's
+    // sandbox is prepared. The manifest still names it through this identity.
+    inputs.build_cache_artifact_id = record.set.build_cache_artifact_id.clone();
     inputs.warm_set_artifact_id = Some(record.artifact_id.clone());
     Ok(())
 }
@@ -303,6 +323,8 @@ fn select(
     authority: &RoundAuthority,
     head: &Manifest,
     node_id: &str,
+    notes: bool,
+    build_cache: Option<BuildCacheKindV1>,
 ) -> Result<WarmSetV1, String> {
     let mut set = WarmSetV1 {
         node: node_id.to_string(),
@@ -311,7 +333,18 @@ fn select(
         notes_artifact_id: None,
         head_delta_artifact_id: None,
         head_delta_dropped: None,
+        build_cache_artifact_id: None,
+        build_cache_dropped: None,
     };
+    if let Some(kind) = build_cache {
+        let (artifact_id, dropped) =
+            crate::build_cache::select_build_cache(cas, events, authority, kind)?;
+        set.build_cache_artifact_id = artifact_id;
+        set.build_cache_dropped = dropped;
+    }
+    if !notes {
+        return Ok(set);
+    }
     let Some(previous) = previous_closed_round(events, authority)? else {
         return Ok(set);
     };

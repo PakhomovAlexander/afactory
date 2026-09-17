@@ -479,9 +479,12 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
             ReviewOperation::Gate => {
                 let deadline =
                     self.current(attempt.ok_or("Review Gate has no started Attempt")?)?;
-                let result =
-                    self.domain
-                        .run_gate_controlled(&node.id, Some(deadline), cancellation);
+                let result = self.domain.run_gate_controlled(
+                    &node.id,
+                    Some(deadline),
+                    cancellation,
+                    attempt.map(PreparedTaskAttempt::id),
+                );
                 if result.is_err() {
                     self.domain.record_unmaterialized_cache_failures(
                         &node.id,

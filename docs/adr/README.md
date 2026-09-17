@@ -193,3 +193,5 @@ Record the options you rejected and why — that is the part future readers need
   Task](0106-authorize-experimental-children-separately.md)
 - [0107 — Carry Worker Notes and Head Deltas as declared warm
   layers](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md)
+- [0108 — Carry Gate build caches as explicitly unsafe warm
+  layers](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md)

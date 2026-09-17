@@ -225,6 +225,9 @@ impl ReviewerAdapter for ClaudeAdapter {
         for (name, value) in &self.grants {
             runner = runner.with_env(name, value);
         }
+        for (name, value) in &inputs.sandbox_environment {
+            runner = runner.with_env(name, value);
+        }
         let capture = runner.capture_with_stdin(cas, &command, prompt.into_bytes())?;
 
         let envelope = Envelope::parse(&capture.stdout);

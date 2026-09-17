@@ -269,13 +269,36 @@ af 0.9.0-rc.3, plan `d9618b70…`.
 - **Evaluator on a hand-fixed tree:** a standalone verification Task needs a Task-kind package,
   so the catalog now carries `warm/verification-kind`, mapping kind `verification` to the
   installed `implementation` profile, and `warm/verification` runs the checks and the
-  evaluator on the exact current Snapshot as Task `warm-p1-verify`. Later packages whose
-  Task ends unsatisfied on mechanical Gate failures follow the same path: fix, verify, review.
+  evaluator on the exact current Snapshot. Task `warm-p1-verify` failed on one real gap the
+  evaluator named exactly (the report join could not read a captured Review Attempt's
+  manifest reference); after that fix, `warm-p1-verify-v2` passed at 161,888 tokens. P1 is
+  verified. Later packages whose Task ends unsatisfied on mechanical Gate failures follow
+  the same path: fix, verify, review.
 - **Known limitation carried:** rendered-input size for a failed or released Attempt is
   reported on the common Task path from its bound context; the frozen legacy path still
   reports it only for admitted Attempts.
 
-## 8. First session
+## 8. P2 implementation record
+
+P2 is implemented as [ADR-0108](../adr/0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md)
+on the shared cache path rather than beside it: the same reserved `.af-cache` root, the same
+no-follow traversal and metadata normalization, the same `remove_materialized_caches` before
+seal. `review.kernel/BuildCache@1` carries `trust: candidate_built`, a CAS-addressed manifest of
+regular files, and the limits applied; `BuildCacheCaptured@1` records the artifact or a refusal
+reason on the Gate; `WarmSet@1` and `WarmSetSelected@1` gain the `build_cache` layer. A
+`trusted_local` Gate declares `build_caches = ["cargo_target"]`, a reviewer declares
+`warm = { build_cache = ["cargo_target"] }`, and the safe policy is refused at load, at Warm Set
+selection before any dispatch, and at every capture and clone. Exit evidence lives in
+`review-sandbox/tests/build_cache.rs` (closed layout, symlink and FIFO refusals, fixed modes,
+removal before seal), `review-config/tests/definition.rs` (declaration and safe-policy
+refusals), `review-core/tests/schema_parity.rs` (contracts) and
+`review-pipeline/tests/build_cache.rs` (a TDD reviewer reusing the Gate build across a resumed
+Round with a sealed diff byte-identical to a cold run, and a recorded symlink refusal). No
+cold-versus-warm dogfood comparison exists yet: the package was implemented without a live
+Campaign, so the build-minute Demand from the design review stays open until the first
+trusted-local warm Campaign records it.
+
+## 9. First session
 
 Revise the design (P0), then run P1 through the campaign Pipeline:
 

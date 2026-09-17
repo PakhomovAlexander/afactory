@@ -287,14 +287,17 @@ impl<'a> ReviewDomainState<'a> {
         node_id: &str,
         deadline: Option<std::time::Instant>,
     ) -> Result<Vec<String>, String> {
-        self.run_gate_controlled(node_id, deadline, None)
+        self.run_gate_controlled(node_id, deadline, None, None)
     }
 
+    /// `gate_attempt` is the common Task Attempt the Gate runs under, when the Task runtime
+    /// executes it; a captured Build Cache records it as producer provenance.
     pub(super) fn run_gate_controlled(
         &self,
         node_id: &str,
         deadline: Option<std::time::Instant>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
+        gate_attempt: Option<&str>,
     ) -> Result<Vec<String>, String> {
         crate::task::control::check(cancellation)?;
 
@@ -564,6 +567,14 @@ impl<'a> ReviewDomainState<'a> {
                 cache_environments.push(kind.environment(sandbox.root()));
             }
         }
+        // A trusted-local Gate that declares build caches builds into empty private
+        // directories below the same reserved cache root; its checks see the pointing
+        // environment. Prepared after the safe caches so the root exists exactly once.
+        let build_cache_environments =
+            self.prepare_gate_build_caches(node_id, &sandbox, container.is_some())?;
+        let cache_root_created =
+            !cache_receipt_artifacts.is_empty() || !build_cache_environments.is_empty();
+        cache_environments.extend(build_cache_environments);
         // Run the checks holding no lock: each is a build or a test, and the store lock is
         // shared with every other node, so holding it across a check would stall the whole
         // pipeline for the build's duration. The lock is taken only to append each result.
@@ -646,7 +657,13 @@ impl<'a> ReviewDomainState<'a> {
         }
 
         let decision = GateDecision::evaluate(&results);
-        if !cache_receipt_artifacts.is_empty() {
+        if decision.passed() {
+            // Only a passing Gate dispatches reviewers, so only a passing Gate's build output
+            // is worth carrying. The capture records its own refusals; it never changes the
+            // verdict.
+            self.capture_gate_build_caches(node_id, gate_attempt, &sandbox)?;
+        }
+        if cache_root_created {
             remove_materialized_caches(&sandbox)?;
         }
         let sealed = sandbox.seal().map_err(|e| e.to_string())?;

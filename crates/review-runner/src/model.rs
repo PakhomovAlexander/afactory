@@ -555,6 +555,17 @@ impl ContextManifest {
                 bytes,
             );
         }
+        if let Some(id) = &inputs.build_cache_artifact_id {
+            // Carried as sandbox bytes, not prompt bytes: the entry names the exact artifact
+            // and spends nothing on the rendered input.
+            self.record(
+                "warm_build_cache",
+                "explicitly unsafe Build Cache cloned into the sandbox from this Round's Gate",
+                Some(id.clone()),
+                Some(review_core::contract::BUILD_CACHE_V1.into()),
+                0,
+            );
+        }
         if let Some(bytes) = request_bytes {
             self.record(
                 "warm_notes_request",
@@ -753,6 +764,16 @@ pub struct ReviewerInputs {
     /// selection and not only its members.
     #[serde(skip)]
     pub warm_set_artifact_id: Option<String>,
+    /// The explicitly unsafe `BuildCache@1` the Warm Set carries into this Attempt's sandbox
+    /// (package P2). Never rendered: it reaches the Worker as bytes below the reserved cache
+    /// root and one environment variable, and the manifest lists it so the report can say so.
+    #[serde(skip)]
+    pub build_cache_artifact_id: Option<String>,
+    /// Sandbox-local environment the kernel resolved for this exact Attempt, such as
+    /// `CARGO_TARGET_DIR` pointing at a cloned Build Cache. Absolute host paths of one
+    /// temporary sandbox: never serialized, never rendered, never durable.
+    #[serde(skip)]
+    pub sandbox_environment: Vec<(String, String)>,
 }
 
 /// The Notes output bound a warm reviewer node declares. Data for the Worker; the kernel
@@ -1271,6 +1292,10 @@ fn invoke_command(
     inputs
         .validate_refusal_history_bound()
         .map_err(RunnerError::Refused)?;
+    let mut runner = runner;
+    for (name, value) in &inputs.sandbox_environment {
+        runner = runner.with_env(name, value);
+    }
     // The serialized document itself decides whether stdin exists. Adding a future input field
     // cannot silently create durable AttemptInput authority that this adapter drops.
     let encoded =

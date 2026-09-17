@@ -234,6 +234,9 @@ impl ReviewerAdapter for CodexAdapter {
         if let Some(home) = &self.codex_home {
             runner = runner.with_grant("CODEX_HOME", home);
         }
+        for (name, value) in &inputs.sandbox_environment {
+            runner = runner.with_env(name, value);
+        }
         let capture = runner.capture_with_stdin(cas, &command, prompt.into_bytes())?;
 
         let events = Events::parse(&capture.stdout);

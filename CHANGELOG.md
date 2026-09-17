@@ -21,6 +21,17 @@ release pages only.
   and rendered input per Attempt. Task Workers may declare optional `af/WorkerNotes@1` ports that
   the compiler wires only within one slot. With `warm` absent nothing changes
   ([ADR-0107](docs/adr/0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md)).
+- Carry the Gate's build to Worker sandboxes as the second warm layer: a `trusted_local` Gate
+  that declares `build_caches = ["cargo_target"]` builds into the reserved `.af-cache` root with
+  `CARGO_TARGET_DIR` pointed at it, captures the result after its checks pass as an explicitly
+  unsafe `review.kernel/BuildCache@1` (regular files only, no-follow traversal, entry, depth,
+  path and byte limits, fixed modes, stripped xattrs and ACLs, producer and head provenance),
+  and records `BuildCacheCaptured@1` with the artifact or a refusal reason. A reviewer node with
+  `warm = { build_cache = ["cargo_target"] }` receives a per-Attempt clone from the CAS through
+  its `WarmSet@1`, the bytes are removed before seal so the sealed diff equals a cold run's, and
+  the safe policy refuses the declaration at load and the handoff before any dispatch. The
+  registry-only `cargo` Cache Snapshot and the self-optimizer cache path are unchanged
+  ([ADR-0108](docs/adr/0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md)).
 
 ## [0.9.0-rc.3] - 2026-09-17
 

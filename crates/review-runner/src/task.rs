@@ -589,6 +589,35 @@ pub trait WorkerModelAdapter: Send + Sync {
         }
         self.invoke_with_broker(cas, workdir, input, timeout, writable, broker)
     }
+
+    /// Controlled invocation with sandbox-local, non-secret variables the kernel resolved for
+    /// this exact Attempt, such as `CARGO_TARGET_DIR` pointing at a cloned Build Cache. An
+    /// adapter that does not thread the environment into its process must refuse a non-empty
+    /// one rather than silently run without it.
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_controlled_with_environment(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+        broker: Option<&dyn ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        environment: &[(String, String)],
+    ) -> ModelWorkerReturn {
+        if !environment.is_empty() {
+            return ModelWorkerReturn {
+                usage_observation: None,
+                message: Err(
+                    "Worker model adapter does not support a sandbox-local environment".into(),
+                ),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
+                raw_artifact_ids: vec![],
+            };
+        }
+        self.invoke_controlled(cas, workdir, input, timeout, writable, broker, cancellation)
+    }
 }
 
 impl ModelWorkerReturn {
@@ -837,6 +866,6 @@ fn command_runner_with_environment(
 
 mod command_control;
 pub use command_control::{
-    invoke_command_bytes_controlled, invoke_command_controlled,
-    invoke_command_controlled_with_environment,
+    invoke_command_bytes_controlled, invoke_command_bytes_controlled_with_environment,
+    invoke_command_controlled, invoke_command_controlled_with_environment,
 };

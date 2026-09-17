@@ -320,6 +320,119 @@ fn warm_layer_policy_is_reviewer_owned_and_bounded() {
 }
 
 #[test]
+fn build_cache_carry_requires_a_trusted_local_gate_that_declares_the_kind() {
+    let trusted_gate = "version = 3\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"\nbuild_caches = [\"cargo_target\"]";
+    let declared = MINIMAL.replace("version = 2", trusted_gate).replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = false, build_cache = [\"cargo_target\"] }\n",
+    );
+    let loaded = Definition::from_toml(&declared).unwrap().load().unwrap();
+    let binding = loaded.gate_execution().expect("v3 Gate binding");
+    assert_eq!(
+        binding.build_caches,
+        [review_config::BuildCacheKindSpec::CargoTarget]
+    );
+    assert_eq!(
+        binding.build_cache_limits(),
+        review_core::BuildCacheLimitsV1::default_v1(),
+        "absent bounds are the kernel defaults with the fixed depth and path limits"
+    );
+    let policy = loaded.warm_policies()["architecture"];
+    assert!(!policy.notes, "a build cache node need not carry Notes");
+    assert_eq!(
+        policy.build_cache.kinds(),
+        [review_config::BuildCacheKindSpec::CargoTarget]
+    );
+    assert_eq!(
+        review_config::BuildCacheKindSpec::CargoTarget.kind(),
+        review_core::BuildCacheKindV1::CargoTarget
+    );
+
+    let bounded = declared.replace(
+        "build_caches = [\"cargo_target\"]",
+        "build_caches = [\"cargo_target\"]\nbuild_cache_max_bytes = 1048576\nbuild_cache_max_entries = 1000",
+    );
+    let loaded = Definition::from_toml(&bounded).unwrap().load().unwrap();
+    let limits = loaded.gate_execution().unwrap().build_cache_limits();
+    assert_eq!(limits.max_bytes, 1_048_576);
+    assert_eq!(limits.max_entries, 1000);
+    assert_eq!(limits.max_depth, review_core::BUILD_CACHE_MAX_DEPTH_V1);
+
+    // The safe policy refuses the handoff before anything runs: a container Gate cannot
+    // declare a candidate-built cache, whatever the reviewer asks for.
+    let safe = declared.replace(
+        "provider = \"trusted_local\"\nrequired_isolation = \"none\"",
+        &format!(
+            "provider = \"container\"\nrequired_isolation = \"container\"\nimage = \"ghcr.io/example/gate@sha256:{}\"",
+            "a".repeat(64)
+        ),
+    );
+    assert!(matches!(
+        Definition::from_toml(&safe).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("refused under the safe policy")
+    ));
+
+    // A reviewer may only receive a kind its Gate declares.
+    let undeclared = declared.replace("\nbuild_caches = [\"cargo_target\"]", "");
+    assert!(matches!(
+        Definition::from_toml(&undeclared).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("declares it in `build_caches`")
+    ));
+    let ungated = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { build_cache = [\"cargo_target\"] }\n",
+    );
+    assert!(matches!(
+        Definition::from_toml(&ungated).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("declares it in `build_caches`")
+    ));
+
+    // The vocabulary is closed on both sides.
+    let duplicate = declared.replace(
+        "build_cache = [\"cargo_target\"]",
+        "build_cache = [\"cargo_target\", \"cargo_target\"]",
+    );
+    assert!(matches!(
+        Definition::from_toml(&duplicate),
+        Err(ConfigError::Parse(message)) if message.contains("more than once")
+    ));
+    let duplicate_gate = declared.replace(
+        "build_caches = [\"cargo_target\"]",
+        "build_caches = [\"cargo_target\", \"cargo_target\"]",
+    );
+    assert!(matches!(
+        Definition::from_toml(&duplicate_gate).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("build cache kinds must be unique")
+    ));
+    let registry_snapshot_is_not_a_build_cache = declared.replace(
+        "build_caches = [\"cargo_target\"]",
+        "build_caches = [\"cargo\"]",
+    );
+    assert!(
+        Definition::from_toml(&registry_snapshot_is_not_a_build_cache)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown variant")
+    );
+    let over = declared.replace(
+        "build_caches = [\"cargo_target\"]",
+        "build_caches = [\"cargo_target\"]\nbuild_cache_max_bytes = 17179869184",
+    );
+    assert!(matches!(
+        Definition::from_toml(&over).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("build cache limits")
+    ));
+    let limits_without_kinds = MINIMAL.replace(
+        "version = 2",
+        "version = 3\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"\nbuild_cache_max_entries = 10",
+    );
+    assert!(matches!(
+        Definition::from_toml(&limits_without_kinds).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("require `build_caches`")
+    ));
+}
+
+#[test]
 fn reviewer_demand_classification_is_pipeline_owned() {
     let advisory = MINIMAL.replace(
         "id = \"architecture\"\nkind = \"reviewer\"\n",

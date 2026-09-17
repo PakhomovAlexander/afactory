@@ -26,11 +26,16 @@
 //! be by a provider of this kind. They close only when the container provider runs against a
 //! live daemon, and the case says so rather than being quietly narrowed to what passes.
 
+pub mod build_cache;
 pub mod cache;
 pub mod container;
 pub mod seal;
 
 pub use self::SandboxTemplate as Template;
+pub use build_cache::{
+    CapturedBuildCache, MaterializedBuildCache, build_cache_environment, capture_build_cache,
+    materialize_build_cache, prepare_build_cache_root,
+};
 pub use cache::{
     CacheEnvironment, CacheError, CacheErrorKind, CacheKind, CacheLimits, CacheMaterialization,
     CacheSnapshot, CacheSource, MAX_CACHE_BYTES, MAX_CACHE_COPY_BYTES, MAX_CACHE_FILES,

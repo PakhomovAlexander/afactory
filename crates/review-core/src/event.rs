@@ -132,10 +132,12 @@ pub enum EventType {
     WarmSetSelectedV1,
     #[serde(rename = "WorkerNotesRecorded@1")]
     WorkerNotesRecordedV1,
+    #[serde(rename = "BuildCacheCaptured@1")]
+    BuildCacheCapturedV1,
 }
 
 impl EventType {
-    pub const ALL: [Self; 60] = [
+    pub const ALL: [Self; 61] = [
         Self::TaskTransitionV1,
         Self::TaskTransitionV2,
         Self::TaskTransitionV3,
@@ -196,6 +198,7 @@ impl EventType {
         Self::SemanticClosureCheckedV1,
         Self::WarmSetSelectedV1,
         Self::WorkerNotesRecordedV1,
+        Self::BuildCacheCapturedV1,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -260,6 +263,7 @@ impl EventType {
             Self::SemanticClosureCheckedV1 => "SemanticClosureChecked@1",
             Self::WarmSetSelectedV1 => "WarmSetSelected@1",
             Self::WorkerNotesRecordedV1 => "WorkerNotesRecorded@1",
+            Self::BuildCacheCapturedV1 => "BuildCacheCaptured@1",
         }
     }
 
@@ -350,6 +354,7 @@ impl EventType {
             Self::SemanticClosureCheckedV1 => ("SemanticClosureChecked", 1),
             Self::WarmSetSelectedV1 => ("WarmSetSelected", 1),
             Self::WorkerNotesRecordedV1 => ("WorkerNotesRecorded", 1),
+            Self::BuildCacheCapturedV1 => ("BuildCacheCaptured", 1),
         }
     }
 }
@@ -448,6 +453,7 @@ impl std::str::FromStr for EventType {
             "SemanticClosureChecked@1" => Ok(Self::SemanticClosureCheckedV1),
             "WarmSetSelected@1" => Ok(Self::WarmSetSelectedV1),
             "WorkerNotesRecorded@1" => Ok(Self::WorkerNotesRecordedV1),
+            "BuildCacheCaptured@1" => Ok(Self::BuildCacheCapturedV1),
             other => Err(UnknownEventType(other.to_string())),
         }
     }
@@ -1805,6 +1811,14 @@ pub fn validate_event_payload(
             recorded
                 .validate()
                 .map_err(|error| format!("WorkerNotesRecorded@1: {error}"))
+        }
+        EventType::BuildCacheCapturedV1 => {
+            let captured =
+                serde_json::from_value::<crate::BuildCacheCapturedPayloadV1>(payload.clone())
+                    .map_err(|error| format!("BuildCacheCaptured@1: {error}"))?;
+            captured
+                .validate()
+                .map_err(|error| format!("BuildCacheCaptured@1: {error}"))
         }
     }
 }

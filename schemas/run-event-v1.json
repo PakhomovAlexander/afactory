@@ -90,7 +90,8 @@
         "ShardSetRecorded@1",
         "SemanticClosureChecked@1",
         "WarmSetSelected@1",
-        "WorkerNotesRecorded@1"
+        "WorkerNotesRecorded@1",
+        "BuildCacheCaptured@1"
       ]
     },
     "occurred_at": {
@@ -624,6 +625,25 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "BuildCacheCaptured@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/build_cache_captured"
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -1044,11 +1064,117 @@
           "items": {
             "enum": [
               "notes",
-              "head_delta"
+              "head_delta",
+              "build_cache"
             ]
           }
         }
       }
+    },
+    "build_cache_captured": {
+      "description": "Appended by a Gate after its checks passed, once per declared build cache kind: exactly one of the captured review.kernel/BuildCache@1 artifact or a refusal reason, with the head the Gate built and the limits that applied. A refusal never changes the Gate verdict; Workers that declared the kind run without it. The artifact is explicitly unsafe and never a Cache Snapshot.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "gate_node",
+        "head_snapshot_id",
+        "kind",
+        "limits",
+        "entries",
+        "bytes"
+      ],
+      "properties": {
+        "gate_node": {
+          "type": "string",
+          "minLength": 1
+        },
+        "gate_attempt_id": {
+          "$ref": "#/$defs/id"
+        },
+        "head_snapshot_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "kind": {
+          "enum": [
+            "cargo_target"
+          ]
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "max_bytes",
+            "max_entries",
+            "max_depth",
+            "max_path_bytes"
+          ],
+          "properties": {
+            "max_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8589934592
+            },
+            "max_entries": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500000
+            },
+            "max_depth": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            },
+            "max_path_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4096
+            }
+          }
+        },
+        "build_cache_artifact_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "refused": {
+          "enum": [
+            "unsafe_content",
+            "limit_exceeded",
+            "source_unavailable",
+            "capture_failed"
+          ]
+        },
+        "entries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "build_cache_artifact_id"
+          ],
+          "not": {
+            "required": [
+              "refused"
+            ]
+          }
+        },
+        {
+          "required": [
+            "refused"
+          ],
+          "not": {
+            "required": [
+              "build_cache_artifact_id"
+            ]
+          }
+        }
+      ]
     },
     "worker_notes_recorded": {
       "description": "What became of one admitted Attempt's notes declaration: exactly one of a WorkerNotes@1 artifact or a drop reason. The Attempt is admitted either way.",
