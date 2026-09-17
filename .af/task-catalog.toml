@@ -56,6 +56,9 @@ version = "1.0.0"
 digest = "sha256:1356e5cfe8f8444f0244b4a74686536d9340aefd8b0d7f289222fe66cbcf9f32"
 path = ".af/task-packages/warm/verification-kind"
 
+[kinds]
+verification = "warm/verification-kind"
+
 [independence]
 command_workers_by_package = true
 distinct_principals = true
