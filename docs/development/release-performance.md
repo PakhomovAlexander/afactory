@@ -97,3 +97,29 @@ nextest installer/profile and opt-in gate for further investigation; do not chan
 the required CI runner until a complete comparison passes on Linux and macOS.
 No additional test is ignored, and no retry or larger production timeout masks these failures.
 The default Cargo gate uses four threads, separate build timing, and all prior checks.
+
+To reproduce the opt-in runner experiment with the pinned binary:
+
+```sh
+scripts/install-nextest.sh
+PATH="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/af-ci-tools:$PATH" make check TEST_RUNNER=nextest
+```
+
+## Local verification record (2026-09-17)
+
+The final default `make check` passed with Rust 1.88.0, debug level 1, incremental
+compilation disabled and four test threads: formatting, Clippy, all tests/doctests,
+and byte-identical synthetic fixtures. The test command took 912.390 seconds;
+its separate build step took 14.012 seconds using the existing local cache.
+
+The nextest experiment ran 1,279 tests in 484.403 seconds (553.063 seconds including
+command startup/enumeration): 1,276 passed, three native-provider probes timed out,
+and one test was reported as leaky. All three probe tests subsequently passed under
+Cargo. These are diagnostic local runs, with background machine activity and no
+controlled repeated performance trial; the failed nextest result is not a savings
+claim. Earlier interrupted runs, including a disk-full failure, are retained separately.
+
+Workflow syntax, required publication dependencies, immutable checkout identity,
+cache failure-path conditions, installer checksum verification, Git metadata regression
+and timing-accounting checks passed locally. GitHub Linux/container validation and the
+external AF correctness review remain pending; no post-change release was published.
