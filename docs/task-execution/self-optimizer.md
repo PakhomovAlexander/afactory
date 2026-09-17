@@ -244,7 +244,6 @@ exit alone is not that evidence. `af/ExperimentTrialResult@1` retains protected 
 charge and billing completeness are derived from the common Attempt ledger. Signed rejections
 remain factual decisions and grant no registration or dispatch authority.
 
-
 ### Controlled configuration candidates
 
 Install the project-owned `optimization-controlled`, `optimization-check-baseline`,
