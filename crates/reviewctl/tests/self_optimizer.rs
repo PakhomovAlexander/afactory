@@ -779,11 +779,13 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     let baseline_root = repo.join(".af/optimization/optimization-check-baseline");
     let baseline_worker = baseline_root.join("worker.py");
     let baseline_source = std::fs::read_to_string(&baseline_worker).unwrap();
+    // Make the fixture workload dominate process-startup jitter on shared CI runners.
+    // The measured comparison and its dispersion gate remain unchanged.
     std::fs::write(
         &baseline_worker,
         baseline_source.replace(
             "request = json.load(sys.stdin)",
-            "request = json.load(sys.stdin)\nimport time; time.sleep(0.2)",
+            "request = json.load(sys.stdin)\nimport time; time.sleep(3)",
         ),
     )
     .unwrap();
