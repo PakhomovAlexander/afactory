@@ -88,7 +88,9 @@
         "SourceCaptured@1",
         "SliceSetAccepted@1",
         "ShardSetRecorded@1",
-        "SemanticClosureChecked@1"
+        "SemanticClosureChecked@1",
+        "WarmSetSelected@1",
+        "WorkerNotesRecorded@1"
       ]
     },
     "occurred_at": {
@@ -584,6 +586,44 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "WarmSetSelected@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/warm_set_selected"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "WorkerNotesRecorded@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/worker_notes_recorded"
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -982,6 +1022,85 @@
           "$ref": "#/$defs/digest"
         }
       }
+    },
+    "warm_set_selected": {
+      "description": "Appended before the node's first AttemptDispatched@1 of a Round. The Warm Set artifact names the exact carried layers; `layers` repeats them for operator reports.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "warm_set_artifact_id",
+        "layers"
+      ],
+      "properties": {
+        "warm_set_artifact_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "source_attempt_id": {
+          "$ref": "#/$defs/id"
+        },
+        "layers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "notes",
+              "head_delta"
+            ]
+          }
+        }
+      }
+    },
+    "worker_notes_recorded": {
+      "description": "What became of one admitted Attempt's notes declaration: exactly one of a WorkerNotes@1 artifact or a drop reason. The Attempt is admitted either way.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result_artifact_id",
+        "bytes"
+      ],
+      "properties": {
+        "result_artifact_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "notes_artifact_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "dropped": {
+          "enum": [
+            "absent",
+            "malformed",
+            "invalid_path",
+            "over_bound"
+          ]
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "notes_artifact_id"
+          ],
+          "not": {
+            "required": [
+              "dropped"
+            ]
+          }
+        },
+        {
+          "required": [
+            "dropped"
+          ],
+          "not": {
+            "required": [
+              "notes_artifact_id"
+            ]
+          }
+        }
+      ]
     },
     "broker_operation_receipt": {
       "type": "object",

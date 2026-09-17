@@ -1111,6 +1111,17 @@ impl Compiler<'_> {
             .ok_or_else(|| format!("Unknown producer {}", address.qualified()))
     }
 
+    /// The effective slot of an already compiled Worker node, or `None` for any other producer.
+    fn worker_slot(&self, node: &str) -> Option<&str> {
+        match &self.graph.nodes.get(node)?.operator {
+            CompiledOperator::Primitive {
+                operator: TaskOperatorV1::Worker { slot },
+                ..
+            } => Some(slot.as_str()),
+            _ => None,
+        }
+    }
+
     fn compatible(&self, source: &Address, target: &PipelinePortV1) -> Result<(), String> {
         let produced = self.port(source)?;
         if produced.artifact_type != target.artifact_type
@@ -1476,6 +1487,27 @@ impl Compiler<'_> {
                                 }
                                 None if port.optional => (),
                                 None => return Err(format!("{qualified} lacks {port_name}")),
+                            }
+                        }
+                        // Worker Notes are a node-private warm layer: a retry or repair node
+                        // may receive the notes of an earlier node on the SAME slot, and nothing
+                        // else. Slots declared independent are different slots by construction.
+                        for (port_name, port) in &signature.contract.inputs {
+                            if port.artifact_type != review_core::task::WORKER_NOTES_V1 {
+                                continue;
+                            }
+                            let Some(source) = bound.get(port_name) else {
+                                continue;
+                            };
+                            let TaskOperatorV1::Worker { slot } = &operator else {
+                                return Err(format!(
+                                    "{qualified} is not a Worker but consumes Worker Notes"
+                                ));
+                            };
+                            if self.worker_slot(&source.node) != Some(slot.as_str()) {
+                                return Err(format!(
+                                    "{qualified} consumes Worker Notes from another slot; Notes never cross slots"
+                                ));
                             }
                         }
                         if bound

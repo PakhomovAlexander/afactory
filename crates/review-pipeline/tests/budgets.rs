@@ -228,6 +228,7 @@ impl ReviewerAdapter for Costed {
         Ok(ReviewerReturn {
             output: clean_output(),
             proposal: Ok(None),
+            notes: Ok(None),
             cost_tokens: self.cost,
             raw_artifact: cas.put(b"stub answer").unwrap(),
         })
@@ -256,6 +257,7 @@ impl ReviewerAdapter for FlakyOnce {
         Ok(ReviewerReturn {
             output: clean_output(),
             proposal: Ok(None),
+            notes: Ok(None),
             cost_tokens: self.cost,
             raw_artifact: cas.put(b"second answer").unwrap(),
         })
@@ -291,6 +293,7 @@ impl ReviewerAdapter for MalformedOnce {
         Ok(ReviewerReturn {
             output: clean_output(),
             proposal: Ok(None),
+            notes: Ok(None),
             cost_tokens: 10_000,
             raw_artifact: cas.put(b"corrected answer").unwrap(),
         })
@@ -343,6 +346,7 @@ impl ReviewerAdapter for InvalidOnce {
         Ok(ReviewerReturn {
             output,
             proposal: Ok(None),
+            notes: Ok(None),
             cost_tokens: self.cost,
             raw_artifact: cas
                 .put(if first {
@@ -379,6 +383,7 @@ impl ReviewerAdapter for InvalidThenUnavailable {
             )
             .unwrap(),
             proposal: Ok(None),
+            notes: Ok(None),
             cost_tokens: self.cost,
             raw_artifact: cas.put(b"first invalid answer").unwrap(),
         })
@@ -419,6 +424,7 @@ impl ReviewerAdapter for CleanAfterGenericFailure {
         Ok(ReviewerReturn {
             output: clean_output(),
             proposal: Ok(None),
+            notes: Ok(None),
             cost_tokens: 10_000,
             raw_artifact: cas.put(b"clean resumed answer").unwrap(),
         })
@@ -452,6 +458,7 @@ impl ReviewerAdapter for InvalidAfterResume {
         Ok(ReviewerReturn {
             output,
             proposal: Ok(None),
+            notes: Ok(None),
             cost_tokens: self.cost,
             raw_artifact: cas
                 .put(if call == 0 {
@@ -491,6 +498,7 @@ impl ReviewerAdapter for InvalidMetadataOnce {
         Ok(ReviewerReturn {
             output,
             proposal: Ok(None),
+            notes: Ok(None),
             cost_tokens: self.cost,
             raw_artifact: cas
                 .put(if first {

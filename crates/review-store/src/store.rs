@@ -963,6 +963,9 @@ struct AuthorityNode {
     /// that declares one still validates here.
     #[serde(default)]
     budget: Option<AuthorityNodeBudget>,
+    /// A reviewer's warm-layer policy (review-config `WarmSpec`); mirrored for the same reason.
+    #[serde(default)]
+    warm: Option<AuthorityWarm>,
 }
 
 #[allow(dead_code)]
@@ -970,6 +973,16 @@ struct AuthorityNode {
 #[serde(deny_unknown_fields)]
 struct AuthorityNodeBudget {
     attempt: u64,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityWarm {
+    #[serde(default)]
+    notes: Option<bool>,
+    #[serde(default)]
+    notes_max_bytes: Option<u64>,
 }
 
 #[allow(dead_code)]
@@ -5288,6 +5301,8 @@ fn round_runtime_event(event_type: EventType) -> bool {
                 | EventType::SliceSetAcceptedV1
                 | EventType::ShardSetRecordedV1
                 | EventType::SemanticClosureCheckedV1
+                | EventType::WarmSetSelectedV1
+                | EventType::WorkerNotesRecordedV1
         )
 }
 

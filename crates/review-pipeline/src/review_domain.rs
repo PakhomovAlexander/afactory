@@ -98,6 +98,11 @@ pub(super) struct ReviewDomainState<'a> {
     /// Outputs made durable in this scheduler run, keyed by their producing node. Downstream
     /// canonical reducers consult only this map plus the validated graph when binding artifacts.
     pub(super) node_outputs: Mutex<BTreeMap<String, ArtifactMap>>,
+    /// Reviewer nodes with a pinned warm-layer policy. Absent nodes run cold, exactly as every
+    /// pipeline written before warm layers existed.
+    pub(super) warm_policies: BTreeMap<String, review_config::WarmSpec>,
+    /// Warm Sets selected and durably recorded for this Round, by node.
+    pub(super) warm_sets: Mutex<BTreeMap<String, crate::warm::WarmSetRecord>>,
 }
 
 impl<'a> ReviewDomainState<'a> {
@@ -197,6 +202,7 @@ impl<'a> ReviewDomainState<'a> {
             .collect::<Result<_, String>>()?;
         self.closeouts = loaded.closeouts().clone();
         self.static_node_ids = loaded.plan_order().iter().cloned().collect();
+        self.warm_policies = loaded.warm_policies().clone();
         Ok(())
     }
 
@@ -253,6 +259,8 @@ impl<'a> ReviewDomainState<'a> {
             reviewer_input_artifacts: Mutex::new(BTreeMap::new()),
             input_bindings: BTreeMap::new(),
             node_outputs: Mutex::new(BTreeMap::new()),
+            warm_policies: BTreeMap::new(),
+            warm_sets: Mutex::new(BTreeMap::new()),
         })
     }
     /// Emit the run's generation state — the campaign's prior findings — as the artifact a

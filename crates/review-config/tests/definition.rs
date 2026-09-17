@@ -258,6 +258,68 @@ gate = "major"
 }
 
 #[test]
+fn warm_layer_policy_is_reviewer_owned_and_bounded() {
+    let cold = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
+    assert!(
+        cold.warm_policies().is_empty(),
+        "a pipeline written before warm layers existed runs cold"
+    );
+
+    let warm = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = true }\n",
+    );
+    let loaded = Definition::from_toml(&warm).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert!(policy.notes);
+    assert_eq!(
+        policy.notes_max_bytes,
+        review_core::DEFAULT_WORKER_NOTES_BYTES as u64
+    );
+
+    let bounded = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = true, notes_max_bytes = 4096 }",
+    );
+    let loaded = Definition::from_toml(&bounded).unwrap().load().unwrap();
+    assert_eq!(loaded.warm_policies()["architecture"].notes_max_bytes, 4096);
+
+    let over = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = true, notes_max_bytes = 1048576 }",
+    );
+    assert!(matches!(
+        Definition::from_toml(&over).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("notes_max_bytes")
+    ));
+
+    let opted_in = warm.replace("warm = { notes = true }", "warm = {}");
+    let loaded = Definition::from_toml(&opted_in).unwrap().load().unwrap();
+    assert!(
+        loaded.warm_policies()["architecture"].notes,
+        "Notes default to on"
+    );
+    let cold = warm.replace("warm = { notes = true }", "warm = { notes = false }");
+    let loaded = Definition::from_toml(&cold).unwrap().load().unwrap();
+    assert!(!loaded.warm_policies()["architecture"].notes);
+
+    let unknown = warm.replace("warm = { notes = true }", "warm = { session = \"always\" }");
+    assert!(matches!(
+        Definition::from_toml(&unknown),
+        Err(ConfigError::Parse(_))
+    ));
+
+    let on_gate = MINIMAL.replace(
+        "id = \"gate\"\nkind = \"gate\"\n",
+        "id = \"gate\"\nkind = \"gate\"\nwarm = { notes = true }\n",
+    );
+    assert!(matches!(
+        Definition::from_toml(&on_gate).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("warm-layer policy")
+    ));
+}
+
+#[test]
 fn reviewer_demand_classification_is_pipeline_owned() {
     let advisory = MINIMAL.replace(
         "id = \"architecture\"\nkind = \"reviewer\"\n",

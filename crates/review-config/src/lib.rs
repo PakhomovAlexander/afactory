@@ -195,6 +195,10 @@ pub struct NodeSpec {
     /// before the field existed behaves exactly as it did. Refines `[budgets]`; requires it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<NodeBudgetSpec>,
+    /// This reviewer's warm-layer policy. `None` is cold: no Notes are requested, carried or
+    /// rendered, and every pipeline written before the field existed behaves exactly as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warm: Option<WarmSpec>,
 }
 
 /// A Worker node's own Attempt cap, in the pipeline's budget unit. On a Scatter it is each
@@ -203,6 +207,38 @@ pub struct NodeSpec {
 #[serde(deny_unknown_fields)]
 pub struct NodeBudgetSpec {
     pub attempt: u64,
+}
+
+/// A reviewer node's warm-layer policy (package P1: Notes and Head Delta). Every layer is a
+/// declared CAS artifact in the Attempt's context manifest, never ambient state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WarmSpec {
+    /// Ask each admitted Attempt for Worker Notes and carry them, with Delta Marking against
+    /// the previous head, to the next Round's Attempt of this same node. On by default once a
+    /// node opts into warm layers; `notes = false` keeps such a node cold.
+    #[serde(default = "default_true")]
+    pub notes: bool,
+    /// Byte bound for one encoded `WorkerNotes@1`. Larger notes are dropped with a recorded
+    /// reason and the Attempt is still admitted.
+    #[serde(default = "default_notes_max_bytes")]
+    pub notes_max_bytes: u64,
+}
+
+fn default_notes_max_bytes() -> u64 {
+    review_core::DEFAULT_WORKER_NOTES_BYTES as u64
+}
+
+impl WarmSpec {
+    fn validate(&self, node: &str) -> Result<(), ConfigError> {
+        let maximum = review_core::MAX_WORKER_NOTES_BYTES as u64;
+        if self.notes_max_bytes == 0 || self.notes_max_bytes > maximum {
+            return Err(ConfigError::Binding(format!(
+                "reviewer `{node}` warm.notes_max_bytes must be between 1 and {maximum}"
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -994,6 +1030,8 @@ pub struct Loaded {
     /// Worker nodes that declared their own Attempt cap. Absent nodes reserve `[budgets].attempt`.
     node_attempt_caps: BTreeMap<String, u64>,
     integration: Option<IntegrationSpec>,
+    /// Reviewer nodes that declared a warm-layer policy. Absent nodes run cold.
+    warm: BTreeMap<String, WarmSpec>,
 }
 
 /// A dispatcher that declares the Subject semantics it actually executes.
@@ -1078,6 +1116,11 @@ impl Loaded {
 
     pub fn integration(&self) -> Option<&IntegrationSpec> {
         self.integration.as_ref()
+    }
+
+    /// Reviewer nodes with a declared warm-layer policy, by node ID.
+    pub fn warm_policies(&self) -> &BTreeMap<String, WarmSpec> {
+        &self.warm
     }
 
     pub fn plan_order(&self) -> &[String] {
@@ -1447,10 +1490,21 @@ impl Definition {
         let mut reviewer_execution = BTreeMap::new();
         let mut slicing = BTreeMap::new();
         let mut closeouts = BTreeMap::new();
+        let mut warm = BTreeMap::new();
         let mut resolved_packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>> =
             BTreeMap::new();
         for spec in &self.nodes {
             let reviewer_like = matches!(spec.kind, NodeKindSpec::Reviewer | NodeKindSpec::Scatter);
+            if let Some(policy) = &spec.warm {
+                if !reviewer_like {
+                    return Err(ConfigError::Binding(format!(
+                        "node `{}` is not a reviewer but declares a warm-layer policy",
+                        spec.id
+                    )));
+                }
+                policy.validate(&spec.id)?;
+                warm.insert(spec.id.clone(), *policy);
+            }
             if reviewer_like {
                 demand_requirements.insert(
                     spec.id.clone(),
@@ -1634,6 +1688,7 @@ impl Definition {
             budgets: self.budgets,
             node_attempt_caps,
             integration,
+            warm,
             convergence: ConvergencePolicy {
                 clean_rounds: self.convergence.clean_rounds,
                 max_rounds: self.convergence.max_rounds,

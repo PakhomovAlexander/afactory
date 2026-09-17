@@ -138,6 +138,7 @@ impl ReviewerAdapter for Recorder {
         Ok(ReviewerReturn {
             output: clean_output(),
             proposal: Ok(None),
+            notes: Ok(None),
             cost_tokens: 1,
             raw_artifact: cas.put(b"stub").unwrap(),
         })

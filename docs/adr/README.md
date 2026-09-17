@@ -191,3 +191,5 @@ Record the options you rejected and why — that is the part future readers need
   pin](0105-dispatch-self-optimize-through-the-project-pin.md)
 - [0106 — Authorize experimental children separately inside one
   Task](0106-authorize-experimental-children-separately.md)
+- [0107 — Carry Worker Notes and Head Deltas as declared warm
+  layers](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md)

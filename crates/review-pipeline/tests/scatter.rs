@@ -68,6 +68,7 @@ fn result(cas: &Cas, findings: Vec<serde_json::Value>, raw: &[u8]) -> ReviewerRe
         }))
         .unwrap(),
         proposal: Ok(None),
+        notes: Ok(None),
         cost_tokens: 10,
         raw_artifact: cas.put(raw).unwrap(),
     }

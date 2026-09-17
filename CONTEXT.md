@@ -333,6 +333,32 @@ reducer, gate, verifier, or integrator, or an explicitly trusted disposition.
 _Avoid_: assuming a successfully completed graph is closed; an unwired Finding or Demand makes
 the result incomplete.
 
+**Warm Set**:
+The exact, per-node set of carried layers one Round's Attempts start from, selected from the
+previous closed Round's admitted Attempt of the same node, recorded before the first dispatch
+and listed in every Attempt's context manifest.
+_Avoid_: "warm cache" or "the previous session" as ambient state; a Warm Set is an artifact, and
+a retry inherits the Round's Warm Set rather than its failed sibling's state.
+
+**Worker Notes**:
+A bounded, typed inspection map one admitted Attempt leaves for the next Attempt of the same
+node: paths inspected, a model of the change, open questions, per-path hints. Data, not a
+verdict, and never shared across nodes or slots.
+_Avoid_: treating Notes as a disposition; every prior Finding still needs its explicit Report,
+Dispute, or Drop.
+
+**Head Delta**:
+The kernel-derived relation between two consecutive heads of one node: exact from and to
+Snapshot IDs, diff policy identity, complete path set with rename truncation, and one mark per
+path over the union of the Notes paths and both Subject views.
+_Avoid_: **Change Set**; a Head Delta names no Base, carries no Subject identity and no Report
+Scope, and exists for whole-tree Subjects too.
+
+**Delta Marking**:
+The rendering of Head Delta marks beside the Change Set section: `changed`, `unchanged`, `new`,
+`reverted`, `removed`, or `renamed` since the previous Round's head.
+_Avoid_: a second full patch in the prompt; the marks exist to keep context minimal.
+
 ## Relationships
 
 - A **Campaign** has many **Rounds**; a Round produces many **Reports**; Reports fold into

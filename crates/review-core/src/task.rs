@@ -43,6 +43,9 @@ pub const PLAN_DECISION_V1: &str = "af/PlanDecision@1";
 pub const REVIEW_HISTORY_V1: &str = "af/ReviewHistory@1";
 pub const VERIFICATION_CONTINUATION_V1: &str = "af/VerificationContinuation@1";
 pub const REPAIR_ASSESSMENT_V1: &str = "af/RepairAssessment@1";
+/// Task-path spelling of the same `WorkerNotes@1` payload: an optional, node-private Worker
+/// port that the compiler wires only between nodes of one slot.
+pub const WORKER_NOTES_V1: &str = "af/WorkerNotes@1";
 
 pub(super) fn require(condition: bool, message: &str) -> Result<(), String> {
     if condition {

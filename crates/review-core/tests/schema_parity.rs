@@ -32,7 +32,10 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 190] = [
+const SCHEMAS: [&str; 193] = [
+    "worker-notes-v1.json",
+    "head-delta-v1.json",
+    "warm-set-v1.json",
     "optimization-recipe-catalog-v1.json",
     "optimization-profile-v1.json",
     "optimization-writable-configuration-v1.json",
@@ -2712,6 +2715,190 @@ fn legacy_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
         );
     }
     assert!(!validator("task-review-round-v1.json").is_valid(&round));
+}
+
+#[test]
+fn warm_layer_contracts_roundtrip_and_stay_closed() {
+    use review_core::event::validate_event_payload;
+    use review_core::{
+        HeadDeltaEntryV1, HeadDeltaMarkV1, HeadDeltaV1, InspectedPathV1, PathHintV1, WarmLayerV1,
+        WarmSetSelectedPayloadV1, WarmSetV1, WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1,
+        WorkerNotesV1,
+    };
+    let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let notes = WorkerNotesV1 {
+        node: "correctness".into(),
+        attempt_id: "a".repeat(26),
+        head_snapshot_id: digest('1'),
+        inspected: vec![InspectedPathV1 {
+            path: "src/lib.rs".into(),
+            tree_entry_digest: Some(digest('2')),
+        }],
+        model_of_change: "the retry loop gained a cap".into(),
+        open_questions: vec!["is the cap configurable?".into()],
+        hints: vec![PathHintV1 {
+            path: "src/retry.rs".into(),
+            note: "the cap is read once at start".into(),
+        }],
+    };
+    notes.validate().unwrap();
+    let mut value = serde_json::to_value(&notes).unwrap();
+    assert_valid("worker-notes-v1.json", &value);
+    let decoded: WorkerNotesV1 = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(decoded, notes);
+    assert_eq!(
+        notes.referenced_paths().into_iter().collect::<Vec<_>>(),
+        ["src/lib.rs", "src/retry.rs"]
+    );
+    value["verdict"] = json!("approve");
+    assert_invalid(
+        "worker-notes-v1.json",
+        &value,
+        "notes are an inspection map and never carry a verdict or a disposition",
+    );
+    assert!(serde_json::from_value::<WorkerNotesV1>(value).is_err());
+
+    let delta = HeadDeltaV1 {
+        node: "correctness".into(),
+        from_snapshot_id: digest('1'),
+        to_snapshot_id: digest('3'),
+        diff_policy_version: "review.kernel/git-tree-diff@test".into(),
+        rename_detection_truncated: true,
+        changed_paths: vec!["src/new.rs".into(), "src/old.rs".into()],
+        marks: vec![
+            HeadDeltaEntryV1 {
+                path: "src/lib.rs".into(),
+                mark: HeadDeltaMarkV1::Reverted,
+                renamed_from: None,
+            },
+            HeadDeltaEntryV1 {
+                path: "src/new.rs".into(),
+                mark: HeadDeltaMarkV1::Renamed,
+                renamed_from: Some("src/old.rs".into()),
+            },
+            HeadDeltaEntryV1 {
+                path: "src/old.rs".into(),
+                mark: HeadDeltaMarkV1::Removed,
+                renamed_from: None,
+            },
+        ],
+    };
+    delta.validate().unwrap();
+    let mut value = serde_json::to_value(&delta).unwrap();
+    assert_valid("head-delta-v1.json", &value);
+    let decoded: HeadDeltaV1 = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(decoded, delta);
+    value["base_snapshot_id"] = json!(digest('9'));
+    assert_invalid(
+        "head-delta-v1.json",
+        &value,
+        "a Head Delta names two consecutive heads and never a Base Snapshot",
+    );
+    assert!(serde_json::from_value::<HeadDeltaV1>(value).is_err());
+    let mut unmarked = delta.clone();
+    unmarked.marks.retain(|entry| entry.path != "src/old.rs");
+    assert!(unmarked.validate().is_err(), "every changed path is marked");
+
+    let set = WarmSetV1 {
+        node: "correctness".into(),
+        round: 2,
+        source_attempt_id: Some("a".repeat(26)),
+        notes_artifact_id: Some(digest('4')),
+        head_delta_artifact_id: Some(digest('5')),
+    };
+    set.validate().unwrap();
+    let mut value = serde_json::to_value(&set).unwrap();
+    assert_valid("warm-set-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<WarmSetV1>(value.clone()).unwrap(),
+        set
+    );
+    value["session_artifact_id"] = json!(digest('6'));
+    assert_invalid(
+        "warm-set-v1.json",
+        &value,
+        "package P1 Warm Sets carry only Notes and a Head Delta and nothing else",
+    );
+    assert!(serde_json::from_value::<WarmSetV1>(value).is_err());
+    let orphan = json!({"node": "correctness", "round": 2, "notes_artifact_id": digest('4')});
+    assert_invalid(
+        "warm-set-v1.json",
+        &orphan,
+        "Notes without their source Attempt",
+    );
+    let orphan: WarmSetV1 = serde_json::from_value(orphan).unwrap();
+    assert!(orphan.validate().is_err());
+
+    let selected = WarmSetSelectedPayloadV1 {
+        warm_set_artifact_id: digest('7'),
+        source_attempt_id: Some("a".repeat(26)),
+        layers: vec![WarmLayerV1::Notes, WarmLayerV1::HeadDelta],
+    };
+    selected.validate().unwrap();
+    validate_event_payload(
+        EventType::WarmSetSelectedV1,
+        &serde_json::to_value(&selected).unwrap(),
+    )
+    .unwrap();
+    let event = RunEvent {
+        event_id: "b".repeat(26),
+        run_id: "run".into(),
+        sequence: 8,
+        event_type: EventType::WarmSetSelectedV1,
+        occurred_at: "2026-09-17T00:00:00Z".into(),
+        node_id: Some("correctness".into()),
+        attempt_id: None,
+        causation_id: Some("c".repeat(26)),
+        correlation_id: None,
+        artifact_refs: vec![digest('7')],
+        payload: serde_json::to_value(&selected).unwrap(),
+    };
+    assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
+    let mut duplicate = serde_json::to_value(&event).unwrap();
+    duplicate["payload"]["layers"] = json!(["notes", "notes"]);
+    assert_invalid("run-event-v1.json", &duplicate, "layers are unique");
+    let payload = duplicate["payload"].clone();
+    assert!(validate_event_payload(EventType::WarmSetSelectedV1, &payload).is_err());
+
+    for recorded in [
+        WorkerNotesRecordedPayloadV1 {
+            result_artifact_id: digest('8'),
+            notes_artifact_id: Some(digest('4')),
+            dropped: None,
+            bytes: 512,
+        },
+        WorkerNotesRecordedPayloadV1 {
+            result_artifact_id: digest('8'),
+            notes_artifact_id: None,
+            dropped: Some(WorkerNotesDropReasonV1::OverBound),
+            bytes: 70_000,
+        },
+    ] {
+        recorded.validate().unwrap();
+        let payload = serde_json::to_value(&recorded).unwrap();
+        validate_event_payload(EventType::WorkerNotesRecordedV1, &payload).unwrap();
+        let event = RunEvent {
+            event_type: EventType::WorkerNotesRecordedV1,
+            attempt_id: Some("a".repeat(26)),
+            artifact_refs: vec![digest('8')],
+            payload,
+            ..event.clone()
+        };
+        assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
+    }
+    let both = json!({
+        "result_artifact_id": digest('8'), "notes_artifact_id": digest('4'),
+        "dropped": "over_bound", "bytes": 1
+    });
+    let mut event_value = serde_json::to_value(&event).unwrap();
+    event_value["type"] = json!("WorkerNotesRecorded@1");
+    event_value["payload"] = both.clone();
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a notes record is either an artifact or a drop, never both",
+    );
+    assert!(validate_event_payload(EventType::WorkerNotesRecordedV1, &both).is_err());
 }
 
 #[path = "schema_parity/task_usage.rs"]

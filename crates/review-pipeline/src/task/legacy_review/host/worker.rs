@@ -132,13 +132,20 @@ impl LegacyReviewTaskHost<'_, '_> {
 
     fn inputs(&self, cas: &Cas, input: &TaskInvocationV1) -> Result<ReviewerInputs, String> {
         let (node, mapping, _) = self.operation(input)?.ok_or("Not a Review Worker")?;
-        crate::reviewer_inputs::prepare(
+        let mut inputs = crate::reviewer_inputs::prepare(
             cas,
             &self.domain.authority,
             self.domain.pipeline_version,
             &node,
             &self.raw_inputs(cas, input, &mapping)?,
-        )
+        )?;
+        // Warm layers are declared inputs bound before the exact context is captured; the
+        // Warm Set itself was recorded when the invocation was published, before reservation.
+        crate::warm::request_notes(&mut inputs, self.domain.notes_max_bytes(&node.id));
+        if let Some(record) = self.domain.select_warm_set(&node.id)? {
+            crate::warm::apply_warm_set(cas, &mut inputs, &record)?;
+        }
+        Ok(inputs)
     }
 
     pub(super) fn worker_context(
@@ -393,6 +400,9 @@ impl LegacyReviewTaskHost<'_, '_> {
                     result: &value,
                     result_contract: inputs.result_contract,
                     proposal: review_runner::parse_proposal_declaration(text),
+                    notes: review_runner::parse_notes_declaration(text),
+                    notes_max_bytes: self.domain.notes_max_bytes(&node.id),
+                    head_manifest: &self.domain.snapshot,
                     assigned_finding_ids: &assigned,
                     report_count: parsed.findings.len(),
                     cost_tokens: usage.chargeable_tokens.get(),
@@ -403,6 +413,12 @@ impl LegacyReviewTaskHost<'_, '_> {
                 attempt.context_id(),
                 result.usage.is_some(),
             )?;
+            // The Notes outcome is a durable Round fact of this exact Attempt. It is appended
+            // now, under the Attempt epoch, so a later Round's Warm Set selection reads it from
+            // the log rather than from process memory.
+            if let Some(notes) = captured.notes {
+                self.domain.append(notes.event)?;
+            }
             let raw_outputs = BTreeMap::from([(
                 node.outputs[0].name.clone(),
                 vec![captured.metadata.result_artifact_id.clone()],

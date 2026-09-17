@@ -9,6 +9,19 @@ release pages only.
 
 ## [Unreleased]
 
+### Changes
+
+- Add the first Worker warm layer: a reviewer node with `warm = { notes = true }` asks each
+  admitted Attempt for bounded Worker Notes, carries them to the next Round's Attempt of the same
+  node as `review.kernel/WorkerNotes@1`, marks every path against the previous head in a
+  `review.kernel/HeadDelta@1`, and records the selection as `review.kernel/WarmSet@1` with
+  `WarmSetSelected@1` before dispatch. Notes are parsed beside the flat Reviewer Result, dropped
+  with a recorded `WorkerNotesRecorded@1` reason when malformed or over `notes_max_bytes`, and
+  rendered as data with their own context manifest entries; `af review report` shows the layers
+  and rendered input per Attempt. Task Workers may declare optional `af/WorkerNotes@1` ports that
+  the compiler wires only within one slot. With `warm` absent nothing changes
+  ([ADR-0107](docs/adr/0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md)).
+
 ## [0.9.0-rc.3] - 2026-09-17
 
 ### Authority compatibility

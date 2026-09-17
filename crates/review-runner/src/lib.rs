@@ -25,11 +25,12 @@ pub mod task;
 pub use command_runner::{CommandRunner, RunnerError};
 pub use model::{
     CommandAdapter, ContextEntry, ContextManifest, Grant, InputTransport, ModelRunner,
-    RESULT_CONTRACT, RESULT_CONTRACT_V2, RawCapture, ReceiptedReviewerReturn, RenderedInput,
-    ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs,
-    ReviewerProposalDeclaration, ReviewerReturn, TokenUsage, compose_command_input,
-    compose_model_prompt, estimate_tokens, extract_result, parse_proposal_declaration,
-    parse_stage_output, parse_stage_output_for, result_contract, unfence,
+    NotesRequest, RESULT_CONTRACT, RESULT_CONTRACT_V2, RawCapture, ReceiptedReviewerReturn,
+    RenderedInput, ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs,
+    ReviewerNoteHint, ReviewerNotesDeclaration, ReviewerProposalDeclaration, ReviewerReturn,
+    TokenUsage, compose_command_input, compose_model_prompt, estimate_tokens, extract_result,
+    parse_notes_declaration, parse_proposal_declaration, parse_stage_output,
+    parse_stage_output_for, result_contract, unfence,
 };
 pub use review_broker::{BrokerClient, ExactBrokerClient};
 pub use review_core::BrokerCredentialModeV1;

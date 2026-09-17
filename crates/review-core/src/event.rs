@@ -128,10 +128,14 @@ pub enum EventType {
     ShardSetRecordedV1,
     #[serde(rename = "SemanticClosureChecked@1")]
     SemanticClosureCheckedV1,
+    #[serde(rename = "WarmSetSelected@1")]
+    WarmSetSelectedV1,
+    #[serde(rename = "WorkerNotesRecorded@1")]
+    WorkerNotesRecordedV1,
 }
 
 impl EventType {
-    pub const ALL: [Self; 58] = [
+    pub const ALL: [Self; 60] = [
         Self::TaskTransitionV1,
         Self::TaskTransitionV2,
         Self::TaskTransitionV3,
@@ -190,6 +194,8 @@ impl EventType {
         Self::SliceSetAcceptedV1,
         Self::ShardSetRecordedV1,
         Self::SemanticClosureCheckedV1,
+        Self::WarmSetSelectedV1,
+        Self::WorkerNotesRecordedV1,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -252,6 +258,8 @@ impl EventType {
             Self::SliceSetAcceptedV1 => "SliceSetAccepted@1",
             Self::ShardSetRecordedV1 => "ShardSetRecorded@1",
             Self::SemanticClosureCheckedV1 => "SemanticClosureChecked@1",
+            Self::WarmSetSelectedV1 => "WarmSetSelected@1",
+            Self::WorkerNotesRecordedV1 => "WorkerNotesRecorded@1",
         }
     }
 
@@ -340,6 +348,8 @@ impl EventType {
             Self::SliceSetAcceptedV1 => ("SliceSetAccepted", 1),
             Self::ShardSetRecordedV1 => ("ShardSetRecorded", 1),
             Self::SemanticClosureCheckedV1 => ("SemanticClosureChecked", 1),
+            Self::WarmSetSelectedV1 => ("WarmSetSelected", 1),
+            Self::WorkerNotesRecordedV1 => ("WorkerNotesRecorded", 1),
         }
     }
 }
@@ -436,6 +446,8 @@ impl std::str::FromStr for EventType {
             "SliceSetAccepted@1" => Ok(Self::SliceSetAcceptedV1),
             "ShardSetRecorded@1" => Ok(Self::ShardSetRecordedV1),
             "SemanticClosureChecked@1" => Ok(Self::SemanticClosureCheckedV1),
+            "WarmSetSelected@1" => Ok(Self::WarmSetSelectedV1),
+            "WorkerNotesRecorded@1" => Ok(Self::WorkerNotesRecordedV1),
             other => Err(UnknownEventType(other.to_string())),
         }
     }
@@ -1777,6 +1789,22 @@ pub fn validate_event_payload(
             recorded
                 .validate()
                 .map_err(|error| format!("{event_type}: {error}"))
+        }
+        EventType::WarmSetSelectedV1 => {
+            let selected =
+                serde_json::from_value::<crate::WarmSetSelectedPayloadV1>(payload.clone())
+                    .map_err(|error| format!("WarmSetSelected@1: {error}"))?;
+            selected
+                .validate()
+                .map_err(|error| format!("WarmSetSelected@1: {error}"))
+        }
+        EventType::WorkerNotesRecordedV1 => {
+            let recorded =
+                serde_json::from_value::<crate::WorkerNotesRecordedPayloadV1>(payload.clone())
+                    .map_err(|error| format!("WorkerNotesRecorded@1: {error}"))?;
+            recorded
+                .validate()
+                .map_err(|error| format!("WorkerNotesRecorded@1: {error}"))
         }
     }
 }

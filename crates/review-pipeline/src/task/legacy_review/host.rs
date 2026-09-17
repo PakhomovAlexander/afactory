@@ -702,6 +702,9 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
                 .lock()
                 .expect("Review inputs")
                 .insert(node.id.clone(), artifact_ids(&raw));
+            // Recorded before the common runtime reserves the node's first Attempt, so every
+            // Attempt of the Round starts from the same declared Warm Set.
+            self.domain.select_warm_set(&node.id)?;
         }
         Ok(())
     }

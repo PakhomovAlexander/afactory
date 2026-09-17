@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:warm-set:1",
+  "title": "WarmSet@1 payload",
+  "description": "The exact per-node set of carried layers one Round's Attempts start from, selected before the first AttemptDispatched@1 and listed in every Attempt's context manifest. Built only from the previous closed Round's admitted Attempt of the same node; fenced, quarantined, malformed and released Attempts contribute nothing. A retry inherits the Round's Warm Set, never its failed sibling's state. Later packages add session, workspace and build-cache layers as optional fields.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["node", "round"],
+  "properties": {
+    "node": { "type": "string", "minLength": 1 },
+    "round": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+    "source_attempt_id": { "type": "string", "pattern": "^[0-9a-z]{26}$" },
+    "notes_artifact_id": { "$ref": "#/$defs/digest" },
+    "head_delta_artifact_id": { "$ref": "#/$defs/digest" }
+  },
+  "dependentRequired": { "notes_artifact_id": ["source_attempt_id"] },
+  "$defs": {
+    "digest": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+  }
+}

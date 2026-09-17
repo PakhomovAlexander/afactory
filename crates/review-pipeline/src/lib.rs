@@ -28,6 +28,7 @@ mod reviewer_output;
 mod reviewer_work;
 pub mod scatter;
 pub mod task;
+mod warm;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
@@ -1992,6 +1993,37 @@ impl<'a> Kernel<'a> {
                 return Err(error);
             }
         };
+        // Warm layers are declared inputs: the Notes request follows the pinned policy, and the
+        // Round's Warm Set was recorded before this node's first dispatch. A retry inherits it.
+        let notes_max_bytes = self.domain.notes_max_bytes(node_id);
+        warm::request_notes(&mut inputs, notes_max_bytes);
+        let warm_set = match self.domain.select_warm_set(node_id) {
+            Ok(record) => record,
+            Err(error) => {
+                if let Some(prepared) = prepared.take() {
+                    self.release_prepared_attempt(
+                        node_id,
+                        &prepared.attempt,
+                        prepared.reservation.as_ref(),
+                        &error,
+                    )?;
+                }
+                return Err(error);
+            }
+        };
+        if let Some(record) = &warm_set
+            && let Err(error) = warm::apply_warm_set(self.domain.cas, &mut inputs, record)
+        {
+            if let Some(prepared) = prepared.take() {
+                self.release_prepared_attempt(
+                    node_id,
+                    &prepared.attempt,
+                    prepared.reservation.as_ref(),
+                    &error,
+                )?;
+            }
+            return Err(error);
+        }
         let result_contract = inputs.result_contract;
         let prior_findings_artifact = inputs.prior_findings_artifact_id.clone();
 
@@ -2204,6 +2236,7 @@ impl<'a> Kernel<'a> {
                     }
                     let returned = receipted.returned;
                     let proposal_declaration = returned.proposal;
+                    let notes_declaration = returned.notes;
                     let assigned_finding_ids = inputs
                         .prior_findings
                         .as_ref()
@@ -2255,6 +2288,9 @@ impl<'a> Kernel<'a> {
                             result: &result_value,
                             result_contract,
                             proposal: proposal_declaration,
+                            notes: notes_declaration,
+                            notes_max_bytes,
+                            head_manifest: &self.domain.snapshot,
                             assigned_finding_ids: &assigned_finding_ids,
                             report_count: returned.output.findings.len(),
                             cost_tokens: returned.cost_tokens,
@@ -2263,24 +2299,27 @@ impl<'a> Kernel<'a> {
                             raw_artifact: &returned.raw_artifact,
                         },
                     );
-                    let reviewer_output::CapturedReviewerResult { metadata, proposal } =
-                        match artifacts {
-                            Ok(artifacts) => artifacts,
-                            Err(error) => {
-                                self.fail_started_attempt(
-                                    node_id,
-                                    &attempt,
-                                    reservation.as_ref(),
-                                    &error,
-                                    returned.cost_tokens.max(broker_charged),
-                                    AttemptFailureEvidence {
-                                        raw_artifact: Some(&returned.raw_artifact),
-                                        refusal_history: None,
-                                    },
-                                )?;
-                                return Err(error);
-                            }
-                        };
+                    let reviewer_output::CapturedReviewerResult {
+                        metadata,
+                        proposal,
+                        notes,
+                    } = match artifacts {
+                        Ok(artifacts) => artifacts,
+                        Err(error) => {
+                            self.fail_started_attempt(
+                                node_id,
+                                &attempt,
+                                reservation.as_ref(),
+                                &error,
+                                returned.cost_tokens.max(broker_charged),
+                                AttemptFailureEvidence {
+                                    raw_artifact: Some(&returned.raw_artifact),
+                                    refusal_history: None,
+                                },
+                            )?;
+                            return Err(error);
+                        }
+                    };
 
                     let result_artifact = metadata.result_artifact_id;
                     let provenance_artifact = metadata.provenance_artifact_id;
@@ -2358,6 +2397,9 @@ impl<'a> Kernel<'a> {
                         | PreparedProposal::Refused(event) => {
                             self.domain.buffer_reviewer_event(node_id, event)
                         }
+                    }
+                    if let Some(notes) = notes {
+                        self.domain.buffer_reviewer_event(node_id, notes.event);
                     }
                     return Ok(vec![result_artifact]);
                 }
@@ -3037,6 +3079,9 @@ impl Dispatch for Kernel<'_> {
                 .get(&node.id)
                 .cloned()
                 .unwrap_or_default();
+            // The Warm Set is selected and recorded before the node's first Attempt of the
+            // Round is reserved and dispatched; every later Attempt of the Round inherits it.
+            self.domain.select_warm_set(&node.id)?;
             let prepared =
                 self.prepare_reviewer_attempt(&node.id, prior_findings, &replayed_failures)?;
             self.prepared_attempts

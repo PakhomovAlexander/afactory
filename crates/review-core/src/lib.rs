@@ -33,6 +33,14 @@ pub mod slice;
 pub mod snapshot;
 pub mod subject;
 pub mod task;
+pub mod warm;
+
+pub use warm::{
+    DEFAULT_WORKER_NOTES_BYTES, HeadDeltaEntryV1, HeadDeltaInputs, HeadDeltaMarkV1, HeadDeltaV1,
+    InspectedPathV1, MAX_HEAD_DELTA_BYTES, MAX_WORKER_NOTES_BYTES, PathHintV1, TreeView,
+    WarmLayerV1, WarmSetSelectedPayloadV1, WarmSetV1, WorkerNotesDropReasonV1,
+    WorkerNotesRecordedPayloadV1, WorkerNotesV1, compute_head_delta_marks,
+};
 
 pub use task::broker::{
     TASK_BROKER_BINDING_V1, TASK_BROKER_OPERATION_V1, TaskBrokerBindingV1, TaskBrokerOperationV1,
@@ -160,4 +168,7 @@ pub mod contract {
     pub const SHARD_SET_V1: &str = "review.kernel/ShardSet@1";
     pub const SEMANTIC_CLOSURE_V1: &str = "review.kernel/SemanticClosure@1";
     pub const REVIEWER_PACKAGE_V1: &str = "review.kernel/ReviewerPackage@1";
+    pub const WORKER_NOTES_V1: &str = "review.kernel/WorkerNotes@1";
+    pub const HEAD_DELTA_V1: &str = "review.kernel/HeadDelta@1";
+    pub const WARM_SET_V1: &str = "review.kernel/WarmSet@1";
 }
