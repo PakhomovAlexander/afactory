@@ -23,7 +23,7 @@ path = ".af/task-packages/warm/implementer"
 
 [packages."warm/correctness"]
 version = "1.0.0"
-digest = "sha256:fc946beabe103a62d009c8d826a5ce6266d0f059034ccd7b8e146032820d6e87"
+digest = "sha256:261c6943e13b49b535a0d4ff037027dc15a7695732d9cccd014b8b88eb00c28f"
 path = ".af/task-packages/warm/correctness"
 
 [packages."warm/bugs"]
