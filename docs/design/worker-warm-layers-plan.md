@@ -266,12 +266,11 @@ af 0.9.0-rc.3, plan `d9618b70…`.
   Task Worker Notes payloads, whole-tree marks contract, and unbounded Notes port counts.
   All eight were fixed in a follow-up commit and the gate passes again; each Finding is
   attested against its changed region.
-- **Evaluator gap:** the evaluator never judged the fixed tree. A standalone verification Task
-  needs a Task-kind package the catalog does not have, and re-running the implementation
-  Pipeline would spend another implementer Attempt. Closing this needs either a
-  `verification` kind package in the campaign catalog or a review Task file that can bind a
-  diff base. Until then a package's `goal` obligation is covered by checks, reviews and the
-  human reading the delivered tree.
+- **Evaluator on a hand-fixed tree:** a standalone verification Task needs a Task-kind package,
+  so the catalog now carries `warm/verification-kind`, mapping kind `verification` to the
+  installed `implementation` profile, and `warm/verification` runs the checks and the
+  evaluator on the exact current Snapshot as Task `warm-p1-verify`. Later packages whose
+  Task ends unsatisfied on mechanical Gate failures follow the same path: fix, verify, review.
 - **Known limitation carried:** rendered-input size for a failed or released Attempt is
   reported on the common Task path from its bound context; the frozen legacy path still
   reports it only for admitted Attempts.
