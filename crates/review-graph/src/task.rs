@@ -1302,6 +1302,79 @@ impl Compiler<'_> {
             .iter()
             .map(|n| (n.id.clone(), n.clone()))
             .collect();
+        // Worker Notes are a node-private warm layer. A Worker node that declares an optional
+        // Notes input and binds nothing receives the Notes of the one earlier Worker node on the
+        // same effective slot, in definition order (a repair or a second pass), and nothing
+        // else: the binding is inserted here so the scheduler orders the two nodes and the
+        // cross-slot check below still validates it; two candidates are ambiguous and refused.
+        {
+            let notes_ports = |slot: &str| -> Option<(Option<String>, Option<String>)> {
+                let effective = slots.get(slot)?;
+                let declaration = self.graph.slots.get(effective)?;
+                let signature = self
+                    .context
+                    .signatures
+                    .get(&format!("worker/{}", declaration.worker))?;
+                let notes = |port: &PipelinePortV1| {
+                    port.artifact_type == review_core::task::WORKER_NOTES_V1
+                };
+                let input = signature
+                    .contract
+                    .inputs
+                    .iter()
+                    .find(|(_, port)| notes(port) && port.optional)
+                    .map(|(name, _)| name.clone());
+                let output = signature
+                    .contract
+                    .outputs
+                    .iter()
+                    .find(|(_, port)| notes(port))
+                    .map(|(name, _)| name.clone());
+                Some((input, output))
+            };
+            for (index, node) in definition.nodes.iter().enumerate() {
+                let TaskOperatorV1::Worker { slot } = &node.operator else {
+                    continue;
+                };
+                let Some((Some(input_port), _)) = notes_ports(slot) else {
+                    continue;
+                };
+                if node.inputs.contains_key(&input_port) {
+                    continue;
+                }
+                let sources: Vec<(String, String)> = definition.nodes[..index]
+                    .iter()
+                    .filter_map(|earlier| {
+                        let TaskOperatorV1::Worker { slot: earlier_slot } = &earlier.operator
+                        else {
+                            return None;
+                        };
+                        if slots.get(earlier_slot) != slots.get(slot) {
+                            return None;
+                        }
+                        let (_, output_port) = notes_ports(earlier_slot)?;
+                        Some((earlier.id.clone(), output_port?))
+                    })
+                    .collect();
+                match sources.len() {
+                    0 => {}
+                    1 => {
+                        let (source, port) = sources.into_iter().next().expect("one source");
+                        pending
+                            .get_mut(&node.id)
+                            .expect("every definition node is pending")
+                            .inputs
+                            .insert(input_port, ValueRefV1::Node { node: source, port });
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{scope}.{} has more than one same-slot Notes source",
+                            node.id
+                        ));
+                    }
+                }
+            }
+        }
         while !pending.is_empty() {
             let mut progressed = false;
             for local in pending.keys().cloned().collect::<Vec<_>>() {

@@ -119,6 +119,19 @@ fn validate_notes_ports(
     let is_notes = |port: &review_core::task::pipeline::PipelinePortV1| {
         port.artifact_type == review_core::task::WORKER_NOTES_V1
     };
+    let notes_inputs = contract
+        .inputs
+        .values()
+        .filter(|port| is_notes(port))
+        .count();
+    let notes_outputs = contract
+        .outputs
+        .values()
+        .filter(|port| is_notes(port))
+        .count();
+    if notes_inputs > 1 || notes_outputs > 1 {
+        return Err("A Worker declares at most one Notes input and one Notes output".into());
+    }
     for (name, port) in contract.inputs.iter().filter(|(_, port)| is_notes(port)) {
         if !port.optional
             || port.cardinality != review_core::PortCardinality::One

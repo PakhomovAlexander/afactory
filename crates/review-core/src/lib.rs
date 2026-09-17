@@ -36,10 +36,10 @@ pub mod task;
 pub mod warm;
 
 pub use warm::{
-    DEFAULT_WORKER_NOTES_BYTES, HeadDeltaEntryV1, HeadDeltaInputs, HeadDeltaMarkV1, HeadDeltaV1,
-    InspectedPathV1, MAX_HEAD_DELTA_BYTES, MAX_WORKER_NOTES_BYTES, PathHintV1, TreeView,
-    WarmLayerV1, WarmSetSelectedPayloadV1, WarmSetV1, WorkerNotesDropReasonV1,
-    WorkerNotesRecordedPayloadV1, WorkerNotesV1, compute_head_delta_marks,
+    DEFAULT_WORKER_NOTES_BYTES, HeadDeltaDropReasonV1, HeadDeltaEntryV1, HeadDeltaInputs,
+    HeadDeltaMarkV1, HeadDeltaV1, InspectedPathV1, MAX_HEAD_DELTA_BYTES, MAX_WORKER_NOTES_BYTES,
+    PathHintV1, TreeView, WarmLayerV1, WarmSetSelectedPayloadV1, WarmSetV1,
+    WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1, WorkerNotesV1, compute_head_delta_marks,
 };
 
 pub use task::broker::{

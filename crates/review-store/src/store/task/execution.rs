@@ -65,6 +65,9 @@ pub struct TaskAttemptAccounting {
     pub charged_tokens: u128,
     pub state: Option<review_attempt::AttemptState>,
     pub result: Option<TaskAttemptResultV1>,
+    /// The exact bound context this Attempt rendered, present from ContextBound onward for
+    /// admitted, failed, fenced and released Attempts alike.
+    pub context_id: Option<String>,
     pub raw_artifact_ids: Vec<String>,
     pub usage_id: Option<String>,
 }
@@ -505,6 +508,7 @@ impl TaskExecutionProjection {
                     started_unix_ms: attempt.started_unix_ms,
                     settled_unix_ms: attempt.settled_unix_ms,
                     released: attempt.released,
+                    context_id: attempt.context_id.clone(),
                     charged_tokens: ledger.map_or(0, |row| row.charged),
                     state: ledger.map(|row| row.state),
                     result: match &attempt.settlement {

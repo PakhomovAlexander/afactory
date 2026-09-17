@@ -242,7 +242,41 @@ defended. No package changes frozen Review Kernel artifact types, persisted even
 `.review/` migration rules. Rollback is the policy default: warm off reproduces today's cold
 Attempts exactly, and existing Campaigns never gain a Warm Set retroactively.
 
-## 7. First session
+## 7. P1 execution record
+
+P1 ran on 2026-09-17 as Task `warm-p1-notes` through `warm/implementation-reviewed` under
+af 0.9.0-rc.3, plan `d9618b70…`.
+
+- **Implementer Attempt:** Claude Fable 5.1 at high, 54 minutes, 364 turns, 1,084,245
+  chargeable tokens. It produced the whole package: two modules, three test files, three
+  schemas, event and parity wiring across seven crates, ADR-0107, vocabulary and changelog.
+- **Why the Task ended unsatisfied:** the Gate stopped at `cargo fmt --check` on formatting the
+  blind Attempt could not run, and markdownlint failed on a pre-existing double blank line in a
+  doc from main. Nothing was compiled or tested inside the Task; both reviewers and the
+  evaluator were suppressed as `branch_not_selected`.
+- **Fix in the worktree:** the sealed candidate tree was materialized from the CAS, formatted,
+  one test-only `Debug` derive added, the main doc lint fixed. `make check` and markdownlint
+  then passed; the tree is the P1 commit.
+- **Review of the fixed tree:** the campaign's two reviewers, both GPT-5.6-Sol at high, ran
+  through the legacy diff pipeline `p1-review` over exactly the P1 commit, because a review
+  Task file cannot declare a diff base. One light Round, 488,980 tokens, 13 Findings that
+  reduce to eight defects: deletion-then-restore marked `new`, renderer bounds that could
+  strand a selected Warm Set, missing Warm Set and layer identities in both manifests,
+  same-slot Notes never auto-wired, Task-path report rows without warm fields, unvalidated
+  Task Worker Notes payloads, whole-tree marks contract, and unbounded Notes port counts.
+  All eight were fixed in a follow-up commit and the gate passes again; each Finding is
+  attested against its changed region.
+- **Evaluator gap:** the evaluator never judged the fixed tree. A standalone verification Task
+  needs a Task-kind package the catalog does not have, and re-running the implementation
+  Pipeline would spend another implementer Attempt. Closing this needs either a
+  `verification` kind package in the campaign catalog or a review Task file that can bind a
+  diff base. Until then a package's `goal` obligation is covered by checks, reviews and the
+  human reading the delivered tree.
+- **Known limitation carried:** rendered-input size for a failed or released Attempt is
+  reported on the common Task path from its bound context; the frozen legacy path still
+  reports it only for admitted Attempts.
+
+## 8. First session
 
 Revise the design (P0), then run P1 through the campaign Pipeline:
 

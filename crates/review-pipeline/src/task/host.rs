@@ -590,6 +590,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
     ) -> Result<(), String> {
+        validate_worker_notes_outputs(cas, input, output)?;
         self.domain.validate_output(cas, task, plan, input, output)
     }
     fn validate_result(
@@ -642,6 +643,46 @@ pub struct CapturedTaskHost<'a> {
 }
 
 pub type CommandTaskHost<'a> = CapturedTaskHost<'a>;
+
+/// Durable admission and replay recheck of every `af/WorkerNotes@1` output: the stored payload
+/// must be a closed `WorkerNotesV1` bound to the producing Attempt, this node and the head the
+/// output port names. Worker JSON never establishes that identity on its own.
+fn validate_worker_notes_outputs(
+    cas: &Cas,
+    input: &TaskInvocationV1,
+    output: &TaskOutputV1,
+) -> Result<(), String> {
+    for value in output.outputs.values() {
+        if value.artifact_type != review_core::task::WORKER_NOTES_V1 {
+            continue;
+        }
+        for id in &value.artifact_ids {
+            let stored = envelope(cas, id)?;
+            if stored.artifact_type != review_core::task::WORKER_NOTES_V1 {
+                return Err("Worker Notes output names an artifact of another type".into());
+            }
+            let Producer::Attempt {
+                node_id,
+                attempt_id,
+                ..
+            } = &stored.producer
+            else {
+                return Err("Worker Notes must be produced by an Attempt".into());
+            };
+            if node_id != &input.node {
+                return Err("Worker Notes were produced by another node".into());
+            }
+            let head = stored
+                .subject_snapshot_id
+                .as_deref()
+                .ok_or("Worker Notes artifact names no head Snapshot")?;
+            let notes: review_core::WorkerNotesV1 = serde_json::from_value(stored.payload)
+                .map_err(|error| format!("stored Worker Notes are not WorkerNotes@1: {error}"))?;
+            notes.check_bound(&input.node, attempt_id, head)?;
+        }
+    }
+    Ok(())
+}
 
 impl<'a> CapturedTaskHost<'a> {
     fn experimental_worker(&self, node: &str) -> Option<&CapturedWorker<'a>> {
@@ -1125,6 +1166,37 @@ impl<'a> CapturedTaskHost<'a> {
                         );
                     }
                 };
+                // A Worker supplies the inspection map; the kernel binds the identity. Unknown
+                // fields, invalid paths and a foreign node, Attempt or head are refused here and
+                // rechecked against the stored artifact at durable admission.
+                let values: Vec<serde_json::Value> =
+                    if declaration.artifact_type == review_core::task::WORKER_NOTES_V1 {
+                        let head = snapshot_id
+                            .clone()
+                            .or_else(|| {
+                                input
+                                    .inputs
+                                    .get("source")
+                                    .and_then(|source| source.snapshot_id.clone())
+                            })
+                            .ok_or("Worker Notes need a head Snapshot to bind to")?;
+                        values
+                            .into_iter()
+                            .map(|value| {
+                                review_core::WorkerNotesV1::bind(
+                                    value,
+                                    &input.node,
+                                    attempt.id(),
+                                    &head,
+                                )
+                                .and_then(|notes| {
+                                    serde_json::to_value(notes).map_err(|error| error.to_string())
+                                })
+                            })
+                            .collect::<Result<_, String>>()?
+                    } else {
+                        values
+                    };
                 let retained: BTreeSet<_> = worker
                     .signature
                     .retains

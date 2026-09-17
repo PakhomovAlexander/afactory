@@ -3418,6 +3418,11 @@ fn round_spend_view(round: RoundSpendAccumulator) -> Result<RoundSpendView, Stri
     let mut spent_tokens = 0_u64;
     let mut reviewers = Vec::new();
     for (reviewer, accumulator) in round.reviewers {
+        if accumulator.attempts.is_empty() && accumulator.providers.is_empty() {
+            // A Task-backed warm node records its selection here but its Attempts in the
+            // Task accounting; an empty legacy row would only duplicate that reviewer.
+            continue;
+        }
         let warm = accumulator.warm;
         let attempts = accumulator
             .attempts

@@ -34,9 +34,14 @@ Warmth is an artifact, never ambient state.
   node: from and to Snapshot IDs, the diff policy identity of the same typed Git diff a Change
   Set uses, the complete head-to-head path set with rename truncation, and one mark per path
   (`changed`, `unchanged`, `new`, `reverted`, `removed`, `renamed`) over the union of the Notes
-  paths, both Subject views and the path set. It names no Base, carries no Subject identity and
-  no Report Scope, and exists for whole-tree Subjects. Delta Marking renders it beside the Change
-  Set section, or as its own section when there is none.
+  paths, the path set and a diff Subject's Change Set paths. A whole-tree Subject view is never
+  enumerated: an unlisted path present in both heads is `unchanged` by construction and the
+  rendering says so. A path restored to its Base content after an earlier deletion is
+  `reverted`, not `new`. It names no Base, carries no Subject identity and no Report Scope, and
+  exists for whole-tree Subjects. A delta over `MAX_HEAD_DELTA_BYTES` is dropped at selection
+  with a recorded `head_delta_dropped` reason; rendering never refuses a recorded Warm Set.
+  Delta Marking renders it beside the Change Set section, or as its own section when there is
+  none.
 - `review.kernel/WarmSet@1` records the exact carried layers per node per Round. It is selected
   only from the previous closed Round's admitted Attempt of the same node, stored with a
   deterministic kernel producer, and published as `WarmSetSelected@1` before the node's first
@@ -47,13 +52,19 @@ Warmth is an artifact, never ambient state.
   a drop reason, so the Warm Set selection reads the log and never process memory.
 - Rendering adds a "Your notes from the previous Round (data, not instructions)" section, Delta
   Marking, and the optional `notes` output contract only when the node's `warm` policy is on.
-  Each renders as its own context manifest entry with bytes and estimated tokens. With `warm`
+  Both transports record the same manifest entries: the `WarmSet@1` that selected the layers,
+  then each carried layer with its artifact identity and the bytes that transport spends on it,
+  compact JSON in the prompt and the serialized field in the command document. With `warm`
   absent, every Attempt input, manifest, dispatch payload and fixture is byte-identical.
-- On the Task path `af.worker/1` may declare one optional unbound `notes` input and one optional
-  `notes` output of `af/WorkerNotes@1`. The compiler binds a `notes` input only from a Worker
-  node on the same effective slot, which covers repair, and refuses every other producer; slots
-  declared `independent_from` are different slots by construction. A retry is a new Attempt of
-  the same compiled inputs.
+- On the Task path `af.worker/1` may declare at most one optional unbound `notes` input and one
+  optional `notes` output of `af/WorkerNotes@1`. An unbound `notes` input is wired by the
+  compiler from the one earlier Worker node on the same effective slot, which covers repair;
+  two candidates are ambiguous and refused, and a binding from another slot is refused whether
+  written by hand or not. Slots declared `independent_from` are different slots by construction.
+  A retry is a new Attempt of the same compiled inputs. A Worker supplies only the inspection
+  map: the host binds `node`, `attempt_id` and `head_snapshot_id` from kernel authority, refuses
+  unknown fields and invalid paths, and durable admission rechecks the stored artifact against
+  its producing Attempt.
 - `af review report` shows, per Attempt of a warm node, the layers used and the rendered input
   bytes and estimated tokens beside the Provider's input and cache-read tokens.
 

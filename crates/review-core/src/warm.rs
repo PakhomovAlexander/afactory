@@ -65,6 +65,51 @@ pub struct WorkerNotesV1 {
 }
 
 impl WorkerNotesV1 {
+    /// Bind a Worker-supplied `af/WorkerNotes@1` payload to kernel authority. The Worker
+    /// supplies the inspection map; the kernel supplies `node`, `attempt_id` and
+    /// `head_snapshot_id`, overwriting whatever the Worker wrote there. Unknown fields and
+    /// invalid paths are refused, so a reply cannot smuggle a verdict under the Notes type.
+    pub fn bind(
+        value: serde_json::Value,
+        node: &str,
+        attempt_id: &str,
+        head_snapshot_id: &str,
+    ) -> Result<Self, String> {
+        let serde_json::Value::Object(mut fields) = value else {
+            return Err("Worker Notes must be one JSON object".into());
+        };
+        fields.insert("node".into(), serde_json::Value::String(node.into()));
+        fields.insert(
+            "attempt_id".into(),
+            serde_json::Value::String(attempt_id.into()),
+        );
+        fields.insert(
+            "head_snapshot_id".into(),
+            serde_json::Value::String(head_snapshot_id.into()),
+        );
+        let notes: Self = serde_json::from_value(serde_json::Value::Object(fields))
+            .map_err(|error| format!("Worker Notes do not match WorkerNotes@1: {error}"))?;
+        notes.validate()?;
+        Ok(notes)
+    }
+
+    /// Check a durably stored `af/WorkerNotes@1` payload against the authority that bound it.
+    pub fn check_bound(
+        &self,
+        node: &str,
+        attempt_id: &str,
+        head_snapshot_id: &str,
+    ) -> Result<(), String> {
+        self.validate()?;
+        if self.node != node
+            || self.attempt_id != attempt_id
+            || self.head_snapshot_id != head_snapshot_id
+        {
+            return Err("Worker Notes name another node, Attempt or head Snapshot".into());
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), String> {
         if self.node.trim().is_empty() {
             return Err("WorkerNotes@1 has an empty node".into());
@@ -285,7 +330,8 @@ pub struct HeadDeltaInputs<'a> {
     /// Renames Git detected from the previous head to the current one.
     pub renames: &'a [PathRenameV1],
     /// Paths that must receive a mark even when neither head changed them: the Notes paths and
-    /// both Subject views.
+    /// both diff Subjects' Change Set paths. A whole-tree Subject view is never enumerated: a
+    /// path present in both heads and absent from the marks is `unchanged` by construction.
     pub extra_paths: &'a BTreeSet<String>,
 }
 
@@ -329,6 +375,7 @@ pub fn compute_head_delta_marks(
                     (Some(before), Some(after)) if before == after => HeadDeltaMarkV1::Unchanged,
                     (Some(_), Some(after)) if base == Some(after) => HeadDeltaMarkV1::Reverted,
                     (Some(_), Some(_)) => HeadDeltaMarkV1::Changed,
+                    (None, Some(after)) if base == Some(after) => HeadDeltaMarkV1::Reverted,
                     (None, Some(_)) => HeadDeltaMarkV1::New,
                     (Some(_), None) if inputs.base.is_some() && base.is_none() => {
                         HeadDeltaMarkV1::Reverted
@@ -364,6 +411,15 @@ impl WarmLayerV1 {
     }
 }
 
+/// Why a Round's Head Delta was computed but not carried.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HeadDeltaDropReasonV1 {
+    /// The canonical Head Delta exceeded `MAX_HEAD_DELTA_BYTES`; the Attempt runs on Notes
+    /// alone and the manifest lists no delta.
+    OverBound,
+}
+
 /// The payload of a `review.kernel/WarmSet@1` artifact: the exact carried layers one node's
 /// Attempts start from in one Round. Recorded before the first Attempt is dispatched; a retry
 /// inherits it, never its failed sibling's state.
@@ -379,6 +435,10 @@ pub struct WarmSetV1 {
     pub notes_artifact_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_delta_artifact_id: Option<String>,
+    /// Recorded when a Head Delta was computed but could not be carried; never set beside a
+    /// carried delta.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_delta_dropped: Option<HeadDeltaDropReasonV1>,
 }
 
 impl WarmSetV1 {
@@ -399,6 +459,9 @@ impl WarmSetV1 {
         }
         if self.notes_artifact_id.is_some() && self.source_attempt_id.is_none() {
             return Err("WarmSet@1 carries Notes without a source Attempt".into());
+        }
+        if self.head_delta_artifact_id.is_some() && self.head_delta_dropped.is_some() {
+            return Err("WarmSet@1 both carries and drops its Head Delta".into());
         }
         Ok(())
     }
@@ -513,6 +576,79 @@ mod tests {
     }
 
     #[test]
+    fn restoring_a_base_path_after_a_deletion_is_reverted_not_new() {
+        let base = view(&[("a.rs", "a0")]);
+        let from = view(&[]);
+        let to = view(&[("a.rs", "a0"), ("fresh.rs", "f1")]);
+        let (changed, marks) = compute_head_delta_marks(HeadDeltaInputs {
+            from: &from,
+            to: &to,
+            base: Some(&base),
+            renames: &[],
+            extra_paths: &BTreeSet::new(),
+        });
+        assert_eq!(changed, vec!["a.rs", "fresh.rs"]);
+        assert_eq!(mark_of(&marks, "a.rs"), HeadDeltaMarkV1::Reverted);
+        assert_eq!(mark_of(&marks, "fresh.rs"), HeadDeltaMarkV1::New);
+    }
+
+    #[test]
+    fn a_warm_set_cannot_both_carry_and_drop_its_head_delta() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let set = WarmSetV1 {
+            node: "correctness".into(),
+            round: 2,
+            source_attempt_id: Some("a".repeat(26)),
+            notes_artifact_id: None,
+            head_delta_artifact_id: Some(digest),
+            head_delta_dropped: Some(HeadDeltaDropReasonV1::OverBound),
+        };
+        assert!(set.validate().is_err());
+        let dropped = WarmSetV1 {
+            head_delta_artifact_id: None,
+            ..set
+        };
+        dropped.validate().unwrap();
+        assert!(dropped.layers().is_empty());
+    }
+
+    #[test]
+    fn task_worker_notes_are_bound_to_kernel_authority() {
+        let head = format!("sha256:{}", "1".repeat(64));
+        let supplied = serde_json::json!({
+            "node": "someone-else",
+            "attempt_id": "z".repeat(26),
+            "head_snapshot_id": format!("sha256:{}", "9".repeat(64)),
+            "inspected": [{"path": "src/lib.rs"}],
+            "model_of_change": "one cap",
+            "open_questions": [],
+            "hints": [],
+        });
+        let bound = WorkerNotesV1::bind(supplied, "implement", &"a".repeat(26), &head).unwrap();
+        assert_eq!(bound.node, "implement");
+        assert_eq!(bound.attempt_id, "a".repeat(26));
+        assert_eq!(bound.head_snapshot_id, head);
+        bound
+            .check_bound("implement", &"a".repeat(26), &head)
+            .unwrap();
+        assert!(
+            bound
+                .check_bound("evaluate", &"a".repeat(26), &head)
+                .is_err()
+        );
+        let smuggled = serde_json::json!({
+            "inspected": [], "model_of_change": "x", "open_questions": [], "hints": [],
+            "verdict": "approve",
+        });
+        assert!(WorkerNotesV1::bind(smuggled, "implement", &"a".repeat(26), &head).is_err());
+        let bad_path = serde_json::json!({
+            "inspected": [{"path": "../etc/passwd"}], "model_of_change": "x",
+            "open_questions": [], "hints": [],
+        });
+        assert!(WorkerNotesV1::bind(bad_path, "implement", &"a".repeat(26), &head).is_err());
+    }
+
+    #[test]
     fn a_whole_tree_subject_never_reports_reverted() {
         let from = view(&[("a.rs", "a1"), ("c.rs", "c1")]);
         let to = view(&[("a.rs", "a2")]);
@@ -588,6 +724,7 @@ mod tests {
             source_attempt_id: None,
             notes_artifact_id: Some(digest),
             head_delta_artifact_id: None,
+            head_delta_dropped: None,
         };
         assert!(set.validate().is_err());
         let set = WarmSetV1 {

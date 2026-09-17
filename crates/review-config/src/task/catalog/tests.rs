@@ -147,6 +147,108 @@ fn worker_notes_ports_must_be_optional_single_and_unbound() {
 }
 
 #[test]
+fn a_worker_declares_at_most_one_notes_input_and_output() {
+    let f = Fixture::new();
+    let package = |edit: &dyn Fn(&mut PipelineContractV1)| {
+        let mut worker = f.compiler.workers["builtin/document-author"].clone();
+        edit(&mut worker.signature.contract);
+        let files = BTreeMap::from([(
+            "worker.toml".into(),
+            toml::to_string(&worker).unwrap().into_bytes(),
+        )]);
+        PackageBytes {
+            schema: "af.task-package/1".into(),
+            name: worker.name.clone(),
+            version: worker.version.clone(),
+            digest: package_digest_from_files(&files),
+            files,
+        }
+    };
+    let two_inputs = package(&|contract| {
+        let unbound = notes_port(true, PortAffinityV1::Unbound {});
+        contract.inputs.insert("notes".into(), unbound.clone());
+        contract.inputs.insert("more_notes".into(), unbound);
+    });
+    let error = TaskPlanCompiler::parse_package(&two_inputs).unwrap_err();
+    assert!(error.contains("at most one Notes input"), "{error}");
+    let two_outputs = package(&|contract| {
+        let same_as = notes_port(true, same_as_input());
+        contract.outputs.insert("notes".into(), same_as.clone());
+        contract.outputs.insert("more_notes".into(), same_as);
+    });
+    let error = TaskPlanCompiler::parse_package(&two_outputs).unwrap_err();
+    assert!(error.contains("at most one Notes input"), "{error}");
+}
+
+#[test]
+fn same_slot_notes_are_wired_by_the_compiler_when_left_unbound() {
+    use review_core::task::pipeline::{TaskNodeV1, TaskOperatorV1};
+    let mut f = Fixture::new();
+    let name = "builtin/document-author";
+    let worker = f.compiler.workers.get_mut(name).unwrap();
+    let unbound = notes_port(true, PortAffinityV1::Unbound {});
+    worker
+        .signature
+        .contract
+        .inputs
+        .insert("notes".into(), unbound.clone());
+    worker
+        .signature
+        .contract
+        .outputs
+        .insert("notes".into(), unbound.clone());
+    let key = format!("worker/{name}");
+    let signature = f.compiler.signatures.get_mut(&key).unwrap();
+    signature
+        .contract
+        .inputs
+        .insert("notes".into(), unbound.clone());
+    signature.contract.outputs.insert("notes".into(), unbound);
+    let pipeline = f.compiler.pipelines.get_mut("builtin/document").unwrap();
+    let author_node = pipeline.nodes[0].id.clone();
+    let inputs = pipeline.nodes[0].inputs.clone();
+    pipeline.nodes.push(TaskNodeV1 {
+        id: "second".into(),
+        operator: TaskOperatorV1::Worker {
+            slot: "author".into(),
+        },
+        inputs,
+        when: None,
+    });
+    // Two evidence Workers on one slot need a reserve for both; the Task revision records it.
+    f.task.limits.verification.attempts = 2;
+    f.task.limits.verification.wall_ms = 2000;
+    f.task.limits.max_attempts = 5;
+    let revision_id = f
+        .cas
+        .put_artifact(
+            review_core::task::TASK_REVISION_V1,
+            capture_producer(),
+            vec![],
+            None,
+            serde_json::to_value(&f.task).unwrap(),
+        )
+        .unwrap()
+        .0;
+    let (_, compiled) = f
+        .compiler
+        .compile(&f.cas, &revision_id, "builtin/document")
+        .unwrap();
+    let second = &compiled.nodes["root.nodes.second"];
+    let source = second
+        .inputs
+        .get("notes")
+        .expect("the unbound Notes input was wired from the same slot");
+    assert_eq!(source.node, format!("root.nodes.{author_node}"));
+    assert_eq!(source.port, "notes");
+    let first = &compiled.nodes[&format!("root.nodes.{author_node}")];
+    assert!(
+        !first.inputs.contains_key("notes"),
+        "the first node on the slot has no earlier Notes source"
+    );
+}
+
+#[test]
 fn worker_notes_never_cross_slots() {
     use review_core::task::pipeline::{TaskNodeV1, TaskOperatorV1, ValueRefV1};
     let mut f = Fixture::new();

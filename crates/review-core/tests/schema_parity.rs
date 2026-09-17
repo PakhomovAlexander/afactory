@@ -2805,8 +2805,16 @@ fn warm_layer_contracts_roundtrip_and_stay_closed() {
         source_attempt_id: Some("a".repeat(26)),
         notes_artifact_id: Some(digest('4')),
         head_delta_artifact_id: Some(digest('5')),
+        head_delta_dropped: None,
     };
     set.validate().unwrap();
+    let dropped = WarmSetV1 {
+        head_delta_artifact_id: None,
+        head_delta_dropped: Some(review_core::HeadDeltaDropReasonV1::OverBound),
+        ..set.clone()
+    };
+    dropped.validate().unwrap();
+    assert_valid("warm-set-v1.json", &serde_json::to_value(&dropped).unwrap());
     let mut value = serde_json::to_value(&set).unwrap();
     assert_valid("warm-set-v1.json", &value);
     assert_eq!(

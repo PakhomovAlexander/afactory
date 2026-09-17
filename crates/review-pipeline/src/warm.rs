@@ -30,6 +30,8 @@ use super::review_domain::ReviewDomainState;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WarmSetRecord {
     pub set: WarmSetV1,
+    /// The `review.kernel/WarmSet@1` artifact every Attempt's manifest names.
+    pub artifact_id: String,
 }
 
 impl ReviewDomainState<'_> {
@@ -111,14 +113,14 @@ impl ReviewDomainState<'_> {
             layers: set.layers(),
         };
         selected.validate()?;
-        let mut refs = vec![artifact_id];
+        let mut refs = vec![artifact_id.clone()];
         refs.extend(layer_ids);
         self.append(
             NewEvent::new(EventType::WarmSetSelectedV1, encode(&selected)?)
                 .node(&set.node)
                 .referencing(refs),
         )?;
-        Ok(WarmSetRecord { set })
+        Ok(WarmSetRecord { set, artifact_id })
     }
 }
 
@@ -144,6 +146,7 @@ pub(crate) fn apply_warm_set(
         inputs.head_delta = Some(encode(&delta)?);
         inputs.head_delta_artifact_id = Some(id.clone());
     }
+    inputs.warm_set_artifact_id = Some(record.artifact_id.clone());
     Ok(())
 }
 
@@ -186,7 +189,10 @@ fn recorded_warm_set(
     if set.node != node_id || set.layers() != payload.layers {
         return Err("recorded Warm Set contradicts its selection event".into());
     }
-    Ok(Some(WarmSetRecord { set }))
+    Ok(Some(WarmSetRecord {
+        set,
+        artifact_id: payload.warm_set_artifact_id,
+    }))
 }
 
 struct PreviousRound {
@@ -304,6 +310,7 @@ fn select(
         source_attempt_id: None,
         notes_artifact_id: None,
         head_delta_artifact_id: None,
+        head_delta_dropped: None,
     };
     let Some(previous) = previous_closed_round(events, authority)? else {
         return Ok(set);
@@ -327,6 +334,15 @@ fn select(
     }
     let from_snapshot_id = previous_subject.subject.head_snapshot_id.as_str();
     let delta = compute_head_delta(cas, authority, head, node_id, from_snapshot_id, extra_paths)?;
+    let delta_bytes = review_store::canonical::canonicalize(&encode(&delta)?)
+        .map_err(|error| error.to_string())?
+        .len();
+    if delta_bytes > review_core::MAX_HEAD_DELTA_BYTES {
+        // Selection is the only place a layer may be refused: an Attempt runs on Notes alone
+        // and the Warm Set records why, instead of a renderer stranding the Round later.
+        set.head_delta_dropped = Some(review_core::HeadDeltaDropReasonV1::OverBound);
+        return Ok(set);
+    }
     let producer = Producer::KernelOperation {
         run_id: authority.run_id.clone(),
         node_id: Some(node_id.to_string()),
@@ -349,9 +365,12 @@ fn select(
     Ok(set)
 }
 
-/// Marks over the union of the Notes paths, both Subject views and the head-to-head path set.
-/// The path set and rename linkage come from the same typed Git diff a Change Set uses; the
-/// marks compare tree entries directly, so a whole-tree Subject is marked too.
+/// Marks over the union of the Notes paths, both diff Subjects' Change Set paths and the
+/// head-to-head path set. The path set and rename linkage come from the same typed Git diff a
+/// Change Set uses; the marks compare tree entries directly, so a whole-tree Subject is marked
+/// too. A whole-tree Subject view is never enumerated: every path present in both heads and
+/// absent from the marks is `unchanged` by construction, which keeps the delta bounded by what
+/// moved instead of by the size of the tree.
 fn compute_head_delta(
     cas: &Cas,
     authority: &RoundAuthority,

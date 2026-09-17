@@ -76,11 +76,15 @@ the from and to Snapshot IDs, the diff policy identity, the complete add and del
 rename truncation metadata, and one mark per path. The Change Set type is not reused: a Change Set
 carries Subject identity and Report Scope, a Head Delta carries neither, and a whole-tree Subject
 has no Change Set at all but still has two heads. Marks are computed over the union of the paths
-the Notes reference, the previous Subject view and the current Subject view, so a path the Notes
-mention that was reverted to Base or removed still receives a mark: `changed`, `unchanged`, `new`,
-`reverted`, `removed`, or a rename state. **Delta Marking** is the rendering of those marks beside
-the Change Set section. It costs a few bytes per path and tells the Worker where its Notes may be
-stale.
+the Notes reference, the head-to-head path set and, for a diff Subject, both Rounds' Change Set
+paths, so a path the Notes mention that was reverted to Base or removed still receives a mark:
+`changed`, `unchanged`, `new`, `reverted`, `removed`, or a rename state. A whole-tree Subject
+view is never enumerated: a path present in both heads and absent from the marks is `unchanged`
+by construction, and the rendering says so, which keeps the delta bounded by what moved rather
+than by the size of the tree. A delta whose canonical bytes exceed its bound is dropped at
+selection with a recorded reason, so no renderer can refuse a Warm Set that was already
+recorded. **Delta Marking** is the rendering of those marks beside the Change Set section. It
+costs a few bytes per path and tells the Worker where its Notes may be stale.
 
 ### L3 Workspace: a stable root and a carried build
 
@@ -153,7 +157,8 @@ change_set(Base -> head_N)                        change_set(Base -> head_N+1)
                                                   HeadDelta(head_N -> head_N+1) -> marks (P1)
 
 WarmSet@1 { node, round: N+1, source_attempt: A_N,
-            notes: id | none, session: id | none, workspace: rebased | full,
+            notes: id | none, head_delta: id | dropped(reason),
+            session: id | none, workspace: rebased | full,
             build_cache: id | none }               recorded before reservation, in the manifest
 ```
 
@@ -220,7 +225,8 @@ Report, Dispute, or Drop.
 **Head Delta**:
 The kernel-derived relation between two consecutive heads of one node: exact from and to
 Snapshot IDs, diff policy identity, complete path set with rename truncation, and one mark per
-path over the union of Notes paths and both Subject views.
+path over the union of Notes paths, the head-to-head path set and a diff Subject's Change Set
+paths; an unlisted path present in both heads is unchanged.
 _Avoid_: **Change Set**; a Head Delta carries no Subject identity and no Report Scope, and it
 exists for whole-tree Subjects too.
 
