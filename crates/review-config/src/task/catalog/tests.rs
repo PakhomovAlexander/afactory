@@ -3,6 +3,89 @@ use review_core::task::pipeline::PipelineContractV1;
 use serde_json::json;
 
 #[test]
+fn instruction_derivation_changes_only_the_captured_instruction_bytes() {
+    let mut f = Fixture::new();
+    let name = "fixture/instruction-worker";
+    let mut worker = f.compiler.workers["builtin/document-author"].clone();
+    worker.name = name.into();
+    let files = BTreeMap::from([
+        (
+            "worker.toml".into(),
+            toml::to_string(&worker).unwrap().into_bytes(),
+        ),
+        (
+            "instructions.md".into(),
+            b"baseline instructions\n".to_vec(),
+        ),
+    ]);
+    let pin = TaskPackagePin {
+        version: "1.0.0".into(),
+        digest: package_digest_from_files(&files),
+        path: "packages/instruction-worker".into(),
+    };
+    let project = files
+        .iter()
+        .map(|(path, bytes)| (format!("{}/{path}", pin.path), bytes.clone()))
+        .collect();
+    f.compiler
+        .capture_package(&f.cas, name, &pin, &project)
+        .unwrap();
+    let package = &f.compiler.packages[name];
+    let original_id = package.dependency.artifact_id.clone();
+    let original = TaskPlanCompiler::captured_worker_package(&f.cas, &original_id).unwrap();
+    let instructions = "candidate instructions only\n";
+    let instructions_id = review_store::canonical::blob_content_id(instructions.as_bytes());
+    let mut expected_files = original.files.clone();
+    expected_files.insert("instructions.md".into(), instructions.as_bytes().to_vec());
+    let expected_digest = package_digest_from_files(&expected_files);
+    let derived_id = TaskPlanCompiler::derive_worker_instructions_package(
+        &f.cas,
+        &original_id,
+        &original.digest,
+        &expected_digest,
+        &instructions_id,
+        instructions,
+        capture_producer(),
+        vec![f.revision_id.clone()],
+    )
+    .unwrap();
+    let derived = TaskPlanCompiler::captured_worker_package(&f.cas, &derived_id).unwrap();
+    assert_eq!(derived.worker, original.worker);
+    assert_eq!(derived.files, expected_files);
+    assert_eq!(derived.digest, expected_digest);
+    assert_ne!(derived_id, original_id);
+
+    assert!(
+        TaskPlanCompiler::derive_worker_instructions_package(
+            &f.cas,
+            &original_id,
+            &original.digest,
+            &original.digest,
+            &instructions_id,
+            instructions,
+            capture_producer(),
+            vec![],
+        )
+        .is_err()
+    );
+    let old = String::from_utf8(original.files["instructions.md"].clone()).unwrap();
+    let old_id = review_store::canonical::blob_content_id(old.as_bytes());
+    assert!(
+        TaskPlanCompiler::derive_worker_instructions_package(
+            &f.cas,
+            &original_id,
+            &original.digest,
+            &original.digest,
+            &old_id,
+            &old,
+            capture_producer(),
+            vec![],
+        )
+        .is_err()
+    );
+}
+
+#[test]
 fn installed_document_authorship_cannot_be_removed_by_omitting_worker_effects() {
     let mut f = Fixture::new();
     let pipeline = f.compiler.pipelines.get_mut("builtin/document").unwrap();

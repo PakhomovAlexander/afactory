@@ -7,6 +7,12 @@ use review_graph::task::CompiledTask;
 
 pub fn read_task_transition(event: &RunEvent) -> Result<TaskTransitionV1, StoreError> {
     match event.event_type {
+        EventType::TaskTransitionV5 => {
+            let value: task::event::TaskTransitionV5 =
+                serde_json::from_value(event.payload.clone())?;
+            value.validate().map_err(conflict)?;
+            Ok(value.into_transition())
+        }
         EventType::TaskTransitionV4 => {
             let value: task::event::TaskTransitionV4 =
                 serde_json::from_value(event.payload.clone())?;
@@ -35,7 +41,10 @@ pub fn read_task_transition(event: &RunEvent) -> Result<TaskTransitionV1, StoreE
 pub(super) fn encode_transition(
     value: &TaskTransitionV1,
 ) -> Result<(EventType, serde_json::Value), StoreError> {
-    if let Some(value) = task::event::TaskTransitionV4::from_recording(value) {
+    if let Some(value) = task::event::TaskTransitionV5::from_adoption(value) {
+        value.validate().map_err(conflict)?;
+        Ok((EventType::TaskTransitionV5, serde_json::to_value(value)?))
+    } else if let Some(value) = task::event::TaskTransitionV4::from_recording(value) {
         value.validate().map_err(conflict)?;
         Ok((EventType::TaskTransitionV4, serde_json::to_value(value)?))
     } else if let Some(value) = task::event::TaskTransitionV3::from_integration(value) {

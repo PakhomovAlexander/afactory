@@ -16,4 +16,6 @@ pub mod runner;
 // because a check command is still the canonical use.
 pub use gate::{GateDecision, GateOutcome};
 pub use review_core::exec::{Arg, ArgError, Command, Provenance};
-pub use runner::{CheckDefinition, CheckResult, CheckRunner, CheckStatus, check_event};
+pub use runner::{
+    CheckDefinition, CheckExecution, CheckResult, CheckRunner, CheckStatus, check_event,
+};

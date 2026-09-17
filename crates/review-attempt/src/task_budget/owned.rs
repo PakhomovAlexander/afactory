@@ -87,4 +87,92 @@ impl TaskBudget {
         self.owned_children.insert(parent.into(), children.to_vec());
         Ok(())
     }
+
+    /// Install an exact, separately approved experimental allocation into this Task's existing
+    /// ledger. The Store validates the signed closure and remaining aggregate allowance first;
+    /// this projection ensures the registered nodes can only spend their declared sub-allocations.
+    pub fn register_experimental_children(
+        &mut self,
+        parent: &str,
+        children: &BTreeMap<String, NodeAllowance>,
+        max_children: u32,
+    ) -> Result<(), String> {
+        let names = children.keys().cloned().collect::<Vec<_>>();
+        if let Some(previous) = self.owned_children.get(parent) {
+            return if previous == &names {
+                Ok(())
+            } else {
+                Err("Experimental child registration changed its approved closure".into())
+            };
+        }
+        let mut unique = BTreeSet::new();
+        if children.is_empty()
+            || children.len() > max_children as usize
+            || children.iter().any(|(child, allowance)| {
+                !within(child, parent)
+                    || !child.split('.').all(review_core::task::is_name)
+                    || !unique.insert(child)
+                    || self.nodes.contains_key(child)
+                    || self.owned_templates.contains_key(child)
+                    || allowance.max_attempts == 0
+                    || allowance.verification_attempts > allowance.max_attempts
+                    || allowance.wall_ms_per_attempt == 0
+                    || allowance.tokens_per_attempt > self.limits.tokens
+            })
+        {
+            return Err(
+                "Experimental children differ from their approved bounded namespace".into(),
+            );
+        }
+        let mut verifier_tokens = 0u64;
+        let mut verifier_attempts = 0u32;
+        let mut verifier_wall_ms = 0u64;
+        for allowance in self
+            .nodes
+            .values()
+            .map(|account| &account.allowance)
+            .chain(children.values())
+        {
+            let count = u64::from(allowance.verification_attempts);
+            verifier_attempts = verifier_attempts
+                .checked_add(allowance.verification_attempts)
+                .ok_or("Experimental verifier Attempt reservation overflow")?;
+            verifier_tokens = verifier_tokens
+                .checked_add(
+                    allowance
+                        .tokens_per_attempt
+                        .checked_mul(count)
+                        .ok_or("Experimental verifier token reservation overflow")?,
+                )
+                .ok_or("Experimental verifier token reservation overflow")?;
+            verifier_wall_ms = verifier_wall_ms
+                .checked_add(
+                    allowance
+                        .wall_ms_per_attempt
+                        .checked_mul(count)
+                        .ok_or("Experimental verifier wall reservation overflow")?,
+                )
+                .ok_or("Experimental verifier wall reservation overflow")?;
+        }
+        if verifier_attempts > self.limits.verification.attempts
+            || verifier_tokens > self.limits.verification.tokens
+            || verifier_wall_ms > self.limits.verification.wall_ms
+        {
+            return Err(
+                "Experimental closure exceeds the Task's protected verifier allocation".into(),
+            );
+        }
+        for (child, allowance) in children {
+            self.nodes.insert(
+                child.clone(),
+                NodeAccount {
+                    allowance: allowance.clone(),
+                    begun: 0,
+                    prepared: 0,
+                },
+            );
+        }
+        self.owned_children.insert(parent.into(), names);
+        Ok(())
+    }
 }

@@ -1,6 +1,9 @@
 //! Journal adapter for the same local delivery transaction and recovery implementation.
 use super::*;
 use review_core::task::delivery::*;
+use review_core::task::optimization_light::{
+    OPTIMIZATION_ADOPTION_RECEIPT_V1, OPTIMIZATION_RESULT_V1, OptimizationAdoptionReceiptV1,
+};
 use review_core::task::{TASK_RESULT_V1, TaskAcceptanceV1, TaskPhaseV1, TaskResultV1};
 use review_store::EventStore;
 use review_store::store::task::{TaskLease, TaskProjection};
@@ -34,6 +37,16 @@ pub(super) struct CommonDelivery {
     result_id: String,
     stop: mpsc::Sender<()>,
     heartbeat: Option<std::thread::JoinHandle<Result<(), String>>>,
+    optimization_adoption: Option<OptimizationAdoptionContext>,
+    prepared_delivery_record_id: Option<String>,
+}
+
+struct OptimizationAdoptionContext {
+    task_id: String,
+    optimization_result_id: String,
+    source_snapshot_id: String,
+    delivered_snapshot_id: String,
+    delivered_tree_id: String,
 }
 
 impl CommonDelivery {
@@ -60,6 +73,61 @@ impl CommonDelivery {
             let _ = store.release_task_lease(&cas, &lease);
             return Err("Task result changed before delivery acquired its lease".into());
         }
+        let optimization_adoption = if current.revision.kind == "optimize" {
+            let result: TaskResultV1 = {
+                let envelope = cas.get_artifact(result_id).map_err(|e| e.to_string())?;
+                serde_json::from_value(envelope.payload).map_err(|e| e.to_string())?
+            };
+            let optimization_result_id = result
+                .outputs
+                .get("result")
+                .filter(|port| {
+                    port.artifact_type == OPTIMIZATION_RESULT_V1 && port.artifact_ids.len() == 1
+                })
+                .and_then(|port| port.artifact_ids.first())
+                .cloned();
+            let source_snapshot_id = current
+                .revision
+                .inputs
+                .get("source")
+                .and_then(|port| port.snapshot_id.clone());
+            let delivered_snapshot_id = result
+                .outputs
+                .get("snapshot")
+                .and_then(|port| port.snapshot_id.clone());
+            match (
+                optimization_result_id,
+                source_snapshot_id,
+                delivered_snapshot_id,
+            ) {
+                (
+                    Some(optimization_result_id),
+                    Some(source_snapshot_id),
+                    Some(delivered_snapshot_id),
+                ) => {
+                    let (snapshot, _) =
+                        review_source_git::task::read_snapshot(&cas, &delivered_snapshot_id)?;
+                    Some(OptimizationAdoptionContext {
+                        task_id: current.task_id.clone(),
+                        optimization_result_id,
+                        source_snapshot_id,
+                        delivered_snapshot_id,
+                        delivered_tree_id: snapshot.content_digest,
+                    })
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let prepared_delivery_record_id = current
+            .deliveries
+            .iter()
+            .rev()
+            .find(|(_, record)| {
+                record.result_id == *result_id && record.status == TaskDeliveryStatusV1::Prepared
+            })
+            .map(|(id, _)| id.clone());
         let store = Arc::new(Mutex::new(store));
         let heartbeat_store = Arc::clone(&store);
         let heartbeat_lease = lease.clone();
@@ -81,6 +149,8 @@ impl CommonDelivery {
             result_id: result_id.clone(),
             stop,
             heartbeat: Some(heartbeat),
+            optimization_adoption,
+            prepared_delivery_record_id,
         })
     }
 }
@@ -145,6 +215,55 @@ impl DeliveryJournal for CommonDelivery {
             receipt_id: artifact.into(),
         };
         value.validate()?;
+        let adoption_id = if status == TaskDeliveryStatusV1::Delivered {
+            let context = self.optimization_adoption.as_ref();
+            let prepared = self.prepared_delivery_record_id.as_ref();
+            match (context, prepared) {
+                (Some(context), Some(prepared)) => {
+                    let adoption = OptimizationAdoptionReceiptV1 {
+                        schema: "af.optimization-adoption-receipt/1".into(),
+                        task_id: context.task_id.clone(),
+                        result_id: context.optimization_result_id.clone(),
+                        source_snapshot_id: context.source_snapshot_id.clone(),
+                        delivered_snapshot_id: context.delivered_snapshot_id.clone(),
+                        delivery_record_id: prepared.clone(),
+                        delivered_tree_id: context.delivered_tree_id.clone(),
+                    };
+                    adoption.validate()?;
+                    Some(
+                        cas.put_artifact(
+                            OPTIMIZATION_ADOPTION_RECEIPT_V1,
+                            review_core::Producer::KernelOperation {
+                                run_id: review_store::store::task::task_run_id(task_id)
+                                    .map_err(|e| e.to_string())?,
+                                node_id: None,
+                                operation_id: "optimization-adoption-delivery-v1".into(),
+                            },
+                            vec![
+                                adoption.result_id.clone(),
+                                adoption.source_snapshot_id.clone(),
+                                adoption.delivered_snapshot_id.clone(),
+                                adoption.delivery_record_id.clone(),
+                                adoption.delivered_tree_id.clone(),
+                            ],
+                            None,
+                            serde_json::to_value(adoption).map_err(|e| e.to_string())?,
+                        )
+                        .map_err(|e| e.to_string())?
+                        .0,
+                    )
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+        let mut refs = value
+            .references()
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        refs.extend(adoption_id);
         let id = cas
             .put_artifact(
                 TASK_DELIVERY_RECORD_V1,
@@ -154,7 +273,7 @@ impl DeliveryJournal for CommonDelivery {
                     node_id: None,
                     operation_id: "local-delivery@1".into(),
                 },
-                value.references().into_iter().map(str::to_owned).collect(),
+                refs,
                 None,
                 serde_json::to_value(value).map_err(|e| e.to_string())?,
             )
@@ -165,6 +284,9 @@ impl DeliveryJournal for CommonDelivery {
             .expect("Delivery Store")
             .record_task_delivery(cas, &self.lease, &id)
             .map_err(|e| e.to_string())?;
+        if status == TaskDeliveryStatusV1::Prepared {
+            self.prepared_delivery_record_id = Some(id);
+        }
         Ok(())
     }
 }
@@ -220,6 +342,8 @@ pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets,
     if result.acceptance != TaskAcceptanceV1::Satisfied {
         return Err("only a verified Task can be delivered".into());
     }
+    review_store::store::task::validate_optimization_delivery(cas, task, &result)
+        .map_err(|error| error.to_string())?;
     let source_snapshot_id = task
         .revision
         .inputs

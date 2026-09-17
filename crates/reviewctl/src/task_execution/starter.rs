@@ -414,6 +414,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
         kind: "release-note".into(),
         goal: GOAL.into(),
         document_sources: Some("sources.json".into()),
+        optimization_history: None,
         pipeline: Some(PipelineChoiceV1 {
             name: pipeline.name,
             fallback: PipelineFallbackV1::Refuse,

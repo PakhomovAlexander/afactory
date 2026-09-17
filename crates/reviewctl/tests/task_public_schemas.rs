@@ -399,7 +399,10 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
         ),
         0,
     );
-    valid(&inspection_schema, &finished);
+    let runtime_inspection_schema = validator("task-inspection-v9.json");
+    valid(&runtime_inspection_schema, &finished);
+    assert_eq!(finished["schema"], "af/task-inspection@9");
+    assert!(!inspection_schema.is_valid(&finished));
     let listed = json_output(cli(&repo, &state, &["task", "list"]), 0);
     let entry = &listed["tasks"][0];
     valid(&list_schema, entry);
@@ -438,14 +441,14 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
         let mut value = finished.clone();
         value["execution_records"] = json!([{"artifact_id":digest,"artifact_type":format!("af/TaskExecutionRecord@{version}"),"record":record,"diagnostic":["historical",{"opaque":true}]}]);
         value["chargeable_tokens"] = json!(u128::MAX.to_string());
-        valid(&inspection_schema, &value);
+        valid(&runtime_inspection_schema, &value);
         value["execution_records"][0]["artifact_type"] = json!(if version == 1 {
             "af/TaskExecutionRecord@2"
         } else {
             "af/TaskExecutionRecord@1"
         });
         assert!(
-            !inspection_schema.is_valid(&value),
+            !runtime_inspection_schema.is_valid(&value),
             "mismatched version {version}"
         );
     }
@@ -457,7 +460,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
     ] {
         let mut value = finished.clone();
         value["chargeable_tokens"] = charge.clone();
-        assert!(!inspection_schema.is_valid(&value));
+        assert!(!runtime_inspection_schema.is_valid(&value));
         let mut value = entry.clone();
         value["chargeable_tokens"] = charge;
         assert!(!list_schema.is_valid(&value));
@@ -470,14 +473,14 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
     ] {
         let mut value = finished.clone();
         value[key] = bad;
-        assert!(!inspection_schema.is_valid(&value), "{key}");
+        assert!(!runtime_inspection_schema.is_valid(&value), "{key}");
     }
     let mut value = planned.clone();
     value.as_object_mut().unwrap().remove("plan");
     assert!(!inspection_schema.is_valid(&value));
     let mut value = finished.clone();
     value.as_object_mut().unwrap().remove("result");
-    assert!(!inspection_schema.is_valid(&value));
+    assert!(!runtime_inspection_schema.is_valid(&value));
     let mut value = planned.clone();
     value["result"] = finished["result"].clone();
     assert!(!inspection_schema.is_valid(&value));
@@ -511,7 +514,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
     );
     let delivered = json_output(cli(&repo, &state, &["task", "show", "pagination-cli"]), 0);
     assert_eq!(delivered["delivery"], receipt);
-    valid(&inspection_schema, &delivered);
+    valid(&runtime_inspection_schema, &delivered);
     let listed = json_output(cli(&repo, &state, &["task", "list"]), 0);
     valid(&list_schema, &listed["tasks"][0]);
 
@@ -530,15 +533,15 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
         .unwrap();
     let mut value = delivered.clone();
     value["delivery"] = cas.get_json(&prepared.1.receipt_id).unwrap();
-    valid(&inspection_schema, &value);
+    valid(&runtime_inspection_schema, &value);
     value["delivery"]["target"]
         .as_object_mut()
         .unwrap()
         .remove("branch");
-    assert!(!inspection_schema.is_valid(&value));
+    assert!(!runtime_inspection_schema.is_valid(&value));
     let mut value = delivered.clone();
     value["delivery"]["unexpected"] = json!(true);
-    assert!(!inspection_schema.is_valid(&value));
+    assert!(!runtime_inspection_schema.is_valid(&value));
 
     let preparation = cas.get_json(&prepared.1.receipt_id).unwrap();
     let terminal = projection
@@ -582,7 +585,11 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
         }
         let mut view = delivered.clone();
         view["delivery"] = raw.clone();
-        assert_eq!(inspection_schema.is_valid(&view), historical, "{case}");
+        assert_eq!(
+            runtime_inspection_schema.is_valid(&view),
+            historical,
+            "{case}"
+        );
         let isolated = directory.path().join(format!("delivery-{index}"));
         task_cli::copy_tree(&before_delivery, &isolated);
         let cas = review_store::Cas::open_existing(isolated.join("cas")).unwrap();

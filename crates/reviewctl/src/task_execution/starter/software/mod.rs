@@ -1175,6 +1175,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
                 "preserve_input": true
             }).as_object().unwrap().clone()),
             document_sources: None,
+            optimization_history: None,
             pipeline: Some(PipelineChoiceV1 {
                 name: format!("builtin/{name}"),
                 fallback: PipelineFallbackV1::Refuse,

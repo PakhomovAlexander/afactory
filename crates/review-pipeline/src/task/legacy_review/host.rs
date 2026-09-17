@@ -881,7 +881,7 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
             && let Some(attempt) = attempt
         {
             match self.capture_gate_facts(cas, input, attempt) {
-                Ok(id) => result.raw_artifact_ids.push(id),
+                Ok(ids) => result.raw_artifact_ids.extend(ids),
                 Err(error) => {
                     result.outputs = Err(format!(
                         "Cannot retain Review Gate facts: {error}; operation: {:?}",

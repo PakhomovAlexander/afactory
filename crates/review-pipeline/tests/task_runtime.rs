@@ -45,6 +45,814 @@ struct Fixture {
     graph: CompiledTask,
 }
 
+#[test]
+fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexecution() {
+    use review_core::task::optimization_experiment::*;
+    use review_core::task::optimization_light::{
+        OPTIMIZATION_EXECUTION_CONFIGURATION_V1, OptimizationExecutionConfigurationV1,
+    };
+    use review_graph::task::{
+        EXPERIMENT_EXECUTION_PLAN_V1, ExperimentExecutionPlanV1, ExperimentPlannedChildV1,
+        ExperimentalSlotTemplateV1,
+    };
+    use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
+    use serde_json::Value;
+    use std::collections::BTreeSet;
+    use std::sync::Mutex;
+
+    struct Model(Mutex<Vec<Value>>);
+    impl WorkerModelAdapter for Model {
+        fn provider_kind(&self) -> &'static str {
+            "fixture"
+        }
+        fn model_settings(&self) -> Option<(String, String)> {
+            Some(("typed-model".into(), "high".into()))
+        }
+        fn invoke(
+            &self,
+            cas: &Cas,
+            _: &std::path::Path,
+            input: Vec<u8>,
+            _: std::time::Duration,
+            writable: bool,
+        ) -> ModelWorkerReturn {
+            assert!(!writable);
+            let request: Value = serde_json::from_slice(&input).unwrap();
+            self.0.lock().unwrap().push(request);
+            let reply = serde_json::to_vec(&json!({
+                "schema":"af.worker-reply/1",
+                "outputs":{"output":[{"outcome":"passed","text":"Checked document"}]}
+            }))
+            .unwrap();
+            ModelWorkerReturn {
+                usage_observation: None,
+                raw_artifact_ids: vec![cas.put(&reply).unwrap()],
+                message: Ok(reply),
+                usage: Some(review_runner::TokenUsage::charge_only(1).into()),
+            }
+        }
+    }
+
+    struct ExperimentDomain {
+        prepared: Mutex<Option<String>>,
+        root_outputs: BTreeMap<String, ArtifactInputV1>,
+    }
+    impl TaskOperatorHost for ExperimentDomain {
+        fn prepare_experiment(
+            &self,
+            _: &Cas,
+            _: &TaskInvocationV1,
+            _: u64,
+        ) -> Result<review_pipeline::task::TaskExperimentInputs, String> {
+            Ok(review_pipeline::task::TaskExperimentInputs {
+                prepared_id: self
+                    .prepared
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .ok_or("fixture is not prepared")?,
+            })
+        }
+        fn complete_experiment(
+            &self,
+            _: &Cas,
+            _: &TaskInvocationV1,
+            _: &review_store::store::task::execution::experiment::RegisteredTaskExperiment,
+            facts: &[review_store::store::task::execution::experiment::ExperimentChildEvidence],
+        ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
+            if facts.len() != 2 || facts.iter().any(|fact| fact.published_output_id.is_none()) {
+                return Err(format!(
+                    "experiment did not retain both command outcomes: {facts:?}"
+                ));
+            }
+            Ok(self.root_outputs.clone())
+        }
+        fn prepare_context(
+            &self,
+            _: &Cas,
+            _: &TaskInvocationV1,
+            _: &[String],
+        ) -> Result<String, String> {
+            Err("dynamic command context must use its resolved captured Worker".into())
+        }
+        fn execute(
+            &self,
+            _: &Cas,
+            _: &TaskInvocationV1,
+            _: Option<&PreparedTaskAttempt>,
+        ) -> TaskWorkOutput {
+            panic!("dynamic command children must use the common command Worker")
+        }
+    }
+    impl TaskDomain for ExperimentDomain {
+        fn validate_experiment_preparation(
+            &self,
+            _: &Cas,
+            _: &TaskRevisionV1,
+            _: &ExecutionPlanV1,
+            prepared_id: &str,
+            _: &ExperimentPreparedV1,
+        ) -> Result<(), String> {
+            if self.prepared.lock().unwrap().as_deref() == Some(prepared_id) {
+                Ok(())
+            } else {
+                Err("wrong prepared closure".into())
+            }
+        }
+        fn validate_context(
+            &self,
+            _: &Cas,
+            _: &TaskInvocationV1,
+            _: &[String],
+            _: &str,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn validate_output(
+            &self,
+            _: &Cas,
+            _: &TaskRevisionV1,
+            _: &ExecutionPlanV1,
+            _: &TaskInvocationV1,
+            _: &TaskOutputV1,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn validate_result(
+            &self,
+            _: &Cas,
+            _: &TaskRevisionV1,
+            _: &TaskResultV1,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+    }
+    struct Developer;
+    impl review_pipeline::task::host::TaskDeveloper for Developer {
+        fn decide(
+            &self,
+            _: &TaskRevisionV1,
+            _: &str,
+            _: PlanDecisionKindV1,
+        ) -> Result<review_store::store::task::DeveloperGrant, String> {
+            Err("outer plan is fixed".into())
+        }
+        fn current(&self, _: &PlanDecisionV1) -> Result<(), String> {
+            Ok(())
+        }
+        fn experiment_current(&self, _: &ExperimentPlanDecisionV1) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    let model = Model(Mutex::new(Vec::new()));
+    let mut f = Fixture::with_model("unused model package file", true);
+    let parent = "root.inputs";
+    let policy = f.task.authority.policy_id.clone();
+    let oracle = f.revision_id.clone();
+    let binding_seed =
+        review_store::content_id(&json!([&f.revision_id, &policy, "trial"])).unwrap();
+    let worker_node = "root.nodes.write";
+    let definition = f.graph.nodes[worker_node].clone();
+    let allowance = f.graph.allowances[worker_node].clone();
+    let mut experimental_allowance = allowance.clone();
+    experimental_allowance.max_attempts = 1;
+    experimental_allowance.verification_attempts = 0;
+    let slot_name = match &definition.operator {
+        review_graph::task::CompiledOperator::Primitive {
+            operator: TaskOperatorV1::Worker { slot },
+            ..
+        } => slot.clone(),
+        _ => panic!("fixture worker"),
+    };
+    let package = f.graph.slots[&slot_name].worker.clone();
+    let worker_package_id = f.plan.bindings[&slot_name].package_artifact_id.clone();
+    let slot = ExperimentalSlotV2 {
+        schema: "af.experimental-slot/2".into(),
+        slot: "trial".into(),
+        outer_plan_binding_id: binding_seed,
+        policy_id: policy.clone(),
+        protected_oracle_id: oracle.clone(),
+        allowed_task_kinds: BTreeSet::from(["document".into()]),
+        allowed_packages: BTreeSet::from([package.clone()]),
+        allowed_worker_package_ids: BTreeSet::from([worker_package_id.clone()]),
+        allowed_efforts: BTreeSet::from(["high".into()]),
+        allowed_effects: BTreeSet::new(),
+        max_children: 2,
+        max_depth: 8,
+        max_concurrency: 1,
+        max_development_candidates: 1,
+        allowance: ExperimentAllowanceV1 {
+            tokens: experimental_allowance.tokens_per_attempt * 2,
+            attempts: 2,
+            wall_ms: experimental_allowance.wall_ms_per_attempt * 2,
+        },
+    };
+    slot.validate().unwrap();
+    let slot_id = f
+        .cas
+        .put_artifact(
+            EXPERIMENTAL_SLOT_V2,
+            producer(),
+            vec![policy.clone(), oracle.clone()],
+            None,
+            serde_json::to_value(&slot).unwrap(),
+        )
+        .unwrap()
+        .0;
+    f.compiler = f
+        .compiler
+        .clone()
+        .with_experimental_slot(
+            parent.into(),
+            ExperimentalSlotTemplateV1 {
+                slot_id: slot_id.clone(),
+                max_concurrency: 1,
+            },
+        )
+        .unwrap();
+    (f.plan, f.graph) = f
+        .compiler
+        .compile(&f.cas, &f.revision_id, "builtin/document")
+        .unwrap();
+    f.plan_id = f
+        .cas
+        .put_artifact(
+            EXECUTION_PLAN_V1,
+            producer(),
+            vec![f.revision_id.clone()],
+            None,
+            serde_json::to_value(&f.plan).unwrap(),
+        )
+        .unwrap()
+        .0;
+
+    let requirement = f.task.inputs["requirements"].clone();
+    let source_id = requirement.artifact_ids[0].clone();
+    let candidate_snapshot_id = f
+        .cas
+        .put_json(&json!({"candidate":"instructions"}))
+        .unwrap();
+    let repin_id = f.cas.put_json(&json!({"repin":"candidate"})).unwrap();
+    let candidate_instructions = "Use only the approved candidate instructions.";
+    let instructions_id =
+        review_store::canonical::blob_content_id(candidate_instructions.as_bytes());
+    f.cas.put(candidate_instructions.as_bytes()).unwrap();
+    let original_digest = f.plan.bindings[&slot_name].package_digest.clone();
+    let mut derived_files = f.compiler.package_files(&package).unwrap().clone();
+    derived_files.insert(
+        "instructions.md".into(),
+        candidate_instructions.as_bytes().to_vec(),
+    );
+    let derived_digest = review_config::lock::package_digest_from_files(&derived_files);
+    let execution_configuration = OptimizationExecutionConfigurationV1 {
+        schema: "af.optimization-execution-configuration/1".into(),
+        recipe_id: "context_retrieval_dedup".into(),
+        original_package_id: worker_package_id.clone(),
+        original_package_digest: original_digest.clone(),
+        source_snapshot_id: source_id.clone(),
+        candidate_snapshot_id: candidate_snapshot_id.clone(),
+        repin_id: repin_id.clone(),
+        package: package.clone(),
+        package_digest: derived_digest.clone(),
+        instructions_id: instructions_id.clone(),
+        instructions: candidate_instructions.into(),
+    };
+    let execution_configuration_id = f
+        .cas
+        .put_artifact(
+            OPTIMIZATION_EXECUTION_CONFIGURATION_V1,
+            producer(),
+            vec![
+                worker_package_id.clone(),
+                source_id.clone(),
+                candidate_snapshot_id.clone(),
+                repin_id.clone(),
+                instructions_id.clone(),
+            ],
+            None,
+            serde_json::to_value(&execution_configuration).unwrap(),
+        )
+        .unwrap()
+        .0;
+    let derived_package_id = TaskPlanCompiler::derive_worker_instructions_package(
+        &f.cas,
+        &worker_package_id,
+        &original_digest,
+        &derived_digest,
+        &instructions_id,
+        candidate_instructions,
+        producer(),
+        vec![execution_configuration_id.clone()],
+    )
+    .unwrap();
+    let task_configuration_id = f
+        .cas
+        .put_artifact(
+            "af/OptimizationConfiguration@1",
+            producer(),
+            vec![execution_configuration_id.clone()],
+            None,
+            json!({
+                "candidate_execution_configuration_id":execution_configuration_id,
+                "source_snapshot_id":source_id,
+                "candidate_snapshot_id":candidate_snapshot_id,
+                "repin_id":repin_id,
+            }),
+        )
+        .unwrap()
+        .0;
+    let case = ExperimentCaseV1 {
+        case_id: source_id.clone(),
+        family_id: policy.clone(),
+        membership: "holdout".into(),
+        source_snapshot_id: source_id.clone(),
+        requirements_id: source_id.clone(),
+        compatibility_id: oracle.clone(),
+    };
+    let specification = ExperimentSpecificationV1 {
+        schema: "af.experiment-specification/1".into(),
+        slot_id: slot_id.clone(),
+        policy_id: policy.clone(),
+        profile_id: oracle.clone(),
+        development_set_id: policy.clone(),
+        holdout_set_id: oracle.clone(),
+        protected_oracle_id: oracle.clone(),
+        baseline_authority_id: policy.clone(),
+        candidate_authority_id: derived_package_id.clone(),
+        baseline_package: package.clone(),
+        candidate_package: package.clone(),
+        recipe: ComparisonRecipeV1::TokensPerVerifiedOutcome,
+        uncertainty_rule: ComparisonUncertaintyRuleV1::RepetitionDispersion,
+        repetitions: 1,
+        minimum_families: 1,
+        token_increase_ceiling_bps: 0,
+        exposed_family_ids: BTreeSet::new(),
+        cases: vec![case],
+    };
+    let specification_id = f
+        .cas
+        .put_artifact(
+            EXPERIMENT_SPECIFICATION_V1,
+            producer(),
+            vec![slot_id.clone()],
+            None,
+            serde_json::to_value(&specification).unwrap(),
+        )
+        .unwrap()
+        .0;
+    let mut closures = Vec::new();
+    let mut planned = BTreeMap::new();
+    for (suffix, arm, authority_id) in [
+        ("baseline", ExperimentArmV1::Baseline, policy.clone()),
+        (
+            "candidate",
+            ExperimentArmV1::Candidate,
+            derived_package_id.clone(),
+        ),
+    ] {
+        let node = format!("{parent}.{suffix}");
+        let candidate = arm == ExperimentArmV1::Candidate;
+        let mut inputs = BTreeMap::from([("input".into(), requirement.clone())]);
+        if candidate {
+            inputs.insert(
+                "configuration".into(),
+                ArtifactInputV1 {
+                    artifact_ids: vec![task_configuration_id.clone()],
+                    artifact_type: "af/OptimizationConfiguration@1".into(),
+                    cardinality: review_core::PortCardinality::One,
+                    snapshot_id: None,
+                },
+            );
+        }
+        let invocation = TaskInvocationV1 {
+            plan_id: f.plan_id.clone(),
+            node: node.clone(),
+            inputs,
+        };
+        let invocation_id = f
+            .cas
+            .put_artifact(
+                review_core::task::execution::TASK_INVOCATION_V1,
+                producer(),
+                vec![f.plan_id.clone(), source_id.clone()],
+                None,
+                serde_json::to_value(&invocation).unwrap(),
+            )
+            .unwrap()
+            .0;
+        let mut child_definition = definition.clone();
+        if candidate {
+            let review_graph::task::CompiledOperator::Primitive { signature, .. } =
+                &mut child_definition.operator
+            else {
+                unreachable!()
+            };
+            *signature = format!("worker-derived/{derived_package_id}");
+        }
+        planned.insert(
+            node.clone(),
+            ExperimentPlannedChildV1 {
+                definition: child_definition,
+                invocation,
+                allowance: experimental_allowance.clone(),
+            },
+        );
+        closures.push(ExperimentChildClosureV1 {
+            node,
+            arm,
+            case_id: source_id.clone(),
+            repetition: 1,
+            task_kind: "document".into(),
+            package: package.clone(),
+            worker_package_id: if candidate {
+                derived_package_id.clone()
+            } else {
+                worker_package_id.clone()
+            },
+            effort: "high".into(),
+            effects: BTreeSet::new(),
+            source_snapshot_id: source_id.clone(),
+            requirements_id: source_id.clone(),
+            authority_id,
+            invocation_id,
+            allowance: ExperimentAllowanceV1 {
+                tokens: experimental_allowance.tokens_per_attempt,
+                attempts: experimental_allowance.max_attempts,
+                wall_ms: experimental_allowance.wall_ms_per_attempt,
+            },
+        });
+    }
+    let child_plan = ExperimentExecutionPlanV1 {
+        schema: "af.experiment-execution-plan/1".into(),
+        parent_node: parent.into(),
+        children: planned,
+    };
+    let child_plan_id = f
+        .cas
+        .put_artifact(
+            EXPERIMENT_EXECUTION_PLAN_V1,
+            producer(),
+            closures.iter().map(|c| c.invocation_id.clone()).collect(),
+            None,
+            serde_json::to_value(&child_plan).unwrap(),
+        )
+        .unwrap()
+        .0;
+    let domain = ExperimentDomain {
+        prepared: Mutex::new(None),
+        root_outputs: f.graph.inputs.clone(),
+    };
+    let developer = Developer;
+    let models = BTreeMap::from([(
+        slot_name.clone(),
+        TaskModelBinding {
+            binding: f.plan.bindings[&slot_name].clone(),
+            adapter: &model as &dyn WorkerModelAdapter,
+        },
+    )]);
+    let host = CapturedTaskHost::capture_with_models(
+        &f.cas,
+        &f.compiler,
+        &f.task,
+        &f.plan,
+        f.graph.clone(),
+        &EmptyTaskEnvironment,
+        &domain,
+        &models,
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority::new(&f.compiler, &host, &developer);
+    let lease = f
+        .store
+        .open_task(&f.cas, &f.revision_id, "experiment", 60_000)
+        .unwrap();
+    f.store
+        .propose_task_plan(&f.cas, &lease, &f.plan_id, &authority)
+        .unwrap();
+    f.store.admit_task_plan(&f.cas, &lease, &authority).unwrap();
+    let prepared = ExperimentPreparedV1 {
+        schema: "af.experiment-prepared/1".into(),
+        task_revision_id: f.revision_id.clone(),
+        outer_plan_id: f.plan_id.clone(),
+        slot_id: slot_id.clone(),
+        specification_id: specification_id.clone(),
+        compiled_child_plan_id: child_plan_id.clone(),
+        policy_id: policy.clone(),
+        spent_accounting_prefix_id: f.revision_id.clone(),
+        writer_epoch: lease.epoch(),
+        children: closures,
+    };
+    let prepared_id = f
+        .cas
+        .put_artifact(
+            EXPERIMENT_PREPARED_V1,
+            producer(),
+            vec![
+                f.revision_id.clone(),
+                f.plan_id.clone(),
+                slot_id.clone(),
+                specification_id.clone(),
+                child_plan_id.clone(),
+                policy.clone(),
+            ],
+            None,
+            serde_json::to_value(&prepared).unwrap(),
+        )
+        .unwrap()
+        .0;
+    *domain.prepared.lock().unwrap() = Some(prepared_id.clone());
+
+    {
+        let runtime =
+            TaskRuntime::new(&mut f.store, &f.cas, lease.clone(), &authority, &host).unwrap();
+        let report = runtime.execute().unwrap();
+        assert!(!report.complete(), "{report:?}");
+        let state = runtime.projection().unwrap();
+        assert_eq!(
+            state.phase,
+            TaskPhaseV1::Waiting {
+                reason: TaskWaitingReasonV1::NeedsPlanReview
+            },
+            "{report:?}"
+        );
+        assert_eq!(state.execution.unwrap().budget.begun_attempts(), 0);
+    }
+    let decision = ExperimentPlanDecisionV1 {
+        schema: "af.experiment-plan-decision/1".into(),
+        prepared_id: prepared_id.clone(),
+        task_revision_id: f.revision_id.clone(),
+        outer_plan_id: f.plan_id.clone(),
+        slot_id,
+        specification_id,
+        compiled_child_plan_id: child_plan_id,
+        policy_id: policy.clone(),
+        developer: "fixture".into(),
+        authorization_id: f.revision_id.clone(),
+        key_policy_id: policy.clone(),
+        signature_id: worker_package_id.clone(),
+        decision: ExperimentDecisionKindV1::Approved,
+        expires_unix_ms: f.task.limits.deadline_unix_ms,
+        reason: "bounded_fixture".into(),
+    };
+    let decision_id = f
+        .cas
+        .put_artifact(
+            EXPERIMENT_PLAN_DECISION_V1,
+            producer(),
+            vec![prepared_id.clone()],
+            None,
+            serde_json::to_value(&decision).unwrap(),
+        )
+        .unwrap()
+        .0;
+    f.store
+        .decide_task_experiment(&f.cas, &lease, &prepared_id, &decision_id, &authority)
+        .unwrap();
+    f.store
+        .register_task_experiment(&f.cas, &lease, &prepared_id, &authority)
+        .unwrap();
+    let runtime = TaskRuntime::new(&mut f.store, &f.cas, lease, &authority, &host).unwrap();
+    let report = runtime.execute().unwrap();
+    assert!(report.complete(), "{report:?}");
+    let attempts = runtime
+        .projection()
+        .unwrap()
+        .execution
+        .unwrap()
+        .budget
+        .begun_attempts();
+    assert_eq!(attempts, 3);
+    let requests = model.0.lock().unwrap().clone();
+    assert_eq!(requests.len(), 3);
+    let candidate_requests = requests
+        .iter()
+        .filter(|request| request["instructions"] == candidate_instructions)
+        .collect::<Vec<_>>();
+    assert_eq!(candidate_requests.len(), 1, "{requests:#?}");
+    assert_eq!(
+        candidate_requests[0]["inputs"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["configuration".into(), "input".into()])
+    );
+    assert!(
+        !candidate_requests[0]["inputs"]
+            .to_string()
+            .contains(candidate_instructions),
+        "candidate instructions were duplicated as a data input"
+    );
+    assert!(
+        requests
+            .iter()
+            .filter(|request| request["instructions"]
+                == "Return the checked document using the declared output contract.")
+            .count()
+            == 2,
+        "baseline and ordinary invocation must retain only the original instructions: {requests:#?}"
+    );
+    assert_ne!(derived_package_id, worker_package_id);
+    assert!(runtime.execute().unwrap().complete());
+    assert_eq!(
+        runtime
+            .projection()
+            .unwrap()
+            .execution
+            .unwrap()
+            .budget
+            .begun_attempts(),
+        attempts
+    );
+    assert_eq!(model.0.lock().unwrap().len(), 3);
+
+    // Delivery installs the selected package bytes as ordinary project authority. Capture a
+    // fresh ordinary Task package with those exact bytes and prove the common model adapter sees
+    // the same instruction identity without an experimental data port.
+    let adopted_model = Model(Mutex::new(Vec::new()));
+    let mut adopted =
+        Fixture::with_model_instructions("unused model package file", true, candidate_instructions);
+    let adopted_slot = adopted.plan.bindings.keys().next().unwrap().clone();
+    assert_eq!(
+        adopted.plan.bindings[&adopted_slot].package_digest,
+        derived_digest
+    );
+    let adopted_models = BTreeMap::from([(
+        adopted_slot.clone(),
+        TaskModelBinding {
+            binding: adopted.plan.bindings[&adopted_slot].clone(),
+            adapter: &adopted_model as &dyn WorkerModelAdapter,
+        },
+    )]);
+    let adopted_host = CapturedTaskHost::capture_with_models(
+        &adopted.cas,
+        &adopted.compiler,
+        &adopted.task,
+        &adopted.plan,
+        adopted.graph.clone(),
+        &EmptyTaskEnvironment,
+        &DocumentDomain,
+        &adopted_models,
+    )
+    .unwrap();
+    let adopted_authority =
+        CapturedTaskAuthority::new(&adopted.compiler, &adopted_host, &NoTaskDeveloper);
+    let adopted_lease = adopted
+        .store
+        .open_task(&adopted.cas, &adopted.revision_id, "adopted", 60_000)
+        .unwrap();
+    adopted
+        .store
+        .propose_task_plan(
+            &adopted.cas,
+            &adopted_lease,
+            &adopted.plan_id,
+            &adopted_authority,
+        )
+        .unwrap();
+    adopted
+        .store
+        .admit_task_plan(&adopted.cas, &adopted_lease, &adopted_authority)
+        .unwrap();
+    let adopted_runtime = TaskRuntime::new(
+        &mut adopted.store,
+        &adopted.cas,
+        adopted_lease,
+        &adopted_authority,
+        &adopted_host,
+    )
+    .unwrap();
+    assert!(adopted_runtime.execute().unwrap().complete());
+    let adopted_requests = adopted_model.0.lock().unwrap();
+    assert_eq!(adopted_requests.len(), 1);
+    assert_eq!(adopted_requests[0]["instructions"], candidate_instructions);
+    assert_eq!(
+        adopted_requests[0]["inputs"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>(),
+        ["input"]
+    );
+}
+
+#[test]
+fn substituted_resolved_context_is_rejected_before_model_dispatch() {
+    use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Model(AtomicUsize);
+    impl WorkerModelAdapter for Model {
+        fn provider_kind(&self) -> &'static str {
+            "fixture"
+        }
+        fn model_settings(&self) -> Option<(String, String)> {
+            Some(("typed-model".into(), "high".into()))
+        }
+        fn invoke(
+            &self,
+            _: &Cas,
+            _: &std::path::Path,
+            _: Vec<u8>,
+            _: std::time::Duration,
+            _: bool,
+        ) -> ModelWorkerReturn {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            panic!("a substituted context reached model dispatch")
+        }
+    }
+
+    struct Substitute<'a> {
+        inner: &'a dyn TaskOperatorHost,
+        replacement: String,
+    }
+    impl TaskOperatorHost for Substitute<'_> {
+        fn prepare_context_for_resolved_attempt(
+            &self,
+            cas: &Cas,
+            input: &TaskInvocationV1,
+            definition: &review_graph::task::CompiledNode,
+            attempt: &review_store::store::task::execution::ReservedTaskAttempt,
+        ) -> Result<String, String> {
+            self.inner
+                .prepare_context_for_resolved_attempt(cas, input, definition, attempt)?;
+            Ok(self.replacement.clone())
+        }
+        fn prepare_context(
+            &self,
+            cas: &Cas,
+            input: &TaskInvocationV1,
+            feedback: &[String],
+        ) -> Result<String, String> {
+            self.inner.prepare_context(cas, input, feedback)
+        }
+        fn execute(
+            &self,
+            cas: &Cas,
+            input: &TaskInvocationV1,
+            attempt: Option<&PreparedTaskAttempt>,
+        ) -> TaskWorkOutput {
+            self.inner.execute(cas, input, attempt)
+        }
+    }
+
+    let model = Model(AtomicUsize::new(0));
+    let mut fixture = Fixture::with_model("unused", true);
+    let slot = fixture.plan.bindings.keys().next().unwrap().clone();
+    let models = BTreeMap::from([(
+        slot.clone(),
+        TaskModelBinding {
+            binding: fixture.plan.bindings[&slot].clone(),
+            adapter: &model as &dyn WorkerModelAdapter,
+        },
+    )]);
+    let host = CapturedTaskHost::capture_with_models(
+        &fixture.cas,
+        &fixture.compiler,
+        &fixture.task,
+        &fixture.plan,
+        fixture.graph.clone(),
+        &EmptyTaskEnvironment,
+        &DocumentDomain,
+        &models,
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority::new(&fixture.compiler, &host, &NoTaskDeveloper);
+    let lease = fixture
+        .store
+        .open_task(&fixture.cas, &fixture.revision_id, "substitution", 60_000)
+        .unwrap();
+    fixture
+        .store
+        .propose_task_plan(&fixture.cas, &lease, &fixture.plan_id, &authority)
+        .unwrap();
+    fixture
+        .store
+        .admit_task_plan(&fixture.cas, &lease, &authority)
+        .unwrap();
+    let substituted = Substitute {
+        inner: &host,
+        replacement: fixture.revision_id.clone(),
+    };
+    let runtime = TaskRuntime::new(
+        &mut fixture.store,
+        &fixture.cas,
+        lease,
+        &authority,
+        &substituted,
+    )
+    .unwrap();
+    let report = runtime.execute().unwrap();
+    assert!(!report.complete(), "{report:?}");
+    assert_eq!(model.0.load(Ordering::SeqCst), 0);
+    let execution = runtime.projection().unwrap().execution.unwrap();
+    assert_eq!(execution.budget.begun_attempts(), 0);
+    assert!(execution.pending_attempts().is_empty());
+}
+
 fn producer() -> Producer {
     Producer::KernelOperation {
         run_id: "task-runtime-test".into(),
@@ -58,6 +866,13 @@ impl Fixture {
         Self::with_model(script, false)
     }
     fn with_model(script: &str, model: bool) -> Self {
+        Self::with_model_instructions(
+            script,
+            model,
+            "Return the checked document using the declared output contract.",
+        )
+    }
+    fn with_model_instructions(script: &str, model: bool, instructions: &str) -> Self {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
@@ -112,12 +927,18 @@ impl Fixture {
             .0;
         let mut output = pipeline.contract.outputs["document"].clone();
         output.covers.clear();
+        let mut configuration_port = pipeline.contract.inputs["requirements"].clone();
+        configuration_port.artifact_type = "af/OptimizationConfiguration@1".into();
+        configuration_port.optional = true;
         let signature = OperatorSignature {
             contract: PipelineContractV1 {
-                inputs: BTreeMap::from([(
-                    "input".into(),
-                    pipeline.contract.inputs["requirements"].clone(),
-                )]),
+                inputs: BTreeMap::from([
+                    (
+                        "input".into(),
+                        pipeline.contract.inputs["requirements"].clone(),
+                    ),
+                    ("configuration".into(), configuration_port),
+                ]),
                 outputs: BTreeMap::from([("output".into(), output)]),
             },
             effects: BTreeSet::new(),
@@ -152,6 +973,11 @@ impl Fixture {
                 "required":["artifact_id","artifact_type","payload"], "properties":{
                     "artifact_id":{"type":"string"}, "artifact_type":{"const":"af/Requirements@1"},
                     "payload":{"type":"object", "additionalProperties":false, "required":["text"], "properties":{"text":{"type":"string"}}}
+                }}},
+            "configuration":{"type":"array", "minItems":1, "maxItems":1, "items":{"type":"object", "additionalProperties":false,
+                "required":["artifact_id","artifact_type","payload"], "properties":{
+                    "artifact_id":{"type":"string"}, "artifact_type":{"const":"af/OptimizationConfiguration@1"},
+                    "payload":{"type":"object"}
                 }}}
         }});
         let output_schema = json!({"type":"object", "additionalProperties":false, "required":["outcome","text"],
@@ -187,10 +1013,7 @@ impl Fixture {
                         "outputs/output.schema.json".into(),
                         serde_json::to_vec(&output_schema).unwrap(),
                     ),
-                    (
-                        "instructions.md".into(),
-                        b"Return the checked document using the declared output contract.".to_vec(),
-                    ),
+                    ("instructions.md".into(), instructions.as_bytes().to_vec()),
                     ("worker.py".into(), script.as_bytes().to_vec()),
                 ]),
             ),

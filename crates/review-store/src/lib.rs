@@ -16,6 +16,7 @@ pub mod canonical;
 pub mod cas;
 pub mod ledger;
 pub mod legacy;
+pub mod optimization;
 pub mod shared;
 pub mod store;
 pub mod subject;

@@ -575,17 +575,45 @@ fn cache_receipts_and_failed_gate_observations_survive_store_reopen() {
             available
         );
         let locked = shared.lock().unwrap();
-        assert_eq!(
-            locked
-                .task_projection(&cas, lease.task_id())
-                .unwrap()
-                .unwrap()
-                .execution
-                .unwrap()
-                .budget
-                .begun_attempts(),
-            attempts
-        );
+        let projection = locked
+            .task_projection(&cas, lease.task_id())
+            .unwrap()
+            .unwrap();
+        let execution = projection.execution.unwrap();
+        assert_eq!(execution.budget.begun_attempts(), attempts);
+        if available {
+            let evidence = execution
+                .settled_artifacts()
+                .into_values()
+                .flat_map(|(_, ids)| ids)
+                .filter_map(|id| cas.get_artifact(&id).ok())
+                .find(|artifact| {
+                    artifact.artifact_type == review_core::task::runtime::TASK_RUNTIME_EVIDENCE_V1
+                })
+                .expect("Gate retained shared runtime evidence");
+            let evidence: review_core::task::runtime::TaskRuntimeEvidenceV1 =
+                serde_json::from_value(evidence.payload).unwrap();
+            evidence.validate().unwrap();
+            assert!(evidence.spans.iter().any(|span| {
+                span.kind == review_core::task::runtime::TaskRuntimeSpanKindV1::Check
+                    && span.started_unix_ms > 0
+            }));
+            assert!(evidence.spans.iter().any(|span| {
+                span.kind
+                    == review_core::task::runtime::TaskRuntimeSpanKindV1::DependencyPreparation
+            }));
+            assert_eq!(evidence.caches.len(), 1);
+            assert_eq!(
+                evidence.caches[0].layer,
+                review_core::task::runtime::TaskCacheLayerV1::DependencyPreparation
+            );
+            assert_eq!(
+                evidence.caches[0].result,
+                review_core::task::runtime::TaskCacheResultV1::Prepared
+            );
+            assert_eq!(evidence.caches[0].bytes_available, 13);
+            assert!(evidence.caches[0].toolchain_id.is_none());
+        }
         let events = locked.replay("review").unwrap();
         let event = events
             .iter()

@@ -380,6 +380,7 @@ impl EventStore {
                     | EventType::TaskTransitionV2
                     | EventType::TaskTransitionV3
                     | EventType::TaskTransitionV4
+                    | EventType::TaskTransitionV5
                     | EventType::TaskBrokerTransitionV1
             )
         }) && task_permit.is_none()

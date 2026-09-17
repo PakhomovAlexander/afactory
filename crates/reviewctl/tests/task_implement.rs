@@ -235,7 +235,7 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
     let (code, stdout, stderr) = run_task(&repo, &home, &state);
     assert_eq!(code, 0, "{stderr}\n{stdout}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(outcome["schema"], "af/task-inspection@3");
+    assert_eq!(outcome["schema"], "af/task-inspection@9");
     assert_eq!(outcome["result"]["acceptance"], "satisfied");
     assert!(outcome.get("delivery").is_none());
     assert_eq!(outcome["attempts"], 3);
@@ -446,7 +446,7 @@ fn verified_task_delivery_is_local_exact_recoverable_and_inspectable() {
     );
     assert_eq!(code, 0, "{stderr}");
     let shown: serde_json::Value = serde_json::from_str(shown.trim()).unwrap();
-    assert_eq!(shown["schema"], "af/task-inspection@3");
+    assert_eq!(shown["schema"], "af/task-inspection@9");
     assert_eq!(shown["result"]["acceptance"], "satisfied");
     assert!(shown["history"].as_array().unwrap().len() >= 8);
 }

@@ -182,9 +182,18 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             Err(error) => return failed(error, Some(0)),
         };
         let Some(policies) = policies else {
-            return self
-                .host
-                .execute_controlled(self.cas, input, attempt, None, self.cancellation);
+            let resolved = match self.resolve_node(&input.node) {
+                Ok(value) => value,
+                Err(error) => return failed(error, Some(0)),
+            };
+            return self.host.execute_resolved_controlled(
+                self.cas,
+                input,
+                &resolved.definition,
+                attempt,
+                None,
+                self.cancellation,
+            );
         };
         let Some(attempt) = attempt else {
             return failed("Task Broker requires a started common Attempt", Some(0));

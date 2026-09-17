@@ -70,6 +70,54 @@ pub(super) struct SignedAuthorization {
     pub signature: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ExperimentAuthorizationRequest {
+    pub schema: String,
+    pub prepared_id: String,
+    pub task_revision_id: String,
+    pub outer_plan_id: String,
+    pub slot_id: String,
+    pub specification_id: String,
+    pub compiled_child_plan_id: String,
+    pub policy_id: String,
+    pub developer: String,
+    pub key_policy_id: String,
+    pub decision: review_core::task::optimization_experiment::ExperimentDecisionKindV1,
+    pub expires_unix_ms: u64,
+    pub reason: String,
+}
+
+impl ExperimentAuthorizationRequest {
+    fn signing_bytes(&self) -> Result<Vec<u8>, String> {
+        if self.schema != "af.experiment-plan-authorization/1"
+            || ![
+                &self.prepared_id,
+                &self.task_revision_id,
+                &self.outer_plan_id,
+                &self.slot_id,
+                &self.specification_id,
+                &self.compiled_child_plan_id,
+                &self.policy_id,
+                &self.key_policy_id,
+            ]
+            .into_iter()
+            .all(|id| review_core::is_digest(id))
+            || !is_name(&self.developer)
+            || self.reason.trim().is_empty()
+            || self.expires_unix_ms == 0
+        {
+            return Err("Invalid experimental authorization payload".into());
+        }
+        let mut bytes = b"af/experiment-plan-authorization/1\n".to_vec();
+        bytes.extend(
+            review_store::canonicalize(&serde_json::to_value(self).map_err(|e| e.to_string())?)
+                .map_err(|e| e.to_string())?,
+        );
+        Ok(bytes)
+    }
+}
+
 pub(super) struct SignedTaskDeveloper<'a> {
     pub cas: &'a Cas,
     pub policy: &'a DeveloperPolicy,
@@ -177,6 +225,57 @@ impl TaskDeveloper for SignedTaskDeveloper<'_> {
         }
         Ok(())
     }
+
+    fn experiment_current(
+        &self,
+        decision: &review_core::task::optimization_experiment::ExperimentPlanDecisionV1,
+    ) -> Result<(), String> {
+        decision.validate()?;
+        self.policy.validate()?;
+        let request: ExperimentAuthorizationRequest = serde_json::from_value(
+            self.cas
+                .get_json(&decision.authorization_id)
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let signature = self
+            .cas
+            .get(&decision.signature_id)
+            .map_err(|e| e.to_string())?;
+        let signature = std::str::from_utf8(&signature).map_err(|e| e.to_string())?;
+        let key_policy_id = review_store::content_id(
+            &serde_json::to_value(self.policy).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        if request.prepared_id != decision.prepared_id
+            || request.task_revision_id != decision.task_revision_id
+            || request.outer_plan_id != decision.outer_plan_id
+            || request.slot_id != decision.slot_id
+            || request.specification_id != decision.specification_id
+            || request.compiled_child_plan_id != decision.compiled_child_plan_id
+            || request.policy_id != decision.policy_id
+            || request.developer != decision.developer
+            || request.key_policy_id != decision.key_policy_id
+            || request.decision != decision.decision
+            || request.expires_unix_ms != decision.expires_unix_ms
+            || request.reason != decision.reason
+            || request.key_policy_id != key_policy_id
+            || clock()? >= request.expires_unix_ms
+        {
+            return Err(
+                "Experimental decision differs from its current signed authorization".into(),
+            );
+        }
+        let key = self
+            .policy
+            .keys
+            .get(&request.developer)
+            .ok_or("Experimental developer key is not trusted")?;
+        let key = minisign_verify::PublicKey::decode(key).map_err(|e| e.to_string())?;
+        let signature = minisign_verify::Signature::decode(signature).map_err(|e| e.to_string())?;
+        key.verify(&request.signing_bytes()?, &signature, false)
+            .map_err(|_| "Developer signature does not authorize this experimental closure".into())
+    }
 }
 
 pub(super) fn host<'a>(
@@ -199,6 +298,12 @@ pub(super) struct DecisionAuthority<'a> {
     pub developer: &'a dyn TaskDeveloper,
 }
 impl review_store::store::task::TaskAuthority for DecisionAuthority<'_> {
+    fn experiment_authorization_current(
+        &self,
+        decision: &review_core::task::optimization_experiment::ExperimentPlanDecisionV1,
+    ) -> Result<(), String> {
+        self.developer.experiment_current(decision)
+    }
     fn validate_planning_inputs(
         &self,
         cas: &Cas,
@@ -263,6 +368,7 @@ fn captured(
         EXECUTION_PLAN_V1,
     )?;
     let graph: CompiledTask = artifact(cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
+    compiler = super::restore_experimental_slots(compiler, &graph)?;
     let _ = bind_models(
         cas,
         &mut compiler,
@@ -296,6 +402,73 @@ pub(crate) fn payload_file(
     let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
     let store =
         EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    if let Some((prepared_id, prepared)) = store
+        .pending_task_experiment(&cas, task_id)
+        .map_err(|e| e.to_string())?
+    {
+        let projection = store
+            .task_projection(&cas, task_id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Unknown Task")?;
+        let authority: RunAuthority = serde_json::from_value(
+            cas.get_json(&projection.revision.authority.policy_id)
+                .map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        let policy = authority
+            .developers
+            .as_ref()
+            .ok_or("This Task has no configured developer signing keys")?;
+        if !policy.keys.contains_key(developer) {
+            return Err("Developer signing key is not trusted by this Task".into());
+        }
+        let request = ExperimentAuthorizationRequest {
+            schema: "af.experiment-plan-authorization/1".into(),
+            prepared_id,
+            task_revision_id: prepared.task_revision_id,
+            outer_plan_id: prepared.outer_plan_id,
+            slot_id: prepared.slot_id,
+            specification_id: prepared.specification_id,
+            compiled_child_plan_id: prepared.compiled_child_plan_id,
+            policy_id: prepared.policy_id,
+            developer: developer.into(),
+            key_policy_id: review_store::content_id(
+                &serde_json::to_value(policy).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?,
+            decision: match decision {
+                PlanDecisionKindV1::Approved => {
+                    review_core::task::optimization_experiment::ExperimentDecisionKindV1::Approved
+                }
+                PlanDecisionKindV1::Rejected => {
+                    review_core::task::optimization_experiment::ExperimentDecisionKindV1::Rejected
+                }
+            },
+            expires_unix_ms: projection.revision.limits.deadline_unix_ms,
+            reason: reason.into(),
+        };
+        let bytes = request.signing_bytes()?;
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(output)
+            .map_err(|e| format!("Authorization payload requires an absent output path: {e}"))?;
+        file.write_all(&bytes)
+            .and_then(|()| file.sync_all())
+            .map_err(|e| e.to_string())?;
+        if inspect.json {
+            println!(
+                "{}",
+                json!({"schema":"af/experiment-decision-payload@1","task_id":task_id,"payload":request,"output":output})
+            );
+        } else {
+            println!(
+                "Experimental authorization payload written to {}. Sign these exact bytes with the trusted developer key.",
+                output.display()
+            );
+        }
+        return Ok(0);
+    }
     let (projection, authority, _) = captured(
         &cas,
         &store,
@@ -368,6 +541,142 @@ pub(crate) fn apply(
     inspect: &crate::cli::TaskInspectArgs,
 ) -> Result<i32, String> {
     let bytes = bounded_read(payload, 70 * 1024)?;
+    if let Some(value) = bytes.strip_prefix(b"af/experiment-plan-authorization/1\n") {
+        let request: ExperimentAuthorizationRequest =
+            serde_json::from_slice(value).map_err(|e| e.to_string())?;
+        let requested = match decision {
+            PlanDecisionKindV1::Approved => {
+                review_core::task::optimization_experiment::ExperimentDecisionKindV1::Approved
+            }
+            PlanDecisionKindV1::Rejected => {
+                review_core::task::optimization_experiment::ExperimentDecisionKindV1::Rejected
+            }
+        };
+        if request.signing_bytes()? != bytes || request.decision != requested {
+            return Err(
+                "Experimental authorization bytes are not canonical or name another decision"
+                    .into(),
+            );
+        }
+        let signature_bytes = bounded_read(signature, 8192)?;
+        let (_, state) = state_path(&inspect.repo, inspect.state.as_deref())?;
+        let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+        let mut store = EventStore::open(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+        let (projection, authority, compiler) = captured(&cas, &store, task_id, true)?;
+        if projection.revision_id != request.task_revision_id
+            || projection.plan_id.as_deref() != Some(request.outer_plan_id.as_str())
+        {
+            return Err("Experimental signature names another Task or outer plan".into());
+        }
+        let policy = authority.developers.as_ref().ok_or("No developer policy")?;
+        let key_policy_id = cas
+            .put_json(&serde_json::to_value(policy).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        if key_policy_id != request.key_policy_id {
+            return Err("Experimental signature names another developer key policy".into());
+        }
+        let authorization_id = cas
+            .put_json(&serde_json::to_value(&request).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        let signature_id = cas.put(&signature_bytes).map_err(|e| e.to_string())?;
+        let experiment_decision =
+            review_core::task::optimization_experiment::ExperimentPlanDecisionV1 {
+                schema: "af.experiment-plan-decision/1".into(),
+                prepared_id: request.prepared_id.clone(),
+                task_revision_id: request.task_revision_id,
+                outer_plan_id: request.outer_plan_id,
+                slot_id: request.slot_id,
+                specification_id: request.specification_id,
+                compiled_child_plan_id: request.compiled_child_plan_id,
+                policy_id: request.policy_id,
+                developer: request.developer,
+                authorization_id,
+                key_policy_id,
+                signature_id,
+                decision: request.decision,
+                expires_unix_ms: request.expires_unix_ms,
+                reason: request.reason,
+            };
+        experiment_decision.validate()?;
+        let decision_id = cas
+            .put_artifact(
+                review_core::task::optimization_experiment::EXPERIMENT_PLAN_DECISION_V1,
+                producer(),
+                vec![
+                    experiment_decision.prepared_id.clone(),
+                    experiment_decision.task_revision_id.clone(),
+                    experiment_decision.outer_plan_id.clone(),
+                    experiment_decision.slot_id.clone(),
+                    experiment_decision.specification_id.clone(),
+                    experiment_decision.compiled_child_plan_id.clone(),
+                    experiment_decision.policy_id.clone(),
+                    experiment_decision.authorization_id.clone(),
+                    experiment_decision.key_policy_id.clone(),
+                    experiment_decision.signature_id.clone(),
+                ],
+                None,
+                serde_json::to_value(&experiment_decision).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?
+            .0;
+        let developer = host(&cas, &authority, None);
+        developer.experiment_current(&experiment_decision)?;
+        let trusted = DecisionAuthority {
+            compiler: &compiler,
+            developer: developer.as_ref(),
+        };
+        let lease = store
+            .take_task_lease(
+                &cas,
+                task_id,
+                &format!("cli-{}", std::process::id()),
+                15_000,
+            )
+            .map_err(|e| e.to_string())?;
+        let outcome = store
+            .decide_task_experiment(&cas, &lease, &request.prepared_id, &decision_id, &trusted)
+            .and_then(|()| {
+                if requested
+                    != review_core::task::optimization_experiment::ExperimentDecisionKindV1::Approved
+                {
+                    return Ok(());
+                }
+                if let Err(registration) = store.register_task_experiment(
+                    &cas,
+                    &lease,
+                    &request.prepared_id,
+                    &trusted,
+                ) {
+                    // The signed decision is factual evidence even when the approved closure no
+                    // longer fits current limits. Leave a durable explicit non-success phase so
+                    // a retry cannot strand the Task in needs_plan_review behind an immutable
+                    // decision.
+                    store.wait_task(
+                        &cas,
+                        &lease,
+                        review_core::task::TaskWaitingReasonV1::NeedsHuman,
+                    )?;
+                    return Err(registration);
+                }
+                Ok(())
+            })
+            .map_err(|e| e.to_string());
+        release(&cas, &mut store, &lease, outcome)?;
+        let presented = present(&cas, &store, task_id, inspect.json, false)?;
+        // `af task reject` reports successful authentication and durable recording of a
+        // negative decision.  The inspection still carries needs_human/non-success Task state;
+        // the command itself must not masquerade a successfully persisted rejection as an I/O
+        // or authorization failure.
+        return Ok(
+            if requested
+                == review_core::task::optimization_experiment::ExperimentDecisionKindV1::Rejected
+            {
+                0
+            } else {
+                presented
+            },
+        );
+    }
     let value = bytes
         .strip_prefix(b"af/task-plan-authorization/1\n")
         .ok_or("Authorization payload has the wrong signing domain")?;

@@ -177,6 +177,11 @@ pub struct CacheSnapshot {
     pub bytes: u64,
     pub files: u64,
     pub materialization: CacheMaterialization,
+    pub started_unix_ms: u64,
+    /// Host-observed time spent resolving and hashing the bounded source tree.
+    pub lookup_ms: u64,
+    /// Host-observed time spent making the admitted bytes available in the sandbox.
+    pub materialization_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,6 +210,10 @@ pub fn materialize_cache(
     sandbox: &Sandbox,
     cas: &Cas,
 ) -> Result<CacheSnapshot, CacheError> {
+    let started_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as u64);
+    let lookup_started = std::time::Instant::now();
     source
         .limits
         .validate()
@@ -216,6 +225,7 @@ pub fn materialize_cache(
         ));
     }
     let preflight = preflight(source.kind, &source.source, source.limits)?;
+    let lookup_ms = lookup_started.elapsed().as_millis() as u64;
     let cache_root = sandbox.root().join(CACHE_ROOT);
     if std::fs::symlink_metadata(&cache_root).is_ok() {
         return Err(cache_error(
@@ -237,7 +247,13 @@ pub fn materialize_cache(
     })?;
     let target = sandbox.root().join(source.kind.relative_root());
 
-    let result = materialize_preflight(source, &preflight, &target, cas);
+    let materialization_started = std::time::Instant::now();
+    let result = materialize_preflight(source, &preflight, &target, cas).map(|mut snapshot| {
+        snapshot.lookup_ms = lookup_ms;
+        snapshot.materialization_ms = materialization_started.elapsed().as_millis() as u64;
+        snapshot.started_unix_ms = started_unix_ms;
+        snapshot
+    });
     if result.is_err() {
         let _ = remove_cache_root(&cache_root);
     }
@@ -514,6 +530,9 @@ fn materialize_preflight(
         files: u64::try_from(preflight.files.len())
             .map_err(|_| cache_error(CacheErrorKind::LimitExceeded, "cache file count overflow"))?,
         materialization,
+        started_unix_ms: 0,
+        lookup_ms: 0,
+        materialization_ms: 0,
     })
 }
 

@@ -30,7 +30,9 @@
         "reviewed_implementation",
         "repair_allowed_implementation",
         "review",
-        "document"
+        "document",
+        "optimization_analysis",
+        "optimization_candidate"
       ]
     }
   }

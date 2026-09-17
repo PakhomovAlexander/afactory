@@ -28,6 +28,10 @@ pub trait Dispatch {
         false
     }
 
+    fn owned_child_parallelism(&self, _node: &Node) -> Option<usize> {
+        None
+    }
+
     /// Called after the owner's exact invocation is durable. The implementation must persist
     /// the complete bounded registration before returning any dispatchable child.
     fn expand_owned_children(
@@ -227,6 +231,7 @@ impl<'a> Scheduler<'a> {
         let mut order = self.plan.order.clone();
         let mut child_inputs: BTreeMap<String, ArtifactMap> = BTreeMap::new();
         let mut owners: BTreeMap<String, (ArtifactMap, Vec<String>)> = BTreeMap::new();
+        let mut child_limits: BTreeMap<String, (String, usize)> = BTreeMap::new();
 
         std::thread::scope(|scope| {
             type Completion = (String, Result<ArtifactMap, String>);
@@ -324,6 +329,21 @@ impl<'a> Scheduler<'a> {
                             };
                             contains(node_id)
                                 && in_flight.iter().filter(|id| contains(id)).count() >= *limit
+                        })
+                    {
+                        continue;
+                    }
+                    if !coordinates
+                        && child_limits.get(node_id).is_some_and(|(owner, limit)| {
+                            in_flight
+                                .iter()
+                                .filter(|id| {
+                                    child_limits
+                                        .get(*id)
+                                        .is_some_and(|(other, _)| other == owner)
+                                })
+                                .count()
+                                >= *limit
                         })
                     {
                         continue;
@@ -428,6 +448,7 @@ impl<'a> Scheduler<'a> {
                             Ok(children)
                         }) {
                             Ok(children) => {
+                                let child_limit = dispatch.owned_child_parallelism(node);
                                 let ids: Vec<_> =
                                     children.iter().map(|child| child.node.id.clone()).collect();
                                 let index = order
@@ -437,6 +458,12 @@ impl<'a> Scheduler<'a> {
                                     + 1;
                                 order.splice(index..index, ids.clone());
                                 for child in children {
+                                    if let Some(limit) = child_limit {
+                                        child_limits.insert(
+                                            child.node.id.clone(),
+                                            (node_id.clone(), limit.max(1)),
+                                        );
+                                    }
                                     child_inputs.insert(child.node.id.clone(), child.inputs);
                                     nodes.insert(child.node.id.clone(), child.node);
                                 }

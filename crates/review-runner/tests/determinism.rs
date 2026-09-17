@@ -1,4 +1,4 @@
-//! Deterministic replay under randomized completion order.
+//! Deterministic replay under controlled completion order.
 //!
 //! Four reviewers run concurrently. Each reports one finding of its own and one finding they all
 //! share — the shared one matters, because the projection gives a finding to its **first**
@@ -13,16 +13,16 @@
 //!    could pass simply because nothing was order-dependent, and the barrier would be
 //!    ceremony.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::mpsc;
+use std::time::Duration;
 
 use review_core::LegacyStageOutput;
 use review_core::{Arg, Command};
 use review_runner::{CommandRunner, Invocation, Outcome, gather};
 use review_store::{Cas, EventStore, Ingest, LedgerProjection};
 
-/// A reviewer that sleeps, then emits its result. The sleep is how completion order is forced
-/// to differ between runs without the test itself becoming nondeterministic.
-fn reviewer(name: &str, delay_ms: u64) -> Command {
+/// A reviewer whose output can be released explicitly by the test coordinator.
+fn reviewer(name: &str, release: Option<usize>) -> Command {
     let json = format!(
         r#"{{"verdict":"request-changes","summary":null,"findings":[
              {{"severity":"major","file":"src/{name}.rs","line":10,
@@ -38,9 +38,10 @@ fn reviewer(name: &str, delay_ms: u64) -> Command {
         vec![
             Arg::literal("-c"),
             Arg::literal(format!(
-                "sleep {}.{:03}; cat <<'EOF'\n{json}\nEOF",
-                delay_ms / 1000,
-                delay_ms % 1000
+                "{}cat <<'EOF'\n{json}\nEOF",
+                release.map_or_else(String::new, |rank| format!(
+                    "while [ ! -f release-{rank} ]; do sleep 0.01; done; "
+                ))
             )),
         ],
     )
@@ -49,45 +50,46 @@ fn reviewer(name: &str, delay_ms: u64) -> Command {
 const NODES: [&str; 4] = ["architecture", "performance", "security", "tdd"];
 
 /// Run every reviewer concurrently, returning outcomes plus the order they actually finished in.
-fn run_concurrently(delays: &[u64; 4]) -> (Vec<Outcome>, Vec<String>) {
+fn run_concurrently(ranks: &[usize; 4]) -> (Vec<Outcome>, Vec<String>) {
     let dir = tempfile::tempdir().unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
     let runner = CommandRunner::new(&cas, dir.path());
-    let counter = AtomicUsize::new(0);
-    let mut finished: Vec<(usize, String)> = Vec::new();
+    let (sender, receiver) = mpsc::channel();
 
-    let results: Vec<(Outcome, usize)> = std::thread::scope(|scope| {
-        let handles: Vec<_> = NODES
-            .iter()
-            .zip(delays.iter())
-            .map(|(node, delay)| {
-                let runner = &runner;
-                let counter = &counter;
-                scope.spawn(move || {
-                    let result = runner.invoke(&reviewer(node, *delay));
-                    let order = counter.fetch_add(1, Ordering::SeqCst);
-                    (
-                        Outcome {
-                            invocation: Invocation::new(*node, format!("{node}@1")),
-                            result,
-                        },
-                        order,
-                    )
-                })
-            })
-            .collect();
-        handles.into_iter().map(|h| h.join().unwrap()).collect()
+    let outcomes = std::thread::scope(|scope| {
+        for (node, rank) in NODES.iter().zip(ranks) {
+            let runner = &runner;
+            let sender = sender.clone();
+            scope.spawn(move || {
+                let result = runner.invoke(&reviewer(node, Some(*rank)));
+                sender
+                    .send(Outcome {
+                        invocation: Invocation::new(*node, format!("{node}@1")),
+                        result,
+                    })
+                    .unwrap();
+            });
+        }
+        drop(sender);
+        let mut outcomes = Vec::new();
+        // All reviewers may run concurrently, but the next output is released only after
+        // the previous invocation actually returns. Host load cannot reorder the control.
+        for rank in 0..NODES.len() {
+            std::fs::write(dir.path().join(format!("release-{rank}")), b"ready").unwrap();
+            let outcome = receiver.recv_timeout(Duration::from_secs(30)).unwrap();
+            assert_eq!(
+                outcome.invocation.node_id,
+                NODES[ranks.iter().position(|r| *r == rank).unwrap()]
+            );
+            outcomes.push(outcome);
+        }
+        outcomes
     });
-
-    for (outcome, order) in &results {
-        finished.push((*order, outcome.invocation.node_id.clone()));
-    }
-    finished.sort_by_key(|(order, _)| *order);
-
-    (
-        results.into_iter().map(|(outcome, _)| outcome).collect(),
-        finished.into_iter().map(|(_, node)| node).collect(),
-    )
+    let finished = outcomes
+        .iter()
+        .map(|o| o.invocation.node_id.clone())
+        .collect();
+    (outcomes, finished)
 }
 
 /// Ingest a sequence of outcomes and return a fingerprint of everything a replay must reproduce.
@@ -143,21 +145,16 @@ fn ingest(outcomes: &[Outcome]) -> (Vec<String>, Vec<String>) {
     (events, ledger)
 }
 
-/// Delay patterns chosen to make the reviewers finish in different orders.
-const PATTERNS: [[u64; 4]; 4] = [
-    [10, 40, 70, 100],
-    [100, 70, 40, 10],
-    [70, 10, 100, 40],
-    [40, 100, 10, 70],
-];
+/// Each node's explicitly coordinated completion rank in four different permutations.
+const PATTERNS: [[usize; 4]; 4] = [[0, 1, 2, 3], [3, 2, 1, 0], [2, 0, 3, 1], [1, 3, 0, 2]];
 
 #[test]
 fn canonical_admission_is_identical_under_every_completion_order() {
     let mut fingerprints = Vec::new();
     let mut completion_orders = Vec::new();
 
-    for delays in PATTERNS {
-        let (outcomes, finished) = run_concurrently(&delays);
+    for ranks in PATTERNS {
+        let (outcomes, finished) = run_concurrently(&ranks);
         assert!(
             outcomes.iter().all(|o| o.succeeded()),
             "every reviewer must have returned a result"
@@ -260,7 +257,7 @@ fn a_failed_reviewer_keeps_its_place() {
     let outcomes = gather(vec![
         Outcome {
             invocation: Invocation::new("tdd", "tdd@1"),
-            result: runner.invoke(&reviewer("tdd", 0)),
+            result: runner.invoke(&reviewer("tdd", None)),
         },
         Outcome {
             invocation: Invocation::new("architecture", "architecture@1"),

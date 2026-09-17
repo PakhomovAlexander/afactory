@@ -10,6 +10,8 @@ pub enum TaskKindProfile {
     RepairAllowedImplementation,
     Review,
     Document,
+    OptimizationAnalysis,
+    OptimizationCandidate,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -25,6 +25,47 @@ pub struct SnapshotTaskEnvironment {
     pub policy: Policy,
 }
 
+impl SnapshotTaskEnvironment {
+    /// Materialize a source snapshot in an ephemeral writable clone for AF-owned preparation.
+    /// The caller must remove its private material before `finish`, which still requires the
+    /// declared source to seal unchanged.
+    pub(crate) fn materialize_preparation(
+        &self,
+        cas: &Cas,
+        invocation: &TaskInvocationV1,
+        signature: &OperatorSignature,
+    ) -> Result<Sandbox, String> {
+        if signature.effects.contains("write-source")
+            || signature
+                .effects
+                .iter()
+                .any(|effect| !matches!(effect.as_str(), "read-source" | "execute-checks"))
+        {
+            return Err("AF-owned preparation requires a non-source-writing Worker".into());
+        }
+        self.materialize_mode(cas, invocation, Mode::EphemeralWrite)
+    }
+
+    fn materialize_mode(
+        &self,
+        cas: &Cas,
+        invocation: &TaskInvocationV1,
+        mode: Mode,
+    ) -> Result<Sandbox, String> {
+        let (id, _, mut manifest) = source_snapshot(
+            cas,
+            invocation
+                .inputs
+                .get("source")
+                .ok_or("Source Worker has no source port")?,
+        )?;
+        add_review_inputs(cas, invocation, mode, &id, &mut manifest)?;
+        let sandbox = Sandbox::materialize(&manifest, cas, mode).map_err(|e| e.to_string())?;
+        review_sandbox::admit(self.policy, &sandbox).map_err(|e| e.to_string())?;
+        Ok(sandbox)
+    }
+}
+
 pub fn invocation_producer(
     cas: &Cas,
     invocation: &TaskInvocationV1,
@@ -120,22 +161,12 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
                 "Source-writing Worker must expose a kernel-captured candidate port".into(),
             );
         }
-        let (id, _, mut manifest) = source_snapshot(
-            cas,
-            invocation
-                .inputs
-                .get("source")
-                .ok_or("Source Worker has no source port")?,
-        )?;
         let mode = if candidate_port(signature) {
             Mode::EphemeralWrite
         } else {
             Mode::ReadOnly
         };
-        add_review_inputs(cas, invocation, mode, &id, &mut manifest)?;
-        let sandbox = Sandbox::materialize(&manifest, cas, mode).map_err(|e| e.to_string())?;
-        review_sandbox::admit(self.policy, &sandbox).map_err(|e| e.to_string())?;
-        Ok(sandbox)
+        self.materialize_mode(cas, invocation, mode)
     }
 
     fn finish(

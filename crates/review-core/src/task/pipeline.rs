@@ -173,6 +173,18 @@ pub enum TaskOperatorV1 {
     DocumentSeal {},
     DocumentCheck {},
     DocumentAccept {},
+    /// Deterministic M1 history fold and typed report rendering; never invokes a Provider.
+    OptimizationProject {},
+    /// Deterministic aggregate development view and installed light-recipe catalog. The output
+    /// is data-only and intentionally omits protected case bodies and a SourceTree handle.
+    OptimizationProfile {},
+    OptimizationPrepare {},
+    OptimizationFinalize {},
+    /// Installed coordinator for one bounded, separately approved experiment.
+    OptimizationExperiment {
+        baseline_slot: String,
+        candidate_slot: String,
+    },
     Seal {},
     /// Kernel receipt assembly: preserves negative/inconclusive checks without invoking a
     /// conditional evaluator, and admits success only from current independent evidence.
@@ -301,6 +313,15 @@ impl PipelineDefinitionV1 {
                         "Operator refers to an unknown Worker slot",
                     )?;
                 }
+                TaskOperatorV1::OptimizationExperiment {
+                    baseline_slot,
+                    candidate_slot,
+                } => require(
+                    baseline_slot != candidate_slot
+                        && self.slots.contains_key(baseline_slot)
+                        && self.slots.contains_key(candidate_slot),
+                    "Optimization experiment needs distinct captured baseline/candidate slots",
+                )?,
                 TaskOperatorV1::Check { checks } => require(
                     !checks.is_empty() && checks.iter().all(|s| is_name(s)),
                     "Check operator needs named trusted checks",

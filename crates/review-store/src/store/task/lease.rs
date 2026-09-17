@@ -19,7 +19,8 @@ impl EventStore {
                 ORDER BY sequence DESC LIMIT 1
              ), transition AS (
                 SELECT sequence FROM events WHERE run_id=?1 AND type IN
-                    ('TaskTransition@1','TaskTransition@2','TaskTransition@3','TaskTransition@4')
+                    ('TaskTransition@1','TaskTransition@2','TaskTransition@3','TaskTransition@4',
+                     'TaskTransition@5')
                 ORDER BY sequence DESC LIMIT 1
              ), tail AS (
                 SELECT sequence FROM events WHERE run_id=?1 ORDER BY sequence DESC LIMIT 1

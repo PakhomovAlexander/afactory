@@ -245,6 +245,7 @@ pub(crate) fn start_legacy(
         issue: None,
         requirements: None,
         document_sources: None,
+        optimization_history: None,
         schema: "af.task-file/1".into(),
         task_id: crate::task::task_id(&repo, &source.content_digest, &loaded.pipeline_artifact_id),
         kind: "implement".into(),
@@ -287,6 +288,7 @@ pub(crate) fn start_legacy(
         json: options.json,
         plan_only,
         timeout_secs: None,
+        optimization_history: None,
     };
     start_captured(
         options,
