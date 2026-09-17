@@ -15,7 +15,8 @@ throughout; the resolver tags that same commit. No PR check substitutes for vali
 of the actual release commit.
 
 CI may select bounded nextest execution through `make check TEST_RUNNER=nextest`;
-ordinary Cargo remains the local default. Doctests remain explicit and required,
+ordinary Cargo remains the local default with four test threads, overridable through
+`TEST_THREADS` for explicit local experiments. Doctests remain explicit and required,
 ignored container probes retain their independent required job, and no retry masks
 failed tests. Preserve real-time integration coverage with exclusive scheduling,
 and use fixed observations to test comparison verdicts deterministically.

@@ -52,7 +52,7 @@ runs:
         printf '{"schema":"af.ci-cache/1","outcome":"%s","primary_key":"%s","matched_key":"%s"}\n' \
           "$outcome" "$PRIMARY_KEY" "$MATCHED_KEY" > "$RUNNER_TEMP/cache-metrics.json"
     - name: Save current Cargo artifacts
-      if: inputs.mode == 'save' && inputs.primary-key != '' && inputs.primary-key != inputs.matched-key
+      if: always() && !cancelled() && inputs.mode == 'save' && inputs.primary-key != '' && inputs.primary-key != inputs.matched-key
       uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
       with:
         path: |

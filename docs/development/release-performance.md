@@ -27,7 +27,9 @@ but publication requires successful validation **and** all three builds. No chec
 container probe, consumer fixture or signature check is removed. The workflow runs
 are grouped by commit so an earlier main check does not queue a later release.
 
-`make check` remains the portable Cargo gate. CI selects `make check TEST_RUNNER=nextest`:
+`make check` remains the portable Cargo gate, with four test threads by default
+(`TEST_THREADS` overrides that local bound). Native-provider fixtures spawn multiple
+processes per test; host CPU count alone is not a suitable concurrency bound. CI selects `make check TEST_RUNNER=nextest`:
 formatting, Clippy, all ordinary unit/integration tests, separate Cargo doctests,
 and synthetic fixture validation. The pinned, checksum-verified nextest binary
 uses four test slots across binaries, no automatic retries and no fail-fast hiding

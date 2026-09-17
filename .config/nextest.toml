@@ -9,5 +9,5 @@ path = "junit.xml"
 
 [[profile.ci.overrides]]
 # Real-time measurement must not contend with unrelated test processes.
-filter = 'binary(self_optimizer)'
+filter = 'binary(self_optimizer) & test(=light_strategy_generates_one_candidate_without_exposing_source_to_author_workers)'
 threads-required = 4

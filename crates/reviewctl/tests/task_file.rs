@@ -261,7 +261,8 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     let plan = run(&["review", "plan", "--file", "review.json"]);
     assert!(
         plan.status.success(),
-        "{}",
+        "{}\n{}",
+        String::from_utf8_lossy(&plan.stdout),
         String::from_utf8_lossy(&plan.stderr)
     );
     assert!(!calls.exists(), "Planning made a model call");

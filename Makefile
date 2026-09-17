@@ -2,6 +2,7 @@
 
 # Default remains the standard Cargo runner; CI opts into bounded cross-binary execution.
 TEST_RUNNER ?= cargo
+TEST_THREADS ?= 4
 CI_STEP = python3 scripts/ci-step.py
 
 check: fmt lint test fixtures
@@ -16,9 +17,9 @@ test:
 ifeq ($(TEST_RUNNER),nextest)
 	$(CI_STEP) test-build cargo nextest run --locked --profile ci --no-run
 	$(CI_STEP) test-run cargo nextest run --locked --profile ci
-	$(CI_STEP) doctests cargo test --locked --doc
+	$(CI_STEP) doctests cargo test --locked --doc -- --test-threads=$(TEST_THREADS)
 else ifeq ($(TEST_RUNNER),cargo)
-	$(CI_STEP) test cargo test --locked
+	$(CI_STEP) test cargo test --locked -- --test-threads=$(TEST_THREADS)
 else
 	$(error TEST_RUNNER must be cargo or nextest)
 endif
