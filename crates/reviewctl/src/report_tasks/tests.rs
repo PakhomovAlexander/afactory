@@ -967,3 +967,30 @@ fn task_report_view_schema_requires_exact_decimals_and_snapshot_identity() {
     changed["task_accounting"][0]["attempts_started"] = json!(1);
     assert!(!validator.is_valid(&changed));
 }
+
+#[test]
+fn bound_context_size_reads_referenced_and_inline_manifests() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let manifest = json!({"entries": [], "rendered_bytes": 24199, "estimated_tokens": 6050});
+    // A captured Review Attempt names its manifest by identity.
+    let manifest_id = cas.put_json(&manifest).unwrap();
+    let review_context = put(
+        &cas,
+        review_core::task::review_compat::TASK_REVIEW_CONTEXT_V1,
+        json!({"context_manifest_id": manifest_id, "review_node": "correctness"}),
+    );
+    assert_eq!(
+        bound_context_size(&cas, &review_context),
+        Some((24199, 6050)),
+        "a Task-backed review Attempt reports its rendered input"
+    );
+    // A generic Task Worker context carries its manifest inline.
+    let generic = cas.put_json(&json!({"manifest": manifest})).unwrap();
+    assert_eq!(bound_context_size(&cas, &generic), Some((24199, 6050)));
+    // Neither shape, no size: the report shows the layers without a cost.
+    let bare = cas
+        .put_json(&json!({"review_node": "correctness"}))
+        .unwrap();
+    assert_eq!(bound_context_size(&cas, &bare), None);
+}

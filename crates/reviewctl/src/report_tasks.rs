@@ -391,13 +391,20 @@ fn warm_selections(events: &[review_core::RunEvent]) -> Result<WarmSelections, S
 }
 
 /// Rendered bytes and estimated tokens of an Attempt's bound Task context, whichever way the
-/// context was stored.
+/// context was stored: a captured Review Attempt's `af/TaskReviewContext@1` names its manifest
+/// by `context_manifest_id`, a generic `af/TaskContext@1` carries it inline as `manifest`.
 fn bound_context_size(cas: &Cas, context_id: &str) -> Option<(u64, u64)> {
     let context = match cas.get_optional_artifact(context_id).ok()? {
         Some(envelope) => envelope.payload,
         None => cas.get_json(context_id).ok()?,
     };
-    let manifest = context.get("manifest")?;
+    let manifest = match context
+        .get("context_manifest_id")
+        .and_then(|id| id.as_str())
+    {
+        Some(manifest_id) => cas.get_json(manifest_id).ok()?,
+        None => context.get("manifest")?.clone(),
+    };
     Some((
         manifest.get("rendered_bytes")?.as_u64()?,
         manifest.get("estimated_tokens")?.as_u64()?,
