@@ -1,6 +1,6 @@
 {
   "schema": "af.task-file/1",
-  "task_id": "warm-p2-build-cache",
+  "task_id": "warm-p2-build-cache-v2",
   "kind": "implement",
   "goal": "P2: Build cache carry: capture the Gate's build output as an explicitly unsafe BuildCache artifact and clone it into Worker sandboxes, built on the shared code-Task cache environment that rc.3 ships.",
   "requirements": {
