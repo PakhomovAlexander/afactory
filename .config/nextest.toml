@@ -1,0 +1,13 @@
+[profile.ci]
+# Cross-binary concurrency is bounded: these tests spawn real process trees.
+test-threads = 4
+retries = 0
+fail-fast = false
+
+[profile.ci.junit]
+path = "junit.xml"
+
+[[profile.ci.overrides]]
+# Real-time measurement must not contend with unrelated test processes.
+filter = 'binary(self_optimizer)'
+threads-required = 4

@@ -1,18 +1,30 @@
 .PHONY: check fmt lint test fixtures build pilot-check consumer-check release review-kernel-container-probes review-kernel-test-corpus
 
+# Default remains the standard Cargo runner; CI opts into bounded cross-binary execution.
+TEST_RUNNER ?= cargo
+CI_STEP = python3 scripts/ci-step.py
+
 check: fmt lint test fixtures
 
 fmt:
-	cargo fmt --all -- --check
+	$(CI_STEP) fmt cargo fmt --all -- --check
 
 lint:
-	cargo clippy --all-targets --locked -- -D warnings
+	$(CI_STEP) lint cargo clippy --all-targets --locked -- -D warnings
 
 test:
-	cargo test --locked
+ifeq ($(TEST_RUNNER),nextest)
+	$(CI_STEP) test-build cargo nextest run --locked --profile ci --no-run
+	$(CI_STEP) test-run cargo nextest run --locked --profile ci
+	$(CI_STEP) doctests cargo test --locked --doc
+else ifeq ($(TEST_RUNNER),cargo)
+	$(CI_STEP) test cargo test --locked
+else
+	$(error TEST_RUNNER must be cargo or nextest)
+endif
 
 fixtures:
-	fixtures/synthetic/generate.sh --check
+	$(CI_STEP) fixtures fixtures/synthetic/generate.sh --check
 
 build:
 	cargo build --release --locked --bin af

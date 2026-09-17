@@ -6,7 +6,8 @@
 #                                 each built binary, signs SHA256SUMS, and publishes the release.
 #
 # A manually pushed vX.Y.Z tag takes the same path from the tag onward. Nothing is published
-# unless `make check` passed on the tagged commit on both operating systems and every archive
+# Builds run alongside validation; publish joins both required branches.
+# Nothing is published unless `make check` passed on the tagged commit on both operating systems and every archive
 # planned the consumer fixtures; nothing is published unsigned.
 name: Release
 
@@ -19,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.sha }}
   cancel-in-progress: false
 
 env:
@@ -70,27 +71,18 @@ jobs:
             echo "prerelease=$prerelease"
           } >> "$GITHUB_OUTPUT"
 
+  # This also provides ordinary main CI when resolve finds no new release.
+  # github.sha is the exact commit just tagged by resolve (or the pushed tag commit).
   check:
-    name: make check (${{ matrix.os }})
     needs: resolve
-    if: needs.resolve.outputs.tag != ''
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.resolve.outputs.tag }}
-      - name: Install the pinned Rust toolchain
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
-      - name: Check the tagged commit
-        run: make check
+    uses: ./.github/workflows/validate.yml
+    with:
+      release: ${{ needs.resolve.outputs.tag != '' }}
 
   build:
     name: build ${{ matrix.target }}
-    needs: [resolve, check]
+    needs: resolve
+    if: needs.resolve.outputs.tag != ''
     strategy:
       fail-fast: true
       matrix:
@@ -114,6 +106,10 @@ jobs:
         # invocation makes rustup install them into the toolchain it just wrote, and that
         # collides ("detected conflict: 'bin/cargo-fmt'"). The check job installs them too.
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt --target "${{ matrix.target }}"
+      - uses: ./.github/actions/cargo-cache
+        id: cargo-cache
+        with:
+          kind: release-${{ matrix.target }}-zig0.15.2-zigbuild0.23.4
       - name: Install zig (static Linux builds)
         if: matrix.cross != 'none'
         run: pip install --user "$CARGO_ZIGBUILD" "$ZIG"
@@ -123,13 +119,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-user-static
       - name: Build
+        env:
+          AF_CI_METRICS: ${{ runner.temp }}/build-metrics.jsonl
         shell: bash
         run: |
           set -euo pipefail
           if [[ "${{ matrix.cross }}" == "none" ]]; then
-            cargo build --release --locked --bin af --target "${{ matrix.target }}"
+            python3 scripts/ci-step.py release-build cargo build --release --locked --bin af --target "${{ matrix.target }}"
           else
-            cargo zigbuild --release --locked --bin af --target "${{ matrix.target }}"
+            python3 scripts/ci-step.py release-build cargo zigbuild --release --locked --bin af --target "${{ matrix.target }}"
           fi
       - name: Prove, plan, and package
         shell: bash
@@ -169,9 +167,26 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+      - name: Save Cargo cache
+        if: always() && !cancelled()
+        uses: ./.github/actions/cargo-cache
+        with:
+          mode: save
+          primary-key: ${{ steps.cargo-cache.outputs.primary-key }}
+          matched-key: ${{ steps.cargo-cache.outputs.matched-key }}
+      - name: Retain build timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: build-metrics-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/build-metrics.jsonl
+            ${{ runner.temp }}/cache-metrics.json
+          if-no-files-found: warn
+
   publish:
     name: sign and publish
-    needs: [resolve, build]
+    needs: [resolve, check, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
