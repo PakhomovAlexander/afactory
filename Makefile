@@ -1,6 +1,6 @@
 .PHONY: check fmt lint test fixtures build pilot-check consumer-check release review-kernel-container-probes review-kernel-test-corpus
 
-# Default remains the standard Cargo runner; CI opts into bounded cross-binary execution.
+# Cargo remains the gate; nextest is an explicit cross-binary benchmark until validated in CI.
 TEST_RUNNER ?= cargo
 TEST_THREADS ?= 4
 CI_STEP = python3 scripts/ci-step.py
@@ -15,10 +15,11 @@ lint:
 
 test:
 ifeq ($(TEST_RUNNER),nextest)
-	$(CI_STEP) test-build cargo nextest run --locked --profile ci --no-run
+	$(CI_STEP) test-build cargo test --locked --no-run
 	$(CI_STEP) test-run cargo nextest run --locked --profile ci
 	$(CI_STEP) doctests cargo test --locked --doc -- --test-threads=$(TEST_THREADS)
 else ifeq ($(TEST_RUNNER),cargo)
+	$(CI_STEP) test-build cargo test --locked --no-run
 	$(CI_STEP) test cargo test --locked -- --test-threads=$(TEST_THREADS)
 else
 	$(error TEST_RUNNER must be cargo or nextest)

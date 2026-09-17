@@ -29,7 +29,8 @@ are grouped by commit so an earlier main check does not queue a later release.
 
 `make check` remains the portable Cargo gate, with four test threads by default
 (`TEST_THREADS` overrides that local bound). Native-provider fixtures spawn multiple
-processes per test; host CPU count alone is not a suitable concurrency bound. CI selects `make check TEST_RUNNER=nextest`:
+processes per test; host CPU count alone is not a suitable concurrency bound.
+CI retains Cargo as its default. The opt-in `make check TEST_RUNNER=nextest` runs:
 formatting, Clippy, all ordinary unit/integration tests, separate Cargo doctests,
 and synthetic fixture validation. The pinned, checksum-verified nextest binary
 uses four test slots across binaries, no automatic retries and no fail-fast hiding
@@ -64,7 +65,7 @@ and branch advances invalidate the embedded commit even when HEAD's text is unch
 Each gate command records `af.ci-step/1` JSONL with its source commit, run/attempt,
 platform, elapsed time and exit code. Compile and test execution have separate labels.
 Cache records distinguish exact reuse, compatible fallback and misses. Validation
-uploads these records and nextest JUnit output even after failures. Builds upload
+uploads these records even after failures; nextest runs additionally produce JUnit output. Builds upload
 their timings separately; only `af-*` binary archives enter release publication.
 
 For workflow-level wall time, job intervals, failed steps and unweighted runner time:
@@ -86,3 +87,13 @@ Overlapping RC3's observed builds with its checks would have removed approximate
 six minutes of critical-path time, assuming available runners. That is a scheduling
 estimate, not a measured post-change release. Keep future before/after measurements
 separate from this estimate and record cold/warm cache state and runner type.
+
+## Nextest rollout decision
+
+The local experiment found native Codex fixture probe timeouts under cross-binary
+scheduling. An earlier standard Cargo run also exposed a transient unavailable
+provider, so this is not established as a nextest-specific defect. Keep the pinned
+nextest installer/profile and opt-in gate for further investigation; do not change
+the required CI runner until a complete comparison passes on Linux and macOS.
+No additional test is ignored, and no retry or larger production timeout masks these failures.
+The default Cargo gate uses four threads, separate build timing, and all prior checks.

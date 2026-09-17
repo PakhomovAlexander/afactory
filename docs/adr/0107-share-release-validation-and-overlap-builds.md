@@ -14,8 +14,8 @@ and Linux container probes before signing or publication. Use the triggering com
 throughout; the resolver tags that same commit. No PR check substitutes for validation
 of the actual release commit.
 
-CI may select bounded nextest execution through `make check TEST_RUNNER=nextest`;
-ordinary Cargo remains the local default with four test threads, overridable through
+Retain bounded nextest execution as an opt-in through `make check TEST_RUNNER=nextest`;
+ordinary Cargo remains the local and CI default with four test threads, overridable through
 `TEST_THREADS` for explicit local experiments. Doctests remain explicit and required,
 ignored container probes retain their independent required job, and no retry masks
 failed tests. Preserve real-time integration coverage with exclusive scheduling,
@@ -29,3 +29,6 @@ and leave unavailable billing/token counters unknown.
 
 See [release performance](../development/release-performance.md) for the observed
 baseline, workflow graph, measurement commands and limits of savings estimates.
+
+Local native-provider probe timeouts block promoting nextest to the required CI gate.
+Keep this rollout decision separate from the independent workflow/cache improvements.

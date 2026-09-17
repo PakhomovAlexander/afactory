@@ -32,12 +32,10 @@ jobs:
         id: cargo-cache
         with:
           kind: check-debug1
-      - name: Install pinned test runner
-        run: scripts/install-nextest.sh
       - name: Check
         env:
           AF_CI_METRICS: ${{ runner.temp }}/check-metrics.jsonl
-        run: make check TEST_RUNNER=nextest
+        run: make check
       - name: CLI smoke
         run: python3 scripts/ci-step.py cli-smoke cargo run --locked -p reviewctl --bin af -- --version
         env:
