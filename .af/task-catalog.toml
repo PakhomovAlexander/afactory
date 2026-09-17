@@ -46,6 +46,11 @@ version = "1.0.0"
 digest = "sha256:3ac1aaa73fe0dbf444bf4bc4fec75e5aa8362bac91e763000f54a4c3ea947bb0"
 path = ".af/task-packages/warm/implementation-reviewed"
 
+[packages."warm/verification"]
+version = "1.0.0"
+digest = "sha256:198ece7f7da58241216800f550a1e5cb65dda88da5534fbf8a1979bc9d74f480"
+path = ".af/task-packages/warm/verification"
+
 [independence]
 command_workers_by_package = true
 distinct_principals = true
