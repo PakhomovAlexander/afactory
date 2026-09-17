@@ -34,13 +34,13 @@
     "standard": true
   },
   "limits": {
-    "tokens": 3500000,
+    "tokens": 4000000,
     "max_attempts": 9,
-    "wall_ms": 14400000,
+    "wall_ms": 21600000,
     "verification": {
-      "tokens": 1300000,
+      "tokens": 1400000,
       "attempts": 7,
-      "wall_ms": 7200000
+      "wall_ms": 10800000
     }
   }
 }
