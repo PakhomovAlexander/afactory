@@ -71,12 +71,13 @@ For workflow-level wall time, job intervals, failed steps and unweighted runner 
 
 ```sh
 gh run view RUN_ID --repo PakhomovAlexander/afactory \
-  --json databaseId,createdAt,jobs > run.json
+  --json databaseId,headSha,attempt,createdAt,startedAt,jobs > run.json
 python3 scripts/ci-report.py run.json > economics.json
 ```
 
-Retain each failed/superseded run and retry attempt separately. Wall time includes
-queue/coordination; summed runner time includes concurrent jobs. Neither is a GitHub
+Retain each failed/superseded run and retry attempt separately. Wall time starts at
+that attempt, including job queues/coordination; since-created time may include older
+attempts and waiting between reruns. Summed runner time includes concurrent jobs. Neither is a GitHub
 invoice. Unknown token usage and billed runner minutes remain null. These artifacts
 provide measurement inputs for subsequent self-optimizer work; they do not constitute
 an authenticated optimization experiment or automatic adoption approval.

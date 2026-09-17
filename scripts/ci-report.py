@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Summarize `gh run view ID --json databaseId,createdAt,jobs` without billing guesses."""
+"""Summarize `gh run view ID --json databaseId,headSha,attempt,createdAt,startedAt,jobs` without billing guesses."""
 import datetime
 import json
 import sys
@@ -33,13 +33,15 @@ def report(run):
     ends = [end for end in ends if end]
     return {
         'schema': 'af.ci-run-economics/1', 'run_id': run.get('databaseId'),
+        'commit': run.get('headSha'), 'attempt': run.get('attempt'),
         'complete': complete,
-        'wall_seconds': duration(stamp(run['createdAt']), max(ends)) if complete and ends else None,
+        'wall_seconds': duration(stamp(run.get('startedAt')), max(ends)) if complete and ends else None,
+        'since_created_seconds': duration(stamp(run['createdAt']), max(ends)) if complete and ends else None,
         'runner_seconds': sum(job['elapsed_seconds'] or 0 for job in jobs)
         if complete and all(job['elapsed_seconds'] is not None or job['conclusion'] == 'skipped' for job in jobs)
         else None,
         'billed_runner_minutes': None, 'tokens': None,
-        'note': 'Wall time includes queue/coordination. Runner seconds sum parallel job intervals; neither is billed cost. One workflow attempt only; retain failed and superseded attempts separately.',
+        'note': 'Wall time starts at this attempt start, including its job queues/coordination. Since-created time may include prior attempts and waiting between reruns. Runner seconds sum parallel job intervals; neither is billed cost. Retain failed and superseded attempts separately.',
         'jobs': jobs,
     }
 
