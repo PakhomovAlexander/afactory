@@ -17,8 +17,10 @@ Prerelease: existing .af authority remains supported. Self-optimization is opt-i
 
 ### Changes
 
-- release: v0.9.0-rc.2 (#93)
-- Add self-optimizer economics, experiments and light optimization (#94)
+- Add project-history capture and reporting with explicit token, elapsed-time and cache evidence (#94).
+- Run bounded optimization experiments with signed approvals, independent evaluation and exact accounting (#94).
+- Add light optimization for Worker instructions and safe Cargo cache selection, with payoff gates and durable adoption evidence (#94).
+- Exercise candidate model contexts and delivered cache settings through real Task paths; coordinate the completion-order test explicitly to avoid scheduling flakes (#94).
 ## [0.9.0-rc.2] - 2026-09-15
 
 ### Authority compatibility
