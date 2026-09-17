@@ -9,6 +9,16 @@ release pages only.
 
 ## [Unreleased]
 
+## [0.9.0-rc.3] - 2026-09-17
+
+### Authority compatibility
+
+Prerelease: existing .af authority remains supported. Self-optimization is opt-in and requires a reviewed project optimizer catalog, bounded policy and the RC3 binary; generated experiments still require exact signed developer approval. Refresh a consumer pin explicitly with the supported onboard refresh-lock path after verifying the release. New optimizer state and Task inspection/transition formats require a compatible binary; preserve the prior Store and known-good release for rollback. Heavy redesign, live paid savings demonstrations, longitudinal adoption and stable-release migration/pilot gates remain pending. This release does not switch consumer pins or claim stable readiness.
+
+### Changes
+
+- release: v0.9.0-rc.2 (#93)
+- Add self-optimizer economics, experiments and light optimization (#94)
 ## [0.9.0-rc.2] - 2026-09-15
 
 ### Authority compatibility
