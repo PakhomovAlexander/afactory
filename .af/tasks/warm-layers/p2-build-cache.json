@@ -1,0 +1,42 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "warm-p2-build-cache",
+  "kind": "implement",
+  "goal": "P2: Build cache carry: clone the Gate's build output into Worker sandboxes as a distinct, explicitly unsafe BuildCache artifact under trusted-local policy.",
+  "requirements": {
+    "schema": "afactory.warm-layers/1",
+    "package": "P2",
+    "design": "docs/design/worker-warm-layers.md",
+    "plan": "docs/design/worker-warm-layers-plan.md",
+    "deliverables": [
+      "review.kernel/BuildCache@1 with producer and head provenance, regular-file-only layout, no-follow traversal, entry, depth and byte limits, fixed modes and stripped xattrs; never typed or named as a Cache Snapshot",
+      "cargo_target closed cache kind that points CARGO_TARGET_DIR at the clone",
+      "Gate-to-Worker typed handoff of the cache within one Round; refused under the safe policy",
+      "Cache bytes removed before seal so they never enter a candidate tree or Proposal"
+    ],
+    "acceptance": [
+      "A safe pipeline refuses the handoff before any Worker dispatch",
+      "A symlink, FIFO or special file in the Gate's target directory refuses capture with a recorded reason",
+      "A TDD reviewer fixture reuses the Gate build and the sealed diff is unchanged"
+    ]
+  },
+  "pipeline": {
+    "name": "warm/implementation-reviewed",
+    "fallback": "refuse"
+  },
+  "strategy": "reviewed",
+  "verification": "review",
+  "facts": {
+    "standard": true
+  },
+  "limits": {
+    "tokens": 3500000,
+    "max_attempts": 9,
+    "wall_ms": 14400000,
+    "verification": {
+      "tokens": 1300000,
+      "attempts": 7,
+      "wall_ms": 7200000
+    }
+  }
+}

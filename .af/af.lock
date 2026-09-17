@@ -1,12 +1,12 @@
 version = 1
 
 [af]
-version = "0.8.0"
+version = "0.9.0-rc.2"
 
 [af.digests]
-aarch64-apple-darwin = "sha256:31ceb11cab76d180ede3da22384249f83bb026167a7f8267dcf1d012e15e55c2"
-aarch64-unknown-linux-musl = "sha256:8de2ead6650e4048107529ec63e89dbcedac025c658c35850976cc30bfb8a465"
-x86_64-unknown-linux-musl = "sha256:befe9900ca6e717dbc1510da3b09f9b9bc8e973e351013723846895644ac2f37"
+aarch64-apple-darwin = "sha256:9bd6521717e7d37a67c9a9ab2ff8ce32bf1ee5c2eda4f2daa379eb2cda51171b"
+aarch64-unknown-linux-musl = "sha256:ffaf16d239a025419cd1c2e4efba4ba99042575ccde0dc88e9cf2ace2ac59f72"
+x86_64-unknown-linux-musl = "sha256:b0bb1f05f80720fffac4c6e23ad9cdcdac4daedef0f71ee115ddece57df64b58"
 
 [reviewers]
 

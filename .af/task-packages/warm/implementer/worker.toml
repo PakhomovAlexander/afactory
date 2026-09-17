@@ -1,0 +1,63 @@
+schema = "af.worker/1"
+name = "warm/implementer"
+version = "1.0.0"
+
+[signature]
+effects = ["write-source"]
+roles = ["implement"]
+worker_input_type = "af/ImplementationInput@1"
+worker_output_type = "af/ImplementationReport@1"
+
+[signature.contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.source.affinity]
+kind = "unbound"
+
+[signature.contract.outputs.candidate]
+artifact_type = "af/CandidateTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.outputs.candidate.affinity]
+kind = "same_as"
+input = "source"
+
+[signature.contract.outputs.report]
+artifact_type = "af/ImplementationReport@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.outputs.report.affinity]
+kind = "same_as"
+input = "source"
+
+[signature.evidence]
+
+[signature.retains]
+candidate = ["requirements", "source"]
+report = ["requirements", "source"]
+
+[signature.attempt]
+tokens = 1500000
+wall_ms = 3600000
+
+[runner]
+kind = "model"
+provider_kind = "claude"
+model = "claude-fable-5-1"
+effort = "high"
