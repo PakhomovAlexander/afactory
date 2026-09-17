@@ -22,6 +22,10 @@ digest = "sha256:75ddb131f51ba984f2969cd37070df24ef31c87525d859e711342b2af8887a8
 version = "1.2.0"
 digest = "sha256:50ab5d7ab98a1b0a5d314008316a82d575f2eeb04904d23b0f97ad515a0431a7"
 
+[workers.correctness-sol]
+version = "1.0.0"
+digest = "sha256:b741a7aa603bcc05aff05ba45ed50dd792dc9cfc2579ca1b8c49a66ebf7f70ee"
+
 [workers.evaluator]
 version = "1.0.0"
 digest = "sha256:cec369961c685997a857c7b7ea206163178cdb72eea568bfdcc0b35daef73ec0"
@@ -41,6 +45,10 @@ digest = "sha256:0bf8057a99f68af429db7e4db08aaf86707a301d905da704ea370687f08f4a0
 [pipelines.implement]
 version = "1.0.0"
 digest = "sha256:93e750b071481afd9094a82ea86211143fe556b1aea44b7a227f46b9e25f245b"
+
+[pipelines.p1-review]
+version = "1.0.0"
+digest = "sha256:3d514584be32195c68c6c02c8df08fbd0a217ff61e1b91062c6b3b1ebbab6193"
 
 [pipelines.review]
 version = "1.0.0"
