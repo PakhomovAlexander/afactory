@@ -176,3 +176,65 @@ fn registration_after_deadline_retains_missing_items_but_cannot_dispatch() {
     assert_eq!(budget.committed_tokens(), 0);
     assert_eq!(budget.reserved_tokens(), 0);
 }
+
+#[test]
+fn experimental_registration_preserves_trusted_verifier_credit() {
+    let limits = TaskLimitsV1 {
+        tokens: 20,
+        max_attempts: 2,
+        deadline_unix_ms: 1_000,
+        verification: VerificationReserveV1 {
+            tokens: 10,
+            attempts: 1,
+            wall_ms: 100,
+        },
+    };
+    let mut budget = TaskBudget::new(limits.clone(), BTreeMap::new()).unwrap();
+    let children = BTreeMap::from([
+        (
+            "root.experiment.candidate".into(),
+            NodeAllowance {
+                tokens_per_attempt: 10,
+                wall_ms_per_attempt: 100,
+                max_attempts: 1,
+                verification_attempts: 0,
+            },
+        ),
+        (
+            "root.experiment.verify".into(),
+            NodeAllowance {
+                tokens_per_attempt: 10,
+                wall_ms_per_attempt: 100,
+                max_attempts: 1,
+                verification_attempts: 1,
+            },
+        ),
+    ]);
+    budget
+        .register_experimental_children("root.experiment", &children, 2)
+        .unwrap();
+    let candidate = budget.prepare("root.experiment.candidate", 1).unwrap();
+    budget.begin(&candidate.id, 2).unwrap();
+    budget.settle_exact(&candidate.id, 10).unwrap();
+    let verifier = budget.prepare("root.experiment.verify", 3).unwrap();
+    budget.begin(&verifier.id, 4).unwrap();
+
+    let mut insufficient = TaskBudget::new(
+        TaskLimitsV1 {
+            verification: VerificationReserveV1 {
+                tokens: 0,
+                attempts: 0,
+                wall_ms: 0,
+            },
+            ..limits
+        },
+        BTreeMap::new(),
+    )
+    .unwrap();
+    assert!(
+        insufficient
+            .register_experimental_children("root.experiment", &children, 2)
+            .unwrap_err()
+            .contains("protected verifier allocation")
+    );
+}

@@ -187,3 +187,7 @@ Record the options you rejected and why — that is the part future readers need
   replies](0103-constrain-native-claude-task-replies.md)
 - [0104 — Preview captured Task plans before first
   execution](0104-preview-captured-task-plans-before-first-execution.md)
+- [0105 — Dispatch `self optimize` through the project
+  pin](0105-dispatch-self-optimize-through-the-project-pin.md)
+- [0106 — Authorize experimental children separately inside one
+  Task](0106-authorize-experimental-children-separately.md)

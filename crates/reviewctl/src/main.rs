@@ -48,6 +48,7 @@ mod project;
 mod providers;
 mod report_tasks;
 mod review_task;
+mod self_optimizer;
 mod selfmgmt;
 mod task;
 mod task_execution;
@@ -814,6 +815,7 @@ fn task_review_options(args: cli::RunArgs, plan_only: bool) -> task_execution::S
         json: args.json,
         plan_only,
         timeout_secs: args.timeout_secs,
+        optimization_history: None,
     }
 }
 
@@ -1270,6 +1272,7 @@ fn main() {
                             json,
                             plan_only: !execute,
                             timeout_secs,
+                            optimization_history: None,
                         })
                     } else {
                         task::options_from_cli(
@@ -1308,6 +1311,7 @@ fn main() {
                     json,
                     plan_only: true,
                     timeout_secs: None,
+                    optimization_history: None,
                 }),
                 cli::TaskCommand::DecisionPayload {
                     task_id,
@@ -1428,6 +1432,26 @@ fn main() {
                 } => task::delivery_from_cli(task_id, repo, branch, worktree, confirm, state, json)
                     .and_then(task::deliver)
                     .map(|()| 0),
+                cli::TaskCommand::ObserveAdoption {
+                    task_id,
+                    commit,
+                    workload,
+                    model,
+                    environment,
+                    evidence_task,
+                    inspect,
+                } => task::observe_adoption(
+                    &task_id,
+                    &commit,
+                    &workload,
+                    &model,
+                    &environment,
+                    evidence_task.as_deref(),
+                    &inspect.repo,
+                    inspect.state.as_ref(),
+                    inspect.json,
+                )
+                .map(|()| 0),
                 cli::TaskCommand::List { inspect } => {
                     task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
                         .and_then(task::list)
@@ -1455,6 +1479,29 @@ fn main() {
         cli::Command::SelfCmd { command } => (
             "af self",
             match command {
+                cli::SelfCommand::Optimize {
+                    since,
+                    all_history,
+                    strategy,
+                    history_config,
+                    execute,
+                    experiment,
+                    candidate,
+                    repo,
+                    state,
+                    json,
+                } => self_optimizer::run(self_optimizer::Options {
+                    since,
+                    all_history,
+                    strategy,
+                    history_config,
+                    execute,
+                    experiment,
+                    candidate,
+                    repo,
+                    state,
+                    json,
+                }),
                 cli::SelfCommand::Status { json } => selfmgmt::status(json).map(|()| 0),
                 cli::SelfCommand::Update { check, version, rc } => {
                     selfmgmt::update(check, version, rc).map(|()| 0)

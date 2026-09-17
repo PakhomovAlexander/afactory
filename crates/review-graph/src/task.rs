@@ -158,6 +158,38 @@ pub struct OwnedChildTemplateV1 {
     pub inherited_inputs: BTreeMap<String, String>,
 }
 
+/// Captured preparation authority for a generated experimental closure.  Unlike an owned-child
+/// template this does not supply an operator or allowance: those bytes arrive in a separately
+/// approved child plan and are checked against the immutable slot before registration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentalSlotTemplateV1 {
+    pub slot_id: String,
+    pub max_concurrency: u32,
+}
+
+/// One executable child in an approved experimental closure.  The invocation contains the
+/// complete typed inputs; the compiled definition contains the exact Worker/operator binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentPlannedChildV1 {
+    pub definition: CompiledNode,
+    pub invocation: review_core::task::execution::TaskInvocationV1,
+    pub allowance: NodeAllowance,
+}
+
+pub const EXPERIMENT_EXECUTION_PLAN_V1: &str = "af/ExperimentExecutionPlan@1";
+
+/// Runtime form of the complete child closure.  It is deliberately separate from CompiledTask:
+/// registering it never mutates the captured outer graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentExecutionPlanV1 {
+    pub schema: String,
+    pub parent_node: String,
+    pub children: BTreeMap<String, ExperimentPlannedChildV1>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompiledTask {
@@ -176,6 +208,8 @@ pub struct CompiledTask {
     pub allowances: BTreeMap<String, NodeAllowance>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub owned_children: BTreeMap<String, OwnedChildTemplateV1>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub experimental_slots: BTreeMap<String, ExperimentalSlotTemplateV1>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -403,6 +437,7 @@ impl CompiledTask {
     }
 
     pub fn budget(&self, limits: review_core::task::TaskLimitsV1) -> Result<TaskBudget, String> {
+        self.validate_experimental_slots()?;
         let templates = self.owned_template_allowances()?;
         // Before dispatch, protect the declared verifier reserve and one Attempt for every
         // unconditional non-verifier. Provider admission guards cannot hide mandatory work.
@@ -493,6 +528,21 @@ impl CompiledTask {
             )?
             .with_owned_templates(templates)?
             .with_token_scopes(self.token_scopes.clone())
+    }
+
+    pub fn validate_experimental_slots(&self) -> Result<(), String> {
+        for (owner, slot) in &self.experimental_slots {
+            if !self.nodes.contains_key(owner)
+                || self.allowances.contains_key(owner)
+                || self.owned_children.contains_key(owner)
+                || !review_core::is_digest(&slot.slot_id)
+                || slot.max_concurrency == 0
+                || slot.max_concurrency > self.max_parallel.max(1)
+            {
+                return Err("Experimental slot needs a static zero-Attempt owner, exact slot identity and bounded concurrency".into());
+            }
+        }
+        Ok(())
     }
 
     pub fn owned_template_allowances(
@@ -774,6 +824,7 @@ fn compile_structure_mode(
             max_parallel: definition.max_parallel,
             allowances: BTreeMap::new(),
             owned_children: BTreeMap::new(),
+            experimental_slots: BTreeMap::new(),
             review_integration: None,
             token_scopes: BTreeMap::new(),
         },
@@ -1358,6 +1409,16 @@ impl Compiler<'_> {
                                 };
                                 (key, operator)
                             }
+                            TaskOperatorV1::OptimizationExperiment {
+                                baseline_slot,
+                                candidate_slot,
+                            } => (
+                                "operator/optimization-experiment".into(),
+                                TaskOperatorV1::OptimizationExperiment {
+                                    baseline_slot: slots[baseline_slot].clone(),
+                                    candidate_slot: slots[candidate_slot].clone(),
+                                },
+                            ),
                             other => (format!("operator/{}", operator_name(other)?), other.clone()),
                         };
                         let signature = self
@@ -1673,6 +1734,11 @@ fn resolve(
 
 fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
     match operator {
+        TaskOperatorV1::OptimizationProject {} => Ok("optimization-project"),
+        TaskOperatorV1::OptimizationProfile {} => Ok("optimization-profile"),
+        TaskOperatorV1::OptimizationPrepare {} => Ok("optimization-prepare"),
+        TaskOperatorV1::OptimizationFinalize {} => Ok("optimization-finalize"),
+        TaskOperatorV1::OptimizationExperiment { .. } => Ok("optimization-experiment"),
         TaskOperatorV1::PlanningContext {} => Ok("planning-context"),
         TaskOperatorV1::DocumentSeal {} => Ok("document-seal"),
         TaskOperatorV1::DocumentCheck {} => Ok("document-check"),

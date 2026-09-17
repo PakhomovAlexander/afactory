@@ -13,6 +13,20 @@ documented in [`docs/architecture.md`](docs/architecture.md); this file defines 
 The durable business request, with immutable revisions, typed inputs and required outputs,
 acceptance obligations, captured authority and bounded resources. Review is one Task kind.
 
+**Observation**:
+A normalized, source-addressed fact about project execution, intervention, cache behavior or
+outcome. It carries no instruction or causal authority, and absent measurements remain unknown.
+
+**History Capture**:
+One immutable, project-scoped set of Observation records plus exact source-prefix receipts,
+exclusions, cutoff and completeness. Appended captures retain predecessor identity; overlap is
+deduplicated by exact source/observation identity, never prose similarity.
+
+**Optimization Economics**:
+The deterministic retained-chain projection that keeps native counters, AF chargeable usage,
+outer-session usage, overlapping time and optional estimates distinct. It is evidence for a
+report, not a provider invoice or a verified savings claim.
+
 **Execution Plan**:
 The exact compiled Pipeline closure for one Task revision, including expanded child calls,
 effective Workers, input identities, allowed effects, acceptance coverage and resource limits.

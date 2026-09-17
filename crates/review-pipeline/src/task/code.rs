@@ -9,6 +9,9 @@ use review_core::PortCardinality;
 use review_core::task::execution::{TaskInvocationV1, TaskOutputV1};
 use review_core::task::pipeline::*;
 use review_core::task::plan::ExecutionPlanV1;
+use review_core::task::runtime::{
+    TASK_RUNTIME_EVIDENCE_V1, TaskRuntimeEvidenceV1, TaskRuntimeSpanKindV1, TaskRuntimeSpanV1,
+};
 use review_core::task::verification::*;
 use review_core::task::*;
 use review_graph::task::{CompiledOperator, CompiledTask, OperatorAttemptCost, OperatorSignature};
@@ -298,10 +301,11 @@ impl CodeTaskDomain {
         attempt: &PreparedTaskAttempt,
         names: &BTreeSet<String>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> Result<ArtifactInputV1, String> {
+    ) -> Result<(ArtifactInputV1, String), String> {
         let source = input.inputs.get("source").ok_or("Check needs source")?;
         let (snapshot_id, _, manifest) = source_snapshot(cas, source)?;
         let mut checks = BTreeMap::new();
+        let mut spans = Vec::new();
         for name in names {
             let definition = self
                 .policy
@@ -333,21 +337,47 @@ impl CodeTaskDomain {
                     "CARGO_TARGET_DIR",
                     runtime.path().join("target").display().to_string(),
                 );
-            let mut result = if remaining > 0 {
-                runner.run(definition)
+            let (mut result, timing) = if remaining > 0 {
+                let execution = runner.run_observed(definition);
+                (
+                    execution.result,
+                    Some((execution.started_unix_ms, execution.elapsed_ms)),
+                )
             } else {
-                CheckResult {
-                    name: name.clone(),
-                    status: CheckStatus::NotRun,
-                    exit_code: None,
-                    reason: Some("Task check deadline expired".into()),
-                    program: Some(definition.command.program.clone()),
-                    args: definition.command.args.clone(),
-                    stdout: None,
-                    stderr: None,
-                    required: definition.required,
-                }
+                (
+                    CheckResult {
+                        name: name.clone(),
+                        status: CheckStatus::NotRun,
+                        exit_code: None,
+                        reason: Some("Task check deadline expired".into()),
+                        program: Some(definition.command.program.clone()),
+                        args: definition.command.args.clone(),
+                        stdout: None,
+                        stderr: None,
+                        required: definition.required,
+                    },
+                    None,
+                )
             };
+            if let Some((started_unix_ms, elapsed_ms)) = timing {
+                let span_id = cas
+                    .put_json(&json!([
+                        attempt.task_id(),
+                        attempt.id(),
+                        input.node,
+                        name,
+                        started_unix_ms,
+                        elapsed_ms
+                    ]))
+                    .map_err(|e| e.to_string())?;
+                spans.push(TaskRuntimeSpanV1 {
+                    span_id,
+                    kind: TaskRuntimeSpanKindV1::Check,
+                    label: name.clone(),
+                    started_unix_ms,
+                    elapsed_ms,
+                });
+            }
             let sealed = sandbox.seal().map_err(|e| e.to_string())?;
             if !sealed.unchanged() {
                 result.status = CheckStatus::Failed;
@@ -383,12 +413,36 @@ impl CodeTaskDomain {
             )
             .map_err(|e| e.to_string())?
             .0;
-        Ok(ArtifactInputV1 {
-            artifact_ids: vec![id],
-            artifact_type: TASK_CHECK_RECEIPT_V1.into(),
-            cardinality: PortCardinality::One,
-            snapshot_id: Some(snapshot_id),
-        })
+        let evidence = TaskRuntimeEvidenceV1 {
+            task_id: attempt.task_id().into(),
+            attempt_id: attempt.id().into(),
+            node: input.node.clone(),
+            context_id: attempt.context_id().into(),
+            spans,
+            caches: vec![],
+        };
+        evidence.validate()?;
+        let evidence_id = cas
+            .put_artifact(
+                TASK_RUNTIME_EVIDENCE_V1,
+                invocation_producer(cas, input, Some(attempt))?,
+                std::iter::once(attempt.context_id().to_owned())
+                    .chain(evidence.spans.iter().map(|span| span.span_id.clone()))
+                    .collect(),
+                Some(snapshot_id.clone()),
+                serde_json::to_value(evidence).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?
+            .0;
+        Ok((
+            ArtifactInputV1 {
+                artifact_ids: vec![id],
+                artifact_type: TASK_CHECK_RECEIPT_V1.into(),
+                cardinality: PortCardinality::One,
+                snapshot_id: Some(snapshot_id),
+            },
+            evidence_id,
+        ))
     }
 
     fn verification(
@@ -833,21 +887,23 @@ impl TaskOperatorHost for CodeTaskDomain {
             );
         }
 
+        let mut raw_artifact_ids = Vec::new();
         let outputs = (|| match self.operator(input)? {
             TaskOperatorV1::Seal {} => Ok(BTreeMap::from([(
                 "snapshot".into(),
                 seal_candidate(cas, input)?,
             )])),
-            TaskOperatorV1::Check { checks } => Ok(BTreeMap::from([(
-                "result".into(),
-                self.checks(
+            TaskOperatorV1::Check { checks } => {
+                let (receipt, evidence_id) = self.checks(
                     cas,
                     input,
                     attempt.ok_or("Check has no started Attempt")?,
                     checks,
                     cancellation,
-                )?,
-            )])),
+                )?;
+                raw_artifact_ids.push(evidence_id);
+                Ok(BTreeMap::from([("result".into(), receipt)]))
+            }
             TaskOperatorV1::Accept {} => self.accept(cas, input),
             _ => Err("Code operator requires its captured Worker or domain adapter".into()),
         })();
@@ -856,7 +912,7 @@ impl TaskOperatorHost for CodeTaskDomain {
             usage: None,
             outputs,
             charged_tokens: Some(0),
-            raw_artifact_ids: vec![],
+            raw_artifact_ids,
             usage_id: None,
             feedback_id: None,
         }

@@ -13,7 +13,32 @@ pub fn invoke_command_controlled(
     timeout: Duration,
     cancellation: Option<&AtomicBool>,
 ) -> WorkerReturn {
-    let Some(flag) = cancellation else {
+    invoke_command_controlled_with_environment(
+        cas,
+        workdir,
+        runtime_root,
+        command,
+        contract,
+        context_id,
+        timeout,
+        cancellation,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn invoke_command_controlled_with_environment(
+    cas: &Cas,
+    workdir: &Path,
+    runtime_root: &Path,
+    command: &Command,
+    contract: &WorkerContract,
+    context_id: &str,
+    timeout: Duration,
+    cancellation: Option<&AtomicBool>,
+    environment: &[(String, String)],
+) -> WorkerReturn {
+    if cancellation.is_none() && environment.is_empty() {
         return invoke_command(
             cas,
             workdir,
@@ -23,16 +48,17 @@ pub fn invoke_command_controlled(
             context_id,
             timeout,
         );
-    };
+    }
     let returned = match contract.read_context(cas, context_id) {
-        Ok((_, bytes)) => invoke_command_bytes_controlled(
+        Ok((_, bytes)) => invoke_command_bytes_controlled_with_environment(
             cas,
             workdir,
             runtime_root,
             command,
             bytes,
             timeout,
-            Some(flag),
+            cancellation,
+            environment,
         ),
         Err(error) => ModelWorkerReturn {
             message: Err(error),
@@ -70,10 +96,34 @@ pub fn invoke_command_bytes_controlled(
     timeout: Duration,
     cancellation: Option<&AtomicBool>,
 ) -> ModelWorkerReturn {
-    let Some(flag) = cancellation else {
+    invoke_command_bytes_controlled_with_environment(
+        cas,
+        workdir,
+        runtime_root,
+        command,
+        bytes,
+        timeout,
+        cancellation,
+        &[],
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn invoke_command_bytes_controlled_with_environment(
+    cas: &Cas,
+    workdir: &Path,
+    runtime_root: &Path,
+    command: &Command,
+    bytes: Vec<u8>,
+    timeout: Duration,
+    cancellation: Option<&AtomicBool>,
+    environment: &[(String, String)],
+) -> ModelWorkerReturn {
+    if cancellation.is_none() && environment.is_empty() {
         return invoke_command_bytes(cas, workdir, runtime_root, command, bytes, timeout);
-    };
-    let runner = match command_runner(workdir, runtime_root, timeout) {
+    }
+    let runner = match command_runner_with_environment(workdir, runtime_root, timeout, environment)
+    {
         Ok(runner) => runner,
         Err(error) => {
             let mut value = ModelWorkerReturn::failed(error);
@@ -81,7 +131,7 @@ pub fn invoke_command_bytes_controlled(
             return value;
         }
     };
-    let capture = runner.capture_settled_with_stdin_controlled(cas, command, bytes, Some(flag));
+    let capture = runner.capture_settled_with_stdin_controlled(cas, command, bytes, cancellation);
     let mut raw_artifact_ids = capture.raw_artifact_ids;
     let message = match capture.status {
         Ok(status) if status.success() => {

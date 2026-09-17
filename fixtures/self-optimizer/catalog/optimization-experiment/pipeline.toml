@@ -1,0 +1,87 @@
+schema = "af.pipeline/1"
+name = "builtin/optimization-experiment"
+version = "1.0.0"
+max_attempts = 2
+max_parallel = 1
+
+[contract.inputs.history]
+artifact_type = "af/OptimizationHistory@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.inputs.history.affinity]
+kind = "unbound"
+
+[contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.inputs.source.affinity]
+kind = "unbound"
+
+[contract.outputs.comparison]
+artifact_type = "af/ExperimentComparison@1"
+cardinality = "one"
+optional = false
+covers = ["experiment"]
+[contract.outputs.comparison.affinity]
+kind = "unbound"
+
+[accepts]
+kinds = ["optimize"]
+[accepts.required_facts]
+experimental = true
+
+[slots.baseline]
+worker = "builtin/optimization-baseline"
+role = "optimize"
+input_type = "af/OptimizationArmInput@1"
+output_type = "af/OptimizationArmReceipt@1"
+min_attempts = 0
+max_attempts = 1
+allow_local_replacement = false
+independent_from = ["candidate"]
+
+[slots.candidate]
+worker = "builtin/optimization-candidate"
+role = "optimize"
+input_type = "af/OptimizationArmInput@1"
+output_type = "af/OptimizationArmReceipt@1"
+min_attempts = 0
+max_attempts = 1
+allow_local_replacement = false
+independent_from = ["baseline"]
+
+[[nodes]]
+id = "experiment"
+[nodes.operator]
+op = "optimization_experiment"
+baseline_slot = "baseline"
+candidate_slot = "candidate"
+[nodes.inputs.history]
+kind = "input"
+port = "history"
+[nodes.inputs.requirements]
+kind = "input"
+port = "requirements"
+[nodes.inputs.source]
+kind = "input"
+port = "source"
+
+[outputs.comparison]
+kind = "node"
+node = "experiment"
+port = "comparison"
+[coverage.experiment]
+kind = "node"
+node = "experiment"
+port = "comparison"

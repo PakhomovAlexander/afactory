@@ -1,0 +1,6 @@
+{"timestamp_unix_ms":"40","type":"session_meta","payload":{"id":"foreign-session","project_id":"sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}}
+{"timestamp_unix_ms":"41","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":900,"cached_input_tokens":0,"output_tokens":50}}}}
+{"timestamp_unix_ms":"50","type":"session_meta","payload":{"id":"codex-session","project_id":"sha256:1111111111111111111111111111111111111111111111111111111111111111"}}
+{"timestamp_unix_ms":"51","type":"response_item","payload":{"type":"reasoning","text":"private chain of thought must never be captured"}}
+{"timestamp_unix_ms":"60","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":5,"reasoning_output_tokens":3}}}}
+{"timestamp_unix_ms":"70","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":120,"cached_input_tokens":30,"output_tokens":10,"reasoning_output_tokens":4}}}}

@@ -1,7 +1,8 @@
 # ADR-0081: Register owned Review children in the common Task runtime
 
 Date: 2026-09-12
-Status: Proposed
+Status: Accepted, 2026-09-17, as the shared-runtime foundation for the authorized
+self-optimizer M1–M3 implementation.
 
 ## Context
 
@@ -70,6 +71,11 @@ repeat paid calls. The Store must retain historical child registrations for acco
 refusing their use for current dispatch after a plan or Round handoff. The additional wire and
 inspection generations keep old artifacts readable without relabeling their payloads.
 
-This implements part of the authorized common-runtime design. Its specialist review remains
-pending. The full repository gate passes at `d9babab`; the legacy CLI cutover and live
-performance pilot remain required.
+The original implementation recorded a passed repository gate at `d9babab` while specialist
+review, the legacy CLI cutover and a live performance pilot were pending. Acceptance of this
+architectural decision does not retroactively complete those historical verification gates.
+
+[ADR-0106](0106-authorize-experimental-children-separately.md) extends the common runtime with
+separately authenticated experimental closures. It does not broaden the data-only meaning of
+owned Review children described here. Experimental dispatch and delivery still require their
+own current authority, checks and evidence; this accepted status grants neither.

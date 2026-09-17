@@ -1,0 +1,57 @@
+schema = "af.pipeline/1"
+name = "builtin/optimization-economics"
+version = "1.0.0"
+max_attempts = 1
+max_parallel = 1
+
+[contract.inputs.history]
+artifact_type = "af/OptimizationHistory@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.inputs.history.affinity]
+kind = "unbound"
+
+[contract.outputs.economics]
+artifact_type = "af/OptimizationEconomics@1"
+cardinality = "one"
+optional = false
+covers = []
+[contract.outputs.economics.affinity]
+kind = "unbound"
+
+[contract.outputs.report]
+artifact_type = "af/OptimizationReport@1"
+cardinality = "one"
+optional = false
+covers = ["analysis"]
+[contract.outputs.report.affinity]
+kind = "unbound"
+
+[accepts]
+kinds = ["optimize"]
+[accepts.required_facts]
+report_only = true
+
+[slots]
+
+[[nodes]]
+id = "project"
+[nodes.operator]
+op = "optimization_project"
+[nodes.inputs.history]
+kind = "input"
+port = "history"
+
+[outputs.economics]
+kind = "node"
+node = "project"
+port = "economics"
+[outputs.report]
+kind = "node"
+node = "project"
+port = "report"
+[coverage.analysis]
+kind = "node"
+node = "project"
+port = "report"

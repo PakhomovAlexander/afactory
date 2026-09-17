@@ -3,6 +3,9 @@
 
 pub mod broker;
 mod encoding;
+pub mod experiment;
+#[cfg(test)]
+mod optimization_billing_tests;
 pub mod owned;
 pub mod usage_observation;
 pub use encoding::{DecodedTaskExecutionRecord, read_execution_record};
@@ -26,6 +29,7 @@ pub struct TaskExecutionProjection {
     attempts: BTreeMap<String, RecordedAttempt>,
     brokers: BTreeMap<String, broker::RecordedBroker>,
     pub(super) owned: BTreeMap<String, owned::RecordedChildren>,
+    pub(super) experiments: BTreeMap<String, experiment::RecordedExperiment>,
     pub(super) review_integrations:
         BTreeMap<String, super::review_integration::RegisteredTaskReviewIntegration>,
     pub(super) active_review_integration: Option<String>,
@@ -40,6 +44,8 @@ struct RecordedAttempt {
     context_id: Option<String>,
     feedback_ids: Vec<String>,
     started: bool,
+    started_unix_ms: Option<u64>,
+    settled_unix_ms: Option<u64>,
     released: bool,
     settlement: Option<TaskExecutionRecordV1>,
 }
@@ -53,10 +59,59 @@ pub struct TaskAttemptAccounting {
     pub plan_id: String,
     pub reservation: TaskReservation,
     pub started: bool,
+    pub started_unix_ms: Option<u64>,
+    pub settled_unix_ms: Option<u64>,
     pub released: bool,
     pub charged_tokens: u128,
     pub state: Option<review_attempt::AttemptState>,
     pub result: Option<TaskAttemptResultV1>,
+    pub raw_artifact_ids: Vec<String>,
+    pub usage_id: Option<String>,
+}
+
+impl TaskAttemptAccounting {
+    /// Settlement closes a started reservation; release is the alternative for work
+    /// that never started. Explicit incomplete native observations remain incomplete.
+    pub fn billing_complete(&self, cas: &Cas, native: bool) -> Result<bool, StoreError> {
+        if !self.started
+            || self.settled_unix_ms.is_none()
+            || self.result.is_none()
+            || self.usage_id.is_none()
+        {
+            return Ok(false);
+        }
+        if native {
+            let usage = cas
+                .get_artifact(self.usage_id.as_ref().expect("checked usage identity"))
+                .map_err(|e| StoreError::Artifact(e.to_string()))?;
+            // A reservation-floor charge with absent native counters is not a bill.
+            if ["input_tokens", "output_tokens"].iter().any(|name| {
+                usage
+                    .payload
+                    .get(name)
+                    .is_none_or(serde_json::Value::is_null)
+            }) {
+                return Ok(false);
+            }
+        }
+        for id in &self.raw_artifact_ids {
+            let Some(artifact) = cas
+                .get_optional_artifact(id)
+                .map_err(|e| StoreError::Artifact(e.to_string()))?
+            else {
+                continue;
+            };
+            if artifact.artifact_type == task::usage::TASK_USAGE_OBSERVATION_V1 {
+                let observation: task::usage::TaskUsageObservationV1 =
+                    serde_json::from_value(artifact.payload)?;
+                observation.validate().map_err(conflict)?;
+                if !observation.charge_complete {
+                    return Ok(false);
+                }
+            }
+        }
+        Ok(true)
+    }
 }
 
 /// Unstarted reservation authority. Only the Store can construct this capability; a Worker
@@ -295,6 +350,7 @@ impl TaskExecutionProjection {
         self.graph = graph;
         self.invocations.clear();
         self.outputs.clear();
+        self.experiments.clear();
         Ok(())
     }
     /// Settlement selects a result durably before the scheduler publishes its ports. A new
@@ -419,6 +475,7 @@ impl TaskExecutionProjection {
             attempts: BTreeMap::new(),
             brokers: BTreeMap::new(),
             owned: BTreeMap::new(),
+            experiments: BTreeMap::new(),
             review_integrations: BTreeMap::new(),
             active_review_integration: None,
         })
@@ -445,11 +502,23 @@ impl TaskExecutionProjection {
                     plan_id: attempt.plan_id.clone(),
                     reservation: attempt.reservation.clone(),
                     started: attempt.started,
+                    started_unix_ms: attempt.started_unix_ms,
+                    settled_unix_ms: attempt.settled_unix_ms,
                     released: attempt.released,
                     charged_tokens: ledger.map_or(0, |row| row.charged),
                     state: ledger.map(|row| row.state),
                     result: match &attempt.settlement {
                         Some(TaskExecutionRecordV1::Settled { result, .. }) => Some(result.clone()),
+                        _ => None,
+                    },
+                    raw_artifact_ids: match &attempt.settlement {
+                        Some(TaskExecutionRecordV1::Settled {
+                            raw_artifact_ids, ..
+                        }) => raw_artifact_ids.clone(),
+                        _ => Vec::new(),
+                    },
+                    usage_id: match &attempt.settlement {
+                        Some(TaskExecutionRecordV1::Settled { usage_id, .. }) => usage_id.clone(),
                         _ => None,
                     },
                 }
@@ -705,12 +774,81 @@ impl TaskProjection {
             }
             self.check_plan_decision(cas, time)?;
         }
+        if experiment::is_experiment_record(&record) {
+            match record {
+                TaskExecutionRecordV1::ExperimentPrepared { .. } => {
+                    if !self.admitted || self.phase != (TaskPhaseV1::Running {}) {
+                        return Err(conflict(
+                            "Experiment preparation requires admitted running execution",
+                        ));
+                    }
+                    self.check_plan_decision(cas, time)?;
+                }
+                TaskExecutionRecordV1::ExperimentPlanDecided { .. }
+                | TaskExecutionRecordV1::ExperimentChildrenRegistered { .. } => {
+                    if !self.admitted
+                        || self.phase
+                            != (TaskPhaseV1::Waiting {
+                                reason: TaskWaitingReasonV1::NeedsPlanReview,
+                            })
+                    {
+                        return Err(conflict(
+                            "Experiment decision requires its preparation pause",
+                        ));
+                    }
+                }
+                _ => unreachable!(),
+            }
+        }
         if self.execution.is_none() {
             self.execution = Some(TaskExecutionProjection::new(cas, self)?);
         }
         let execution = self.execution.as_mut().expect("execution initialized");
         execution.check_review_integration_record(cas, &record)?;
         match &record {
+            TaskExecutionRecordV1::ExperimentPrepared { .. }
+            | TaskExecutionRecordV1::ExperimentPlanDecided { .. }
+            | TaskExecutionRecordV1::ExperimentChildrenRegistered { .. } => {
+                let revision_id = self.revision_id.clone();
+                let outer_plan_id = self
+                    .plan_id
+                    .clone()
+                    .ok_or_else(|| conflict("Task has no plan"))?;
+                execution.apply_experiment(
+                    cas,
+                    &self.revision,
+                    &revision_id,
+                    &outer_plan_id,
+                    &record,
+                    time,
+                )?;
+                match record {
+                    TaskExecutionRecordV1::ExperimentPrepared { .. } => {
+                        self.phase = TaskPhaseV1::Waiting {
+                            reason: TaskWaitingReasonV1::NeedsPlanReview,
+                        };
+                    }
+                    TaskExecutionRecordV1::ExperimentChildrenRegistered { .. } => {
+                        self.phase = TaskPhaseV1::Running {};
+                    }
+                    TaskExecutionRecordV1::ExperimentPlanDecided { prepared_id, .. } => {
+                        let rejected = execution
+                            .experiments
+                            .get(&prepared_id)
+                            .and_then(|experiment| experiment.decision.as_ref())
+                            .is_some_and(|(_, decision)| {
+                                decision.decision
+                                    == task::optimization_experiment::ExperimentDecisionKindV1::Rejected
+                            });
+                        if rejected {
+                            self.phase = TaskPhaseV1::Waiting {
+                                reason: TaskWaitingReasonV1::NeedsHuman,
+                            };
+                        }
+                    }
+                    _ => {}
+                }
+            }
             TaskExecutionRecordV1::OwnedChildrenRegistered { .. }
             | TaskExecutionRecordV1::OwnedChildPublished { .. }
             | TaskExecutionRecordV1::OwnedChildrenCompleted { .. } => {
@@ -850,6 +988,8 @@ impl TaskProjection {
                         },
                         feedback_ids: feedback_ids.clone(),
                         started: false,
+                        started_unix_ms: None,
+                        settled_unix_ms: None,
                         released: false,
                         settlement: None,
                     },
@@ -908,6 +1048,7 @@ impl TaskProjection {
                     .begin(&attempt.reservation.id, time)
                     .map_err(conflict)?;
                 attempt.started = true;
+                attempt.started_unix_ms = Some(time);
             }
             TaskExecutionRecordV1::Released { attempt_id, .. } => {
                 let attempt = execution
@@ -1001,11 +1142,12 @@ impl TaskProjection {
                         return Err(conflict("Task settlement was quarantined"));
                     }
                 }
-                execution
+                let recorded = execution
                     .attempts
                     .get_mut(attempt_id)
-                    .expect("known Attempt")
-                    .settlement = Some(record.clone());
+                    .expect("known Attempt");
+                recorded.settlement = Some(record.clone());
+                recorded.settled_unix_ms = Some(time);
             }
             TaskExecutionRecordV1::Published {
                 output_id,
@@ -1719,11 +1861,12 @@ impl EventStore {
                 &out,
             )?;
         }
-        state
+        let execution = state
             .execution
             .as_ref()
-            .ok_or_else(|| conflict("Task has no admitted execution"))?
-            .verify_output(cas, &out)?;
+            .ok_or_else(|| conflict("Task has no admitted execution"))?;
+        execution.verify_output(cas, &out)?;
+        let definition = execution.resolve_node(&input.node)?.definition;
         let mut refs = BTreeSet::new();
         for value in out.outputs.values() {
             validate_input_refs(cas, value, &mut refs)?;
@@ -1733,7 +1876,7 @@ impl EventStore {
                 .map_err(|e| StoreError::Artifact(e.to_string()))?;
         }
         authority
-            .validate_output(cas, &state.revision, plan, &input, &out)
+            .validate_resolved_output(cas, &state.revision, plan, &input, &out, &definition)
             .map_err(StoreError::TaskOutputRejected)?;
         Ok((out, input))
     }
@@ -1836,7 +1979,10 @@ impl TaskExecutionProjection {
             }
             TaskExecutionRecordV1::Released { .. }
             | TaskExecutionRecordV1::Settled { .. }
-            | TaskExecutionRecordV1::UsageObserved { .. } => return Ok(()),
+            | TaskExecutionRecordV1::UsageObserved { .. }
+            | TaskExecutionRecordV1::ExperimentPrepared { .. }
+            | TaskExecutionRecordV1::ExperimentPlanDecided { .. }
+            | TaskExecutionRecordV1::ExperimentChildrenRegistered { .. } => return Ok(()),
         };
         self.check_integration_node(&node)
     }

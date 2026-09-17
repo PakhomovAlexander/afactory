@@ -1,0 +1,6 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"urn:af:schema:optimization-verification:1","type":"object","additionalProperties":false,
+  "required":["schema","profile","source_snapshot_id","candidate_snapshot_id","requirements_id","harness_id","comparison_id","evaluation_id","package_repin_id","conclusion","deliverable","protected_checks_passed"],
+  "properties":{"schema":{"const":"af.optimization-verification/1"},"profile":{"enum":["analysis","candidate"]},"source_snapshot_id":{"$ref":"#/$defs/id"},"candidate_snapshot_id":{"$ref":"#/$defs/id"},"requirements_id":{"$ref":"#/$defs/id"},"harness_id":{"$ref":"#/$defs/id"},"comparison_id":{"$ref":"#/$defs/id"},"evaluation_id":{"$ref":"#/$defs/id"},"package_repin_id":{"$ref":"#/$defs/id"},"conclusion":{"enum":["accepted","rejected","inconclusive"]},"deliverable":{"type":"boolean"},"protected_checks_passed":{"type":"boolean"}},
+  "$defs":{"id":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"}}
+}

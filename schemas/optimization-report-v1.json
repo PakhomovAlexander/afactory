@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:optimization-report:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "economics_id", "project_id", "status", "summary", "highlights", "missing_measurements", "live_demonstrations"],
+  "properties": {
+    "schema": {"const": "af.optimization-report/1"},
+    "economics_id": {"$ref": "#/$defs/digest"},
+    "project_id": {"$ref": "#/$defs/digest"},
+    "status": {"enum": ["complete", "partial"]},
+    "summary": {"type": "string", "minLength": 1, "maxLength": 16384},
+    "highlights": {"type": "array", "maxItems": 128, "items": {"type": "string", "minLength": 1, "maxLength": 16384}},
+    "missing_measurements": {"type": "array", "maxItems": 1024, "items": {"type": "string", "minLength": 1, "maxLength": 16384}},
+    "live_demonstrations": {"const": "pending"}
+  },
+  "$defs": {"digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}
+}

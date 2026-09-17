@@ -66,13 +66,20 @@ pub(crate) fn write_output(
     let bytes = match format {
         "json" => serde_json::to_vec_pretty(&artifact).map_err(|e| e.to_string())?,
         "markdown" => {
-            if artifact.artifact_type != review_core::task::document::DOCUMENT_V1 {
-                return Err("Markdown output requires a typed Document".into());
+            if artifact.artifact_type == review_core::task::optimization::OPTIMIZATION_REPORT_V1 {
+                let report: review_core::task::optimization::OptimizationReportV1 =
+                    serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+                report.render_markdown()?.into_bytes()
+            } else if artifact.artifact_type == review_core::task::document::DOCUMENT_V1 {
+                let document: review_core::task::document::DocumentV1 =
+                    serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+                document.validate()?;
+                document.text.into_bytes()
+            } else {
+                return Err(
+                    "Markdown output requires a typed Document or OptimizationReport".into(),
+                );
             }
-            let document: review_core::task::document::DocumentV1 =
-                serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
-            document.validate()?;
-            document.text.into_bytes()
         }
         _ => return Err("Unsupported output format".into()),
     };
@@ -112,6 +119,7 @@ pub(crate) fn write_output(
 pub(super) fn environment(
     cas: &Cas,
     authority: &RunAuthority,
+    profile: TaskKindProfile,
 ) -> Result<Box<dyn TaskEnvironment>, String> {
     authority.invocation_policy_id()?;
     if let Some(id) = &authority.document_policy_id {
@@ -129,8 +137,19 @@ pub(super) fn environment(
         )
         .map_err(|e| e.to_string())?;
         policy.validate()?;
-        Ok(Box::new(SnapshotTaskEnvironment {
+        let source = SnapshotTaskEnvironment {
             policy: policy.isolation(),
-        }))
+        };
+        // The same installed source environment consumes an adopted Cargo cache selection for
+        // ordinary supported command checks and for protected optimizer arms. Profile selection
+        // cannot create a trial-only cache implementation.
+        let _ = profile;
+        Ok(Box::new(
+            review_pipeline::task::optimization_configuration::OptimizationEnvironment::new(
+                source,
+                authority.code_policy_id()?.to_owned(),
+            )
+            .with_cache_source_resolver(crate::caches::resolve_kind),
+        ))
     }
 }

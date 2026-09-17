@@ -32,7 +32,40 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 156] = [
+const SCHEMAS: [&str; 190] = [
+    "optimization-recipe-catalog-v1.json",
+    "optimization-profile-v1.json",
+    "optimization-writable-configuration-v1.json",
+    "optimization-execution-configuration-v1.json",
+    "optimization-diagnostic-v1.json",
+    "optimization-proposal-v1.json",
+    "optimization-result-v1.json",
+    "optimization-adoption-receipt-v1.json",
+    "optimization-adoption-observation-v1.json",
+    "optimization-adoption-task-evidence-v1.json",
+    "experiment-trial-result-v1.json",
+    "optimization-evaluation-v1.json",
+    "experimental-slot-v2.json",
+    "task-inspection-v10.json",
+    "task-inspection-v11.json",
+    "task-execution-record-v5.json",
+    "experiment-execution-plan-v1.json",
+    "task-runtime-evidence-v1.json",
+    "task-inspection-v9.json",
+    "optimization-sources-v1.json",
+    "optimization-history-v1.json",
+    "optimization-economics-v1.json",
+    "optimization-report-v1.json",
+    "optimization-policy-v1.json",
+    "experimental-slot-v1.json",
+    "optimization-harness-v1.json",
+    "experiment-specification-v1.json",
+    "experiment-prepared-v1.json",
+    "experiment-plan-decision-v1.json",
+    "experiment-comparison-v1.json",
+    "optimization-verification-v1.json",
+    "optimization-package-repin-v1.json",
+    "harness-materialization-v1.json",
     "task-inspection-v8.json",
     "provider-doctor-v2.json",
     "review-outcome-v2.json",
@@ -125,6 +158,7 @@ const SCHEMAS: [&str; 156] = [
     "task-transition-v2.json",
     "task-transition-v3.json",
     "task-transition-v4.json",
+    "task-transition-v5.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
     "task-run-report-v2.json",
@@ -652,6 +686,76 @@ fn assert_invalid(name: &str, instance: &Value, why: &str) {
         !validator(name).is_valid(instance),
         "{name} accepted a value it must reject ({why})"
     );
+}
+
+#[test]
+fn light_optimizer_schemas_reject_rust_validator_divergences() {
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let proposal = |path: &str| {
+        json!({
+            "schema":"af.optimization-proposal/1",
+            "profile_id":digest,
+            "diagnostic_id":digest,
+            "recipe_catalog_id":digest,
+            "recipe_id":"context_dedup",
+            "hypothesis":"remove duplicate context",
+            "edits":{path:{"text":"x","executable":false}},
+            "expected":{
+                "comparable_future_runs":"10",
+                "gross_token_savings_per_run":"1",
+                "gross_time_savings_ms_per_run":"0",
+                "recurring_tokens_per_run":"0",
+                "recurring_time_ms_per_run":"0",
+                "maximum_validation_tokens":"10",
+                "maximum_validation_time_ms":"10"
+            }
+        })
+    };
+    assert_valid(
+        "optimization-proposal-v1.json",
+        &proposal(".af/workers/implementer/worker.toml"),
+    );
+    assert_invalid(
+        "optimization-proposal-v1.json",
+        &proposal("config/.git/index"),
+        ".git path components are reserved",
+    );
+    let catalog = json!({
+        "schema":"af.optimization-recipe-catalog/1",
+        "catalog_version":digest,
+        "recipes":[{
+            "recipe_id":"context_dedup",
+            "capability":"context",
+            "support":"installed",
+            "applicability":["repeated_context"],
+            "required_observations":["context_tokens"],
+            "writable_effects":["project_configuration"],
+            "validation":["matched_protected_trials"],
+            "invalidation":["source_policy_worker_package"],
+            "payoff_basis":"bad\u{0001}text"
+        }]
+    });
+    assert_invalid(
+        "optimization-recipe-catalog-v1.json",
+        &catalog,
+        "control characters are rejected by schema and Rust",
+    );
+    for control in ['\t', '\r', '\u{0085}'] {
+        let mut catalog = catalog.clone();
+        catalog["recipes"][0]["payoff_basis"] = Value::String(format!("bad{control}text"));
+        assert_invalid(
+            "optimization-recipe-catalog-v1.json",
+            &catalog,
+            "every Rust control character except newline is rejected",
+        );
+        let mut proposal = proposal(".af/workers/implementer/worker.toml");
+        proposal["hypothesis"] = Value::String(format!("bad{control}text"));
+        assert_invalid(
+            "optimization-proposal-v1.json",
+            &proposal,
+            "proposal text uses the same control-character contract",
+        );
+    }
 }
 
 #[test]

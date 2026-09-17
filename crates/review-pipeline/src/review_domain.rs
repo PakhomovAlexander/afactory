@@ -55,6 +55,12 @@ pub(super) struct ReviewDomainState<'a> {
     pub(super) execution_bindings: Mutex<BTreeMap<String, RunExecutionBindingV4>>,
     pub(super) cache_snapshots: Mutex<BTreeMap<(String, RunCacheKindV5), RunCacheSnapshotV5>>,
     pub(super) cache_failures: Mutex<BTreeMap<(String, RunCacheKindV5), RunCacheFailureV5>>,
+    /// Measured common-runtime evidence is retained with the owning Task Gate Attempt. It is
+    /// separate from deterministic Review verdict artifacts and cannot affect convergence.
+    pub(super) runtime_spans:
+        Mutex<BTreeMap<String, Vec<review_core::task::runtime::TaskRuntimeSpanV1>>>,
+    pub(super) runtime_caches:
+        Mutex<BTreeMap<String, Vec<review_core::task::runtime::TaskCacheObservationV1>>>,
     pub(super) demand_requirements: BTreeMap<String, review_core::DemandRequirement>,
     pub(super) slicing: BTreeMap<String, scatter::StaticSlicePolicy>,
     pub(super) closeouts: BTreeMap<String, String>,
@@ -231,6 +237,8 @@ impl<'a> ReviewDomainState<'a> {
             execution_bindings: Mutex::new(BTreeMap::new()),
             cache_snapshots: Mutex::new(BTreeMap::new()),
             cache_failures: Mutex::new(BTreeMap::new()),
+            runtime_spans: Mutex::new(BTreeMap::new()),
+            runtime_caches: Mutex::new(BTreeMap::new()),
             demand_requirements: BTreeMap::new(),
             slicing: BTreeMap::new(),
             closeouts: BTreeMap::new(),
@@ -459,6 +467,60 @@ impl<'a> ReviewDomainState<'a> {
                         return Err(error.to_string());
                     }
                 };
+                let cache_observation_id = self
+                    .cas
+                    .put_json(&serde_json::json!([
+                        self.run_id,
+                        node_id,
+                        "dependency_preparation",
+                        snapshot.kind.name(),
+                        snapshot.source_digest,
+                        snapshot.started_unix_ms,
+                        snapshot.lookup_ms,
+                        snapshot.materialization_ms
+                    ]))
+                    .map_err(|error| error.to_string())?;
+                let span_id = self
+                    .cas
+                    .put_json(&serde_json::json!([
+                        self.run_id,
+                        node_id,
+                        "dependency_preparation",
+                        snapshot.started_unix_ms,
+                        snapshot
+                            .lookup_ms
+                            .saturating_add(snapshot.materialization_ms)
+                    ]))
+                    .map_err(|error| error.to_string())?;
+                self.runtime_spans
+                    .lock()
+                    .expect("runtime spans")
+                    .entry(node_id.to_string())
+                    .or_default()
+                    .push(review_core::task::runtime::TaskRuntimeSpanV1 {
+                        span_id,
+                        kind: review_core::task::runtime::TaskRuntimeSpanKindV1::DependencyPreparation,
+                        label: snapshot.kind.name().into(),
+                        started_unix_ms: snapshot.started_unix_ms,
+                        elapsed_ms: snapshot.lookup_ms.saturating_add(snapshot.materialization_ms),
+                    });
+                self.runtime_caches
+                    .lock()
+                    .expect("runtime caches")
+                    .entry(node_id.to_string())
+                    .or_default()
+                    .push(review_core::task::runtime::TaskCacheObservationV1 {
+                        observation_id: cache_observation_id,
+                        layer: review_core::task::runtime::TaskCacheLayerV1::DependencyPreparation,
+                        kind: snapshot.kind.name().into(),
+                        eligible: true,
+                        result: review_core::task::runtime::TaskCacheResultV1::Prepared,
+                        source_digest: snapshot.source_digest.clone(),
+                        toolchain_id: None,
+                        bytes_available: snapshot.bytes,
+                        lookup_ms: snapshot.lookup_ms,
+                        materialization_ms: snapshot.materialization_ms,
+                    });
                 let receipt = RunCacheSnapshotV5 {
                     node: node_id.to_string(),
                     kind: run_cache_kind(snapshot.kind),
@@ -515,8 +577,8 @@ impl<'a> ReviewDomainState<'a> {
             crate::task::control::check(cancellation)?;
             runner = runner.with_timeout(gate_remaining(self.check_timeout, deadline)?);
             let mut cleanup_failure = None;
-            let result = match container.as_ref() {
-                Some(provider) => runner.run_with(check, |program, args, env, timeout| {
+            let execution = match container.as_ref() {
+                Some(provider) => runner.run_with_observed(check, |program, args, env, timeout| {
                     match provider.exec_evidenced_controlled(
                         sandbox.root(),
                         program,
@@ -534,8 +596,32 @@ impl<'a> ReviewDomainState<'a> {
                         }
                     }
                 }),
-                None => runner.run(check),
+                None => runner.run_observed(check),
             };
+            let result = execution.result;
+            let span_id = self
+                .cas
+                .put_json(&serde_json::json!([
+                    self.run_id,
+                    node_id,
+                    "check",
+                    check.name,
+                    execution.started_unix_ms,
+                    execution.elapsed_ms
+                ]))
+                .map_err(|error| error.to_string())?;
+            self.runtime_spans
+                .lock()
+                .expect("runtime spans")
+                .entry(node_id.to_string())
+                .or_default()
+                .push(review_core::task::runtime::TaskRuntimeSpanV1 {
+                    span_id,
+                    kind: review_core::task::runtime::TaskRuntimeSpanKindV1::Check,
+                    label: check.name.clone(),
+                    started_unix_ms: execution.started_unix_ms,
+                    elapsed_ms: execution.elapsed_ms,
+                });
             self.buffer_reviewer_event(node_id, check_event(&result, node_id));
             results.push(result);
             if let Some(error) = cleanup_failure {

@@ -7,11 +7,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 mod accounting;
+mod experiment;
 mod owned;
 pub use accounting::{
     TASK_EXECUTION_RECORD_V2, TASK_EXECUTION_RECORD_V3, TaskExecutionRecordV2,
     TaskExecutionRecordV3,
 };
+pub use experiment::{TASK_EXECUTION_RECORD_V5, TaskExecutionRecordV5};
 pub use owned::{TASK_EXECUTION_RECORD_V4, TaskExecutionRecordV4};
 
 pub const TASK_INVOCATION_V1: &str = "af/TaskInvocation@1";
@@ -165,6 +167,21 @@ pub enum TaskExecutionRecordV1 {
         child_set_id: String,
         output_id: String,
     },
+    #[serde(skip)]
+    ExperimentPrepared {
+        prepared_id: String,
+    },
+    #[serde(skip)]
+    ExperimentPlanDecided {
+        prepared_id: String,
+        decision_id: String,
+    },
+    #[serde(skip)]
+    ExperimentChildrenRegistered {
+        prepared_id: String,
+        decision_id: String,
+        child_plan_id: String,
+    },
 }
 
 // This enum is also the normalized lifecycle representation. Its v1 wire reader retains
@@ -218,6 +235,20 @@ impl TaskExecutionRecordV1 {
             }
             Self::Published { output_id, .. } => refs.push(output_id),
             Self::OwnedChildrenRegistered { child_set_id } => refs.push(child_set_id),
+            Self::ExperimentPrepared { prepared_id } => refs.push(prepared_id),
+            Self::ExperimentPlanDecided {
+                prepared_id,
+                decision_id,
+            } => refs.extend([prepared_id.as_str(), decision_id.as_str()]),
+            Self::ExperimentChildrenRegistered {
+                prepared_id,
+                decision_id,
+                child_plan_id,
+            } => refs.extend([
+                prepared_id.as_str(),
+                decision_id.as_str(),
+                child_plan_id.as_str(),
+            ]),
             Self::OwnedChildPublished {
                 child_set_id,
                 output_id,
@@ -249,8 +280,11 @@ impl TaskExecutionRecordV1 {
                 Self::OwnedChildrenRegistered { .. }
                     | Self::OwnedChildPublished { .. }
                     | Self::OwnedChildrenCompleted { .. }
+                    | Self::ExperimentPrepared { .. }
+                    | Self::ExperimentPlanDecided { .. }
+                    | Self::ExperimentChildrenRegistered { .. }
             ),
-            "Owned Task execution records require the v4 encoding",
+            "Versioned Task execution records require their explicit encoding",
         )?;
         if let Self::Settled { charged_tokens, .. } | Self::UsageObserved { charged_tokens, .. } =
             self
@@ -271,7 +305,10 @@ impl TaskExecutionRecordV1 {
         let attempt = match self {
             Self::Invocation { .. }
             | Self::OwnedChildrenRegistered { .. }
-            | Self::OwnedChildrenCompleted { .. } => None,
+            | Self::OwnedChildrenCompleted { .. }
+            | Self::ExperimentPrepared { .. }
+            | Self::ExperimentPlanDecided { .. }
+            | Self::ExperimentChildrenRegistered { .. } => None,
             Self::Prepared {
                 attempt_id,
                 reservation_id,

@@ -130,6 +130,16 @@ impl TaskExecutionProjection {
                 expected_inputs: None,
             });
         }
+        for experiment in self.experiments.values() {
+            if let Some(child) = experiment.registered_child(node) {
+                return Ok(ResolvedTaskNode {
+                    definition: child.definition.clone(),
+                    allowance: Some(child.allowance.clone()),
+                    owned: None,
+                    expected_inputs: Some(child.invocation.inputs.clone()),
+                });
+            }
+        }
         for set in self.owned.values().filter(|set| self.active_children(set)) {
             let Some(input) = set.invocations.get(node) else {
                 continue;

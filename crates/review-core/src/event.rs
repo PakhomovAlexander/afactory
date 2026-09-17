@@ -20,6 +20,8 @@ pub enum EventType {
     TaskTransitionV3,
     #[serde(rename = "TaskTransition@4")]
     TaskTransitionV4,
+    #[serde(rename = "TaskTransition@5")]
+    TaskTransitionV5,
     #[serde(rename = "TaskBrokerTransition@1")]
     TaskBrokerTransitionV1,
     #[serde(rename = "TaskReviewResultSelected@1")]
@@ -129,11 +131,12 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 57] = [
+    pub const ALL: [Self; 58] = [
         Self::TaskTransitionV1,
         Self::TaskTransitionV2,
         Self::TaskTransitionV3,
         Self::TaskTransitionV4,
+        Self::TaskTransitionV5,
         Self::TaskBrokerTransitionV1,
         Self::TaskReviewResultSelectedV1,
         Self::BrokerOperationCompletedV1,
@@ -195,6 +198,7 @@ impl EventType {
             Self::TaskTransitionV2 => "TaskTransition@2",
             Self::TaskTransitionV3 => "TaskTransition@3",
             Self::TaskTransitionV4 => "TaskTransition@4",
+            Self::TaskTransitionV5 => "TaskTransition@5",
             Self::TaskBrokerTransitionV1 => "TaskBrokerTransition@1",
             Self::TaskReviewResultSelectedV1 => "TaskReviewResultSelected@1",
             Self::BrokerOperationCompletedV1 => "BrokerOperationCompleted@1",
@@ -282,6 +286,7 @@ impl EventType {
             Self::TaskTransitionV2 => ("TaskTransition", 2),
             Self::TaskTransitionV3 => ("TaskTransition", 3),
             Self::TaskTransitionV4 => ("TaskTransition", 4),
+            Self::TaskTransitionV5 => ("TaskTransition", 5),
             Self::TaskBrokerTransitionV1 => ("TaskBrokerTransition", 1),
             Self::TaskReviewResultSelectedV1 => ("TaskReviewResultSelected", 1),
             Self::BrokerOperationCompletedV1 => ("BrokerOperationCompleted", 1),
@@ -377,6 +382,7 @@ impl std::str::FromStr for EventType {
             "TaskTransition@2" => Ok(Self::TaskTransitionV2),
             "TaskTransition@3" => Ok(Self::TaskTransitionV3),
             "TaskTransition@4" => Ok(Self::TaskTransitionV4),
+            "TaskTransition@5" => Ok(Self::TaskTransitionV5),
             "TaskBrokerTransition@1" => Ok(Self::TaskBrokerTransitionV1),
             "TaskReviewResultSelected@1" => Ok(Self::TaskReviewResultSelectedV1),
             "AttemptAdmitted@1" => Ok(Self::AttemptAdmittedV1),
@@ -1415,6 +1421,11 @@ pub fn validate_event_payload(
     payload: &serde_json::Value,
 ) -> Result<(), String> {
     match event_type {
+        EventType::TaskTransitionV5 => {
+            serde_json::from_value::<crate::task::event::TaskTransitionV5>(payload.clone())
+                .map_err(|e| e.to_string())?
+                .validate()
+        }
         EventType::TaskReviewResultSelectedV1 => serde_json::from_value::<
             crate::task::review_compat::TaskReviewResultSelectedV1,
         >(payload.clone())

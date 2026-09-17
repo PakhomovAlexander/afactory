@@ -273,6 +273,26 @@ impl ProviderTaskDomain<'_> {
     }
 }
 impl TaskOperatorHost for ProviderTaskDomain<'_> {
+    fn prepare_experiment(
+        &self,
+        cas: &Cas,
+        parent: &review_core::task::execution::TaskInvocationV1,
+        writer_epoch: u64,
+    ) -> Result<super::TaskExperimentInputs, String> {
+        self.inner.prepare_experiment(cas, parent, writer_epoch)
+    }
+
+    fn complete_experiment(
+        &self,
+        cas: &Cas,
+        parent: &review_core::task::execution::TaskInvocationV1,
+        experiment: &review_store::store::task::execution::experiment::RegisteredTaskExperiment,
+        facts: &[review_store::store::task::execution::experiment::ExperimentChildEvidence],
+    ) -> Result<std::collections::BTreeMap<String, review_core::task::ArtifactInputV1>, String>
+    {
+        self.inner
+            .complete_experiment(cas, parent, experiment, facts)
+    }
     fn prepare_owned_children(
         &self,
         cas: &Cas,
@@ -459,6 +479,17 @@ impl TaskOperatorHost for ProviderTaskDomain<'_> {
     }
 }
 impl TaskDomain for ProviderTaskDomain<'_> {
+    fn validate_experiment_preparation(
+        &self,
+        cas: &Cas,
+        task: &review_core::task::TaskRevisionV1,
+        plan: &review_core::task::plan::ExecutionPlanV1,
+        prepared_id: &str,
+        prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
+    ) -> Result<(), String> {
+        self.inner
+            .validate_experiment_preparation(cas, task, plan, prepared_id, prepared)
+    }
     fn validate_review_integration_selection(
         &self,
         cas: &Cas,

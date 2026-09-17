@@ -1,7 +1,48 @@
 use super::*;
 use review_core::task::event::{
     TaskChangeV1, TaskTransitionV1, TaskTransitionV2, TaskTransitionV3, TaskTransitionV4,
+    TaskTransitionV5,
 };
+
+#[test]
+fn adoption_observation_has_its_own_strict_wire() {
+    let normalized = TaskTransitionV1 {
+        writer: "observer".into(),
+        epoch: 3,
+        now_unix_ms: 5678,
+        change: TaskChangeV1::AdoptionObservationRecorded {
+            observation_id: format!("sha256:{}", "d".repeat(64)),
+        },
+    };
+    assert!(serde_json::to_value(&normalized).is_err());
+    let wire = TaskTransitionV5::from_adoption(&normalized).unwrap();
+    wire.validate().unwrap();
+    let value = serde_json::to_value(&wire).unwrap();
+    assert_valid("task-transition-v5.json", &value);
+    assert_eq!(wire.into_transition(), normalized);
+    for schema in [
+        "task-transition-v1.json",
+        "task-transition-v2.json",
+        "task-transition-v3.json",
+        "task-transition-v4.json",
+    ] {
+        assert_invalid(schema, &value, "adoption observation is additive authority");
+    }
+    review_core::event::validate_event_payload(review_core::EventType::TaskTransitionV5, &value)
+        .unwrap();
+
+    let mut missing = value.clone();
+    missing["change"]
+        .as_object_mut()
+        .unwrap()
+        .remove("observation_id");
+    assert_invalid(
+        "task-transition-v5.json",
+        &missing,
+        "observation identity is mandatory",
+    );
+    assert!(serde_json::from_value::<TaskTransitionV5>(missing).is_err());
+}
 
 #[test]
 fn recording_resume_has_its_own_strict_wire_and_leaves_old_resume_frozen() {

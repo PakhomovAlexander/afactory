@@ -10,6 +10,85 @@ use review_core::task::{
 use serde_json::{Value, json};
 
 #[test]
+fn optimization_economics_contracts_preserve_unknowns_and_pending_live_gates() {
+    use review_core::task::optimization::*;
+    let id = format!("sha256:{}", "1".repeat(64));
+    let receipt = format!("sha256:{}", "2".repeat(64));
+    let history = json!({
+        "schema":"af.optimization-history/1", "project_id":id,
+        "cutoff_unix_ms":"100", "receipts":[{
+            "receipt_id":receipt,"adapter":"fixture","adapter_version":"v1",
+            "project_id":id,"source_id":"fixture.jsonl","execution_id":"session-1",
+            "byte_start":"0","byte_end":"0","prefix_digest":id,"cutoff_unix_ms":"100",
+            "redaction_version":"v1","completeness":"complete"
+        }], "observations":[], "gaps":["timing"]
+    });
+    assert_valid("optimization-history-v1.json", &history);
+    serde_json::from_value::<OptimizationHistoryV1>(history.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let usage = json!({"chargeable_tokens":"0"});
+    let economics = json!({
+        "schema":"af.optimization-economics/1","project_id":id,"capture_ids":[id],
+        "cutoff_unix_ms":"100","rows":[],"af_usage":usage,"outer_session_usage":usage,
+        "active_ms":"0","elapsed_ms":"0","summed_work_ms":"0","verified":0,
+        "failed_or_incomplete":0,"repeated_failures":0,"missing_fields":["timing"],
+        "cache_results":{"cargo":{"hit":1}},
+        "cache_economics":{"cargo":{"eligible":1,"ineligible":0,"hits":1,"misses":0,
+            "unknown_results":0,"cold":0,"warm":1,"unknown_temperature":0,
+            "bytes_reused":"10","invalidation_ids":["Cargo.lock:fixture"],
+            "missing_fields":["lookup_time","tokens_reused","warmup_time"]}}
+    });
+    assert_valid("optimization-economics-v1.json", &economics);
+    serde_json::from_value::<OptimizationEconomicsV1>(economics.clone())
+        .unwrap()
+        .validate()
+        .unwrap();
+    let mut invalid_history = history;
+    invalid_history["gaps"] = json!(["missing\n* injected"]);
+    assert_invalid(
+        "optimization-history-v1.json",
+        &invalid_history,
+        "gaps are identifiers",
+    );
+    assert!(
+        serde_json::from_value::<OptimizationHistoryV1>(invalid_history)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let mut invalid_economics = economics;
+    invalid_economics["missing_fields"] = json!(["invalid field"]);
+    assert_invalid(
+        "optimization-economics-v1.json",
+        &invalid_economics,
+        "missing fields are identifiers",
+    );
+    assert!(
+        serde_json::from_value::<OptimizationEconomicsV1>(invalid_economics)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let report = json!({"schema":"af.optimization-report/1","economics_id":id,
+        "project_id":id,"status":"partial","summary":"Timing is unknown.","highlights":[],
+        "missing_measurements":["timing"],"live_demonstrations":"pending"});
+    assert_valid("optimization-report-v1.json", &report);
+    let report: OptimizationReportV1 = serde_json::from_value(report).unwrap();
+    report.validate().unwrap();
+    assert!(report.render_markdown().unwrap().contains("**pending**"));
+    let policy = json!({"schema":"af.optimization-policy/1","project_id":id,
+        "strategy":"light","max_sessions":200,"max_raw_bytes":"268435456",
+        "max_record_bytes":"1048576","max_normalized_bytes":"16777216"});
+    assert_valid("optimization-policy-v1.json", &policy);
+    serde_json::from_value::<OptimizationPolicyV1>(policy)
+        .unwrap()
+        .validate()
+        .unwrap();
+}
+
+#[test]
 fn document_contracts_keep_source_data_closed_and_never_use_code_snapshots() {
     use review_core::task::document::*;
     let sources = json!({"schema":"af.document-sources/1","sources":{"ticket":{"title":"Pagination","uri":"https://example.invalid/AF-42","revision":"42@1","text":"Add offset pagination."}}});

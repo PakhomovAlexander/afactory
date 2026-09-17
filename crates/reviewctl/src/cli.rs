@@ -30,7 +30,7 @@ Namespaces:
   provider   inspect and preflight the configured model providers
   onboard    generate or validate `.af/` review authority for a repository
   config     show the effective configuration and where each value came from
-  self       install, update, roll back, and remove af itself
+  self       optimize the current project, or manage af installations
 
 `af help <topic>` explains config, layers, environment, exit-codes, json, self, and trust.";
 
@@ -161,12 +161,15 @@ last-wins, arrays replace. See `af help layers`.",
         #[command(subcommand)]
         command: ConfigCommand,
     },
-    /// Install, update, roll back, and remove af itself
+    /// Analyze project economics, or install, update, roll back, and remove af itself
     #[command(
         name = "self",
         subcommand_required = true,
         arg_required_else_help = true,
-        long_about = "Install, update, roll back, and remove af itself.\n\n\
+        long_about = "Analyze project economics, or install, update, roll back, and remove af itself.\n\n\
+`self optimize` is project-scoped: it dispatches through the project pin, captures only declared \
+history, and previews a report-only common Task. Binary-management subcommands remain outside \
+project dispatch.\n\n\
 Installed versions live under `$XDG_DATA_HOME/af/versions/<v>/` with a receipt each; the \
 default is the `~/.local/bin/af` symlink. A project whose `.af/af.lock` pins another version \
 is run by that version: `af` execs it, installing it on demand when the archive matches the \
@@ -939,7 +942,7 @@ pub(crate) enum TaskCommand {
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
-    /// Write exact bytes for an external developer signature; this does not approve execution
+    /// Write exact outer-plan or pending experiment bytes for an external developer signature
     DecisionPayload {
         task_id: String,
         #[arg(long)]
@@ -965,7 +968,7 @@ pub(crate) enum TaskCommand {
         #[command(flatten)]
         inspect: TaskInspectArgs,
     },
-    /// Record an exact plan approval signed by a captured developer key
+    /// Record an exact outer-plan or pending experiment approval signed by a captured developer key
     Approve {
         task_id: String,
         #[arg(long)]
@@ -1050,6 +1053,28 @@ opens a pull request, or contacts a remote.",
         #[arg(long, help_heading = "Output")]
         json: bool,
     },
+    /// Record whether a later commit exactly adopts a delivered light optimization
+    ObserveAdoption {
+        /// Optimization Task id whose local delivery is being observed
+        task_id: String,
+        /// Commit or ref to compare with the delivered configuration
+        #[arg(long, default_value = "HEAD")]
+        commit: String,
+        /// Comparable workload identity or version label
+        #[arg(long)]
+        workload: String,
+        /// Model or Worker configuration identity or version label
+        #[arg(long)]
+        model: String,
+        /// Execution environment identity or version label
+        #[arg(long)]
+        environment: String,
+        /// Finished later common Task whose immutable receipts are linked as observational evidence
+        #[arg(long, value_name = "TASK_ID")]
+        evidence_task: Option<String>,
+        #[command(flatten)]
+        inspect: TaskInspectArgs,
+    },
     /// List Tasks with outcome and spend
     List {
         #[command(flatten)]
@@ -1126,6 +1151,47 @@ pub(crate) enum LayerArg {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum SelfCommand {
+    /// Capture project history and preview economics or an explicitly installed experiment
+    #[command(
+        long_about = "Capture declared, project-associated history and preview an Optimization Task. With a captured .af/optimization-policy.json, --strategy light runs the installed diagnose/propose/experiment path; otherwise the command retains token-free report-only analysis. Every generated experimental closure requires a separate signed decision. Raw transcripts, protected case bodies, private reasoning and undeclared paths are never sent to diagnosis/proposal Workers. The command is dispatched through the project's pinned af release.",
+        after_long_help = "Examples:\n  af self optimize --strategy light\n  af self optimize --since 30d\n  af self optimize --all-history --execute\n  af self optimize --experiment --execute\n  af task output TASK_ID --port report --format markdown --output optimization.md"
+    )]
+    Optimize {
+        /// Include observations at or after this duration before the captured UTC cutoff
+        #[arg(long, value_name = "DURATION", conflicts_with = "all_history")]
+        since: Option<String>,
+        /// Read all declared history subject to captured bounds
+        #[arg(long, conflicts_with = "since")]
+        all_history: bool,
+        /// Versioned strategy declaration; light uses an installed policy when present
+        #[arg(long, default_value = "light", value_parser = ["light", "heavy"])]
+        strategy: String,
+        /// Declared source configuration; paths are never discovered implicitly
+        #[arg(
+            long,
+            value_name = "FILE",
+            default_value = ".af/optimization-sources.toml"
+        )]
+        history_config: PathBuf,
+        /// Explicitly execute the fixed report-only plan after capture
+        #[arg(long)]
+        execute: bool,
+        /// Request the installed bounded baseline/candidate experiment profile
+        #[arg(long)]
+        experiment: bool,
+        /// Concrete bounded configuration edits; runs the controlled candidate Pipeline
+        #[arg(long, value_name = "FILE")]
+        candidate: Option<PathBuf>,
+        /// Repository whose pin, source identity and catalog apply
+        #[arg(long, value_name = "DIR", default_value = ".")]
+        repo: PathBuf,
+        /// Explicit common Task state directory outside the repository
+        #[arg(long, value_name = "DIR")]
+        state: Option<PathBuf>,
+        /// One JSON document on stdout
+        #[arg(long)]
+        json: bool,
+    },
     /// What is installed, the default, its receipt, and the pin that applies here
     Status {
         /// One JSON document on stdout
