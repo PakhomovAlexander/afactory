@@ -5,7 +5,7 @@
 #                                 macOS, builds every target, plans the consumer fixtures with
 #                                 each built binary, signs SHA256SUMS, and publishes the release.
 #
-# A manually pushed vX.Y.Z tag takes the same path from the tag onward. Nothing is published
+# A manually pushed vX.Y.Z tag takes the same path from the tag onward.
 # Builds run alongside validation; publish joins both required branches.
 # Nothing is published unless `make check` passed on the tagged commit on both operating systems and every archive
 # planned the consumer fixtures; nothing is published unsigned.
@@ -40,36 +40,12 @@ jobs:
       prerelease: ${{ steps.resolve.outputs.prerelease }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2 # eligibility compares the first-parent workspace version
       - name: Decide whether this commit is a release, and tag it
         id: resolve
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
-          [[ -n "$version" ]] || { echo "Cargo.toml has no workspace version"; exit 1; }
-          tag=""
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            tag="$GITHUB_REF_NAME"
-            [[ "$tag" == "v$version" ]] || { echo "tag $tag does not match Cargo.toml version $version"; exit 1; }
-          elif git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
-            echo "v$version is already released; nothing to do"
-          elif ! grep -q "^## \[$version\]" CHANGELOG.md; then
-            echo "Cargo.toml is at $version but CHANGELOG.md has no [$version] section: not a release commit (scripts/release.sh writes both)"
-          else
-            tag="v$version"
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -a "$tag" -m "$tag"
-            git push origin "refs/tags/$tag"
-            echo "tagged $tag"
-          fi
-          prerelease=false
-          [[ "$version" == *-* ]] && prerelease=true
-          {
-            echo "tag=$tag"
-            echo "version=$version"
-            echo "prerelease=$prerelease"
-          } >> "$GITHUB_OUTPUT"
+        run: bash scripts/resolve-release.sh
 
   # This also provides ordinary main CI when resolve finds no new release.
   # github.sha is the exact commit just tagged by resolve (or the pushed tag commit).

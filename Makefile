@@ -1,11 +1,11 @@
-.PHONY: check fmt lint test fixtures build pilot-check consumer-check release review-kernel-container-probes review-kernel-test-corpus
+.PHONY: release-check check fmt lint test fixtures build pilot-check consumer-check release review-kernel-container-probes review-kernel-test-corpus
 
 # Cargo remains the gate; nextest is an explicit cross-binary benchmark until validated in CI.
 TEST_RUNNER ?= cargo
 TEST_THREADS ?= 4
 CI_STEP = python3 scripts/ci-step.py
 
-check: fmt lint test fixtures
+check: fmt lint test fixtures release-check
 
 fmt:
 	$(CI_STEP) fmt cargo fmt --all -- --check
@@ -57,3 +57,7 @@ review-kernel-container-probes:
 review-kernel-test-corpus:
 	cargo test --locked -p review-core --test legacy_corpus -- --ignored
 	cargo test --locked -p review-store --test legacy_ledgers -- --ignored
+
+# Exercise release selection and tag races against disposable local Git remotes.
+release-check:
+	$(CI_STEP) release-resolution python3 scripts/test-release-resolve.py

@@ -26,6 +26,17 @@ commit no longer receives a duplicate main CI gate. Build jobs overlap validatio
 but publication requires successful validation **and** all three builds. No check,
 container probe, consumer fixture or signature check is removed. The workflow runs
 are grouped by commit so an earlier main check does not queue a later release.
+Only a main commit whose workspace version changes against its first parent may
+create the tag. Later commits cannot steal that release even if scheduled first.
+Tag pushes never overwrite: a competing tag is read back and its commit checked.
+An existing tag on the same commit supports retry; a different commit selects normal
+main validation. Read/push failures without an existing tag fail closed.
+
+PR required-check contexts are now `validation / check (ubuntu-latest)` and
+`validation / container-probes`; update any rules that name the old `check` and
+`container-probes` contexts during rollout. No branch protection or ruleset was
+configured on this repository when checked for this change. Main status is reported
+by Release, which the README badge now follows.
 
 `make check` remains the portable Cargo gate, with four test threads by default
 (`TEST_THREADS` overrides that local bound). Native-provider fixtures spawn multiple
@@ -63,7 +74,11 @@ and branch advances invalidate the embedded commit even when HEAD's text is unch
 ## Measurements
 
 Each gate command records `af.ci-step/1` JSONL with its source commit, run/attempt,
-platform, elapsed time and exit code. Compile and test execution have separate labels.
+platform, elapsed time and exit code. `test-build` measures compilation of ordinary
+test targets. The Cargo `test` record includes test execution **and doctest compilation**;
+Cargo cannot prebuild doctests with `--no-run`. The opt-in nextest path records ordinary
+test execution separately, while its `doctests` record includes compilation and execution.
+Do not treat either Cargo `test` or `doctests` as pure execution time.
 Cache records distinguish exact reuse, compatible fallback and misses. Validation
 uploads these records even after failures; nextest runs additionally produce JUnit output. Builds upload
 their timings separately; only `af-*` binary archives enter release publication.
@@ -121,5 +136,21 @@ claim. Earlier interrupted runs, including a disk-full failure, are retained sep
 
 Workflow syntax, required publication dependencies, immutable checkout identity,
 cache failure-path conditions, installer checksum verification, Git metadata regression
-and timing-accounting checks passed locally. GitHub Linux/container validation and the
-external AF correctness review remain pending; no post-change release was published.
+and timing-accounting checks passed locally. GitHub run 35252791781 passed Linux
+validation, CLI smoke and live container probes: 17m54s workflow wall time and 20m59s
+summed job intervals, with cold cache misses and successful cache saves. No post-change
+release has been published.
+
+The single Fable 5.1/high AF review took 6m45s and reported one major and three minor
+findings. The release tag race is addressed by version-change eligibility and checked
+tag races, with executable local-Git regression tests in `make check`. Timing semantics,
+the main badge, and status-context migration are corrected above. The historical AF
+verdict remains finding-bearing; these are post-review repairs, not a second review.
+The initial AF gate was interrupted when its temporary build directory disappeared;
+the restarted gate passed before the reviewer ran.
+
+Two measurement demands remain future work: record cache outcomes, archive sizes and
+main-cache eviction over 20 subsequent PR/main runs; compare the first two tagged
+releases (cold/warm) against RC3 using the run report and runner types. One cold PR run
+cannot establish either cache retention or release speedup. If eviction dominates,
+revise cache retention using those measurements. These demands are not marked satisfied.
