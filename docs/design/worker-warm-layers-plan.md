@@ -298,7 +298,28 @@ cold-versus-warm dogfood comparison exists yet: the package was implemented with
 Campaign, so the build-minute Demand from the design review stays open until the first
 trusted-local warm Campaign records it.
 
-## 9. First session
+## 9. Kernel findings from running the campaign
+
+Dogfooding the Task runtime for P1 and P2 surfaced two kernel defects that are not part of any
+package and belong to their own follow-up:
+
+- **The writer lease does not survive a build on a loaded machine.** The lease is 15 seconds,
+  renewed every 5 seconds from the same process that runs the check Attempt. With `make check`
+  compiling on every core while the host was already at a load average near 30, renewal
+  stopped and the kernel fenced its own writer: one review Round and two verification Tasks
+  were lost this way, each after the Gate had started. ADR-0089 kept the lease unchanged; the
+  numbers above are the first evidence against it.
+- **A Round fenced during its Gate cannot be recovered.** Resuming the Campaign refuses with
+  "Review must recover domain publication before finalization"; `--restart-round` refuses with
+  "Recording recovery needs an already-published selected output at the failed report". The
+  abandoned Gate Attempt produced no output to recover from, so both recovery paths are wedged
+  and the only way forward is a new Campaign. The P2 review therefore ran as
+  `warm-p2-review-b`; the wedged `warm-p2-review` holds no Findings.
+
+Until the lease is load-tolerant, run one kernel execution at a time on this machine and keep
+Spotlight away from the state and cache directories.
+
+## 10. First session
 
 Revise the design (P0), then run P1 through the campaign Pipeline:
 
