@@ -329,6 +329,11 @@ for an unbound reviewer, a batch-adjacency assertion in the pipeline test, a Tas
 that the Worker's clone settles with its own Attempt, and a wrapper test that the environment
 path rechecks identity rather than refusing the layer.
 
+P2 is verified: Task `warm-p2-verify-v4` (kind `verification`, the same evaluator profile that
+verified P1) ran alone against the fixed Snapshot and finished `verified` at 136,966 tokens.
+With the nine attestations and one rejection recorded in `warm-p2-review-b`, P2 closes the same
+way P1 did: implementation, review, fixes, verification.
+
 ## 9. Kernel findings from running the campaign
 
 Dogfooding the Task runtime for P1 and P2 surfaced two kernel defects that are not part of any
