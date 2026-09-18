@@ -405,6 +405,10 @@ drifted symlink with an external sentinel, and a path-free failure; pipeline tes
 unrecorded preparation is rebuilt with the log's lineage and that a failure reaches the report
 and the log without the cache root's spelling.
 
+P3 is verified: Task `warm-p3-verify` ran alone against the fixed Snapshot and finished
+`verified` at 153,575 tokens. With the eleven attestations recorded in `warm-p3-review`, P3
+closes the same way P1 and P2 did.
+
 ## 11. First session
 
 Revise the design (P0), then run P1 through the campaign Pipeline:
