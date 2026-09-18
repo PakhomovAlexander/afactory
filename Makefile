@@ -1,18 +1,32 @@
-.PHONY: check fmt lint test fixtures build pilot-check consumer-check release review-kernel-container-probes review-kernel-test-corpus
+.PHONY: release-check check fmt lint test fixtures build pilot-check consumer-check release review-kernel-container-probes review-kernel-test-corpus
 
-check: fmt lint test fixtures
+# Cargo remains the gate; nextest is an explicit cross-binary benchmark until validated in CI.
+TEST_RUNNER ?= cargo
+TEST_THREADS ?= 4
+CI_STEP = python3 scripts/ci-step.py
+
+check: fmt lint test fixtures release-check
 
 fmt:
-	cargo fmt --all -- --check
+	$(CI_STEP) fmt cargo fmt --all -- --check
 
 lint:
-	cargo clippy --all-targets --locked -- -D warnings
+	$(CI_STEP) lint cargo clippy --all-targets --locked -- -D warnings
 
 test:
-	cargo test --locked
+ifeq ($(TEST_RUNNER),nextest)
+	$(CI_STEP) test-build cargo test --locked --no-run
+	$(CI_STEP) test-run cargo nextest run --locked --profile ci
+	$(CI_STEP) doctests cargo test --locked --doc -- --test-threads=$(TEST_THREADS)
+else ifeq ($(TEST_RUNNER),cargo)
+	$(CI_STEP) test-build cargo test --locked --no-run
+	$(CI_STEP) test cargo test --locked -- --test-threads=$(TEST_THREADS)
+else
+	$(error TEST_RUNNER must be cargo or nextest)
+endif
 
 fixtures:
-	fixtures/synthetic/generate.sh --check
+	$(CI_STEP) fixtures fixtures/synthetic/generate.sh --check
 
 build:
 	cargo build --release --locked --bin af
@@ -43,3 +57,7 @@ review-kernel-container-probes:
 review-kernel-test-corpus:
 	cargo test --locked -p review-core --test legacy_corpus -- --ignored
 	cargo test --locked -p review-store --test legacy_ledgers -- --ignored
+
+# Exercise release selection and tag races against disposable local Git remotes.
+release-check:
+	$(CI_STEP) release-resolution python3 scripts/test-release-resolve.py

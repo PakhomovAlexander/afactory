@@ -1076,6 +1076,19 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     );
     assert!(!cache_delivery.join(".af-cache").exists());
 
+    // This second experiment verifies missing toolchain evidence, not latency. Do not
+    // spend another set of real sleeps to obtain a verdict that must remain inconclusive.
+    std::fs::write(&baseline_worker, &baseline_source).unwrap();
+    let mut catalog: toml::Value = std::fs::read_to_string(&catalog_path)
+        .unwrap()
+        .parse()
+        .unwrap();
+    catalog["packages"]["builtin/optimization-check-baseline"]["digest"] = toml::Value::String(
+        review_config::lock::package_digest("builtin/optimization-check-baseline", &baseline_root)
+            .unwrap(),
+    );
+    std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
+
     std::fs::remove_file(repo.join("rust-toolchain.toml")).unwrap();
     for args in [
         vec!["add", "-A"],

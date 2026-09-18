@@ -522,6 +522,37 @@ fn latency_requires_each_holdout_family_and_a_dispersion_margin() {
             value.repetition = repetition;
             value
         };
+    // Accepted latency is a deterministic comparison of captured measurements, not a
+    // bet about the scheduler. Keep the command-path fixture for real clock plumbing.
+    let stable_trials = vec![
+        measured('1', '4', '0', 1, ExperimentArmV1::Baseline, 100, 100),
+        measured('2', '4', '0', 1, ExperimentArmV1::Candidate, 100, 50),
+        measured('3', '4', '0', 2, ExperimentArmV1::Baseline, 100, 100),
+        measured('4', '4', '0', 2, ExperimentArmV1::Candidate, 100, 50),
+        measured('5', '5', '1', 1, ExperimentArmV1::Baseline, 100, 100),
+        measured('6', '5', '1', 1, ExperimentArmV1::Candidate, 100, 50),
+        measured('7', '5', '1', 2, ExperimentArmV1::Baseline, 100, 100),
+        measured('8', '5', '1', 2, ExperimentArmV1::Candidate, 100, 50),
+    ];
+    let stable = compare_experiment(
+        &specification_id,
+        &prepared_id,
+        &specification,
+        stable_trials.clone(),
+    )
+    .unwrap();
+    assert_eq!(stable.conclusion, ComparisonConclusionV1::Accepted);
+    assert_eq!(stable.reason, "latency_objective_met");
+    let mut reversed = stable_trials;
+    reversed.reverse();
+    assert_eq!(
+        compare_experiment(&specification_id, &prepared_id, &specification, reversed)
+            .unwrap()
+            .conclusion,
+        stable.conclusion,
+        "measurement arrival order cannot change the verdict"
+    );
+
     let aggregate_only = compare_experiment(
         &specification_id,
         &prepared_id,
