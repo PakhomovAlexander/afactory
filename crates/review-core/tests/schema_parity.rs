@@ -3171,6 +3171,7 @@ fn warm_workspace_contracts_roundtrip_and_stay_closed() {
         fallback: None,
         verified_digest: digest('3'),
         entries_touched: 4,
+        preparation_ms: 250,
     };
     let full = WorkspaceRebasedPayloadV1 {
         from_snapshot_id: None,
@@ -3189,7 +3190,13 @@ fn warm_workspace_contracts_roundtrip_and_stay_closed() {
         entries_touched: 0,
         ..rebased.clone()
     };
-    for payload in [&rebased, &full, &fallen_back, &reused] {
+    let unrecorded = WorkspaceRebasedPayloadV1 {
+        basis: WorkspaceBasisV1::Full,
+        fallback: Some(WorkspaceFallbackReasonV1::UnrecordedPreparation),
+        entries_touched: 12,
+        ..rebased.clone()
+    };
+    for payload in [&rebased, &full, &fallen_back, &reused, &unrecorded] {
         payload.validate().unwrap();
         let value = serde_json::to_value(payload).unwrap();
         validate_event_payload(EventType::WorkspaceRebasedV1, &value).unwrap();

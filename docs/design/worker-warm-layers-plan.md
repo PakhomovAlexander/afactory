@@ -355,7 +355,57 @@ package and belong to their own follow-up:
 Until the lease is load-tolerant, run one kernel execution at a time on this machine and keep
 Spotlight away from the state and cache directories.
 
-## 10. First session
+## 10. P3 implementation record
+
+P3 is implemented as [ADR-0109](../adr/0109-rebase-warm-workspaces-at-stable-roots-with-digest-verification.md):
+a reviewer node with `warm = { workspace = "rebase" }` gets one stable root per node per
+Campaign under the XDG cache directory, named by an opaque identity that is what `WarmSet@1`
+and the new `WorkspaceRebased@1` record, never a host path. On a changed head the kernel clones
+the trusted template copy-on-write, applies the manifest-level diff from `review-source-git`'s
+new rebase module, scans the clone back into a manifest and swaps it in only when its content
+digest equals the head's Tree Digest; any other outcome is discarded and the head is
+materialized in full with the reason recorded (`no_verified_template`, `template_corrupt`,
+`apply_failed`, `digest_mismatch`). An unchanged head is reused with nothing touched. The
+root's head marker is removed before every swap and written after the manifest, so an
+interrupted preparation is never trusted. Per-Attempt sandboxes remain fresh clones of the
+verified template. Exit evidence lives in `review-source-git` unit tests (rebase byte-identical
+to a full materialization across modify, add, delete, type changes and pruned directories),
+`review-sandbox/tests/workspace.rs` (full, rebased, reused; tampering, a removed marker and a
+contradicted manifest each fail closed with their reason), `review-pipeline/tests/warm_workspace.rs`
+(a two-Round Campaign rebases once and reuses on resume, a tampered template records
+`digest_mismatch` and still serves the right tree, a pipeline without the policy creates no root)
+and `review-core/tests/schema_parity.rs`. The implementer Attempt of Task
+`warm-p3-warm-workspace` cost 763,695 tokens; its Gate failed on `cargo fmt` only, and the
+Store's pinned warm-policy mirror needed the `workspace` field before a pinned pipeline with
+the policy parsed, both applied by hand before the gate went green.
+
+The P3 review (Campaign `warm-p3-review`, the same two reviewers) closed with two Blockers and
+nine Majors that reduce to seven fixes, all applied before verification:
+
+- **Rebase deletion could follow a drifted symlink outside the workspace** (both Blockers).
+  The clone is now scanned against the previous manifest before any entry is unlinked, removals
+  open every parent component `O_NOFOLLOW` and unlink descriptor-relative, and a leftover
+  clone that is a symlink is unlinked rather than walked.
+- **An unchanged head was reused without verification** (two Majors). The tree is read back and
+  scanned before reuse; a drifted tree is rebuilt as `template_corrupt`.
+- **A crash between the swap and the event lost the record, and the marker could forge
+  lineage** (three Majors). The marker is trusted only against the log's last
+  `WorkspaceRebased@1`; the previous head in the new record comes from that record, and a
+  marker the log never recorded rebuilds as `unrecorded_preparation`.
+- **Preparation errors carried host paths** (two Majors). A typed, path-free error crosses the
+  kernel boundary; the path stays in an operator detail on stderr.
+- **Cold reviews required a valid XDG cache setting.** The CLI installs the cache root only
+  when a pinned policy keeps a workspace.
+- **Preparation time was measured and discarded.** `WorkspaceRebased@1` records
+  `preparation_ms` and the report shows it beside each Attempt's warm layers.
+
+New evidence: a rebase-engine test that a symlinked parent cannot delete outside the tree;
+sandbox tests for verified reuse under four corruptions, an unrecorded and a forged marker, a
+drifted symlink with an external sentinel, and a path-free failure; pipeline tests that an
+unrecorded preparation is rebuilt with the log's lineage and that a failure reaches the report
+and the log without the cache root's spelling.
+
+## 11. First session
 
 Revise the design (P0), then run P1 through the campaign Pipeline:
 

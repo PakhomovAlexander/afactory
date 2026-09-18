@@ -62,6 +62,10 @@ pub enum WorkspaceFallbackReasonV1 {
     ApplyFailed,
     /// The re-based tree's manifest digest differed from the head's Tree Digest.
     DigestMismatch,
+    /// The root held a marker the Campaign log never recorded: a preparation that ended after
+    /// its swap but before its `WorkspaceRebased@1` became durable, or a marker written by
+    /// hand. Machine-local state supplies no lineage, so the head is rebuilt.
+    UnrecordedPreparation,
 }
 
 /// Payload of `WorkspaceRebased@1`, appended once per node per kernel run before the node's
@@ -85,6 +89,9 @@ pub struct WorkspaceRebasedPayloadV1 {
     /// Entries written or removed: every entry for a full materialization, the diff's path set
     /// for a rebase, zero for a reused template.
     pub entries_touched: u64,
+    /// Host-observed time the preparation took, whatever its basis. Preparation happens before
+    /// the Round's first Attempt is reserved, so no Attempt wall clock includes it.
+    pub preparation_ms: u64,
 }
 
 impl WorkspaceRebasedPayloadV1 {
@@ -129,8 +136,10 @@ impl WorkspaceRebasedPayloadV1 {
                 }
             }
         }
-        if self.entries_touched > crate::json::SAFE_INTEGER_MAX as u64 {
-            return Err("WorkspaceRebased@1 entries exceed the JSON safe-integer bound".into());
+        if self.entries_touched > crate::json::SAFE_INTEGER_MAX as u64
+            || self.preparation_ms > crate::json::SAFE_INTEGER_MAX as u64
+        {
+            return Err("WorkspaceRebased@1 counts exceed the JSON safe-integer bound".into());
         }
         Ok(())
     }
@@ -154,6 +163,7 @@ mod tests {
             fallback: None,
             verified_digest: digest('3'),
             entries_touched: 4,
+            preparation_ms: 12,
         }
     }
 

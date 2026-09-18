@@ -486,8 +486,16 @@ fn execute_current(
                 lease.clone(),
                 model_bindings(&captured.plan, &captured.captured, &captured.workers)?,
             )?
-            .with_cache_source_resolver(super::caches::resolve_kind)
-            .with_workspace_cache_root(super::config::cache_home()?.join("af").join("workspaces"));
+            .with_cache_source_resolver(super::caches::resolve_kind);
+            // Only a pinned policy that keeps a Warm Workspace needs the cache root; a cold
+            // pipeline neither validates nor touches the machine's cache configuration.
+            let host = if super::keeps_warm_workspace(&captured.captured.loaded) {
+                host.with_workspace_cache_root(
+                    super::config::cache_home()?.join("af").join("workspaces"),
+                )
+            } else {
+                host
+            };
             let authority = CapturedTaskAuthority::for_legacy_review(
                 &captured.compiler,
                 &host,

@@ -2817,6 +2817,19 @@ struct AttemptWarmView {
     rendered_bytes: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     estimated_tokens: Option<u64>,
+    /// The node's Warm Workspace preparation for this Round, joined from `WorkspaceRebased@1`:
+    /// it ran before the Attempt was reserved, so no Attempt wall clock includes it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace: Option<WorkspacePreparationView>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct WorkspacePreparationView {
+    basis: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback: Option<String>,
+    entries_touched: u64,
+    preparation_ms: u64,
 }
 
 /// Wall-clock and provider usage from the store's sidecar; absent when the Attempt predates it.
@@ -2974,6 +2987,14 @@ fn attempt_wall_suffix(wall: Option<&AttemptWallView>) -> String {
 }
 
 /// Which warm layers an Attempt used and what its rendered input cost; empty for cold nodes.
+/// Whether any pinned reviewer policy keeps a Warm Workspace (`warm = { workspace = "rebase" }`).
+fn keeps_warm_workspace(loaded: &review_config::Loaded) -> bool {
+    loaded
+        .warm_policies()
+        .values()
+        .any(|policy| policy.workspace == review_config::WorkspaceSpec::Rebase)
+}
+
 fn attempt_warm_suffix(warm: Option<&AttemptWarmView>) -> String {
     let Some(warm) = warm else {
         return String::new();
@@ -2988,7 +3009,22 @@ fn attempt_warm_suffix(warm: Option<&AttemptWarmView>) -> String {
         (Some(bytes), None) => format!(" rendered {bytes} B"),
         _ => String::new(),
     };
-    format!(", warm[{layers}]{rendered}")
+    let workspace = warm
+        .workspace
+        .as_ref()
+        .map(|workspace| {
+            let basis = match &workspace.fallback {
+                Some(reason) => format!("{}:{reason}", workspace.basis),
+                None => workspace.basis.clone(),
+            };
+            format!(
+                "; workspace {basis} ({} touched, {})",
+                workspace.entries_touched,
+                human_duration(workspace.preparation_ms)
+            )
+        })
+        .unwrap_or_default();
+    format!(", warm[{layers}]{rendered}{workspace}")
 }
 
 /// Rendered input size of one admitted Attempt from its durable provenance. Evidence for a
@@ -3020,6 +3056,9 @@ fn attempt_warm_view(
         layers: selection.layers.clone(),
         rendered_bytes: context_size.map(|size| size.0),
         estimated_tokens: context_size.map(|size| size.1),
+        // The pre-Task renderer serves logs written before Warm Workspaces existed; every
+        // Task-backed review joins its preparation in `report_tasks`.
+        workspace: None,
     })
 }
 
@@ -4959,8 +4998,13 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         .with_ledger_projection(ledger_projection)?
         .with_checks(loaded.checks().to_vec())
         .with_cache_source_resolver(caches::resolve_kind)
-        .with_workspace_cache_root(config::cache_home()?.join("af").join("workspaces"))
         .with_check_timeout(check_timeout);
+    // Only a pipeline that keeps a Warm Workspace needs the cache root; a cold pipeline
+    // neither validates nor touches the machine's cache configuration.
+    if keeps_warm_workspace(&loaded) {
+        kernel =
+            kernel.with_workspace_cache_root(config::cache_home()?.join("af").join("workspaces"));
+    }
     if let Some(budgets) = loaded.budgets() {
         run_progress(
             options,

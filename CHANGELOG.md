@@ -38,7 +38,7 @@ release pages only.
   rather than a host path. On a new head the kernel applies the tree diff to a copy-on-write
   clone of the previous template, scans the result and swaps it in only when its manifest digest
   equals the head's Tree Digest; any other outcome falls back to a full materialization from the
-  CAS with the reason recorded. An unchanged head materializes nothing. `WorkspaceRebased@1`
+  CAS with the reason recorded. An unchanged head materializes nothing and is verified by a read-only scan before it is reused; the root's marker is trusted only against the Campaign log's last `WorkspaceRebased@1`, and a marker the log never recorded rebuilds the head as `unrecorded_preparation`. Preparation failures carry no host path, cold pipelines touch no cache configuration, and the event records the preparation time. `WorkspaceRebased@1`
   records the previous and current head, the basis, the fallback reason, the verified digest and
   the entries touched before the Warm Set is recorded, and the `workspace` layer joins
   `WarmSetSelected@1` when the template was carried. Per-Attempt sandboxes remain fresh clones,

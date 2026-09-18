@@ -24,7 +24,8 @@ use review_core::{
 };
 use review_runner::{NotesRequest, ReviewerInputs, ReviewerNotesDeclaration};
 use review_sandbox::{
-    SandboxTemplate, WorkspaceRoot, default_workspace_cache_root, prepare_workspace, workspace_id,
+    RecordedPreparation, SandboxTemplate, WorkspaceRoot, default_workspace_cache_root,
+    prepare_workspace, workspace_id,
 };
 use review_source_git::git::TREE_DIFF_POLICY_VERSION;
 use review_source_git::{Manifest, TreeChangeKind, manifest_diff};
@@ -92,13 +93,32 @@ impl ReviewDomainState<'_> {
         };
         let id = workspace_id(&self.run_id, &self.authority.campaign_manifest_id, node_id);
         let root = WorkspaceRoot::new(&cache_root, &id).map_err(|error| error.to_string())?;
+        // The root's marker is believed only against the Campaign log's own last record of
+        // this workspace; that record, not the marker, is also where the previous head comes
+        // from. A marker the log never recorded is rebuilt with that reason.
+        let events = self
+            .store
+            .lock()
+            .expect("event store")
+            .replay(&self.run_id)
+            .map_err(|error| error.to_string())?;
+        let recorded = recorded_preparation(&events, node_id, &id)?;
         let prepared = prepare_workspace(
             &root,
             &self.snapshot,
             &self.authority.head_snapshot_id,
             self.cas,
+            recorded.as_ref(),
         )
-        .map_err(|error| format!("preparing the Warm Workspace of `{node_id}`: {error}"))?;
+        .map_err(|error| {
+            // The host path stays on the operator's terminal; the durable outcome names the
+            // node and the kind of failure only.
+            eprintln!(
+                "warm workspace diagnostic for `{node_id}`: {}",
+                error.operator_detail()
+            );
+            format!("preparing the Warm Workspace of `{node_id}`: {error}")
+        })?;
         let payload = WorkspaceRebasedPayloadV1 {
             node: node_id.to_string(),
             workspace_id: id.clone(),
@@ -108,6 +128,7 @@ impl ReviewDomainState<'_> {
             fallback: prepared.fallback,
             verified_digest: prepared.verified_digest.clone(),
             entries_touched: prepared.entries_touched,
+            preparation_ms: prepared.preparation_ms,
         };
         payload.validate()?;
         let mut refs = vec![self.authority.head_snapshot_id.clone()];
@@ -255,6 +276,31 @@ impl ReviewDomainState<'_> {
         )?;
         Ok(WarmSetRecord { set, artifact_id })
     }
+}
+
+/// The Campaign log's last `WorkspaceRebased@1` for this node's workspace: the head it was
+/// verified to hold and the digest of that verification. `None` before the first preparation.
+fn recorded_preparation(
+    events: &[RunEvent],
+    node_id: &str,
+    workspace_id: &str,
+) -> Result<Option<RecordedPreparation>, String> {
+    let mut recorded = None;
+    for event in events.iter().filter(|event| {
+        event.event_type == EventType::WorkspaceRebasedV1
+            && event.node_id.as_deref() == Some(node_id)
+    }) {
+        let payload: WorkspaceRebasedPayloadV1 =
+            serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
+        payload.validate()?;
+        if payload.workspace_id == workspace_id {
+            recorded = Some(RecordedPreparation {
+                snapshot_id: payload.to_snapshot_id,
+                verified_digest: payload.verified_digest,
+            });
+        }
+    }
+    Ok(recorded)
 }
 
 /// Ask a warm node's Attempt to leave Notes. Cold nodes get no request and no prompt change.

@@ -79,8 +79,11 @@ pub fn manifest_changes(from: &Manifest, to: &Manifest) -> ManifestChanges {
 /// modified and added entries are written from the CAS exactly as a materialization writes them.
 /// Returns the number of distinct paths written or removed.
 ///
-/// Nothing here verifies the result. A caller scans the tree afterwards and compares its content
-/// digest with the head's Tree Digest; any disagreement means the tree is discarded.
+/// Removals never follow a symlink: every parent component is opened `O_NOFOLLOW` and must be a
+/// real directory, so a tree that drifted under its manifest cannot make the rebase reach
+/// outside `root`. Nothing here verifies the result. A caller scans the tree beforehand, so the
+/// tree holds `from`, and afterwards, comparing its content digest with the head's Tree Digest;
+/// any disagreement means the tree is discarded.
 pub fn apply_tree_diff(
     from: &Manifest,
     to: &Manifest,
@@ -133,7 +136,7 @@ pub fn apply_tree_diff(
     // that still holds entries refuses removal and stays; one the head needs again is recreated
     // by the materialization below.
     for directory in parents.iter().rev() {
-        let _ = fs::remove_dir(root.join(directory));
+        prune_directory(root, directory);
     }
     let written: Vec<Entry> = changes
         .modified
@@ -149,6 +152,76 @@ pub fn apply_tree_diff(
     Ok(changes.touched())
 }
 
+/// Unlink one entry of the tree being re-based without following any symlink on the way: the
+/// root and every parent component are opened descriptor-relative with `O_NOFOLLOW` and must
+/// be real directories, and the entry itself is unlinked relative to the last of them. A parent
+/// that is a symlink, wherever it points, refuses the rebase instead of reaching through it.
+#[cfg(unix)]
+fn remove_entry(root: &Path, relative: &Path, encoded: &str) -> Result<(), MaterializeError> {
+    use nix::fcntl::AtFlags;
+    use nix::sys::stat::{SFlag, fstatat};
+    use nix::unistd::{UnlinkatFlags, unlinkat};
+
+    let (directory, name) = open_parent_no_follow(root, relative, encoded)?;
+    match fstatat(&directory, name, AtFlags::AT_SYMLINK_NOFOLLOW) {
+        Ok(stat) if SFlag::from_bits_truncate(stat.st_mode) & SFlag::S_IFMT == SFlag::S_IFDIR => {
+            Err(MaterializeError::Manifest(format!(
+                "entry `{encoded}` is a directory in the tree being re-based"
+            )))
+        }
+        Ok(_) => unlinkat(&directory, name, UnlinkatFlags::NoRemoveDir)
+            .map_err(|error| MaterializeError::Io(std::io::Error::from(error))),
+        // The previous manifest names a path the tree lacks. The verification scan decides
+        // whether what remains still equals the head.
+        Err(nix::errno::Errno::ENOENT) => Ok(()),
+        Err(error) => Err(MaterializeError::Io(std::io::Error::from(error))),
+    }
+}
+
+/// Remove an emptied directory of the tree being re-based, relative to its no-follow parent.
+/// Best effort: a directory that still holds entries, or a parent that is no longer a real
+/// directory, leaves it in place for the verification scan to judge.
+#[cfg(unix)]
+fn prune_directory(root: &Path, relative: &Path) {
+    use nix::unistd::{UnlinkatFlags, unlinkat};
+
+    if let Ok((directory, name)) = open_parent_no_follow(root, relative, "") {
+        let _ = unlinkat(&directory, name, UnlinkatFlags::RemoveDir);
+    }
+}
+
+/// Open every parent component of `relative` below `root` with `O_NOFOLLOW | O_DIRECTORY`,
+/// returning the last directory and the entry's own name.
+#[cfg(unix)]
+fn open_parent_no_follow<'a>(
+    root: &Path,
+    relative: &'a Path,
+    encoded: &str,
+) -> Result<(std::os::fd::OwnedFd, &'a std::ffi::OsStr), MaterializeError> {
+    use nix::fcntl::{OFlag, open, openat};
+    use nix::sys::stat::Mode;
+
+    let flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY;
+    let refused = |error: nix::errno::Errno| match error {
+        nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR => MaterializeError::Manifest(
+            format!("entry `{encoded}` lies below a symlink in the tree being re-based"),
+        ),
+        other => MaterializeError::Io(std::io::Error::from(other)),
+    };
+    let name = relative
+        .file_name()
+        .ok_or_else(|| MaterializeError::Manifest(format!("entry `{encoded}` has no name")))?;
+    let mut directory = open(root, flags, Mode::empty()).map_err(refused)?;
+    if let Some(parent) = relative.parent() {
+        for component in parent.components() {
+            directory =
+                openat(&directory, component.as_os_str(), flags, Mode::empty()).map_err(refused)?;
+        }
+    }
+    Ok((directory, name))
+}
+
+#[cfg(not(unix))]
 fn remove_entry(root: &Path, relative: &Path, encoded: &str) -> Result<(), MaterializeError> {
     let target = root.join(relative);
     match fs::symlink_metadata(&target) {
@@ -158,11 +231,14 @@ fn remove_entry(root: &Path, relative: &Path, encoded: &str) -> Result<(), Mater
             )))
         }
         Ok(_) => fs::remove_file(&target).map_err(MaterializeError::Io),
-        // The previous manifest names a path the tree lacks. The verification scan decides
-        // whether what remains still equals the head.
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(MaterializeError::Io(error)),
     }
+}
+
+#[cfg(not(unix))]
+fn prune_directory(root: &Path, relative: &Path) {
+    let _ = fs::remove_dir(root.join(relative));
 }
 
 /// Read the tree at `root` back into a manifest with the given path spelling, hashing every
@@ -404,6 +480,46 @@ mod tests {
         assert_ne!(
             scan_tree(&root, to.path_encoding).unwrap().content_digest(),
             to.content_digest()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_drifted_symlinked_parent_cannot_delete_outside_the_tree() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let from = Manifest::new(vec![
+            entry("dir/victim", EntryKind::File, &cas, b"inside\n"),
+            entry("keep.rs", EntryKind::File, &cas, b"keep\n"),
+        ])
+        .unwrap();
+        let to = Manifest::new(vec![entry("keep.rs", EntryKind::File, &cas, b"keep\n")]).unwrap();
+        let root = directory.path().join("tree");
+        materialize(&from, &cas, &root).unwrap();
+        // The tree drifted: `dir` is now a symlink to a directory outside the tree that holds
+        // a file of the same name.
+        let outside = directory.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("victim"), b"external\n").unwrap();
+        fs::remove_dir_all(root.join("dir")).unwrap();
+        std::os::unix::fs::symlink(&outside, root.join("dir")).unwrap();
+
+        let error = apply_tree_diff(&from, &to, &cas, &root).unwrap_err();
+        assert!(
+            error.to_string().contains("below a symlink"),
+            "the rebase refuses to reach through the symlink: {error}"
+        );
+        assert_eq!(
+            fs::read(outside.join("victim")).unwrap(),
+            b"external\n",
+            "nothing outside the tree was touched"
+        );
+        assert!(
+            fs::symlink_metadata(root.join("dir"))
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "the drifted entry is left for the verification scan to judge"
         );
     }
 

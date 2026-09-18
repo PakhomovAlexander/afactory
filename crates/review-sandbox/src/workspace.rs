@@ -12,8 +12,11 @@
 //! sibling isolation is exactly what it was with a temporary template.
 //!
 //! Warmth stays an artifact: the durable record names the root by an opaque identity and never
-//! by a host path, and nothing about the root is consulted without its marker.
+//! by a host path, nothing about the root is consulted without its marker, and the marker is
+//! believed only when the Campaign log recorded the preparation that wrote it. Errors that
+//! leave this module carry no host path; the detail stays with the operator.
 
+use std::fmt;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -24,6 +27,81 @@ use review_store::Cas;
 
 use crate::{Mode, SandboxTemplate, clone_tree, restore_writable_dirs};
 
+/// Why a workspace could not be prepared. The display text is fixed and path-free, so it may
+/// travel into a failed node outcome or a Task diagnostic; the host path and the underlying
+/// error stay in [`WorkspaceError::operator_detail`], for a terminal only.
+#[derive(Debug)]
+pub struct WorkspaceError {
+    kind: WorkspaceErrorKind,
+    detail: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceErrorKind {
+    /// The head manifest, its Snapshot ID or the recorded preparation is not usable.
+    InvalidHead,
+    /// The cache root cannot be located or is not an absolute directory.
+    CacheRootUnavailable,
+    /// The workspace identity is malformed, or the root exists but is not a real directory.
+    RootUnavailable,
+    /// The head could not be written from the CAS.
+    MaterializationFailed,
+    /// Another filesystem operation on the root failed.
+    Io,
+}
+
+impl WorkspaceError {
+    fn new(kind: WorkspaceErrorKind, detail: impl Into<String>) -> Self {
+        Self {
+            kind,
+            detail: detail.into(),
+        }
+    }
+
+    pub fn kind(&self) -> WorkspaceErrorKind {
+        self.kind
+    }
+
+    /// The detail with whatever path or system message it carries: for stderr, never for an
+    /// event, an artifact or a report.
+    pub fn operator_detail(&self) -> String {
+        format!("{self}: {}", self.detail)
+    }
+}
+
+impl fmt::Display for WorkspaceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self.kind {
+            WorkspaceErrorKind::InvalidHead => "the Warm Workspace head is not usable",
+            WorkspaceErrorKind::CacheRootUnavailable => {
+                "the warm workspace cache root is unavailable"
+            }
+            WorkspaceErrorKind::RootUnavailable => "the warm workspace root is unavailable",
+            WorkspaceErrorKind::MaterializationFailed => {
+                "the Warm Workspace could not be materialized from the CAS"
+            }
+            WorkspaceErrorKind::Io => "a warm workspace filesystem operation failed",
+        })
+    }
+}
+
+impl std::error::Error for WorkspaceError {}
+
+impl From<std::io::Error> for WorkspaceError {
+    fn from(error: std::io::Error) -> Self {
+        Self::new(WorkspaceErrorKind::Io, error.to_string())
+    }
+}
+
+/// The Campaign log's last `WorkspaceRebased@1` for a workspace: the head it was verified to
+/// hold and the digest that verification produced. The root's marker is trusted only when it
+/// claims exactly this digest; lineage comes from here, never from the marker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedPreparation {
+    pub snapshot_id: String,
+    pub verified_digest: String,
+}
+
 const TREE: &str = "tree";
 const NEXT_TREE: &str = "tree.next";
 const OLD_TREE: &str = "tree.old";
@@ -33,22 +111,22 @@ const HEAD_SCHEMA: &str = "af.warm-workspace/1";
 
 /// The machine-local root every Warm Workspace lives under: `$XDG_CACHE_HOME/af/workspaces`,
 /// or `~/.cache/af/workspaces` when the variable is unset. A relative value is refused.
-pub fn default_workspace_cache_root() -> Result<PathBuf, std::io::Error> {
+pub fn default_workspace_cache_root() -> Result<PathBuf, WorkspaceError> {
+    let unavailable =
+        |detail: &str| WorkspaceError::new(WorkspaceErrorKind::CacheRootUnavailable, detail);
     let base = match std::env::var_os("XDG_CACHE_HOME").filter(|value| !value.is_empty()) {
         Some(cache) => PathBuf::from(cache),
         None => {
             let home = std::env::var_os("HOME")
                 .filter(|value| !value.is_empty())
                 .ok_or_else(|| {
-                    std::io::Error::other(
-                        "neither XDG_CACHE_HOME nor HOME locates the warm workspace cache",
-                    )
+                    unavailable("neither XDG_CACHE_HOME nor HOME locates the warm workspace cache")
                 })?;
             PathBuf::from(home).join(".cache")
         }
     };
     if !base.is_absolute() {
-        return Err(std::io::Error::other(
+        return Err(unavailable(
             "the warm workspace cache root must be an absolute directory",
         ));
     }
@@ -81,14 +159,16 @@ pub struct WorkspaceRoot {
 }
 
 impl WorkspaceRoot {
-    pub fn new(cache_root: &Path, workspace_id: &str) -> Result<Self, std::io::Error> {
+    pub fn new(cache_root: &Path, workspace_id: &str) -> Result<Self, WorkspaceError> {
         if !is_workspace_id(workspace_id) {
-            return Err(std::io::Error::other(format!(
-                "`{workspace_id}` is not a workspace identity"
-            )));
+            return Err(WorkspaceError::new(
+                WorkspaceErrorKind::RootUnavailable,
+                format!("`{workspace_id}` is not a workspace identity"),
+            ));
         }
         if !cache_root.is_absolute() {
-            return Err(std::io::Error::other(
+            return Err(WorkspaceError::new(
+                WorkspaceErrorKind::CacheRootUnavailable,
                 "the warm workspace cache root must be an absolute directory",
             ));
         }
@@ -127,7 +207,8 @@ pub struct WorkspacePreparation {
     pub basis: WorkspaceBasisV1,
     /// Why the head was materialized in full, when it was.
     pub fallback: Option<WorkspaceFallbackReasonV1>,
-    /// The head Snapshot the previous verified template held, when there was one.
+    /// The head Snapshot the Campaign last recorded for this workspace, when it recorded one.
+    /// Taken from the durable record the caller supplied, never from the root's marker.
     pub from_snapshot_id: Option<String>,
     /// The Tree Digest the resulting template holds: always the head's own.
     pub verified_digest: String,
@@ -138,9 +219,9 @@ pub struct WorkspacePreparation {
     pub preparation_ms: u64,
 }
 
-/// The previous verified state of a root, read from its marker and manifest.
+/// The previous verified state of a root, read from its marker and manifest. The marker's
+/// Snapshot ID is checked for shape and otherwise ignored: lineage comes from the log.
 struct VerifiedTemplate {
-    snapshot_id: String,
     content_digest: String,
     manifest: Manifest,
 }
@@ -151,23 +232,31 @@ struct Outcome {
     entries_touched: u64,
 }
 
-/// Bring the root's template to `head`. An unchanged head materializes nothing; a changed head
-/// re-bases the previous verified template and verifies the result's digest; anything the root
-/// cannot prove falls back to a full materialization with a recorded reason. The returned
-/// template is trusted only because the root's marker says the tree was verified to hold the
-/// head, and the marker is rewritten only after that verification.
+/// Bring the root's template to `head`. An unchanged head materializes nothing but is read back
+/// and verified before it is served; a changed head re-bases the previous verified template on
+/// a clone and verifies the result's digest; anything the root cannot prove falls back to a
+/// full materialization with a recorded reason. The root's marker vouches for the tree only
+/// when it agrees with `recorded`, the Campaign log's last preparation of this workspace: a
+/// marker the log never recorded, whether left by a preparation that ended before its record
+/// or written by hand, is not trusted and supplies no lineage.
 pub fn prepare_workspace(
     root: &WorkspaceRoot,
     head: &Manifest,
     head_snapshot_id: &str,
     cas: &Cas,
-) -> Result<WorkspacePreparation, std::io::Error> {
+    recorded: Option<&RecordedPreparation>,
+) -> Result<WorkspacePreparation, WorkspaceError> {
+    let invalid = |detail: &str| WorkspaceError::new(WorkspaceErrorKind::InvalidHead, detail);
     head.validate()
-        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        .map_err(|error| invalid(&error.to_string()))?;
     if !review_core::is_digest(head_snapshot_id) {
-        return Err(std::io::Error::other(
-            "a Warm Workspace head needs a Snapshot ID",
-        ));
+        return Err(invalid("a Warm Workspace head needs a Snapshot ID"));
+    }
+    if recorded.is_some_and(|record| {
+        !review_core::is_digest(&record.snapshot_id)
+            || !review_core::is_digest(&record.verified_digest)
+    }) {
+        return Err(invalid("the recorded preparation is malformed"));
     }
     let clock = Instant::now();
     std::fs::create_dir_all(root.path())?;
@@ -175,27 +264,48 @@ pub fn prepare_workspace(
         .file_type()
         .is_symlink()
     {
-        return Err(std::io::Error::other(format!(
-            "warm workspace root {} is a symlink",
-            root.path().display()
-        )));
+        return Err(WorkspaceError::new(
+            WorkspaceErrorKind::RootUnavailable,
+            format!("warm workspace root {} is a symlink", root.path().display()),
+        ));
     }
     // Leftovers of a preparation that ended between its steps carry no marker and no trust.
     remove_tree(&root.path().join(NEXT_TREE));
     remove_tree(&root.path().join(OLD_TREE));
     let head_digest = head.content_digest();
-    let (previous, missing) = match read_verified(root) {
-        Ok(previous) => (previous, WorkspaceFallbackReasonV1::NoVerifiedTemplate),
-        Err(()) => (None, WorkspaceFallbackReasonV1::TemplateCorrupt),
-    };
-    let from_snapshot_id = previous.as_ref().map(|found| found.snapshot_id.clone());
-    let outcome = match previous {
-        Some(previous) if previous.content_digest == head_digest => Outcome {
-            basis: WorkspaceBasisV1::Reused,
-            fallback: None,
-            entries_touched: 0,
+    let from_snapshot_id = recorded.map(|record| record.snapshot_id.clone());
+    // Trust is by digest: the log's last record says which Tree Digest was verified at this
+    // root, and the marker must claim exactly that. The Snapshot ID the marker carries is
+    // informational; a reuse under a new Snapshot ID of the same tree rewrites nothing.
+    let trusted = match read_verified(root) {
+        Ok(None) => Err(WorkspaceFallbackReasonV1::NoVerifiedTemplate),
+        Err(()) => Err(WorkspaceFallbackReasonV1::TemplateCorrupt),
+        Ok(Some(marker)) => match recorded {
+            Some(record) if record.verified_digest == marker.content_digest => Ok(marker),
+            _ => Err(WorkspaceFallbackReasonV1::UnrecordedPreparation),
         },
-        Some(previous) => match rebase(root, &previous.manifest, head, cas) {
+    };
+    let outcome = match trusted {
+        Ok(previous) if previous.content_digest == head_digest => {
+            // Nothing is written, but the tree is read back in full: the marker vouches for
+            // what was verified when it was written, not for what the tree holds now.
+            match scan_tree(root.tree(), head.path_encoding) {
+                Ok(scanned) if scanned.content_digest() == head_digest => Outcome {
+                    basis: WorkspaceBasisV1::Reused,
+                    fallback: None,
+                    entries_touched: 0,
+                },
+                _ => materialize_full(
+                    root,
+                    head,
+                    head_snapshot_id,
+                    &head_digest,
+                    cas,
+                    WorkspaceFallbackReasonV1::TemplateCorrupt,
+                )?,
+            }
+        }
+        Ok(previous) => match rebase(root, &previous.manifest, head, cas) {
             Ok(entries_touched) => {
                 commit(root, head, head_snapshot_id, &head_digest)?;
                 Outcome {
@@ -208,7 +318,7 @@ pub fn prepare_workspace(
                 materialize_full(root, head, head_snapshot_id, &head_digest, cas, reason)?
             }
         },
-        None => materialize_full(root, head, head_snapshot_id, &head_digest, cas, missing)?,
+        Err(reason) => materialize_full(root, head, head_snapshot_id, &head_digest, cas, reason)?,
     };
     Ok(WorkspacePreparation {
         template: SandboxTemplate::at_stable_root(head.clone(), root.tree()),
@@ -247,6 +357,15 @@ fn rebase_into(
 ) -> Result<u64, WorkspaceFallbackReasonV1> {
     clone_tree(&root.tree(), next, Mode::EphemeralWrite)
         .map_err(|_| WorkspaceFallbackReasonV1::ApplyFailed)?;
+    // The clone must hold exactly the previous manifest before any entry is unlinked or
+    // written. A template that drifted under its marker, a directory replaced by a symlink
+    // included, is caught here while nothing outside the clone has been touched; the apply
+    // below then removes entries only through real directories.
+    let cloned = scan_tree(next, previous.path_encoding)
+        .map_err(|_| WorkspaceFallbackReasonV1::TemplateCorrupt)?;
+    if cloned.content_digest() != previous.content_digest() {
+        return Err(WorkspaceFallbackReasonV1::TemplateCorrupt);
+    }
     let touched = apply_tree_diff(previous, head, cas, next)
         .map_err(|_| WorkspaceFallbackReasonV1::ApplyFailed)?;
     let scanned =
@@ -266,11 +385,14 @@ fn materialize_full(
     head_digest: &str,
     cas: &Cas,
     reason: WorkspaceFallbackReasonV1,
-) -> Result<Outcome, std::io::Error> {
+) -> Result<Outcome, WorkspaceError> {
     let next = root.path().join(NEXT_TREE);
     if let Err(error) = materialize(head, cas, &next) {
         remove_tree(&next);
-        return Err(std::io::Error::other(error.to_string()));
+        return Err(WorkspaceError::new(
+            WorkspaceErrorKind::MaterializationFailed,
+            error.to_string(),
+        ));
     }
     commit(root, head, head_snapshot_id, head_digest)?;
     Ok(Outcome {
@@ -288,7 +410,7 @@ fn commit(
     head: &Manifest,
     head_snapshot_id: &str,
     head_digest: &str,
-) -> Result<(), std::io::Error> {
+) -> Result<(), WorkspaceError> {
     let tree = root.tree();
     let next = root.path().join(NEXT_TREE);
     let old = root.path().join(OLD_TREE);
@@ -310,15 +432,15 @@ fn commit(
     Ok(())
 }
 
-fn remove_marker(root: &WorkspaceRoot) -> Result<(), std::io::Error> {
+fn remove_marker(root: &WorkspaceRoot) -> Result<(), WorkspaceError> {
     match std::fs::remove_file(root.head_marker()) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error),
+        Err(error) => Err(error.into()),
     }
 }
 
-fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
+fn write_atomically(path: &Path, bytes: &[u8]) -> Result<(), WorkspaceError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
     file.write_all(bytes)?;
@@ -348,7 +470,7 @@ fn read_verified(root: &WorkspaceRoot) -> Result<Option<VerifiedTemplate>, ()> {
             .map(str::to_owned)
             .ok_or(())
     };
-    let snapshot_id = field("snapshot_id")?;
+    field("snapshot_id")?;
     let content_digest = field("content_digest")?;
     let manifest: Manifest = std::fs::read(root.manifest_file())
         .ok()
@@ -362,16 +484,22 @@ fn read_verified(root: &WorkspaceRoot) -> Result<Option<VerifiedTemplate>, ()> {
         return Err(());
     }
     Ok(Some(VerifiedTemplate {
-        snapshot_id,
         content_digest,
         manifest,
     }))
 }
 
-/// Best-effort removal of a tree the root no longer trusts or needs.
+/// Best-effort removal of a tree the root no longer trusts or needs. Only a real directory is
+/// walked; a symlink or a stray file where a tree should be is unlinked as it is, so nothing
+/// it points at is ever chmod'ed or removed.
 fn remove_tree(path: &Path) {
-    if std::fs::symlink_metadata(path).is_ok() {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    if metadata.is_dir() && !metadata.file_type().is_symlink() {
         restore_writable_dirs(path);
         let _ = std::fs::remove_dir_all(path);
+    } else {
+        let _ = std::fs::remove_file(path);
     }
 }

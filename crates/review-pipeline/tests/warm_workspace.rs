@@ -18,6 +18,7 @@ use review_core::{
     WorkspaceRebasedPayloadV1, is_workspace_id,
 };
 use review_pipeline::{Kernel, RoundAuthority};
+use review_sandbox::{RecordedPreparation, WorkspaceRoot, prepare_workspace, workspace_id};
 use review_source_git::{Entry, EntryKind, Manifest, PathEncoding, materialize, scan_tree};
 use review_store::{Cas, ConvergencePolicy, EventStore, NewEvent};
 
@@ -551,9 +552,9 @@ fn a_corrupted_template_fails_closed_into_a_full_materialization_that_records_wh
     let (head_one_id, first) = run_round_one(&cas, &mut store, &workspaces, &loaded, &head_one);
     let root = workspaces.join(&first.workspace_id).join("tree");
 
-    // An entry the next head does not touch changed under an intact marker. The rebase applies
-    // cleanly and its verification disagrees with the head, so the head is rebuilt from the
-    // CAS and the reviewer sees the real tree.
+    // An entry the next head does not touch changed under an intact marker. The clone is
+    // scanned before any entry is unlinked and disagrees with the previous manifest, so the
+    // head is rebuilt from the CAS and the reviewer sees the real tree.
     std::fs::write(root.join("src/deep/c.rs"), b"tampered\n").unwrap();
     let head_two = head_two(&cas);
     let round_two = start_round(&cas, &mut store, &head_two, 2);
@@ -581,8 +582,8 @@ fn a_corrupted_template_fails_closed_into_a_full_materialization_that_records_wh
     assert_eq!(second.basis, WorkspaceBasisV1::Full);
     assert_eq!(
         second.fallback,
-        Some(WorkspaceFallbackReasonV1::DigestMismatch),
-        "the corrupted rebase is refused and the reason recorded"
+        Some(WorkspaceFallbackReasonV1::TemplateCorrupt),
+        "the drifted template is refused before the rebase and the reason recorded"
     );
     assert_eq!(
         second.from_snapshot_id.as_deref(),
@@ -609,6 +610,132 @@ fn a_corrupted_template_fails_closed_into_a_full_materialization_that_records_wh
         mutations,
         serde_json::json!({"added": ["edited.txt"], "modified": [], "deleted": []})
     );
+}
+
+#[test]
+fn a_preparation_the_log_never_recorded_is_rebuilt_with_the_recorded_lineage() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+    let workspaces = dir.path().join("workspaces");
+    let loaded = Definition::from_toml(WARM_WORKSPACE_PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
+    let head_one = head_one(&cas);
+    let (head_one_id, first) = run_round_one(&cas, &mut store, &workspaces, &loaded, &head_one);
+    assert!(first.preparation_ms < 600_000, "measured, not discarded");
+
+    // Round two's preparation swapped the tree and wrote its marker for the new head, then the
+    // process died before `WorkspaceRebased@1` was appended: the root holds head two under a
+    // marker the log never recorded.
+    let head_two = head_two(&cas);
+    let head_two_id = snapshot_id(&cas, &head_two, "test-tree-2");
+    let root = WorkspaceRoot::new(&workspaces, &first.workspace_id).unwrap();
+    let recorded = RecordedPreparation {
+        snapshot_id: first.to_snapshot_id.clone(),
+        verified_digest: first.verified_digest.clone(),
+    };
+    let interrupted =
+        prepare_workspace(&root, &head_two, &head_two_id, &cas, Some(&recorded)).unwrap();
+    assert_eq!(interrupted.basis, WorkspaceBasisV1::Rebased);
+
+    let round_two = start_round(&cas, &mut store, &head_two, 2);
+    let authority = RoundAuthority::load(&store, &cas, "run", &round_two.event_id).unwrap();
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        head_two.clone(),
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_workspace_cache_root(workspaces.clone())
+    .with_reviewer("reviewer", editing_reviewer())
+    .with_reviewer("reader", reading_reviewer());
+    let report = loaded.run(&kernel).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    drop(kernel);
+
+    let events = events_of(&store, EventType::WorkspaceRebasedV1);
+    assert_eq!(events.len(), 2);
+    let second = rebased(&events[1]);
+    assert_eq!(second.basis, WorkspaceBasisV1::Full);
+    assert_eq!(
+        second.fallback,
+        Some(WorkspaceFallbackReasonV1::UnrecordedPreparation),
+        "an unrecorded marker is not reinterpreted as reuse"
+    );
+    assert_eq!(
+        second.from_snapshot_id.as_deref(),
+        Some(head_one_id.as_str()),
+        "the previous head is the log's, never the marker's"
+    );
+    assert_eq!(second.to_snapshot_id, head_two_id);
+    assert_eq!(second.entries_touched, 3);
+    assert_eq!(
+        scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
+        head_two
+    );
+    let (mutations, _) = sealed_mutations(&cas, &store, &round_two.event_id, "reviewer");
+    assert_eq!(
+        mutations,
+        serde_json::json!({"added": ["edited.txt"], "modified": [], "deleted": []})
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_preparation_failure_reaches_the_report_without_a_host_path() {
+    let dir = tempfile::tempdir().unwrap();
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+    let workspaces = dir.path().join("distinctive-cache-root-7f3a");
+    let loaded = Definition::from_toml(WARM_WORKSPACE_PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
+    let head = head_one(&cas);
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &head,
+        WARM_WORKSPACE_PIPELINE,
+    );
+    let opened_event = store.campaign_opened("run").unwrap().unwrap();
+    let opened: CampaignOpenedPayloadV1 =
+        serde_json::from_value(opened_event.payload.clone()).unwrap();
+    // The node's root exists but is a symlink: the preparation refuses it.
+    let id = workspace_id("run", &opened.campaign_manifest_id, "reviewer");
+    std::fs::create_dir_all(&workspaces).unwrap();
+    std::fs::create_dir_all(dir.path().join("elsewhere")).unwrap();
+    std::os::unix::fs::symlink(dir.path().join("elsewhere"), workspaces.join(&id)).unwrap();
+    let kernel = Kernel::from_loaded(&cas, &mut store, "run", head.clone(), &loaded, authority)
+        .unwrap()
+        .with_workspace_cache_root(workspaces.clone())
+        .with_reviewer("reviewer", reading_reviewer())
+        .with_reviewer("reader", reading_reviewer());
+    let report = loaded.run(&kernel).unwrap();
+    assert!(!report.complete());
+    let outcomes = format!("{:?}", report.outcomes);
+    assert!(
+        outcomes.contains("warm workspace root is unavailable"),
+        "{outcomes}"
+    );
+    assert!(
+        !outcomes.contains("distinctive-cache-root") && !outcomes.contains(&id),
+        "no host path in a durable outcome: {outcomes}"
+    );
+    drop(kernel);
+    for event in store.replay("run").unwrap() {
+        let bytes = serde_json::to_string(&event).unwrap();
+        assert!(
+            !bytes.contains("distinctive-cache-root"),
+            "no host path in the log: {bytes}"
+        );
+    }
 }
 
 #[test]

@@ -172,6 +172,7 @@ pub(super) fn read(
 ) -> Result<TaskAccountingReport, String> {
     let mut referenced = BTreeSet::new();
     let warm_selections = warm_selections(events)?;
+    let workspace_preparations = workspace_preparations(events)?;
     for event in events {
         match event.event_type {
             review_core::EventType::RunReportV6 => {
@@ -293,10 +294,22 @@ pub(super) fn read(
                         .context_id
                         .as_deref()
                         .and_then(|id| bound_context_size(cas, id));
+                    let workspace = review_node
+                        .as_deref()
+                        .zip(plan.round.as_ref())
+                        .and_then(|(node, round)| {
+                            workspace_preparations.get(&(
+                                round.round,
+                                round.epoch,
+                                node.to_string(),
+                            ))
+                        })
+                        .cloned();
                     super::AttemptWarmView {
                         layers: layers.clone(),
                         rendered_bytes: size.map(|size| size.0),
                         estimated_tokens: size.map(|size| size.1),
+                        workspace,
                     }
                 });
             views.push(TaskAttemptView {
@@ -347,6 +360,60 @@ pub(super) fn read(
 /// `WarmSetSelected@1` layers by (Round, epoch, review node), read from the Campaign log so a
 /// Task-backed review Attempt reports its warm layers exactly as a legacy one does.
 type WarmSelections = BTreeMap<(u32, u32, String), Vec<String>>;
+
+/// `WorkspaceRebased@1` by (Round, epoch, review node): what preparing the node's Warm
+/// Workspace for that Round did and cost. Preparation precedes every Attempt of the Round, so
+/// the report shows it once per Attempt view without adding it to any wall clock.
+type WorkspacePreparations = BTreeMap<(u32, u32, String), super::WorkspacePreparationView>;
+
+fn workspace_preparations(
+    events: &[review_core::RunEvent],
+) -> Result<WorkspacePreparations, String> {
+    let mut rounds: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    let mut preparations = BTreeMap::new();
+    for event in events {
+        match event.event_type {
+            review_core::EventType::RoundStartedV1 => {
+                let payload: review_core::RoundStartedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                rounds.insert(event.event_id.clone(), (payload.round, payload.epoch));
+            }
+            review_core::EventType::WorkspaceRebasedV1 => {
+                let payload: review_core::WorkspaceRebasedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                let Some((round, epoch)) = event
+                    .causation_id
+                    .as_deref()
+                    .and_then(|round| rounds.get(round))
+                    .copied()
+                else {
+                    continue;
+                };
+                let basis = serde_json::to_value(payload.basis)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                let fallback = payload
+                    .fallback
+                    .and_then(|reason| serde_json::to_value(reason).ok())
+                    .and_then(|value| value.as_str().map(str::to_owned));
+                preparations.insert(
+                    (round, epoch, payload.node.clone()),
+                    super::WorkspacePreparationView {
+                        basis,
+                        fallback,
+                        entries_touched: payload.entries_touched,
+                        preparation_ms: payload.preparation_ms,
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(preparations)
+}
 
 fn warm_selections(events: &[review_core::RunEvent]) -> Result<WarmSelections, String> {
     let mut rounds: BTreeMap<String, (u32, u32)> = BTreeMap::new();

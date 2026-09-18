@@ -34,20 +34,41 @@ discarded.
   and the new one (removals and modifications unlinked, emptied directories pruned, changed and
   added entries written from the CAS exactly as a materialization writes them), scans the clone
   back into a manifest with the head's path spelling, and compares that manifest's content
-  digest with the head's Tree Digest. Only an equal digest swaps the clone in. The scan hashes
-  every entry, so a template that drifted under its marker is caught even when the diff never
-  touched the drifted path.
+  digest with the head's Tree Digest. Only an equal digest swaps the clone in. Before any entry
+  is unlinked the clone is scanned against the previous manifest, so a template that drifted
+  under its marker, a directory replaced by a symlink included, is caught while nothing outside
+  the clone has been touched; removals then open every parent component `O_NOFOLLOW` and a
+  leftover clone that is a symlink is unlinked, never traversed. The scan after the apply
+  hashes every entry, so a rebase that produced anything but the head is discarded.
 - **Fail closed into a full materialization and record why.** A rebase that cannot be applied,
   cannot be verified, or verifies to another digest is discarded, and the head is materialized
   from the CAS into the root instead. `WorkspaceRebased@1` records, per node and kernel run,
   the previous and current head Snapshot IDs, the basis (`full`, `rebased`, `reused`), the
   fallback reason when the basis is `full` (`no_verified_template`, `template_corrupt`,
-  `apply_failed`, `digest_mismatch`), the digest the template was verified to hold, and the
-  entries touched. The root's head marker is removed before any swap and written after the
+  `apply_failed`, `digest_mismatch`, `unrecorded_preparation`), the digest the template was
+  verified to hold, the entries touched, and the host time the preparation took. Preparation
+  runs before the Round's first Attempt is reserved, so the report shows it beside each
+  Attempt's warm layers rather than inside any Attempt wall clock. The root's head marker is removed before any swap and written after the
   manifest, so a preparation that ends early leaves a root the next one refuses to trust.
-- **An unchanged head materializes nothing.** When the marker's digest equals the head's Tree
-  Digest the template is reused as it stands: no clone, no scan, no write, and a record whose
-  basis is `reused` with zero entries touched.
+- **An unchanged head materializes nothing, but is verified.** When the marker's digest equals
+  the head's Tree Digest the tree is read back and scanned; only a scan equal to the head reuses
+  the template as it stands, with no clone and no write, and a record whose basis is `reused`
+  with zero entries touched. A drifted tree under an intact marker is rebuilt as
+  `template_corrupt`.
+- **The marker is believed only against the log.** The root's marker is machine-local state.
+  It vouches for the tree only when it claims exactly the verified digest of the Campaign
+  log's last `WorkspaceRebased@1` for that workspace; the Snapshot ID it carries is
+  informational, and the previous head the new record names comes from that durable record,
+  never from the marker. A marker the log never
+  recorded, whether a preparation ended after its swap and before its record became durable or
+  someone wrote the file, rebuilds the head as `unrecorded_preparation`.
+- **Preparation failures carry no host path.** The error a preparation returns to the kernel has
+  a fixed, path-free text per kind; the cache root, the workspace path and the system message
+  stay in an operator detail printed to stderr, so a failed node outcome, a report or a Task
+  diagnostic never records where the cache lives.
+- **Cold pipelines touch no cache configuration.** The CLI resolves and installs the workspace
+  cache root only when a pinned reviewer policy declares `workspace = "rebase"`; a pipeline
+  without the policy neither validates `XDG_CACHE_HOME` nor creates a directory under it.
 - **The Warm Set names the workspace; the layer carries no artifact.** `WarmSet@1` gains
   `workspace` and `workspace_id`, present together or not at all, and the `workspace` layer joins
   `WarmSetSelected@1` when the basis is `rebased` or `reused`. The workspace's content is the head
@@ -79,9 +100,10 @@ discarded.
 
 ## Consequences
 
-- A warm node's Round N+1 template costs one copy-on-write clone, the diff's writes and one
-  read-only scan of the tree instead of a full CAS materialization; the dogfood comparison the
-  design requires ships with the first warm Campaign, not with this package.
+- A warm node's Round N+1 template costs one copy-on-write clone, two read-only scans of the
+  tree (before and after the apply) and the diff's writes instead of a full CAS materialization;
+  an unchanged head costs one scan. The dogfood comparison the design requires ships with the
+  first warm Campaign, not with this package.
 - Stable roots are bounded machine-local cache growth: one tree per warm node per Campaign,
   addressed by identity under the XDG cache directory. Collection of roots whose Campaign has
   ended remains a separate concern.

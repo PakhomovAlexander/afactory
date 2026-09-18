@@ -45,8 +45,8 @@ pub use cache::{
 pub use container::{Availability, ContainerProvider};
 pub use seal::{MutationSet, SealedSandbox};
 pub use workspace::{
-    WorkspacePreparation, WorkspaceRoot, default_workspace_cache_root, prepare_workspace,
-    workspace_id,
+    RecordedPreparation, WorkspaceError, WorkspaceErrorKind, WorkspacePreparation, WorkspaceRoot,
+    default_workspace_cache_root, prepare_workspace, workspace_id,
 };
 
 use std::path::{Path, PathBuf};
