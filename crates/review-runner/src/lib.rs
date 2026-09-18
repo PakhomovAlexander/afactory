@@ -20,6 +20,7 @@
 
 pub mod command_runner;
 pub mod model;
+pub mod session;
 pub mod task;
 
 pub use command_runner::{CommandRunner, RunnerError};
@@ -39,6 +40,7 @@ pub use review_process::{
     ExitPolicy, SupervisedDuplexOutput, SupervisedError, SupervisedOutput, SupervisedStreamError,
     run_supervised, run_supervised_duplex, run_supervised_streaming, run_supervised_with_policy,
 };
+pub use session::{CapturedSession, SessionCapture, SessionDeletion, SessionLayer, SessionResume};
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

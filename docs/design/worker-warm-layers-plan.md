@@ -420,7 +420,35 @@ P3 is verified: Task `warm-p3-verify` ran alone against the fixed Snapshot and f
 `verified` at 153,575 tokens. With the eleven attestations recorded in `warm-p3-review`, P3
 closes the same way P1 and P2 did.
 
-## 11. First session
+## 11. P4 implementation record
+
+P4 is implemented as [ADR-0110](../adr/0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md).
+The session identity is the Attempt's own Round-scoped ID plus a fixed suffix, so it is derived
+rather than hashed or random and a crashed kernel can still name the file it owes a deletion.
+`review-core` carries `SessionSnapshot@1`, `SessionSnapshotPrepared@1`, `SessionSnapshotCleaned@1`
+and `ColdCloseoutDispatched@1`; `review-runner` carries the `SessionLayer` adapter surface and the
+resume render mode; `review-runner-claude` implements the pinned store layout, the bounded capture
+and the no-follow deletion; `review-pipeline` owns the protocol, the gates, the recovery sweep and
+the compiled Cold Closeout; `review-config` owns `warm.session`, `warm.session_max_age_secs` and
+`convergence.cold_closeout` with their load-time refusals. Exit evidence lives in
+`review-pipeline/tests/session_snapshot.rs` (capture and forked resume across two Rounds, recovery
+of a capture interrupted between its phases with no orphan and no ambient transcript, cache-read
+tokens recorded separately from input tokens, a confirmation dispatched only on a would-be-clean
+result, and a retry meeting the protected reservation), `review-runner-claude/tests/session.rs`
+(the pinned flags, the bounded capture, the idempotent deletion, a symlinked project directory
+that is never followed), `review-runner/tests/session_render.rs` (the delta prompt and its
+manifest), `review-config/tests/definition.rs` (policy defaults and the feasibility refusal) and
+`review-core/tests/schema_parity.rs`.
+
+Two limits are carried deliberately. The session layer runs on the Kernel's own reviewer path; a
+Task-hosted Review Attempt records the drop reason `host_unsupported` and runs on Notes, which is
+recorded rather than silent. And no cold-versus-warm dogfood comparison exists: the package was
+implemented without a live Campaign, so the design review's forked-resume Demand — net token and
+wall-time savings over cold and Notes-only Attempts at several ages — stays open until the first
+Campaign runs with `session = "if_recent"`. Both policy defaults are off, which is what the design
+asks for until that Evidence exists.
+
+## 12. First session
 
 Revise the design (P0), then run P1 through the campaign Pipeline:
 

@@ -129,7 +129,9 @@ impl ClaudeTaskAdapter {
                 };
             }
         };
-        let mut command = claude_command(&self.program, &self.model_flags);
+        // The common Task path installs no session layer (its Attempts record
+        // `host_unsupported`), so the command carries no session flags.
+        let mut command = claude_command(&self.program, &self.model_flags, None);
         if let Some(schema) = &output_schema {
             command
                 .args

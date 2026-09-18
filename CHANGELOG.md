@@ -45,6 +45,24 @@ release pages only.
   so a warm Attempt's sealed diff is what the reviewer wrote; nodes without the policy and
   pipelines written before it are unchanged
   ([ADR-0109](docs/adr/0109-rebase-warm-workspaces-at-stable-roots-with-digest-verification.md)).
+- Add the Session Snapshot as the fourth warm layer, for Claude reviewers only, and the compiled
+  Cold Closeout beside it. A node with `warm = { session = "if_recent" }` runs each Attempt under
+  a `--session-id` the kernel derives from the Attempt ID; at seal the bounded transcript enters
+  the CAS as `review.kernel/SessionSnapshot@1`, `SessionSnapshotPrepared@1` records it with the
+  bytes, the estimated tokens and a path-free source identity, the harness copy is deleted without
+  following a symlink, and `SessionSnapshotCleaned@1` closes the protocol. A sweep before the
+  Round's first Attempt finishes any cleanup a crash interrupted and removes every transcript the
+  node's Attempts could have left, without a provider call. The next Round re-materializes the
+  transcript and resumes it with `--resume --fork-session`, sending only the delta prompt — no
+  package instructions, no Change Set patch — with both the transcript and the delta listed in the
+  Attempt's context manifest. Provider support, `warm.session.max_age` and fitting the reservation
+  beside the delta are gates whose every failure is a recorded `WarmSet@1` drop back to Notes
+  alone; Codex implements nothing and keeps `--ephemeral`. `[convergence] cold_closeout` compiles
+  a conditional cold Attempt of a warm reviewer, reserved before its warm Attempt so a retry
+  cannot consume it, dispatched only when the warm result would otherwise close the Round clean,
+  and folded into the Ledger through `ColdCloseoutDispatched@1` before the convergence decision.
+  Both policies default to off, so a pipeline written before this package is unchanged
+  ([ADR-0110](docs/adr/0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md)).
 
 ## [0.9.0-rc.3] - 2026-09-17
 

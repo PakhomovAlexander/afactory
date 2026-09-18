@@ -228,6 +228,69 @@ impl WorkspaceSpec {
     }
 }
 
+/// How a reviewer node carries its harness session across Rounds (package P4). Claude adapters
+/// only: an adapter that cannot host a kernel-assigned session and resume it forked drops the
+/// layer with a recorded reason and runs on Notes alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionSpec {
+    /// No session is assigned, captured, or resumed. The default, and what every pipeline
+    /// written before the field existed does.
+    #[default]
+    Off,
+    /// Capture at seal, and resume the previous admitted Attempt's transcript only while it is
+    /// younger than `session_max_age_secs`, so a provider prompt cache can plausibly serve it.
+    IfRecent,
+    /// Capture at seal, and resume whatever the age, subject to the reservation gate. The age
+    /// bound still decides nothing else: a transcript that does not fit is still dropped.
+    Always,
+}
+
+impl SessionSpec {
+    pub fn is_off(&self) -> bool {
+        *self == Self::Off
+    }
+
+    /// Whether the node assigns a session identity and captures its transcript at seal. Capture
+    /// is what makes the *next* Round's resume possible; resume itself is gated separately.
+    pub fn captures(&self) -> bool {
+        !self.is_off()
+    }
+
+    /// The age bound that applies to a resume under this policy, in seconds. `always` still
+    /// refuses a transcript beyond the hard bound, because a transcript that old cannot be
+    /// serving a prompt cache and is only prefix cost.
+    pub fn max_age_secs(&self, configured: u64) -> u64 {
+        match self {
+            Self::Off => 0,
+            Self::IfRecent => configured,
+            Self::Always => review_core::MAX_SESSION_MAX_AGE_SECS,
+        }
+    }
+}
+
+/// Which required reviewers with warm layers get a compiled Cold Closeout: a conditional cold
+/// Attempt of the same node inside the Round, dispatched only when the warm result would
+/// otherwise close the Round clean, holding a reservation protected before the warm Attempt ran.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColdCloseoutSpec {
+    /// No closeout is compiled. The default, so every pipeline written before the field existed
+    /// dispatches exactly the Attempts it did before.
+    #[default]
+    None,
+    /// The first warm reviewer in plan order confirms a would-be-clean Round cold.
+    OneRequired,
+    /// Every warm reviewer confirms a would-be-clean Round cold.
+    All,
+}
+
+impl ColdCloseoutSpec {
+    pub fn is_none(&self) -> bool {
+        *self == Self::None
+    }
+}
+
 /// A reviewer node's warm-layer policy (package P1: Notes and Head Delta; package P2: the
 /// Gate's build cache; package P3: the Warm Workspace). Every layer is a declared CAS artifact
 /// in the Attempt's context manifest, never ambient state.
@@ -252,10 +315,30 @@ pub struct WarmSpec {
     /// or `"fresh"` keeps a temporary template per Round.
     #[serde(default, skip_serializing_if = "WorkspaceSpec::is_fresh")]
     pub workspace: WorkspaceSpec,
+    /// `session = "if_recent"` or `"always"` assigns each Attempt a kernel-derived session
+    /// identity, captures its transcript at seal and resumes the previous admitted Attempt's
+    /// transcript forked. Absent or `"off"` is the default: no session is assigned, captured or
+    /// resumed, and the node's prompt is byte-identical to a pre-P4 Attempt.
+    #[serde(default, skip_serializing_if = "SessionSpec::is_off")]
+    pub session: SessionSpec,
+    /// `warm.session.max_age`, in seconds: how recent the previous admitted Attempt must be for
+    /// `session = "if_recent"` to resume it. Omitted from a pinned policy that keeps the
+    /// default, so a cold or notes-only pipeline serializes exactly as it did before.
+    #[serde(default = "default_session_max_age_secs")]
+    #[serde(skip_serializing_if = "is_default_session_max_age")]
+    pub session_max_age_secs: u64,
 }
 
 fn default_notes_max_bytes() -> u64 {
     review_core::DEFAULT_WORKER_NOTES_BYTES as u64
+}
+
+fn default_session_max_age_secs() -> u64 {
+    review_core::DEFAULT_SESSION_MAX_AGE_SECS
+}
+
+fn is_default_session_max_age(value: &u64) -> bool {
+    *value == review_core::DEFAULT_SESSION_MAX_AGE_SECS
 }
 
 impl WarmSpec {
@@ -284,6 +367,20 @@ impl WarmSpec {
                     kind.as_str()
                 )));
             }
+        }
+        let age_bound = review_core::MAX_SESSION_MAX_AGE_SECS;
+        if self.session_max_age_secs == 0 || self.session_max_age_secs > age_bound {
+            return Err(ConfigError::Binding(format!(
+                "reviewer `{node}` warm.session_max_age_secs must be between 1 and {age_bound}"
+            )));
+        }
+        // Notes are the default carry and the declared fallback for every session gate failure:
+        // provider support, age and the reservation all fall back to Notes alone. A
+        // session-only node would silently carry nothing the moment a gate refused.
+        if self.session.captures() && !self.notes {
+            return Err(ConfigError::Binding(format!(
+                "reviewer `{node}` warm.session requires `notes = true`: every session gate falls back to Notes alone"
+            )));
         }
         Ok(())
     }
@@ -960,6 +1057,11 @@ pub struct ConvergenceSpec {
     pub max_rounds: u32,
     #[serde(default = "major")]
     pub gate: SeveritySpec,
+    /// Which warm reviewers get a compiled Cold Closeout. Defaults to `none`, so a pipeline
+    /// written before the field existed dispatches exactly the Attempts it did before; the
+    /// example warm policy sets it explicitly.
+    #[serde(default, skip_serializing_if = "ColdCloseoutSpec::is_none")]
+    pub cold_closeout: ColdCloseoutSpec,
 }
 
 fn one() -> u32 {
@@ -978,6 +1080,7 @@ impl Default for ConvergenceSpec {
             clean_rounds: 1,
             max_rounds: 3,
             gate: SeveritySpec::Major,
+            cold_closeout: ColdCloseoutSpec::None,
         }
     }
 }
@@ -1186,6 +1289,10 @@ pub struct Loaded {
     integration: Option<IntegrationSpec>,
     /// Reviewer nodes that declared a warm-layer policy. Absent nodes run cold.
     warm: BTreeMap<String, WarmSpec>,
+    /// The pinned Cold Closeout policy and the exact warm reviewer nodes it compiles a
+    /// conditional cold Attempt for, in plan order.
+    cold_closeout: ColdCloseoutSpec,
+    cold_closeout_nodes: Vec<String>,
 }
 
 /// A dispatcher that declares the Subject semantics it actually executes.
@@ -1275,6 +1382,17 @@ impl Loaded {
     /// Reviewer nodes with a declared warm-layer policy, by node ID.
     pub fn warm_policies(&self) -> &BTreeMap<String, WarmSpec> {
         &self.warm
+    }
+
+    /// The pinned Cold Closeout policy.
+    pub fn cold_closeout(&self) -> ColdCloseoutSpec {
+        self.cold_closeout
+    }
+
+    /// The exact warm reviewer nodes this pipeline compiled a conditional cold Attempt for.
+    /// Empty under the default policy, so nothing extra is ever dispatched by accident.
+    pub fn cold_closeout_nodes(&self) -> &[String] {
+        &self.cold_closeout_nodes
     }
 
     pub fn plan_order(&self) -> &[String] {
@@ -1379,6 +1497,74 @@ impl Loaded {
         }
         Ok(Scheduler::new(&self.plan).run(dispatcher))
     }
+}
+
+/// The warm reviewer nodes a pinned Cold Closeout policy compiles a conditional cold Attempt
+/// for, in definition order, with the feasibility the design requires: a policy whose budget
+/// cannot admit the extra Attempts is refused here, before anything runs, rather than
+/// discovered when the warm result turns out to be clean.
+///
+/// Only a node with warm layers is a candidate: a cold reviewer's result needs no cold
+/// confirmation, so a pipeline with no warm policy compiles no closeout whatever the setting.
+fn cold_closeout_nodes(
+    convergence: &ConvergenceSpec,
+    nodes: &[NodeSpec],
+    budgets: Option<&BudgetSpec>,
+) -> Result<Vec<String>, ConfigError> {
+    if convergence.cold_closeout.is_none() {
+        return Ok(Vec::new());
+    }
+    let warm: Vec<&NodeSpec> = nodes
+        .iter()
+        .filter(|node| node.kind == NodeKindSpec::Reviewer && node.warm.is_some())
+        .collect();
+    let selected: Vec<&NodeSpec> = match convergence.cold_closeout {
+        ColdCloseoutSpec::None => Vec::new(),
+        ColdCloseoutSpec::OneRequired => warm.iter().take(1).copied().collect(),
+        ColdCloseoutSpec::All => warm.clone(),
+    };
+    if selected.is_empty() {
+        return Err(ConfigError::Binding(
+            "convergence.cold_closeout names a confirmation Attempt but no reviewer declares warm layers; a cold reviewer needs no cold confirmation".into(),
+        ));
+    }
+    for node in &selected {
+        // A brokered reviewer's Attempt runs under a Broker Handle issued for exactly that
+        // Attempt. A closeout would need its own lease, which this package does not compile.
+        if node.execution.as_ref().is_some_and(|execution| {
+            execution.credential_mode == review_core::BrokerCredentialModeV1::Brokered
+        }) {
+            return Err(ConfigError::Binding(format!(
+                "reviewer `{}` is brokered and cannot take a compiled Cold Closeout: its confirmation Attempt would need a Broker Handle of its own",
+                node.id
+            )));
+        }
+    }
+    if let Some(budgets) = budgets {
+        let reservation = |node: &NodeSpec| {
+            node.budget
+                .map(|budget| budget.attempt)
+                .unwrap_or(budgets.attempt)
+        };
+        // Every Worker's first Attempt plus every closeout's protected Attempt must fit the run
+        // cap, or the reservation this policy promises to protect could never be taken.
+        let workers: u128 = nodes
+            .iter()
+            .filter(|node| matches!(node.kind, NodeKindSpec::Reviewer | NodeKindSpec::Scatter))
+            .map(|node| u128::from(reservation(node)))
+            .sum();
+        let closeouts: u128 = selected
+            .iter()
+            .map(|node| u128::from(reservation(node)))
+            .sum();
+        if workers + closeouts > u128::from(budgets.run) {
+            return Err(ConfigError::Binding(format!(
+                "convergence.cold_closeout needs {closeouts} protected tokens beside {workers} for the Round's Workers, which exceeds the run cap ({}); raise the cap or set cold_closeout = \"none\"",
+                budgets.run
+            )));
+        }
+    }
+    Ok(selected.iter().map(|node| node.id.clone()).collect())
 }
 
 impl Definition {
@@ -1607,6 +1793,8 @@ impl Definition {
                 self.convergence.clean_rounds, self.convergence.max_rounds
             )));
         }
+        let cold_closeout_nodes =
+            cold_closeout_nodes(&self.convergence, &self.nodes, self.budgets.as_ref())?;
         if let Some(policy) = &integration {
             if self.version != 5 {
                 return Err(ConfigError::Binding(
@@ -1871,6 +2059,8 @@ impl Definition {
             node_attempt_caps,
             integration,
             warm,
+            cold_closeout: self.convergence.cold_closeout,
+            cold_closeout_nodes,
             convergence: ConvergencePolicy {
                 clean_rounds: self.convergence.clean_rounds,
                 max_rounds: self.convergence.max_rounds,

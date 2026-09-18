@@ -92,7 +92,10 @@
         "WarmSetSelected@1",
         "WorkerNotesRecorded@1",
         "BuildCacheCaptured@1",
-        "WorkspaceRebased@1"
+        "WorkspaceRebased@1",
+        "SessionSnapshotPrepared@1",
+        "SessionSnapshotCleaned@1",
+        "ColdCloseoutDispatched@1"
       ]
     },
     "occurred_at": {
@@ -664,6 +667,63 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "SessionSnapshotPrepared@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/session_snapshot_prepared"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "SessionSnapshotCleaned@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/session_snapshot_cleaned"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "ColdCloseoutDispatched@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/cold_closeout_dispatched"
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -1086,11 +1146,200 @@
               "notes",
               "head_delta",
               "build_cache",
-              "workspace"
+              "workspace",
+              "session"
             ]
           }
         }
       }
+    },
+    "session_snapshot_prepared": {
+      "description": "Phase one of the crash-consistent session capture, appended under the Attempt epoch: the bounded transcript is verified in the CAS and the harness copy is still on disk. A kernel that stops here leaves a durable instruction to finish the deletion, which recovery completes without a provider call. The source names the adapter kind and the content identity of the harness path, never the path.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "session_artifact_id",
+        "transcript_artifact_id",
+        "source",
+        "bytes",
+        "estimated_tokens",
+        "captured_at_unix_ms"
+      ],
+      "properties": {
+        "session_id": {
+          "$ref": "#/$defs/session_id"
+        },
+        "session_artifact_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "transcript_artifact_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "source": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "provider_kind",
+            "path_digest"
+          ],
+          "properties": {
+            "provider_kind": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 32,
+              "pattern": "^[a-z0-9-]+$"
+            },
+            "path_digest": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 33554432
+        },
+        "estimated_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "captured_at_unix_ms": {
+          "description": "Host-observed capture time, the only input to the warm.session.max_age gate. Evidence for a policy decision, never an ordering authority: the event sequence remains the only order.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "session_snapshot_cleaned": {
+      "description": "Phase two of the session capture: the idempotent, no-follow deletion of the transcript from the harness directory. Deleted and already_absent both complete the protocol; refused records what stood where the transcript was and never unlinks it. Warm Set selection requires a completed cleanup, so an ambient transcript is never resumed.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "session_id",
+        "outcome"
+      ],
+      "properties": {
+        "session_id": {
+          "$ref": "#/$defs/session_id"
+        },
+        "outcome": {
+          "enum": [
+            "deleted",
+            "already_absent",
+            "refused"
+          ]
+        },
+        "refusal": {
+          "enum": [
+            "not_regular_file",
+            "symlinked_parent",
+            "unreadable"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "refused"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "refusal"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "refusal"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "cold_closeout_dispatched": {
+      "description": "The compiled, conditional cold Attempt of a required reviewer, dispatched inside the Round only when the warm result would otherwise close it clean, holding a reservation protected before the warm Attempt ran. Published once with its outcome, so a crash never leaves a dispatch without a result. The Ledger folds the cold result through warm_result_artifact_id, beside the exact warm result its own edge delivered.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "round",
+        "warm_attempt_id",
+        "warm_result_artifact_id",
+        "cold_attempt_id",
+        "charged_tokens"
+      ],
+      "properties": {
+        "node": {
+          "type": "string",
+          "minLength": 1
+        },
+        "round": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "warm_attempt_id": {
+          "$ref": "#/$defs/id"
+        },
+        "warm_result_artifact_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "cold_attempt_id": {
+          "$ref": "#/$defs/id"
+        },
+        "reserved_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "charged_tokens": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "cold_result_artifact_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "failed": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "cold_result_artifact_id"
+          ],
+          "not": {
+            "required": [
+              "failed"
+            ]
+          }
+        },
+        {
+          "required": [
+            "failed"
+          ],
+          "not": {
+            "required": [
+              "cold_result_artifact_id"
+            ]
+          }
+        }
+      ]
+    },
+    "session_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
     },
     "workspace_rebased": {
       "description": "Appended once per node per kernel run, before the node's Warm Set is recorded: which head the node's stable workspace template held, which head it holds now, on what basis (materialized in full with a recorded reason, re-based by tree diff and verified against the head's Tree Digest, or reused unchanged), the digest the result was verified to hold, how many entries the preparation touched, and how long it took. The workspace is named by an opaque identity, never a host path.",

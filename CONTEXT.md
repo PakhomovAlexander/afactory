@@ -341,10 +341,11 @@ _Avoid_: assuming a successfully completed graph is closed; an unwired Finding o
 the result incomplete.
 
 **Warm Set**:
-The exact, per-node set of carried layers one Round's Attempts start from: Notes and the Head
-Delta selected from the previous closed Round's admitted Attempt of the same node, the Build
-Cache carried from this Round's Gate, and the basis of the node's Warm Workspace, recorded before
-the first dispatch and listed in every Attempt's context manifest.
+The exact, per-node set of carried layers one Round's Attempts start from: Notes, the Head Delta
+and the Session Snapshot selected from the previous closed Round's admitted Attempt of the same
+node, the Build Cache carried from this Round's Gate, and the basis of the node's Warm Workspace,
+recorded before the first dispatch and listed in every Attempt's context manifest. A layer that
+cannot be carried is recorded with its reason, never omitted silently.
 _Avoid_: "warm cache" or "the previous session" as ambient state; a Warm Set is an artifact, and
 a retry inherits the Round's Warm Set rather than its failed sibling's state.
 
@@ -374,6 +375,21 @@ Scope, and exists for whole-tree Subjects too.
 The rendering of Head Delta marks beside the Change Set section: `changed`, `unchanged`, `new`,
 `reverted`, `removed`, or `renamed` since the previous Round's head.
 _Avoid_: a second full patch in the prompt; the marks exist to keep context minimal.
+
+**Session Snapshot**:
+The content-addressed transcript of one Attempt's harness session, running under a session
+identity the kernel derived from the Attempt ID, captured at seal through a two-phase protocol —
+capture and verify, prepared record, no-follow deletion, cleanup-completed record — and
+re-materialized for a forked resume that sends only the delta prompt. Selectable only from an
+Attempt that was admitted *and* whose cleanup completed.
+_Avoid_: "resume the session" as a verb on a live process; the process ended with its Attempt, and
+a resume forks a re-materialized copy rather than continuing anything.
+
+**Cold Closeout**:
+A compiled, conditionally dispatched cold Attempt of a warm reviewer inside the Round that would
+otherwise close on its warm result, holding a reservation taken before that warm Attempt ran.
+_Avoid_: reading a warm clean Round as convergence on its own, or a Round-level rule the scheduler
+could honor — the Round is only known to be closing after its results are reduced.
 
 ## Relationships
 

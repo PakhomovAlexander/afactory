@@ -56,6 +56,16 @@ struct RequestedLayers<'a> {
     notes: bool,
     build_cache: Option<(BuildCacheKindV1, String)>,
     workspace: Option<&'a WarmWorkspace>,
+    /// Package P4: the session layer, with the age bound its policy pinned and what the
+    /// frontend hosting the node can do with it. `None` for a node that hosts no session.
+    session: Option<SessionRequest>,
+}
+
+/// What deciding the session layer needs beyond the log: the pinned age bound and the host's
+/// capability, both resolved before selection so the decision is one function of durable state.
+struct SessionRequest {
+    max_age_secs: u64,
+    capability: Option<crate::session::SessionCapability>,
 }
 
 impl ReviewDomainState<'_> {
@@ -181,7 +191,17 @@ impl ReviewDomainState<'_> {
             None => None,
         };
         let keeps_workspace = self.warm_workspace_policy(node_id);
-        if !notes && build_cache.is_none() && !keeps_workspace {
+        // The session layer, like Notes, can only come from the previous closed Round; a node
+        // that hosts sessions still records its drop reason in Round one's Warm Set only when
+        // some other layer already makes one, which is why it follows the same Round gate.
+        let session =
+            (self.session_policy(node_id).is_some() && self.authority.round > 1).then(|| {
+                SessionRequest {
+                    max_age_secs: self.session_max_age_secs(node_id),
+                    capability: self.session_capability(node_id),
+                }
+            });
+        if !notes && build_cache.is_none() && !keeps_workspace && session.is_none() {
             return Ok(None);
         }
         if let Some(record) = self.warm_sets.lock().expect("warm sets").get(node_id) {
@@ -224,6 +244,7 @@ impl ReviewDomainState<'_> {
                         notes,
                         build_cache,
                         workspace: workspace.as_ref(),
+                        session,
                     },
                 )?;
                 self.record_warm_set(set)?
@@ -241,6 +262,7 @@ impl ReviewDomainState<'_> {
             .iter()
             .chain(set.head_delta_artifact_id.iter())
             .chain(set.build_cache_artifact_id.iter())
+            .chain(set.session_artifact_id.iter())
             .cloned()
             .collect();
         let producer = Producer::KernelOperation {
@@ -326,7 +348,9 @@ pub(crate) fn apply_warm_set(
         inputs.head_delta_artifact_id = Some(id.clone());
     }
     // The build cache is never rendered; it reaches the sandbox as bytes when the Attempt's
-    // sandbox is prepared. The manifest still names it through this identity.
+    // sandbox is prepared. The manifest still names it through this identity. The Session
+    // Snapshot is the same shape of layer: its bytes reach the harness's own session store when
+    // the Attempt's sandbox exists, so `crate::session::apply_session` binds it there.
     inputs.build_cache_artifact_id = record.set.build_cache_artifact_id.clone();
     inputs.warm_set_artifact_id = Some(record.artifact_id.clone());
     Ok(())
@@ -500,6 +524,8 @@ fn select(
         workspace_id: layers
             .workspace
             .map(|workspace| workspace.workspace_id.clone()),
+        session_artifact_id: None,
+        session_dropped: None,
     };
     if let Some((kind, gate)) = layers.build_cache {
         let (artifact_id, dropped) =
@@ -507,16 +533,35 @@ fn select(
         set.build_cache_artifact_id = artifact_id;
         set.build_cache_dropped = dropped;
     }
+    let session = |set: &mut WarmSetV1, source: Option<&str>| -> Result<(), String> {
+        let Some(request) = &layers.session else {
+            return Ok(());
+        };
+        let (artifact_id, dropped) = crate::session::select_session(
+            cas,
+            events,
+            request.capability,
+            request.max_age_secs,
+            source,
+            crate::session::now_unix_ms(),
+        )?;
+        set.session_artifact_id = artifact_id;
+        set.session_dropped = dropped;
+        Ok(())
+    };
     if !layers.notes {
+        session(&mut set, None)?;
         return Ok(set);
     }
     let Some(previous) = previous_closed_round(events, authority)? else {
+        session(&mut set, None)?;
         return Ok(set);
     };
     let source = admitted_attempt(events, &previous.event_id, node_id)?;
     if let Some(attempt_id) = &source {
         set.notes_artifact_id = recorded_notes(events, &previous.event_id, attempt_id)?;
     }
+    session(&mut set, source.as_deref())?;
     set.source_attempt_id = source;
     let mut extra_paths = match &set.notes_artifact_id {
         Some(id) => read_notes(cas, id)?.referenced_paths(),

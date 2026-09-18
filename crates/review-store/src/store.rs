@@ -991,6 +991,13 @@ struct AuthorityWarm {
     /// the closed vocabulary, the Store only keeps the pinned shape readable.
     #[serde(default)]
     workspace: Option<String>,
+    /// Package P4: the session layer (`off`, `if_recent` or `always`) and its age bound; the
+    /// config crate validates the closed vocabulary and the provider restriction, the Store
+    /// only keeps the pinned shape readable.
+    #[serde(default)]
+    session: Option<String>,
+    #[serde(default)]
+    session_max_age_secs: Option<u64>,
 }
 
 #[allow(dead_code)]
@@ -1437,6 +1444,16 @@ fn typed_json_artifacts(
                         review_core::contract::BUILD_CACHE_V1.into(),
                     )?;
                 }
+                continue;
+            }
+            EventType::SessionSnapshotPreparedV1 => {
+                let prepared: review_core::SessionSnapshotPreparedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                insert_artifact_type(
+                    &mut artifacts,
+                    prepared.session_artifact_id,
+                    review_core::contract::SESSION_SNAPSHOT_V1.into(),
+                )?;
                 continue;
             }
             EventType::RunReportV6 => {
@@ -5325,6 +5342,9 @@ fn round_runtime_event(event_type: EventType) -> bool {
                 | EventType::WorkerNotesRecordedV1
                 | EventType::BuildCacheCapturedV1
                 | EventType::WorkspaceRebasedV1
+                | EventType::SessionSnapshotPreparedV1
+                | EventType::SessionSnapshotCleanedV1
+                | EventType::ColdCloseoutDispatchedV1
         )
 }
 

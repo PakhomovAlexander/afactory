@@ -136,10 +136,16 @@ pub enum EventType {
     BuildCacheCapturedV1,
     #[serde(rename = "WorkspaceRebased@1")]
     WorkspaceRebasedV1,
+    #[serde(rename = "SessionSnapshotPrepared@1")]
+    SessionSnapshotPreparedV1,
+    #[serde(rename = "SessionSnapshotCleaned@1")]
+    SessionSnapshotCleanedV1,
+    #[serde(rename = "ColdCloseoutDispatched@1")]
+    ColdCloseoutDispatchedV1,
 }
 
 impl EventType {
-    pub const ALL: [Self; 62] = [
+    pub const ALL: [Self; 65] = [
         Self::TaskTransitionV1,
         Self::TaskTransitionV2,
         Self::TaskTransitionV3,
@@ -202,6 +208,9 @@ impl EventType {
         Self::WorkerNotesRecordedV1,
         Self::BuildCacheCapturedV1,
         Self::WorkspaceRebasedV1,
+        Self::SessionSnapshotPreparedV1,
+        Self::SessionSnapshotCleanedV1,
+        Self::ColdCloseoutDispatchedV1,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -268,6 +277,9 @@ impl EventType {
             Self::WorkerNotesRecordedV1 => "WorkerNotesRecorded@1",
             Self::BuildCacheCapturedV1 => "BuildCacheCaptured@1",
             Self::WorkspaceRebasedV1 => "WorkspaceRebased@1",
+            Self::SessionSnapshotPreparedV1 => "SessionSnapshotPrepared@1",
+            Self::SessionSnapshotCleanedV1 => "SessionSnapshotCleaned@1",
+            Self::ColdCloseoutDispatchedV1 => "ColdCloseoutDispatched@1",
         }
     }
 
@@ -360,6 +372,9 @@ impl EventType {
             Self::WorkerNotesRecordedV1 => ("WorkerNotesRecorded", 1),
             Self::BuildCacheCapturedV1 => ("BuildCacheCaptured", 1),
             Self::WorkspaceRebasedV1 => ("WorkspaceRebased", 1),
+            Self::SessionSnapshotPreparedV1 => ("SessionSnapshotPrepared", 1),
+            Self::SessionSnapshotCleanedV1 => ("SessionSnapshotCleaned", 1),
+            Self::ColdCloseoutDispatchedV1 => ("ColdCloseoutDispatched", 1),
         }
     }
 }
@@ -460,6 +475,9 @@ impl std::str::FromStr for EventType {
             "WorkerNotesRecorded@1" => Ok(Self::WorkerNotesRecordedV1),
             "BuildCacheCaptured@1" => Ok(Self::BuildCacheCapturedV1),
             "WorkspaceRebased@1" => Ok(Self::WorkspaceRebasedV1),
+            "SessionSnapshotPrepared@1" => Ok(Self::SessionSnapshotPreparedV1),
+            "SessionSnapshotCleaned@1" => Ok(Self::SessionSnapshotCleanedV1),
+            "ColdCloseoutDispatched@1" => Ok(Self::ColdCloseoutDispatchedV1),
             other => Err(UnknownEventType(other.to_string())),
         }
     }
@@ -1833,6 +1851,30 @@ pub fn validate_event_payload(
             rebased
                 .validate()
                 .map_err(|error| format!("WorkspaceRebased@1: {error}"))
+        }
+        EventType::SessionSnapshotPreparedV1 => {
+            let prepared =
+                serde_json::from_value::<crate::SessionSnapshotPreparedPayloadV1>(payload.clone())
+                    .map_err(|error| format!("SessionSnapshotPrepared@1: {error}"))?;
+            prepared
+                .validate()
+                .map_err(|error| format!("SessionSnapshotPrepared@1: {error}"))
+        }
+        EventType::SessionSnapshotCleanedV1 => {
+            let cleaned =
+                serde_json::from_value::<crate::SessionSnapshotCleanedPayloadV1>(payload.clone())
+                    .map_err(|error| format!("SessionSnapshotCleaned@1: {error}"))?;
+            cleaned
+                .validate()
+                .map_err(|error| format!("SessionSnapshotCleaned@1: {error}"))
+        }
+        EventType::ColdCloseoutDispatchedV1 => {
+            let dispatched =
+                serde_json::from_value::<crate::ColdCloseoutDispatchedPayloadV1>(payload.clone())
+                    .map_err(|error| format!("ColdCloseoutDispatched@1: {error}"))?;
+            dispatched
+                .validate()
+                .map_err(|error| format!("ColdCloseoutDispatched@1: {error}"))
         }
     }
 }

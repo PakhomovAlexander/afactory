@@ -114,6 +114,20 @@ pub(super) struct ReviewDomainState<'a> {
     /// Warm Workspace templates prepared in this kernel run, by node. Each was verified to hold
     /// the Round head before it was cached here.
     pub(super) warm_workspaces: Mutex<BTreeMap<String, crate::warm::WarmWorkspace>>,
+    /// Package P4: what the execution frontend hosting each node can do with the session layer,
+    /// installed before the node's Warm Set is selected. An absent entry is a frontend that does
+    /// not run the session protocol, and the Warm Set records `host_unsupported`.
+    pub(super) session_hosts: Mutex<BTreeMap<String, crate::session::SessionCapability>>,
+}
+
+/// One Cold Closeout result folded into the Ledger beside the warm result it confirms: the
+/// node both Attempts belong to, the confirmation's own result artifact and Attempt, and the
+/// result value itself.
+struct FoldedColdCloseout {
+    node: String,
+    result_artifact_id: String,
+    cold_attempt_id: String,
+    result: serde_json::Value,
 }
 
 impl<'a> ReviewDomainState<'a> {
@@ -293,6 +307,7 @@ impl<'a> ReviewDomainState<'a> {
             warm_sets: Mutex::new(BTreeMap::new()),
             workspace_cache_root: None,
             warm_workspaces: Mutex::new(BTreeMap::new()),
+            session_hosts: Mutex::new(BTreeMap::new()),
         })
     }
     /// Emit the run's generation state — the campaign's prior findings — as the artifact a
@@ -916,6 +931,60 @@ impl<'a> ReviewDomainState<'a> {
         Ok(outputs.original)
     }
 
+    /// One Cold Closeout result, ready to fold beside the warm result it confirms.
+    ///
+    /// The Cold Closeout results this Round recorded for the warm results `results` already
+    /// holds: for each delivered reviewer result, the cold confirmation of that exact artifact,
+    /// attributed to the same node. A closeout that failed contributes nothing to reduce; its
+    /// record still says the Round has no cold confirmation.
+    fn cold_closeout_results(
+        &self,
+        results: &[(String, String, ReviewerResultContract, LegacyStageOutput)],
+    ) -> Result<Vec<FoldedColdCloseout>, String> {
+        let delivered: BTreeSet<(&str, &str)> = results
+            .iter()
+            .map(|(node, id, _, _)| (node.as_str(), id.as_str()))
+            .collect();
+        if delivered.is_empty() {
+            return Ok(Vec::new());
+        }
+        let events = self
+            .store
+            .lock()
+            .expect("event store")
+            .replay(&self.run_id)
+            .map_err(|error| error.to_string())?;
+        let mut folded = Vec::new();
+        for event in events.iter().filter(|event| {
+            event.event_type == EventType::ColdCloseoutDispatchedV1
+                && event.causation_id.as_deref() == Some(self.authority.round_event_id.as_str())
+        }) {
+            let payload: review_core::ColdCloseoutDispatchedPayloadV1 =
+                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
+            payload.validate()?;
+            if !delivered.contains(&(
+                payload.node.as_str(),
+                payload.warm_result_artifact_id.as_str(),
+            )) {
+                continue;
+            }
+            let Some(result_id) = payload.cold_result_artifact_id else {
+                continue;
+            };
+            let result = self
+                .cas
+                .get_json(&result_id)
+                .map_err(|error| error.to_string())?;
+            folded.push(FoldedColdCloseout {
+                node: payload.node,
+                result_artifact_id: result_id,
+                cold_attempt_id: payload.cold_attempt_id,
+                result,
+            });
+        }
+        Ok(folded)
+    }
+
     pub(super) fn reduce_ledger(
         &self,
         node: &Node,
@@ -1148,6 +1217,22 @@ impl<'a> ReviewDomainState<'a> {
                 }
             }
         }
+        // Package P4: a Cold Closeout is a second Attempt of the same node inside this Round,
+        // and its result folds beside the exact warm result an edge delivered. The closure is
+        // anchored to that delivered artifact, so the Ledger still reduces what its edges
+        // delivered rather than a global scan of whatever happened to run. It is folded after
+        // the selection binding above, which pairs delivered artifacts with selected Attempts:
+        // a confirmation is not the node's selected result and never competes for that slot.
+        let mut closeout_attempts: BTreeMap<String, String> = BTreeMap::new();
+        for closeout in self.cold_closeout_results(&results)? {
+            let (contract, output) = reviewer_stage_output(closeout.result)
+                .map_err(|error| format!("artifact {}: {error}", closeout.result_artifact_id))?;
+            closeout_attempts.insert(
+                closeout.result_artifact_id.clone(),
+                closeout.cold_attempt_id,
+            );
+            results.push((closeout.node, closeout.result_artifact_id, contract, output));
+        }
         // Canonical gather order: reviewer node id — not completion order, input-port label, or
         // artifact digest order. Legacy campaigns retain their frozen port-labelled projection.
         results.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
@@ -1165,6 +1250,19 @@ impl<'a> ReviewDomainState<'a> {
                 results
                     .iter()
                     .map(|(node, result_id, _, _)| {
+                        // A Cold Closeout result belongs to its own Attempt of the same node,
+                        // under the same exact invocation inputs. It is not the node's
+                        // selection, so it is bound from its own durable record instead.
+                        if let Some(attempt_id) = closeout_attempts.get(result_id) {
+                            return Ok((
+                                attempt_id.clone(),
+                                reviewer_inputs.get(node).cloned().ok_or_else(|| {
+                                    format!(
+                                        "Cold Closeout of `{node}` has no exact invocation inputs"
+                                    )
+                                })?,
+                            ));
+                        }
                         let selection = selections.get(node).ok_or_else(|| {
                             format!("selected reviewer result for `{node}` has no Attempt")
                         })?;

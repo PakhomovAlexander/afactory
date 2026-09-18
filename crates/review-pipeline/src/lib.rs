@@ -23,11 +23,13 @@
 //! produces no reviewer artifacts at all — not reviewer artifacts nobody reads.
 
 mod build_cache;
+mod closeout;
 mod review_domain;
 mod reviewer_inputs;
 mod reviewer_output;
 mod reviewer_work;
 pub mod scatter;
+mod session;
 pub mod task;
 mod warm;
 
@@ -1242,6 +1244,14 @@ pub struct Kernel<'a> {
     /// plan order before any external model call starts. The worker removes its prepared entry.
     prepared_attempts: Mutex<BTreeMap<String, PreparedReviewerAttempt>>,
     failure_classes: Mutex<BTreeMap<String, NodeFailureClass>>,
+    /// Package P4: the warm reviewers the pinned convergence policy compiled a conditional cold
+    /// confirmation for. Empty under the default policy, so nothing extra is ever dispatched.
+    cold_closeout_nodes: BTreeSet<String>,
+    /// The severity gate a warm result must stay under to be a would-be-clean Round.
+    convergence_gate: review_core::Severity,
+    /// Confirmation reservations taken before each closeout node's warm Attempt ran and held
+    /// until the Round is known to need them or not. `None` for an uncapped pipeline.
+    closeout_reservations: Mutex<BTreeMap<String, Option<Reservation>>>,
     replayed_invocations: BTreeMap<String, NodeInvocationPayloadV1>,
     replayed_outputs: BTreeMap<String, DurableReceipt>,
     replayed_refusal_histories: BTreeMap<String, Vec<String>>,
@@ -1468,6 +1478,9 @@ impl<'a> Kernel<'a> {
             timeout_retries: 1,
             prepared_attempts: Mutex::new(BTreeMap::new()),
             failure_classes: Mutex::new(BTreeMap::new()),
+            cold_closeout_nodes: BTreeSet::new(),
+            convergence_gate: review_core::Severity::Major,
+            closeout_reservations: Mutex::new(BTreeMap::new()),
             replayed_invocations: replayed.invocations,
             replayed_outputs: replayed.outputs,
             replayed_refusal_histories: replayed.refusal_histories,
@@ -1543,6 +1556,11 @@ impl<'a> Kernel<'a> {
         kernel.reviewer_execution = loaded.reviewer_execution().clone();
         kernel.fan_out_cap = loaded.budgets().and_then(|budgets| budgets.fan_out);
         kernel.node_attempt_caps = loaded.node_attempt_caps().clone();
+        // Cold Closeout is compiled, not scheduled: the pinned convergence policy decided at
+        // load time which warm reviewers owe a cold confirmation, and the kernel only honours
+        // that list.
+        kernel.cold_closeout_nodes = loaded.cold_closeout_nodes().iter().cloned().collect();
+        kernel.convergence_gate = loaded.convergence().gate;
         Ok(kernel)
     }
 
@@ -1747,6 +1765,37 @@ impl<'a> Kernel<'a> {
             .record_attempt_wall(&wall);
     }
 
+    /// The session layer this adapter can host for `node_id`, or `None` when the node hosts no
+    /// session at all. Every session operation goes through this, so a node whose policy is off
+    /// never touches the operator's harness directory.
+    fn session_layer_for(&self, node_id: &str) -> Option<&dyn review_runner::SessionLayer> {
+        self.domain.session_policy(node_id)?;
+        let binding_node = self.domain.reviewer_binding_node(node_id);
+        self.reviewers.get(&binding_node)?.session_layer()
+    }
+
+    /// Install what this frontend can do with the session layer, then finish every cleanup the
+    /// Campaign still owes and remove any transcript its Attempts left. Runs before the node's
+    /// Warm Set is selected and before any Attempt of the Round is reserved, so the sweep never
+    /// races a live session and never needs a provider call.
+    fn prepare_sessions(&self, node_id: &str) -> Result<(), String> {
+        if self.domain.session_policy(node_id).is_none() {
+            return Ok(());
+        }
+        let layer = self.session_layer_for(node_id);
+        self.domain.install_session_capability(
+            node_id,
+            session::SessionCapability {
+                supported: layer.is_some(),
+                reservation_tokens: self
+                    .budgets
+                    .as_ref()
+                    .map(|budgets| self.attempt_reservation(node_id, budgets)),
+            },
+        );
+        session::sweep_sessions(&self.domain, layer, node_id)
+    }
+
     fn prepare_reviewer_attempt(
         &self,
         node_id: &str,
@@ -1763,6 +1812,10 @@ impl<'a> Kernel<'a> {
                     .map_err(|error| error.to_string())
             })
             .transpose()?;
+        // The confirmation Attempt's reservation is taken before the warm Attempt's, so it is
+        // protected from this node's own retries and from every other node in the Round. An
+        // infeasible policy refuses here, before anything is spent.
+        self.reserve_cold_closeout(node_id)?;
         let reservation = match &self.budgets {
             Some(budgets) => {
                 let base = self.domain.reviewer_binding_node(node_id);
@@ -2005,6 +2058,17 @@ impl<'a> Kernel<'a> {
         // Round's Warm Set was recorded before this node's first dispatch. A retry inherits it.
         let notes_max_bytes = self.domain.notes_max_bytes(node_id);
         warm::request_notes(&mut inputs, notes_max_bytes);
+        if let Err(error) = self.prepare_sessions(node_id) {
+            if let Some(prepared) = prepared.take() {
+                self.release_prepared_attempt(
+                    node_id,
+                    &prepared.attempt,
+                    prepared.reservation.as_ref(),
+                    &error,
+                )?;
+            }
+            return Err(error);
+        }
         let warm_set = match self.domain.select_warm_set(node_id) {
             Ok(record) => record,
             Err(error) => {
@@ -2094,6 +2158,16 @@ impl<'a> Kernel<'a> {
                 &binding_node,
                 &attempt.to_string(),
                 reservation.as_ref().map(|reservation| reservation.amount),
+            );
+            // The session identity is the kernel's and is derived from this exact Attempt, so
+            // the harness writes a transcript the kernel can name, capture and delete. A retry
+            // is a new Attempt and therefore a new session; it inherits the Round's Warm Set,
+            // never its failed sibling's state.
+            let session_layer = self.session_layer_for(node_id);
+            session::assign_session_id(
+                &mut inputs,
+                self.domain.session_capability(node_id),
+                &attempt.to_string(),
             );
 
             let boundary = KernelBrokerBoundary { kernel: self };
@@ -2201,6 +2275,23 @@ impl<'a> Kernel<'a> {
                 };
             let cloned_build_cache = !build_cache_environment.is_empty();
             inputs.sandbox_environment = build_cache_environment;
+            // A carried Session Snapshot is re-materialized into this exact Attempt's harness
+            // directory and resumed with a fork, so the captured transcript is read and never
+            // mutated. A failure here fails the Attempt rather than quietly dropping a layer the
+            // Round already declared: warmth is declared, so an Attempt starts from what was
+            // recorded or does not start.
+            if let Err(error) = session::apply_session(
+                self.domain.cas,
+                session_layer,
+                sandbox.root(),
+                warm_set
+                    .as_ref()
+                    .and_then(|record| record.set.session_artifact_id.as_deref()),
+                &mut inputs,
+            ) {
+                self.release_prepared_attempt(node_id, &attempt, reservation.as_ref(), &error)?;
+                return Err(error);
+            }
 
             let invocation = reviewer_work::invoke(
                 self.domain.cas,
@@ -2210,6 +2301,10 @@ impl<'a> Kernel<'a> {
                 broker.as_ref().map(|broker| broker as &dyn BrokerClient),
             );
             let broker_charged = broker.as_ref().map_or(0, Broker::charged_usage);
+            // The working copy a resume materialized is a byte-identical copy of a CAS object
+            // the log already names, so removing it is hygiene rather than a phase of the
+            // capture protocol and records no event. The sweep removes it too if this is missed.
+            session::remove_working_copy(session_layer, &inputs);
             let invoked = match invocation.result {
                 Ok(invoked) => Ok(invoked),
                 Err(reviewer_work::InvocationFailure::Adapter(error)) => Err(error),
@@ -2452,6 +2547,36 @@ impl<'a> Kernel<'a> {
                     if let Some(notes) = notes {
                         self.domain.buffer_reviewer_event(node_id, notes.event);
                     }
+                    // Capture is the two-phase protocol under this Attempt's epoch, appended
+                    // directly rather than buffered: the prepared record must be durable before
+                    // the harness copy is deleted, or a crash between them would leave an
+                    // orphaned object or an ambient transcript.
+                    //
+                    // A capture that cannot complete never costs the Round its admitted result:
+                    // the layer is optional, every partial outcome is one the next Round's sweep
+                    // finishes, and the operator sees why on stderr.
+                    if let Err(error) = session::capture_session(
+                        &self.domain,
+                        session_layer,
+                        node_id,
+                        &attempt.to_string(),
+                        inputs.session_id.as_deref(),
+                    ) {
+                        eprintln!("session capture diagnostic for `{node_id}`: {error}");
+                    }
+                    // Cold Closeout: compiled into this node from the pinned convergence policy,
+                    // dispatched only when this warm result would otherwise close the Round
+                    // clean, and paid for by the reservation protected before the warm Attempt
+                    // ran. Both results fold into the Ledger before the convergence decision.
+                    self.run_cold_closeout(
+                        node,
+                        node_inputs,
+                        adapter.as_ref(),
+                        &attempt.to_string(),
+                        &result_artifact,
+                        &returned.output,
+                        result_contract,
+                    )?;
                     return Ok(vec![result_artifact]);
                 }
                 Err(RunnerError::MalformedOutput { raw_artifact, why }) => {
@@ -3132,6 +3257,9 @@ impl Dispatch for Kernel<'_> {
                 .unwrap_or_default();
             // The Warm Set is selected and recorded before the node's first Attempt of the
             // Round is reserved and dispatched; every later Attempt of the Round inherits it.
+            // Session capability and the recovery sweep come first, so selection reads a log in
+            // which every owed cleanup is finished and no ambient transcript survives.
+            self.prepare_sessions(&node.id)?;
             self.domain.select_warm_set(&node.id)?;
             let prepared =
                 self.prepare_reviewer_attempt(&node.id, prior_findings, &replayed_failures)?;
@@ -3222,7 +3350,15 @@ impl Dispatch for Kernel<'_> {
             // labels are the reviewer's concern, not theirs.
             NodeKind::Gather => self.domain.run_gather(node, inputs),
             NodeKind::Ledger => return self.domain.run_ledger(node, inputs),
-            NodeKind::Reviewer => self.run_reviewer(node, inputs),
+            NodeKind::Reviewer => {
+                let result = self.run_reviewer(node, inputs);
+                if result.is_err() {
+                    // A node with no admitted result has no would-be-clean Round to confirm,
+                    // so its protected reservation goes back to the Round it was taken from.
+                    self.release_cold_closeout(&node.id);
+                }
+                result
+            }
         }?;
         bind_single_output(node, artifacts)
     }

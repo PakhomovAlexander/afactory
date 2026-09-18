@@ -197,3 +197,5 @@ Record the options you rejected and why — that is the part future readers need
   layers](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md)
 - [0109 — Re-base Warm Workspaces at stable roots with digest
   verification](0109-rebase-warm-workspaces-at-stable-roots-with-digest-verification.md)
+- [0110 — Capture Claude sessions in two phases and confirm a clean warm Round
+  cold](0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md)

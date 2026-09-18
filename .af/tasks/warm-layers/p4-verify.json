@@ -1,0 +1,44 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "warm-p4-verify",
+  "kind": "verification",
+  "goal": "Verify that the P4 Session Snapshot and Cold Closeout satisfy their requirements on the exact fixed Snapshot.",
+  "requirements": {
+    "schema": "afactory.warm-layers/1",
+    "package": "P4",
+    "design": "docs/design/worker-warm-layers.md",
+    "plan": "docs/design/worker-warm-layers-plan.md",
+    "deliverables": [
+      "Kernel-assigned --session-id derived from the Attempt ID; capture of the session transcript at seal into review.kernel/SessionSnapshot@1",
+      "Two-phase protocol under the Attempt epoch: capture and verify, prepared event with CAS ID, idempotent no-follow deletion from the harness directory, cleanup-completed event; recovery finishes cleanup without a provider call",
+      "Forked resume with --resume and --fork-session; a resume render mode that sends only the delta prompt; the manifest lists the transcript and the delta",
+      "Gates: provider support, previous Attempt age under warm.session.max_age, transcript estimated tokens fitting the reservation; any failure falls back to Notes only",
+      "Codex excluded from this package; --ephemeral retained",
+      "Cold Closeout compiled as a conditional cold Attempt of the same node inside the Round with a protected reservation",
+      "Schemas, parity fixtures, one ADR numbered after the latest, README index entry, CHANGELOG Unreleased entry"
+    ],
+    "acceptance": [
+      "A crash between capture and deletion recovers to a consistent state with no orphan and no ambient transcript",
+      "A resumed Attempt records cache-read tokens separately from input tokens",
+      "Cold Closeout dispatches only when the warm result would make the Round clean, and its reservation is protected",
+      "The policy default keeps the layer off",
+      "make check passes"
+    ]
+  },
+  "pipeline": {
+    "name": "warm/verification",
+    "fallback": "refuse"
+  },
+  "strategy": "light",
+  "facts": {},
+  "limits": {
+    "tokens": 600000,
+    "max_attempts": 4,
+    "wall_ms": 6000000,
+    "verification": {
+      "tokens": 400000,
+      "attempts": 4,
+      "wall_ms": 5000000
+    }
+  }
+}

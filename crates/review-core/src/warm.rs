@@ -406,6 +406,9 @@ pub enum WarmLayerV1 {
     /// Package P3: the node's stable template re-based to the head, or reused unchanged,
     /// instead of materialized from scratch.
     Workspace,
+    /// Package P4: the previous admitted Attempt's harness transcript, re-materialized and
+    /// resumed forked so only the delta prompt is sent. Claude adapters only.
+    Session,
 }
 
 impl WarmLayerV1 {
@@ -415,6 +418,7 @@ impl WarmLayerV1 {
             Self::HeadDelta => "head_delta",
             Self::BuildCache => "build_cache",
             Self::Workspace => "workspace",
+            Self::Session => "session",
         }
     }
 }
@@ -474,6 +478,16 @@ pub struct WarmSetV1 {
     /// host path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
+    /// Package P4: the `review.kernel/SessionSnapshot@1` of the previous closed Round's
+    /// admitted Attempt of this node, re-materialized and resumed forked. Selected only when
+    /// the adapter supports resume, the cleanup of its capture completed, its age is under
+    /// `warm.session.max_age` and its estimated tokens fit the reservation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_artifact_id: Option<String>,
+    /// Recorded when the node's policy asked for the session layer and none was carried; never
+    /// set beside a carried session. The Attempt runs on Notes alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_dropped: Option<crate::session::SessionDropReasonV1>,
 }
 
 impl WarmSetV1 {
@@ -492,11 +506,18 @@ impl WarmSetV1 {
         if !valid_layer(&self.notes_artifact_id)
             || !valid_layer(&self.head_delta_artifact_id)
             || !valid_layer(&self.build_cache_artifact_id)
+            || !valid_layer(&self.session_artifact_id)
         {
             return Err("WarmSet@1 has an invalid layer artifact ID".into());
         }
         if self.notes_artifact_id.is_some() && self.source_attempt_id.is_none() {
             return Err("WarmSet@1 carries Notes without a source Attempt".into());
+        }
+        if self.session_artifact_id.is_some() && self.source_attempt_id.is_none() {
+            return Err("WarmSet@1 carries a Session Snapshot without a source Attempt".into());
+        }
+        if self.session_artifact_id.is_some() && self.session_dropped.is_some() {
+            return Err("WarmSet@1 both carries and drops its Session Snapshot".into());
         }
         if self.head_delta_artifact_id.is_some() && self.head_delta_dropped.is_some() {
             return Err("WarmSet@1 both carries and drops its Head Delta".into());
@@ -529,6 +550,9 @@ impl WarmSetV1 {
         }
         if self.workspace.is_some_and(WorkspaceBasisV1::carried) {
             layers.push(WarmLayerV1::Workspace);
+        }
+        if self.session_artifact_id.is_some() {
+            layers.push(WarmLayerV1::Session);
         }
         layers
     }
@@ -662,6 +686,8 @@ mod tests {
             build_cache_dropped: None,
             workspace: None,
             workspace_id: None,
+            session_artifact_id: None,
+            session_dropped: None,
         };
         assert!(set.validate().is_err());
         let dropped = WarmSetV1 {
@@ -685,6 +711,8 @@ mod tests {
             build_cache_dropped: None,
             workspace: Some(WorkspaceBasisV1::Rebased),
             workspace_id: Some("b".repeat(32)),
+            session_artifact_id: None,
+            session_dropped: None,
         };
         set.validate().unwrap();
         assert_eq!(set.layers(), vec![WarmLayerV1::Workspace]);
@@ -733,6 +761,8 @@ mod tests {
             build_cache_dropped: Some(BuildCacheDropReasonV1::Refused),
             workspace: None,
             workspace_id: None,
+            session_artifact_id: None,
+            session_dropped: None,
         };
         assert!(set.validate().is_err());
         let carried = WarmSetV1 {
@@ -870,6 +900,8 @@ mod tests {
             build_cache_dropped: None,
             workspace: None,
             workspace_id: None,
+            session_artifact_id: None,
+            session_dropped: None,
         };
         assert!(set.validate().is_err());
         let set = WarmSetV1 {
@@ -878,5 +910,50 @@ mod tests {
         };
         set.validate().unwrap();
         assert_eq!(set.layers(), vec![WarmLayerV1::Notes]);
+    }
+
+    #[test]
+    fn a_warm_set_carries_its_session_only_beside_the_attempt_that_left_it() {
+        use crate::session::SessionDropReasonV1;
+        let digest = format!("sha256:{}", "e".repeat(64));
+        let set = WarmSetV1 {
+            node: "correctness".into(),
+            round: 3,
+            source_attempt_id: Some("a".repeat(26)),
+            notes_artifact_id: None,
+            head_delta_artifact_id: None,
+            head_delta_dropped: None,
+            build_cache_artifact_id: None,
+            build_cache_dropped: None,
+            workspace: None,
+            workspace_id: None,
+            session_artifact_id: Some(digest),
+            session_dropped: None,
+        };
+        set.validate().unwrap();
+        assert_eq!(set.layers(), vec![WarmLayerV1::Session]);
+        let orphan = WarmSetV1 {
+            source_attempt_id: None,
+            ..set.clone()
+        };
+        assert!(
+            orphan.validate().is_err(),
+            "a transcript with no source Attempt is not a warm layer"
+        );
+        let both = WarmSetV1 {
+            session_dropped: Some(SessionDropReasonV1::TooOld),
+            ..set.clone()
+        };
+        assert!(both.validate().is_err());
+        let dropped = WarmSetV1 {
+            session_artifact_id: None,
+            session_dropped: Some(SessionDropReasonV1::ProviderUnsupported),
+            ..set
+        };
+        dropped.validate().unwrap();
+        assert!(
+            dropped.layers().is_empty(),
+            "a dropped session layer falls back to Notes alone"
+        );
     }
 }

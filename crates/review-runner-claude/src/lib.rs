@@ -19,12 +19,20 @@
 //! the real `HOME` is a deliberate loosening relative to the codex adapter; every grant's value
 //! is redacted from everything stored.
 //!
+//! **Sessions are the kernel's, not the provider's.** When a node's warm policy asks for the
+//! session layer, the adapter passes the kernel-derived `--session-id` for this Attempt, and,
+//! when a Session Snapshot was carried, `--resume <source> --fork-session` so the captured
+//! transcript is read and never mutated. Both flags precede the package's model flags and are
+//! pinned by fixture like the security flags. Without them — every other adapter, Codex
+//! included — no session is assigned, captured, or resumed. See [`session`].
+//!
 //! **Token mapping, recorded:** cost is uncached input plus cache creation plus output as the CLI
 //! reports them — cache reads excluded. An agentic reviewer re-reads its context
 //! through the cache on every turn; counting those would spend the whole attempt cap on
 //! bookkeeping. Codex reports cached reads inside `input_tokens`, so the two adapters differ
 //! exactly where their providers do.
 
+pub mod session;
 pub mod task;
 
 use std::path::Path;
@@ -34,10 +42,12 @@ use review_core::{Arg, Command};
 use review_runner::ResolvedReviewer;
 use review_runner::{
     InputTransport, ModelRunner, ReceiptedReviewerReturn, RenderedInput, ReviewerAdapter,
-    ReviewerInputs, ReviewerReturn, RunnerError, TokenUsage, compose_model_prompt,
+    ReviewerInputs, ReviewerReturn, RunnerError, SessionLayer, TokenUsage, compose_model_prompt,
     parse_notes_declaration, parse_proposal_declaration, parse_stage_output_for,
 };
 use review_store::Cas;
+
+pub use session::ClaudeSessionStore;
 
 pub struct ClaudeAdapter {
     program: String,
@@ -46,6 +56,10 @@ pub struct ClaudeAdapter {
     timeout: Duration,
     /// (name, value) grants for subscription/keychain auth.
     grants: Vec<(String, String)>,
+    /// The operator's harness session store, derived from the same explicit grants. Present
+    /// only once auth is granted: without `HOME` there is no directory to address, and the
+    /// adapter refuses the session layer rather than guessing one.
+    session_store: Option<ClaudeSessionStore>,
 }
 
 impl ClaudeAdapter {
@@ -83,6 +97,7 @@ impl ClaudeAdapter {
             prompt,
             timeout,
             grants: Vec::new(),
+            session_store: None,
         })
     }
 
@@ -94,9 +109,17 @@ impl ClaudeAdapter {
         user: impl Into<String>,
         home: impl Into<String>,
     ) -> Self {
+        let home = home.into();
+        // The session store is exactly the directory these grants point the harness at; it is
+        // derived here rather than read from the environment, so the adapter can only ever
+        // capture and delete inside what the operator granted.
+        self.session_store = Some(ClaudeSessionStore::from_grants(
+            config_dir.as_deref(),
+            &home,
+        ));
         self.grants = vec![
             ("USER".to_string(), user.into()),
-            ("HOME".to_string(), home.into()),
+            ("HOME".to_string(), home),
         ];
         if let Some(config_dir) = config_dir {
             self.grants
@@ -119,9 +142,18 @@ impl ClaudeAdapter {
 
 /// Build the adapter-owned capability smoke invocation. It shares the production argument
 /// ordering while disabling tools: admission proves auth/model inference, not filesystem access.
+/// An admission probe never hosts a session: it carries no Attempt and leaves no transcript.
 pub fn smoke_command(runner: &Command) -> Result<Command, String> {
     let model_flags = claude_model_flags(runner)?;
-    Ok(claude_command(&runner.program, &model_flags))
+    Ok(claude_command(&runner.program, &model_flags, None))
+}
+
+/// The session arguments one Attempt runs under: the kernel's own identity for the session this
+/// Attempt will write, and, when a Session Snapshot was carried, the source session to resume
+/// with a fork so the captured transcript is read and never mutated.
+struct SessionArgs<'a> {
+    session_id: &'a str,
+    resume_from: Option<&'a str>,
 }
 
 fn claude_model_flags(runner: &Command) -> Result<Vec<String>, String> {
@@ -158,12 +190,33 @@ fn claude_model_flags(runner: &Command) -> Result<Vec<String>, String> {
     Ok(flags)
 }
 
-fn claude_command(program: &str, model_flags: &[String]) -> Command {
+fn claude_command(
+    program: &str,
+    model_flags: &[String],
+    session: Option<SessionArgs<'_>>,
+) -> Command {
     let mut args = vec![
         Arg::literal("-p"),
         Arg::literal("--output-format"),
         Arg::literal("json"),
     ];
+    // The session identity is the kernel's, assigned from the Attempt ID before the process
+    // starts, so the transcript this invocation writes is the kernel's to capture and delete
+    // rather than the provider's to keep. A resume always forks: the captured transcript is
+    // read, and everything this Attempt says lands in its own session.
+    if let Some(session) = &session {
+        args.extend([
+            Arg::literal("--session-id"),
+            Arg::literal(session.session_id),
+        ]);
+        if let Some(resume_from) = session.resume_from {
+            args.extend([
+                Arg::literal("--resume"),
+                Arg::literal(resume_from),
+                Arg::literal("--fork-session"),
+            ]);
+        }
+    }
     args.extend(model_flags.iter().map(Arg::literal));
     // Security flags are adapter-owned and deliberately follow package-controlled model flags.
     // Claude applies the last value for valued flags; packages therefore cannot replace the
@@ -198,6 +251,12 @@ impl ReviewerAdapter for ClaudeAdapter {
             .map(|receipt| receipt.returned)
     }
 
+    fn session_layer(&self) -> Option<&dyn SessionLayer> {
+        self.session_store
+            .as_ref()
+            .map(|store| store as &dyn SessionLayer)
+    }
+
     fn render_input(&self, inputs: &ReviewerInputs) -> Result<Option<RenderedInput>, RunnerError> {
         let (prompt, manifest) =
             compose_model_prompt(&self.prompt, inputs).map_err(RunnerError::Refused)?;
@@ -219,7 +278,14 @@ impl ReviewerAdapter for ClaudeAdapter {
         // pure composition backs `render_input`, so what is sent is what can be audited.
         let (prompt, context_manifest) =
             compose_model_prompt(&self.prompt, inputs).map_err(RunnerError::Refused)?;
-        let command = claude_command(&self.program, &self.model_flags);
+        let session = inputs.session_id.as_deref().map(|session_id| SessionArgs {
+            session_id,
+            resume_from: inputs
+                .session_resume
+                .as_ref()
+                .map(|resume| resume.session_id.as_str()),
+        });
+        let command = claude_command(&self.program, &self.model_flags, session);
 
         let mut runner = ModelRunner::new(sandbox_root, self.timeout);
         for (name, value) in &self.grants {
