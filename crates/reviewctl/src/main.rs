@@ -4959,6 +4959,7 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         .with_ledger_projection(ledger_projection)?
         .with_checks(loaded.checks().to_vec())
         .with_cache_source_resolver(caches::resolve_kind)
+        .with_workspace_cache_root(config::cache_home()?.join("af").join("workspaces"))
         .with_check_timeout(check_timeout);
     if let Some(budgets) = loaded.budgets() {
         run_progress(

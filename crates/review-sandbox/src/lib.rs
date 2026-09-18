@@ -30,6 +30,7 @@ pub mod build_cache;
 pub mod cache;
 pub mod container;
 pub mod seal;
+pub mod workspace;
 
 pub use self::SandboxTemplate as Template;
 pub use build_cache::{
@@ -43,6 +44,10 @@ pub use cache::{
 };
 pub use container::{Availability, ContainerProvider};
 pub use seal::{MutationSet, SealedSandbox};
+pub use workspace::{
+    WorkspacePreparation, WorkspaceRoot, default_workspace_cache_root, prepare_workspace,
+    workspace_id,
+};
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -410,7 +415,9 @@ fn symlink_raw(target: &Path, at: &Path) -> std::io::Result<()> {
 pub struct SandboxTemplate {
     manifest: Arc<Manifest>,
     root: PathBuf,
-    _dir: tempfile::TempDir,
+    /// Present for a temporary template, removed with the handle. A Warm Workspace template
+    /// lives at a stable root the handle does not own, so nothing is removed with it.
+    _dir: Option<tempfile::TempDir>,
 }
 
 impl SandboxTemplate {
@@ -421,8 +428,26 @@ impl SandboxTemplate {
         Ok(SandboxTemplate {
             manifest: Arc::new(manifest.clone()),
             root,
-            _dir: dir,
+            _dir: Some(dir),
         })
+    }
+
+    /// A template at a stable root this handle does not own. Only the workspace module builds
+    /// one, after it verified that `root` holds exactly `manifest`.
+    pub(crate) fn at_stable_root(manifest: Manifest, root: PathBuf) -> SandboxTemplate {
+        SandboxTemplate {
+            manifest: Arc::new(manifest),
+            root,
+            _dir: None,
+        }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    pub fn manifest(&self) -> &Manifest {
+        self.manifest.as_ref()
     }
 }
 

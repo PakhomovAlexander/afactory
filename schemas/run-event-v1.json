@@ -91,7 +91,8 @@
         "SemanticClosureChecked@1",
         "WarmSetSelected@1",
         "WorkerNotesRecorded@1",
-        "BuildCacheCaptured@1"
+        "BuildCacheCaptured@1",
+        "WorkspaceRebased@1"
       ]
     },
     "occurred_at": {
@@ -644,6 +645,25 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": {
+            "const": "WorkspaceRebased@1"
+          }
+        },
+        "required": [
+          "type"
+        ]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/workspace_rebased"
+          }
+        }
+      }
     }
   ],
   "$defs": {
@@ -1065,11 +1085,106 @@
             "enum": [
               "notes",
               "head_delta",
-              "build_cache"
+              "build_cache",
+              "workspace"
             ]
           }
         }
       }
+    },
+    "workspace_rebased": {
+      "description": "Appended once per node per kernel run, before the node's Warm Set is recorded: which head the node's stable workspace template held, which head it holds now, on what basis (materialized in full with a recorded reason, re-based by tree diff and verified against the head's Tree Digest, or reused unchanged), the digest the result was verified to hold, and how many entries the preparation touched. The workspace is named by an opaque identity, never a host path.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "workspace_id",
+        "to_snapshot_id",
+        "basis",
+        "verified_digest",
+        "entries_touched"
+      ],
+      "properties": {
+        "node": {
+          "type": "string",
+          "minLength": 1
+        },
+        "workspace_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{32}$"
+        },
+        "from_snapshot_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "to_snapshot_id": {
+          "$ref": "#/$defs/digest"
+        },
+        "basis": {
+          "enum": [
+            "full",
+            "rebased",
+            "reused"
+          ]
+        },
+        "fallback": {
+          "enum": [
+            "no_verified_template",
+            "template_corrupt",
+            "apply_failed",
+            "digest_mismatch"
+          ]
+        },
+        "verified_digest": {
+          "$ref": "#/$defs/digest"
+        },
+        "entries_touched": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "basis": {
+                "const": "full"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "fallback"
+            ]
+          },
+          "else": {
+            "required": [
+              "from_snapshot_id"
+            ],
+            "not": {
+              "required": [
+                "fallback"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "basis": {
+                "const": "reused"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "entries_touched": {
+                "const": 0
+              }
+            }
+          }
+        }
+      ]
     },
     "build_cache_captured": {
       "description": "Appended by a Gate after its checks passed, once per declared build cache kind: exactly one of the captured review.kernel/BuildCache@1 artifact or a refusal reason, with the head the Gate built and the limits that applied. A refusal never changes the Gate verdict; Workers that declared the kind run without it. The artifact is explicitly unsafe and never a Cache Snapshot.",

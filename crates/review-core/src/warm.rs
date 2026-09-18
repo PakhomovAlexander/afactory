@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 
 use crate::change_set::PathRenameV1;
+use crate::workspace::{WorkspaceBasisV1, is_workspace_id};
 
 /// Hard upper bound for one encoded `WorkerNotes@1` payload. Policy may lower it, never raise it.
 pub const MAX_WORKER_NOTES_BYTES: usize = 64 * 1024;
@@ -402,6 +403,9 @@ pub enum WarmLayerV1 {
     HeadDelta,
     /// Package P2: the Gate's candidate-built output cloned into the Attempt's sandbox.
     BuildCache,
+    /// Package P3: the node's stable template re-based to the head, or reused unchanged,
+    /// instead of materialized from scratch.
+    Workspace,
 }
 
 impl WarmLayerV1 {
@@ -410,6 +414,7 @@ impl WarmLayerV1 {
             Self::Notes => "notes",
             Self::HeadDelta => "head_delta",
             Self::BuildCache => "build_cache",
+            Self::Workspace => "workspace",
         }
     }
 }
@@ -461,6 +466,14 @@ pub struct WarmSetV1 {
     /// beside a carried build cache.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build_cache_dropped: Option<BuildCacheDropReasonV1>,
+    /// Package P3: how the node's stable workspace template came to hold this Round's head.
+    /// Present exactly with `workspace_id`; absent for a node that templates fresh per Round.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceBasisV1>,
+    /// The opaque identity of the node's stable workspace root within this Campaign. Never a
+    /// host path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<String>,
 }
 
 impl WarmSetV1 {
@@ -491,6 +504,15 @@ impl WarmSetV1 {
         if self.build_cache_artifact_id.is_some() && self.build_cache_dropped.is_some() {
             return Err("WarmSet@1 both carries and drops its Build Cache".into());
         }
+        match (&self.workspace, &self.workspace_id) {
+            (None, None) => {}
+            (Some(_), Some(id)) if is_workspace_id(id) => {}
+            _ => {
+                return Err(
+                    "WarmSet@1 names a workspace basis and identity together or not at all".into(),
+                );
+            }
+        }
         Ok(())
     }
 
@@ -504,6 +526,9 @@ impl WarmSetV1 {
         }
         if self.build_cache_artifact_id.is_some() {
             layers.push(WarmLayerV1::BuildCache);
+        }
+        if self.workspace.is_some_and(WorkspaceBasisV1::carried) {
+            layers.push(WarmLayerV1::Workspace);
         }
         layers
     }
@@ -635,6 +660,8 @@ mod tests {
             head_delta_dropped: Some(HeadDeltaDropReasonV1::OverBound),
             build_cache_artifact_id: None,
             build_cache_dropped: None,
+            workspace: None,
+            workspace_id: None,
         };
         assert!(set.validate().is_err());
         let dropped = WarmSetV1 {
@@ -643,6 +670,53 @@ mod tests {
         };
         dropped.validate().unwrap();
         assert!(dropped.layers().is_empty());
+    }
+
+    #[test]
+    fn a_warm_set_names_its_workspace_basis_and_identity_together() {
+        let set = WarmSetV1 {
+            node: "correctness".into(),
+            round: 2,
+            source_attempt_id: None,
+            notes_artifact_id: None,
+            head_delta_artifact_id: None,
+            head_delta_dropped: None,
+            build_cache_artifact_id: None,
+            build_cache_dropped: None,
+            workspace: Some(WorkspaceBasisV1::Rebased),
+            workspace_id: Some("b".repeat(32)),
+        };
+        set.validate().unwrap();
+        assert_eq!(set.layers(), vec![WarmLayerV1::Workspace]);
+        let full = WarmSetV1 {
+            workspace: Some(WorkspaceBasisV1::Full),
+            ..set.clone()
+        };
+        full.validate().unwrap();
+        assert!(
+            full.layers().is_empty(),
+            "a fully materialized template carries nothing"
+        );
+        let reused = WarmSetV1 {
+            workspace: Some(WorkspaceBasisV1::Reused),
+            ..set.clone()
+        };
+        assert_eq!(reused.layers(), vec![WarmLayerV1::Workspace]);
+        let nameless = WarmSetV1 {
+            workspace_id: None,
+            ..set.clone()
+        };
+        assert!(nameless.validate().is_err());
+        let baseless = WarmSetV1 {
+            workspace: None,
+            ..set.clone()
+        };
+        assert!(baseless.validate().is_err());
+        let host_path = WarmSetV1 {
+            workspace_id: Some("/Users/operator/.cache/af/workspaces/x".into()),
+            ..set
+        };
+        assert!(host_path.validate().is_err());
     }
 
     #[test]
@@ -657,6 +731,8 @@ mod tests {
             head_delta_dropped: None,
             build_cache_artifact_id: Some(digest),
             build_cache_dropped: Some(BuildCacheDropReasonV1::Refused),
+            workspace: None,
+            workspace_id: None,
         };
         assert!(set.validate().is_err());
         let carried = WarmSetV1 {
@@ -792,6 +868,8 @@ mod tests {
             head_delta_dropped: None,
             build_cache_artifact_id: None,
             build_cache_dropped: None,
+            workspace: None,
+            workspace_id: None,
         };
         assert!(set.validate().is_err());
         let set = WarmSetV1 {

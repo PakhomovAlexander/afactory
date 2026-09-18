@@ -35,6 +35,12 @@ pub mod snapshot;
 pub mod subject;
 pub mod task;
 pub mod warm;
+pub mod workspace;
+
+pub use workspace::{
+    WORKSPACE_ID_HEX_LEN, WorkspaceBasisV1, WorkspaceFallbackReasonV1, WorkspaceRebasedPayloadV1,
+    is_workspace_id,
+};
 
 pub use warm::{
     BuildCacheDropReasonV1, DEFAULT_WORKER_NOTES_BYTES, HeadDeltaDropReasonV1, HeadDeltaEntryV1,

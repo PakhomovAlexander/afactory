@@ -2809,6 +2809,8 @@ fn warm_layer_contracts_roundtrip_and_stay_closed() {
         head_delta_dropped: None,
         build_cache_artifact_id: None,
         build_cache_dropped: None,
+        workspace: None,
+        workspace_id: None,
     };
     set.validate().unwrap();
     let dropped = WarmSetV1 {
@@ -3035,6 +3037,8 @@ fn build_cache_contracts_are_explicitly_unsafe_bounded_and_closed() {
         head_delta_dropped: None,
         build_cache_artifact_id: Some(digest('4')),
         build_cache_dropped: None,
+        workspace: None,
+        workspace_id: None,
     };
     set.validate().unwrap();
     assert_eq!(set.layers(), vec![WarmLayerV1::BuildCache]);
@@ -3064,6 +3068,191 @@ fn build_cache_contracts_are_explicitly_unsafe_bounded_and_closed() {
         ..event
     };
     assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
+}
+
+#[test]
+fn warm_workspace_contracts_roundtrip_and_stay_closed() {
+    use review_core::event::validate_event_payload;
+    use review_core::{
+        WarmLayerV1, WarmSetSelectedPayloadV1, WarmSetV1, WorkspaceBasisV1,
+        WorkspaceFallbackReasonV1, WorkspaceRebasedPayloadV1,
+    };
+    let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let workspace_id = "c".repeat(32);
+
+    let set = WarmSetV1 {
+        node: "correctness".into(),
+        round: 2,
+        source_attempt_id: None,
+        notes_artifact_id: None,
+        head_delta_artifact_id: None,
+        head_delta_dropped: None,
+        build_cache_artifact_id: None,
+        build_cache_dropped: None,
+        workspace: Some(WorkspaceBasisV1::Rebased),
+        workspace_id: Some(workspace_id.clone()),
+    };
+    set.validate().unwrap();
+    assert_eq!(set.layers(), vec![WarmLayerV1::Workspace]);
+    let mut value = serde_json::to_value(&set).unwrap();
+    assert_valid("warm-set-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<WarmSetV1>(value.clone()).unwrap(),
+        set
+    );
+    for basis in [WorkspaceBasisV1::Full, WorkspaceBasisV1::Reused] {
+        let other = WarmSetV1 {
+            workspace: Some(basis),
+            ..set.clone()
+        };
+        other.validate().unwrap();
+        assert_valid("warm-set-v1.json", &serde_json::to_value(&other).unwrap());
+    }
+    value["workspace_id"] = json!("/Users/operator/.cache/af/workspaces/c");
+    assert_invalid(
+        "warm-set-v1.json",
+        &value,
+        "a workspace is named by an opaque identity, never a host path",
+    );
+    assert!(
+        serde_json::from_value::<WarmSetV1>(value)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let nameless = json!({"node": "correctness", "round": 2, "workspace": "rebased"});
+    assert_invalid(
+        "warm-set-v1.json",
+        &nameless,
+        "a workspace basis without its identity",
+    );
+    assert!(
+        serde_json::from_value::<WarmSetV1>(nameless)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let baseless = json!({"node": "correctness", "round": 2, "workspace_id": &workspace_id});
+    assert_invalid(
+        "warm-set-v1.json",
+        &baseless,
+        "a workspace identity without its basis",
+    );
+
+    let selected = WarmSetSelectedPayloadV1 {
+        warm_set_artifact_id: digest('7'),
+        source_attempt_id: None,
+        layers: vec![WarmLayerV1::Workspace],
+    };
+    selected.validate().unwrap();
+    let payload = serde_json::to_value(&selected).unwrap();
+    validate_event_payload(EventType::WarmSetSelectedV1, &payload).unwrap();
+    let event = RunEvent {
+        event_id: "b".repeat(26),
+        run_id: "run".into(),
+        sequence: 10,
+        event_type: EventType::WarmSetSelectedV1,
+        occurred_at: "2026-09-18T00:00:00Z".into(),
+        node_id: Some("correctness".into()),
+        attempt_id: None,
+        causation_id: Some("c".repeat(26)),
+        correlation_id: None,
+        artifact_refs: vec![digest('7')],
+        payload,
+    };
+    assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
+
+    let rebased = WorkspaceRebasedPayloadV1 {
+        node: "correctness".into(),
+        workspace_id: workspace_id.clone(),
+        from_snapshot_id: Some(digest('1')),
+        to_snapshot_id: digest('2'),
+        basis: WorkspaceBasisV1::Rebased,
+        fallback: None,
+        verified_digest: digest('3'),
+        entries_touched: 4,
+    };
+    let full = WorkspaceRebasedPayloadV1 {
+        from_snapshot_id: None,
+        basis: WorkspaceBasisV1::Full,
+        fallback: Some(WorkspaceFallbackReasonV1::NoVerifiedTemplate),
+        entries_touched: 12,
+        ..rebased.clone()
+    };
+    let fallen_back = WorkspaceRebasedPayloadV1 {
+        basis: WorkspaceBasisV1::Full,
+        fallback: Some(WorkspaceFallbackReasonV1::DigestMismatch),
+        ..rebased.clone()
+    };
+    let reused = WorkspaceRebasedPayloadV1 {
+        basis: WorkspaceBasisV1::Reused,
+        entries_touched: 0,
+        ..rebased.clone()
+    };
+    for payload in [&rebased, &full, &fallen_back, &reused] {
+        payload.validate().unwrap();
+        let value = serde_json::to_value(payload).unwrap();
+        validate_event_payload(EventType::WorkspaceRebasedV1, &value).unwrap();
+        assert_eq!(
+            serde_json::from_value::<WorkspaceRebasedPayloadV1>(value.clone()).unwrap(),
+            *payload
+        );
+        let event = RunEvent {
+            event_type: EventType::WorkspaceRebasedV1,
+            artifact_refs: vec![digest('1'), digest('2')],
+            payload: value,
+            ..event.clone()
+        };
+        assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
+    }
+    let mut event_value = serde_json::to_value(&RunEvent {
+        event_type: EventType::WorkspaceRebasedV1,
+        payload: serde_json::to_value(&rebased).unwrap(),
+        ..event.clone()
+    })
+    .unwrap();
+    event_value["payload"]["fallback"] = json!("apply_failed");
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a rebase that succeeded records no fallback reason",
+    );
+    assert!(
+        validate_event_payload(EventType::WorkspaceRebasedV1, &event_value["payload"]).is_err()
+    );
+    event_value["payload"] = serde_json::to_value(&full).unwrap();
+    event_value["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("fallback");
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a full materialization records why the template was not re-based",
+    );
+    assert!(
+        validate_event_payload(EventType::WorkspaceRebasedV1, &event_value["payload"]).is_err()
+    );
+    event_value["payload"] = serde_json::to_value(&reused).unwrap();
+    event_value["payload"]["entries_touched"] = json!(1);
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a reused template materializes nothing",
+    );
+    assert!(
+        validate_event_payload(EventType::WorkspaceRebasedV1, &event_value["payload"]).is_err()
+    );
+    event_value["payload"] = serde_json::to_value(&rebased).unwrap();
+    event_value["payload"]["root"] = json!("/Users/operator/.cache/af/workspaces/c/tree");
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a workspace record never carries a host path",
+    );
+    assert!(
+        validate_event_payload(EventType::WorkspaceRebasedV1, &event_value["payload"]).is_err()
+    );
 }
 
 #[path = "schema_parity/task_usage.rs"]

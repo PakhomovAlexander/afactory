@@ -486,7 +486,8 @@ fn execute_current(
                 lease.clone(),
                 model_bindings(&captured.plan, &captured.captured, &captured.workers)?,
             )?
-            .with_cache_source_resolver(super::caches::resolve_kind);
+            .with_cache_source_resolver(super::caches::resolve_kind)
+            .with_workspace_cache_root(super::config::cache_home()?.join("af").join("workspaces"));
             let authority = CapturedTaskAuthority::for_legacy_review(
                 &captured.compiler,
                 &host,

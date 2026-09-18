@@ -14,6 +14,7 @@ pub mod capture;
 pub mod git;
 pub mod manifest;
 pub mod materialize;
+pub mod rebase;
 pub mod task;
 
 pub use capture::{Capture, CaptureError, CaptureObserver, NoObserver, Snapshot, worktree_state};
@@ -26,3 +27,4 @@ pub use manifest::{
     digest_reader_with_buffer, encode_path, fs_path,
 };
 pub use materialize::{MaterializeError, materialize};
+pub use rebase::{ManifestChanges, apply_tree_diff, manifest_changes, scan_tree};

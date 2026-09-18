@@ -1,5 +1,5 @@
 //! Worker warm layers, package P1: Warm Set selection, Head Delta computation and Notes
-//! capture.
+//! capture; package P3: the Warm Workspace each warm node's sandboxes are cloned from.
 //!
 //! Warmth is an artifact, never ambient state. A node's Warm Set is selected from the durable
 //! Campaign log, stored in the CAS, recorded as `WarmSetSelected@1` before the node's first
@@ -7,18 +7,25 @@
 //! context manifest lists with bytes and estimated tokens. Only the previous closed Round's
 //! admitted Attempt of the same node can be a source; fenced, quarantined, malformed and
 //! released Attempts contribute nothing, and a retry inherits the Round's Warm Set rather than
-//! its failed sibling's state.
+//! its failed sibling's state. A node with `workspace = "rebase"` also keeps one stable
+//! template root per Campaign, re-based to each head and verified before the Warm Set that
+//! names it is recorded.
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 
 use review_core::event::AttemptAdmittedPayloadV1;
 use review_core::{
     ArtifactEnvelope, BuildCacheKindV1, EventType, HeadDeltaInputs, HeadDeltaV1, InspectedPathV1,
     PathHintV1, PathRenameV1, Producer, RoundStartedPayloadV1, RunEvent, SourceSnapshot, TreeView,
     WarmSetSelectedPayloadV1, WarmSetV1, WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1,
-    WorkerNotesV1, compute_head_delta_marks, run_report_closes_round,
+    WorkerNotesV1, WorkspaceBasisV1, WorkspaceRebasedPayloadV1, compute_head_delta_marks,
+    run_report_closes_round,
 };
 use review_runner::{NotesRequest, ReviewerInputs, ReviewerNotesDeclaration};
+use review_sandbox::{
+    SandboxTemplate, WorkspaceRoot, default_workspace_cache_root, prepare_workspace, workspace_id,
+};
 use review_source_git::git::TREE_DIFF_POLICY_VERSION;
 use review_source_git::{Manifest, TreeChangeKind, manifest_diff};
 use review_store::{Cas, NewEvent};
@@ -34,7 +41,91 @@ pub(crate) struct WarmSetRecord {
     pub artifact_id: String,
 }
 
+/// One node's Warm Workspace in this kernel run: the verified template at its stable root and
+/// the basis the Round's Warm Set records.
+#[derive(Clone)]
+pub(crate) struct WarmWorkspace {
+    pub template: Arc<SandboxTemplate>,
+    pub workspace_id: String,
+    pub basis: WorkspaceBasisV1,
+}
+
+/// The layers a node's pinned policy asks for in this Round, resolved before selection.
+struct RequestedLayers<'a> {
+    notes: bool,
+    build_cache: Option<(BuildCacheKindV1, String)>,
+    workspace: Option<&'a WarmWorkspace>,
+}
+
 impl ReviewDomainState<'_> {
+    /// Whether the node's pinned policy keeps a Warm Workspace.
+    pub(crate) fn warm_workspace_policy(&self, node_id: &str) -> bool {
+        self.warm_policy(node_id)
+            .is_some_and(|policy| policy.workspace == review_config::WorkspaceSpec::Rebase)
+    }
+
+    /// The node's Warm Workspace template, prepared once per kernel run and verified to hold
+    /// the Round head; `None` for a node whose policy templates fresh per Round.
+    pub(crate) fn warm_workspace_template(
+        &self,
+        node_id: &str,
+    ) -> Result<Option<Arc<SandboxTemplate>>, String> {
+        if !self.warm_workspace_policy(node_id) {
+            return Ok(None);
+        }
+        Ok(Some(self.warm_workspace(node_id)?.template))
+    }
+
+    /// Prepare the node's Warm Workspace for the Round head, once per kernel run, and record
+    /// what the preparation did as `WorkspaceRebased@1`: re-based and verified, reused
+    /// unchanged, or materialized in full with the reason. Every later request in this run
+    /// reuses the prepared template. The root is named by its opaque identity; the host path
+    /// never enters the record.
+    pub(crate) fn warm_workspace(&self, node_id: &str) -> Result<WarmWorkspace, String> {
+        let mut workspaces = self.warm_workspaces.lock().expect("warm workspaces");
+        if let Some(workspace) = workspaces.get(node_id) {
+            return Ok(workspace.clone());
+        }
+        let cache_root = match &self.workspace_cache_root {
+            Some(root) => root.clone(),
+            None => default_workspace_cache_root().map_err(|error| error.to_string())?,
+        };
+        let id = workspace_id(&self.run_id, &self.authority.campaign_manifest_id, node_id);
+        let root = WorkspaceRoot::new(&cache_root, &id).map_err(|error| error.to_string())?;
+        let prepared = prepare_workspace(
+            &root,
+            &self.snapshot,
+            &self.authority.head_snapshot_id,
+            self.cas,
+        )
+        .map_err(|error| format!("preparing the Warm Workspace of `{node_id}`: {error}"))?;
+        let payload = WorkspaceRebasedPayloadV1 {
+            node: node_id.to_string(),
+            workspace_id: id.clone(),
+            from_snapshot_id: prepared.from_snapshot_id.clone(),
+            to_snapshot_id: self.authority.head_snapshot_id.clone(),
+            basis: prepared.basis,
+            fallback: prepared.fallback,
+            verified_digest: prepared.verified_digest.clone(),
+            entries_touched: prepared.entries_touched,
+        };
+        payload.validate()?;
+        let mut refs = vec![self.authority.head_snapshot_id.clone()];
+        refs.extend(prepared.from_snapshot_id.clone());
+        self.append(
+            NewEvent::new(EventType::WorkspaceRebasedV1, encode(&payload)?)
+                .node(node_id)
+                .referencing(refs),
+        )?;
+        let workspace = WarmWorkspace {
+            template: Arc::new(prepared.template),
+            workspace_id: id,
+            basis: prepared.basis,
+        };
+        workspaces.insert(node_id.to_string(), workspace.clone());
+        Ok(workspace)
+    }
+
     /// The pinned warm policy of a node, resolved through its binding node for dynamic shards.
     pub(crate) fn warm_policy(&self, node_id: &str) -> Option<review_config::WarmSpec> {
         let base = self.reviewer_binding_node(node_id);
@@ -54,8 +145,9 @@ impl ReviewDomainState<'_> {
     /// Select and durably record the node's Warm Set for this Round, once. A resumed Round
     /// finds its recorded selection and reuses it; nothing is recomputed or re-appended. Cold
     /// nodes have no Warm Set, and Notes are carried only from Round two on; a node that
-    /// declares a build cache kind selects one in every Round, because that layer travels from
-    /// this Round's Gate rather than from the previous Round.
+    /// declares a build cache kind or a Warm Workspace selects one in every Round, because
+    /// those layers travel from this Round's Gate and from the node's own stable root rather
+    /// than from the previous Round's Attempt.
     pub(crate) fn select_warm_set(&self, node_id: &str) -> Result<Option<WarmSetRecord>, String> {
         let notes = self.notes_max_bytes(node_id).is_some() && self.authority.round > 1;
         let build_cache = match self.node_build_cache_kind(node_id) {
@@ -67,7 +159,8 @@ impl ReviewDomainState<'_> {
             }
             None => None,
         };
-        if !notes && build_cache.is_none() {
+        let keeps_workspace = self.warm_workspace_policy(node_id);
+        if !notes && build_cache.is_none() && !keeps_workspace {
             return Ok(None);
         }
         if let Some(record) = self.warm_sets.lock().expect("warm sets").get(node_id) {
@@ -81,8 +174,24 @@ impl ReviewDomainState<'_> {
             .map_err(|error| error.to_string())?;
         let recorded =
             recorded_warm_set(self.cas, &events, &self.authority.round_event_id, node_id)?;
+        // The workspace is prepared and verified before the Warm Set that names it is recorded
+        // or read back, so a resumed Round rebuilds its template before its first Attempt
+        // exactly as a fresh Round does.
+        let workspace = if keeps_workspace {
+            Some(self.warm_workspace(node_id)?)
+        } else {
+            None
+        };
         let record = match recorded {
-            Some(record) => record,
+            Some(record) => {
+                let prepared = workspace.as_ref().map(|found| found.workspace_id.as_str());
+                if record.set.workspace_id.as_deref() != prepared {
+                    return Err(format!(
+                        "node `{node_id}` recorded a Warm Set naming another workspace"
+                    ));
+                }
+                record
+            }
             None => {
                 let set = select(
                     self.cas,
@@ -90,8 +199,11 @@ impl ReviewDomainState<'_> {
                     &self.authority,
                     &self.snapshot,
                     node_id,
-                    notes,
-                    build_cache,
+                    RequestedLayers {
+                        notes,
+                        build_cache,
+                        workspace: workspace.as_ref(),
+                    },
                 )?;
                 self.record_warm_set(set)?
             }
@@ -327,8 +439,7 @@ fn select(
     authority: &RoundAuthority,
     head: &Manifest,
     node_id: &str,
-    notes: bool,
-    build_cache: Option<(BuildCacheKindV1, String)>,
+    layers: RequestedLayers<'_>,
 ) -> Result<WarmSetV1, String> {
     let mut set = WarmSetV1 {
         node: node_id.to_string(),
@@ -339,14 +450,18 @@ fn select(
         head_delta_dropped: None,
         build_cache_artifact_id: None,
         build_cache_dropped: None,
+        workspace: layers.workspace.map(|workspace| workspace.basis),
+        workspace_id: layers
+            .workspace
+            .map(|workspace| workspace.workspace_id.clone()),
     };
-    if let Some((kind, gate)) = build_cache {
+    if let Some((kind, gate)) = layers.build_cache {
         let (artifact_id, dropped) =
             crate::build_cache::select_build_cache(cas, events, authority, &gate, kind)?;
         set.build_cache_artifact_id = artifact_id;
         set.build_cache_dropped = dropped;
     }
-    if !notes {
+    if !layers.notes {
         return Ok(set);
     }
     let Some(previous) = previous_closed_round(events, authority)? else {

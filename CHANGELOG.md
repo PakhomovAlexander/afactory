@@ -32,6 +32,19 @@ release pages only.
   the safe policy refuses the declaration at load and the handoff before any dispatch. The
   registry-only `cargo` Cache Snapshot and the self-optimizer cache path are unchanged
   ([ADR-0108](docs/adr/0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md)).
+- Add the Warm Workspace as the third warm layer: a reviewer node with
+  `warm = { workspace = "rebase" }` keeps one stable template root per Campaign under
+  `$XDG_CACHE_HOME/af/workspaces`, named in its `WarmSet@1` by an opaque workspace identity
+  rather than a host path. On a new head the kernel applies the tree diff to a copy-on-write
+  clone of the previous template, scans the result and swaps it in only when its manifest digest
+  equals the head's Tree Digest; any other outcome falls back to a full materialization from the
+  CAS with the reason recorded. An unchanged head materializes nothing. `WorkspaceRebased@1`
+  records the previous and current head, the basis, the fallback reason, the verified digest and
+  the entries touched before the Warm Set is recorded, and the `workspace` layer joins
+  `WarmSetSelected@1` when the template was carried. Per-Attempt sandboxes remain fresh clones,
+  so a warm Attempt's sealed diff is what the reviewer wrote; nodes without the policy and
+  pipelines written before it are unchanged
+  ([ADR-0109](docs/adr/0109-rebase-warm-workspaces-at-stable-roots-with-digest-verification.md)).
 
 ## [0.9.0-rc.3] - 2026-09-17
 

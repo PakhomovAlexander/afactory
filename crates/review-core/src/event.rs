@@ -134,10 +134,12 @@ pub enum EventType {
     WorkerNotesRecordedV1,
     #[serde(rename = "BuildCacheCaptured@1")]
     BuildCacheCapturedV1,
+    #[serde(rename = "WorkspaceRebased@1")]
+    WorkspaceRebasedV1,
 }
 
 impl EventType {
-    pub const ALL: [Self; 61] = [
+    pub const ALL: [Self; 62] = [
         Self::TaskTransitionV1,
         Self::TaskTransitionV2,
         Self::TaskTransitionV3,
@@ -199,6 +201,7 @@ impl EventType {
         Self::WarmSetSelectedV1,
         Self::WorkerNotesRecordedV1,
         Self::BuildCacheCapturedV1,
+        Self::WorkspaceRebasedV1,
     ];
 
     pub const fn as_str(self) -> &'static str {
@@ -264,6 +267,7 @@ impl EventType {
             Self::WarmSetSelectedV1 => "WarmSetSelected@1",
             Self::WorkerNotesRecordedV1 => "WorkerNotesRecorded@1",
             Self::BuildCacheCapturedV1 => "BuildCacheCaptured@1",
+            Self::WorkspaceRebasedV1 => "WorkspaceRebased@1",
         }
     }
 
@@ -355,6 +359,7 @@ impl EventType {
             Self::WarmSetSelectedV1 => ("WarmSetSelected", 1),
             Self::WorkerNotesRecordedV1 => ("WorkerNotesRecorded", 1),
             Self::BuildCacheCapturedV1 => ("BuildCacheCaptured", 1),
+            Self::WorkspaceRebasedV1 => ("WorkspaceRebased", 1),
         }
     }
 }
@@ -454,6 +459,7 @@ impl std::str::FromStr for EventType {
             "WarmSetSelected@1" => Ok(Self::WarmSetSelectedV1),
             "WorkerNotesRecorded@1" => Ok(Self::WorkerNotesRecordedV1),
             "BuildCacheCaptured@1" => Ok(Self::BuildCacheCapturedV1),
+            "WorkspaceRebased@1" => Ok(Self::WorkspaceRebasedV1),
             other => Err(UnknownEventType(other.to_string())),
         }
     }
@@ -1819,6 +1825,14 @@ pub fn validate_event_payload(
             captured
                 .validate()
                 .map_err(|error| format!("BuildCacheCaptured@1: {error}"))
+        }
+        EventType::WorkspaceRebasedV1 => {
+            let rebased =
+                serde_json::from_value::<crate::WorkspaceRebasedPayloadV1>(payload.clone())
+                    .map_err(|error| format!("WorkspaceRebased@1: {error}"))?;
+            rebased
+                .validate()
+                .map_err(|error| format!("WorkspaceRebased@1: {error}"))
         }
     }
 }

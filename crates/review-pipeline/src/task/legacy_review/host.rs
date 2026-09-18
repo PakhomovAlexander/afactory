@@ -194,6 +194,12 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
         self
     }
 
+    /// Where Warm Workspaces live on this machine; see `Kernel::with_workspace_cache_root`.
+    pub fn with_workspace_cache_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.domain.workspace_cache_root = Some(root.into());
+        self
+    }
+
     fn providers(&self) -> crate::task::provider::ProviderTaskDomain<'_> {
         crate::task::provider::ProviderTaskDomain {
             graph: &self.captured.compilation.graph,

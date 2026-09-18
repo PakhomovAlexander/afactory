@@ -107,6 +107,13 @@ pub(super) struct ReviewDomainState<'a> {
     pub(super) warm_build_cache_gates: BTreeMap<String, String>,
     /// Warm Sets selected and durably recorded for this Round, by node.
     pub(super) warm_sets: Mutex<BTreeMap<String, crate::warm::WarmSetRecord>>,
+    /// Package P3: the machine-local root Warm Workspaces live under, resolved by the CLI to the
+    /// XDG cache directory and by tests to a temporary one. `None` resolves the default at the
+    /// first warm workspace. The path never enters a durable record.
+    pub(super) workspace_cache_root: Option<std::path::PathBuf>,
+    /// Warm Workspace templates prepared in this kernel run, by node. Each was verified to hold
+    /// the Round head before it was cached here.
+    pub(super) warm_workspaces: Mutex<BTreeMap<String, crate::warm::WarmWorkspace>>,
 }
 
 impl<'a> ReviewDomainState<'a> {
@@ -284,6 +291,8 @@ impl<'a> ReviewDomainState<'a> {
             warm_policies: BTreeMap::new(),
             warm_build_cache_gates: BTreeMap::new(),
             warm_sets: Mutex::new(BTreeMap::new()),
+            workspace_cache_root: None,
+            warm_workspaces: Mutex::new(BTreeMap::new()),
         })
     }
     /// Emit the run's generation state — the campaign's prior findings — as the artifact a
@@ -1783,6 +1792,17 @@ impl<'a> ReviewDomainState<'a> {
     pub(super) fn sandbox(&self, mode: Mode) -> Result<Sandbox, String> {
         let template = self.sandbox_template()?;
         Sandbox::from_template(&template, mode).map_err(|e| e.to_string())
+    }
+
+    /// A fresh sandbox for one node's Attempt: a clone of the node's Warm Workspace template
+    /// when its policy keeps one, and of the run's temporary template otherwise. Either way
+    /// every Attempt gets its own copy-on-write clone and nothing it writes reaches a sibling,
+    /// the template or the source.
+    pub(super) fn sandbox_for(&self, node_id: &str, mode: Mode) -> Result<Sandbox, String> {
+        match self.warm_workspace_template(node_id)? {
+            Some(template) => Sandbox::from_template(&template, mode).map_err(|e| e.to_string()),
+            None => self.sandbox(mode),
+        }
     }
 
     pub(super) fn record_cache_failure(

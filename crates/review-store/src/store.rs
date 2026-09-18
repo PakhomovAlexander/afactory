@@ -987,6 +987,10 @@ struct AuthorityWarm {
     /// closed vocabulary, the Store only keeps the pinned shape readable.
     #[serde(default)]
     build_cache: Vec<String>,
+    /// Package P3: the Warm Workspace basis (`fresh` or `rebase`); the config crate validates
+    /// the closed vocabulary, the Store only keeps the pinned shape readable.
+    #[serde(default)]
+    workspace: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -5320,6 +5324,7 @@ fn round_runtime_event(event_type: EventType) -> bool {
                 | EventType::WarmSetSelectedV1
                 | EventType::WorkerNotesRecordedV1
                 | EventType::BuildCacheCapturedV1
+                | EventType::WorkspaceRebasedV1
         )
 }
 

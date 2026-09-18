@@ -313,7 +313,9 @@ impl LegacyReviewTaskHost<'_, '_> {
                     .map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string())?;
-            let sandbox = self.domain.sandbox(review_sandbox::Mode::EphemeralWrite)?;
+            let sandbox = self
+                .domain
+                .sandbox_for(&node.id, review_sandbox::Mode::EphemeralWrite)?;
             // The Round's recorded Warm Set names the Build Cache, if any; it is cloned into
             // this exact sandbox and its location reaches the adapter as sandbox-local
             // environment, never as rendered context.

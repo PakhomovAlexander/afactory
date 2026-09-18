@@ -1574,6 +1574,13 @@ impl<'a> Kernel<'a> {
         self
     }
 
+    /// Where Warm Workspaces live on this machine. The CLI resolves the XDG cache directory;
+    /// tests supply a temporary root. The path never enters a durable record.
+    pub fn with_workspace_cache_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.domain.workspace_cache_root = Some(root.into());
+        self
+    }
+
     pub fn with_reviewer(mut self, node_id: impl Into<String>, command: Command) -> Self {
         self.reviewers.insert(node_id.into(), Box::new(command));
         self
@@ -2159,8 +2166,9 @@ impl<'a> Kernel<'a> {
 
             // Each attempt gets its own fresh sandbox. Reviewers may edit freely — a TDD
             // reviewer must — and nothing they do can reach a sibling, the source, the
-            // snapshot, or a retry of themselves.
-            let sandbox = match self.domain.sandbox(Mode::EphemeralWrite) {
+            // snapshot, or a retry of themselves. A warm node clones its verified Warm
+            // Workspace template instead of the run's temporary one; the isolation is the same.
+            let sandbox = match self.domain.sandbox_for(node_id, Mode::EphemeralWrite) {
                 Ok(sandbox) => sandbox,
                 Err(error) => {
                     self.release_prepared_attempt(node_id, &attempt, reservation.as_ref(), &error)?;

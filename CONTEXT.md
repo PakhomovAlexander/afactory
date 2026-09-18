@@ -342,11 +342,19 @@ the result incomplete.
 
 **Warm Set**:
 The exact, per-node set of carried layers one Round's Attempts start from: Notes and the Head
-Delta selected from the previous closed Round's admitted Attempt of the same node, and the Build
-Cache carried from this Round's Gate, recorded before the first dispatch and listed in every
-Attempt's context manifest.
+Delta selected from the previous closed Round's admitted Attempt of the same node, the Build
+Cache carried from this Round's Gate, and the basis of the node's Warm Workspace, recorded before
+the first dispatch and listed in every Attempt's context manifest.
 _Avoid_: "warm cache" or "the previous session" as ambient state; a Warm Set is an artifact, and
 a retry inherits the Round's Warm Set rather than its failed sibling's state.
+
+**Warm Workspace**:
+One node's stable template root within one Campaign, named by an opaque workspace identity and
+re-based to each new head by tree diff on a copy-on-write clone of the previous template. The
+result is trusted only when its manifest digest equals the head's Tree Digest; otherwise the head
+is materialized in full and the reason recorded. Per-Attempt sandboxes remain fresh clones of it.
+_Avoid_: treating the root as the sandbox or as shared state; a Warm Workspace never crosses
+nodes, and a host path never names it in a durable record.
 
 **Worker Notes**:
 A bounded, typed inspection map one admitted Attempt leaves for the next Attempt of the same

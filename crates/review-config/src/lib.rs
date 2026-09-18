@@ -209,9 +209,28 @@ pub struct NodeBudgetSpec {
     pub attempt: u64,
 }
 
+/// How a reviewer node's sandboxes are templated across Rounds (package P3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSpec {
+    /// A temporary template materialized per Round, exactly as before warm layers existed.
+    #[default]
+    Fresh,
+    /// A stable template root per node per Campaign under the machine's cache directory,
+    /// re-based to each new head by tree diff and verified against the head's Tree Digest, with
+    /// a full materialization as the recorded fallback. Per-Attempt sandboxes stay fresh clones.
+    Rebase,
+}
+
+impl WorkspaceSpec {
+    pub fn is_fresh(&self) -> bool {
+        *self == Self::Fresh
+    }
+}
+
 /// A reviewer node's warm-layer policy (package P1: Notes and Head Delta; package P2: the
-/// Gate's build cache). Every layer is a declared CAS artifact in the Attempt's context
-/// manifest, never ambient state.
+/// Gate's build cache; package P3: the Warm Workspace). Every layer is a declared CAS artifact
+/// in the Attempt's context manifest, never ambient state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WarmSpec {
@@ -229,6 +248,10 @@ pub struct WarmSpec {
     /// `trusted_local` Gate Execution Binding; a safe pipeline refuses the handoff at load.
     #[serde(default, skip_serializing_if = "BuildCacheKindsSpec::is_empty")]
     pub build_cache: BuildCacheKindsSpec,
+    /// `workspace = "rebase"` gives the node a stable Warm Workspace re-based per head; absent
+    /// or `"fresh"` keeps a temporary template per Round.
+    #[serde(default, skip_serializing_if = "WorkspaceSpec::is_fresh")]
+    pub workspace: WorkspaceSpec,
 }
 
 fn default_notes_max_bytes() -> u64 {

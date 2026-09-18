@@ -320,6 +320,57 @@ fn warm_layer_policy_is_reviewer_owned_and_bounded() {
 }
 
 #[test]
+fn warm_workspace_policy_defaults_to_a_fresh_template_per_round() {
+    let warm = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = true }\n",
+    );
+    let loaded = Definition::from_toml(&warm).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert_eq!(
+        policy.workspace,
+        review_config::WorkspaceSpec::Fresh,
+        "a warm node without the key keeps a temporary template per Round"
+    );
+    assert!(policy.workspace.is_fresh());
+    let serialized = serde_json::to_value(policy).unwrap();
+    assert!(
+        serialized.get("workspace").is_none(),
+        "the default is never written back, so earlier pipelines stay byte-identical"
+    );
+
+    let rebase = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = false, workspace = \"rebase\" }",
+    );
+    let loaded = Definition::from_toml(&rebase).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert!(!policy.notes, "a workspace node need not carry Notes");
+    assert_eq!(policy.workspace, review_config::WorkspaceSpec::Rebase);
+    assert!(!policy.workspace.is_fresh());
+    assert_eq!(
+        serde_json::to_value(policy).unwrap()["workspace"],
+        serde_json::json!("rebase")
+    );
+
+    let explicit = warm.replace(
+        "warm = { notes = true }",
+        "warm = { workspace = \"fresh\" }",
+    );
+    let loaded = Definition::from_toml(&explicit).unwrap().load().unwrap();
+    assert!(loaded.warm_policies()["architecture"].workspace.is_fresh());
+
+    let unknown = warm.replace(
+        "warm = { notes = true }",
+        "warm = { workspace = \"shared\" }",
+    );
+    assert!(matches!(
+        Definition::from_toml(&unknown),
+        Err(ConfigError::Parse(_))
+    ));
+}
+
+#[test]
 fn build_cache_carry_requires_a_trusted_local_gate_that_declares_the_kind() {
     let trusted_gate = "version = 3\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"\nbuild_caches = [\"cargo_target\"]";
     let declared = MINIMAL.replace("version = 2", trusted_gate).replace(
