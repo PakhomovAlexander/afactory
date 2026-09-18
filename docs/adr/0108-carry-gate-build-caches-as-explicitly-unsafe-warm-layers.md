@@ -48,11 +48,15 @@ it never be typed, named or documented as a Cache Snapshot.
   re-checked at Warm Set selection, before the node's first Attempt is reserved or dispatched,
   and again at every capture and clone.
 - **Typed Gate-to-Worker handoff within one Round.** After its checks pass, the Gate captures
-  each declared kind and appends `BuildCacheCaptured@1` on the Gate node with exactly one of the
+  each declared kind and records `BuildCacheCaptured@1` on the Gate node with exactly one of the
   artifact or a refusal reason (`unsafe_content`, `limit_exceeded`, `source_unavailable`,
-  `capture_failed`), plus the head and the limits applied. A refusal never changes the Gate
-  verdict; the Workers that declared the kind run without the layer. Warm Set selection reads
-  the Round's capture record from the log and records `build_cache_artifact_id` or a
+  `capture_failed`), plus the head and the limits applied. The record is published in the same
+  batch as the Gate's `GateDecision@1`, so no log holds a capture whose decision did not become
+  durable with it. A refusal never changes the Gate verdict; the Workers that declared the kind
+  run without the layer. A reviewer that declares the kind must be `gated_by` the Gate that
+  captures it, refused at load otherwise; Warm Set selection reads only the record that Gate
+  published before its passing decision, never another Gate's record or one drained later
+  from a Gate Attempt that never decided, and records `build_cache_artifact_id` or a
   `build_cache_dropped` reason in `WarmSet@1`; the `build_cache` layer joins `WarmSetSelected@1`.
   A node that declares a build cache kind therefore selects a Warm Set in every Round, including
   Round one, because this layer travels from the current Round's Gate rather than from the
@@ -67,7 +71,10 @@ it never be typed, named or documented as a Cache Snapshot.
 - **Evidence, not a cache-hit claim.** Capture and clone are measured as
   `dependency_preparation` spans and cache observations in the existing `TaskRuntimeEvidence@1`
   shapes, keyed by the Gate's kind. They record bytes made available and host time; they never
-  assert that a compiler reused anything.
+  assert that a compiler reused anything. A Task-hosted Gate settles its capture with its checks;
+  a Task-hosted Worker settles its own clone as its own `TaskRuntimeEvidence@1`, after its raw
+  reply, so `af task show` reports what each Attempt's preparation cost. The legacy Kernel keeps
+  the measurement in memory beside the node, as it does for check spans.
 
 ## Considered options
 

@@ -387,6 +387,14 @@ fn build_cache_carry_requires_a_trusted_local_gate_that_declares_the_kind() {
         Err(ConfigError::Binding(message)) if message.contains("declares it in `build_caches`")
     ));
 
+    // The cache travels from the exact Gate the reviewer waits on, so it must wait on one.
+    assert_eq!(declared.matches("gated_by = \"gate\"").count(), 1);
+    let unbound = declared.replace("gated_by = \"gate\"\n", "");
+    assert!(matches!(
+        Definition::from_toml(&unbound).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("requires `gated_by`")
+    ));
+
     // The vocabulary is closed on both sides.
     let duplicate = declared.replace(
         "build_cache = [\"cargo_target\"]",

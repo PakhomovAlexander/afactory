@@ -277,6 +277,7 @@ impl LegacyReviewTaskHost<'_, '_> {
             feedback_id: None,
         };
         let mut feedback_code = TaskFeedbackCodeV1::ContextRejected;
+        let mut runtime_evidence_id: Option<String> = None;
         result.outputs = (|| {
             let attempt = attempt.ok_or("Review Worker has no started common Attempt")?;
             let deadline = self.current(attempt)?;
@@ -317,9 +318,15 @@ impl LegacyReviewTaskHost<'_, '_> {
             // this exact sandbox and its location reaches the adapter as sandbox-local
             // environment, never as rendered context.
             let warm_set = self.domain.select_warm_set(&node.id)?;
-            let environment =
+            let (environment, clone_evidence) =
                 self.domain
                     .materialize_build_cache(&node.id, warm_set.as_ref(), &sandbox)?;
+            if let Some(evidence) = clone_evidence {
+                // The clone is this exact Attempt's preparation. It settles with the Attempt,
+                // whatever the Worker then does, and never as a node-wide fact.
+                runtime_evidence_id =
+                    Some(self.retain_worker_runtime_evidence(cas, input, attempt, evidence)?);
+            }
             let runtime = match self.execution(&node.id)? {
                 WorkerExecutionV1::Command {} => {
                     Some(tempfile::tempdir().map_err(|e| e.to_string())?)
@@ -475,6 +482,8 @@ impl LegacyReviewTaskHost<'_, '_> {
             );
             Ok(ports)
         })();
+        // Retained after the raw response, so the first raw artifact stays the Worker's reply.
+        result.raw_artifact_ids.extend(runtime_evidence_id);
         if result.outputs.is_err() {
             result.feedback_id = (|| {
                 let attempt = attempt.ok_or("Review feedback has no actual Attempt")?;

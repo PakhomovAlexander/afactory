@@ -99,9 +99,10 @@ directories become a **Build Cache**, `BuildCache@1`: a candidate-built artifact
 unsafe and is never typed or named as a Cache Snapshot, because it was produced by candidate code
 under a policy that can read anything the operator can. Its capture is closed: regular files only,
 descriptor-relative no-follow traversal, entry, depth, path and byte limits, fixed modes, extended
-attributes and ACLs stripped, and producer plus head provenance recorded. Worker sandboxes that
-declare the `cargo_target` kind receive a copy-on-write clone with `CARGO_TARGET_DIR` pointed at
-it, and the bytes are removed before seal. The handoff is admitted only under the trusted-local
+attributes and ACLs stripped, and producer plus head provenance recorded. The capture record is
+published in the same batch as the Gate's decision. Worker sandboxes of nodes that declare the
+`cargo_target` kind and wait on that Gate receive a copy-on-write clone with `CARGO_TARGET_DIR`
+pointed at it, and the bytes are removed before seal; the clone is measured per Attempt. The handoff is admitted only under the trusted-local
 policy; a safe pipeline refuses it before any Worker dispatch and keeps the existing
 administrator-approved registry snapshot.
 

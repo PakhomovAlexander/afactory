@@ -233,6 +233,13 @@ fn a_tdd_reviewer_reuses_the_gate_build_and_seals_the_same_diff_as_a_cold_run() 
         captured[0].causation_id.as_deref(),
         Some(authority.round_event_id())
     );
+    let decisions = events_of(&store, EventType::GateDecisionV1);
+    assert_eq!(decisions.len(), 1);
+    assert_eq!(
+        decisions[0].sequence,
+        captured[0].sequence + 1,
+        "the capture is published in the Gate's own batch, immediately before its decision"
+    );
     let capture: BuildCacheCapturedPayloadV1 =
         serde_json::from_value(captured[0].payload.clone()).unwrap();
     capture.validate().unwrap();

@@ -90,3 +90,6 @@ Warmth is an artifact, never ambient state.
   replay unchanged, and warm off reproduces today's cold Attempts exactly.
 - Later packages extend `WarmSet@1` with session, workspace and build-cache layers as optional
   fields, and may add their own drop reasons; they do not change this package's contracts.
+  Until the release that first ships `WarmSetSelected@1`, those packages may also add their
+  layer names to its `layers` vocabulary, because no released kernel has written the event;
+  after that release a new layer name requires `WarmSetSelected@2`.

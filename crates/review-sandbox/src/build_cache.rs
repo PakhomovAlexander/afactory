@@ -353,23 +353,27 @@ fn walk(
 }
 
 /// Stream one opened regular file into the CAS and file it under the size it was opened with.
+/// Every pass the CAS takes over the descriptor is bounded to one byte more than that size, so
+/// a file that grows during capture costs at most one extra byte per pass, is refused as a
+/// concurrent change, and is never filed under the size the walk admitted.
 fn publish(file: PlannedFile, cas: &Cas) -> Result<Entry, CacheError> {
     let PlannedFile {
-        mut source,
+        source,
         encoded,
         size,
         executable,
     } = file;
     let mut buffer = vec![0_u8; 64 * 1024];
+    let mut bounded = BoundedSource::new(source, size.saturating_add(1));
     let (content, published) = cas
-        .put_reader_with_buffer(&mut source, &mut buffer)
+        .put_reader_with_buffer(&mut bounded, &mut buffer)
         .map_err(|error| {
             cache_error(
                 CacheErrorKind::MaterializationFailed,
                 format!("publishing build cache file {encoded}: {error}"),
             )
         })?;
-    let metadata = source.metadata().map_err(|error| {
+    let metadata = bounded.source.metadata().map_err(|error| {
         cache_error(
             CacheErrorKind::ConcurrentChange,
             format!("inspecting open build cache file {encoded}: {error}"),
@@ -391,6 +395,56 @@ fn publish(file: PlannedFile, cas: &Cas) -> Result<Entry, CacheError> {
         content,
         size,
     })
+}
+
+/// An opened descriptor the CAS may read and rewind, never past its admitted bound. The bound
+/// holds on every pass: hashing, publication and any re-read after a rewind.
+struct BoundedSource {
+    source: std::fs::File,
+    limit: u64,
+    position: u64,
+}
+
+impl BoundedSource {
+    fn new(source: std::fs::File, limit: u64) -> Self {
+        Self {
+            source,
+            limit,
+            position: 0,
+        }
+    }
+}
+
+impl std::io::Read for BoundedSource {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let remaining = self.limit.saturating_sub(self.position);
+        if remaining == 0 || buffer.is_empty() {
+            return Ok(0);
+        }
+        let window = usize::try_from(remaining)
+            .map_or(buffer.len(), |remaining| buffer.len().min(remaining));
+        let read = self.source.read(&mut buffer[..window])?;
+        self.position = self.position.saturating_add(read as u64);
+        Ok(read)
+    }
+}
+
+impl std::io::Seek for BoundedSource {
+    fn seek(&mut self, target: std::io::SeekFrom) -> std::io::Result<u64> {
+        // The CAS only rewinds between its passes; any other movement would let a caller
+        // read past the bound by seeking around it.
+        match target {
+            std::io::SeekFrom::Start(0) => {
+                self.source.seek(std::io::SeekFrom::Start(0))?;
+                self.position = 0;
+                Ok(0)
+            }
+            other => Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!("bounded build cache source only rewinds, not {other:?}"),
+            )),
+        }
+    }
 }
 
 /// Clone one captured Build Cache into a Worker sandbox from the CAS. Every manifest entry is
@@ -541,4 +595,85 @@ fn normalize_tree(target: &Path, manifest: &Manifest) -> Result<(), CacheError> 
         })?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use review_source_git::digest_reader_with_buffer;
+    use std::io::{Read, Seek, SeekFrom};
+
+    fn planned(directory: &Path, bytes: &[u8], admitted: u64) -> PlannedFile {
+        let path = directory.join("debug/deps/libfixture.rlib");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, bytes).unwrap();
+        PlannedFile {
+            source: std::fs::File::open(&path).unwrap(),
+            encoded: "debug/deps/libfixture.rlib".into(),
+            size: admitted,
+            executable: false,
+        }
+    }
+
+    fn digest_of(bytes: &[u8]) -> String {
+        let mut buffer = vec![0_u8; 64];
+        digest_reader_with_buffer(&mut std::io::Cursor::new(bytes), &mut buffer)
+            .unwrap()
+            .0
+    }
+
+    #[test]
+    fn a_file_that_grew_after_the_walk_is_refused_and_never_filed_under_its_full_content() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let grown = b"compiled-and-then-some-more";
+        let error = publish(planned(directory.path(), grown, 8), &cas).unwrap_err();
+        assert_eq!(error.kind(), CacheErrorKind::ConcurrentChange);
+        assert!(
+            !cas.contains(&digest_of(grown)),
+            "the grown content must not be published"
+        );
+        assert!(
+            !cas.contains(&digest_of(&grown[..8])),
+            "the admitted prefix is not the file either"
+        );
+    }
+
+    #[test]
+    fn a_file_that_shrank_after_the_walk_is_refused() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let error = publish(planned(directory.path(), b"short", 64), &cas).unwrap_err();
+        assert_eq!(error.kind(), CacheErrorKind::ConcurrentChange);
+        // The CAS files what it actually read under that content's own identity, as the safe
+        // cache path does; the refusal is what keeps it out of the manifest.
+        assert!(cas.contains(&digest_of(b"short")));
+    }
+
+    #[test]
+    fn a_stable_file_is_filed_under_its_opened_size() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let entry = publish(planned(directory.path(), b"compiled", 8), &cas).unwrap();
+        assert_eq!(entry.size, 8);
+        assert_eq!(entry.content, digest_of(b"compiled"));
+        assert!(cas.contains(&entry.content));
+    }
+
+    #[test]
+    fn the_bounded_source_never_reads_past_its_limit_even_after_a_rewind() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("file");
+        std::fs::write(&path, b"0123456789").unwrap();
+        let mut bounded = BoundedSource::new(std::fs::File::open(&path).unwrap(), 4);
+        let mut first = Vec::new();
+        bounded.read_to_end(&mut first).unwrap();
+        assert_eq!(first, b"0123");
+        bounded.rewind().unwrap();
+        let mut second = Vec::new();
+        bounded.read_to_end(&mut second).unwrap();
+        assert_eq!(second, b"0123");
+        assert!(bounded.seek(SeekFrom::End(0)).is_err());
+        assert!(bounded.seek(SeekFrom::Start(1)).is_err());
+    }
 }

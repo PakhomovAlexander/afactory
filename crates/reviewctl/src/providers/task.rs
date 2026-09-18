@@ -229,6 +229,31 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         broker: Option<&dyn ExactBrokerClient>,
         cancellation: Option<&AtomicBool>,
     ) -> ModelWorkerReturn {
+        self.invoke_controlled_with_environment(
+            cas,
+            workdir,
+            input,
+            timeout,
+            writable,
+            broker,
+            cancellation,
+            &[],
+        )
+    }
+    /// The one invocation path. Sandbox-local environment (a carried Build Cache location) is
+    /// forwarded to the native client exactly as it arrived; the trait's default would refuse
+    /// it, so a wrapper that forgot this method would silently strip a warm layer.
+    fn invoke_controlled_with_environment(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+        broker: Option<&dyn ExactBrokerClient>,
+        cancellation: Option<&AtomicBool>,
+        environment: &[(String, String)],
+    ) -> ModelWorkerReturn {
         let refused = || ModelWorkerReturn {
             message: Err(concat!(
                 "Captured Task Provider identity is no longer current or could not be verified ",
@@ -241,6 +266,16 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         };
         // Native clients do not consume Broker handles. Keep the native refusal, before any check.
         if broker.is_some() {
+            if !environment.is_empty() {
+                return ModelWorkerReturn {
+                    message: Err(
+                        "Brokered Task Provider invocation cannot carry sandbox environment".into(),
+                    ),
+                    usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
+                    usage_observation: None,
+                    raw_artifact_ids: vec![],
+                };
+            }
             return self
                 .inner
                 .invoke_with_broker(cas, workdir, input, timeout, writable, broker);
@@ -257,8 +292,16 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
             return refused();
         };
-        self.inner
-            .invoke_controlled(cas, workdir, input, remaining, writable, None, cancellation)
+        self.inner.invoke_controlled_with_environment(
+            cas,
+            workdir,
+            input,
+            remaining,
+            writable,
+            None,
+            cancellation,
+            environment,
+        )
     }
 }
 

@@ -236,11 +236,21 @@ fn default_notes_max_bytes() -> u64 {
 }
 
 impl WarmSpec {
-    fn validate(&self, node: &str, gate: Option<&GateExecutionSpec>) -> Result<(), ConfigError> {
+    fn validate(
+        &self,
+        node: &str,
+        gate: Option<&GateExecutionSpec>,
+        gated_by: Option<&str>,
+    ) -> Result<(), ConfigError> {
         let maximum = review_core::MAX_WORKER_NOTES_BYTES as u64;
         if self.notes_max_bytes == 0 || self.notes_max_bytes > maximum {
             return Err(ConfigError::Binding(format!(
                 "reviewer `{node}` warm.notes_max_bytes must be between 1 and {maximum}"
+            )));
+        }
+        if !self.build_cache.kinds().is_empty() && gated_by.is_none() {
+            return Err(ConfigError::Binding(format!(
+                "reviewer `{node}` warm.build_cache requires `gated_by`: a candidate-built cache is carried only from the exact Gate the reviewer waits on"
             )));
         }
         for kind in self.build_cache.kinds() {
@@ -1651,7 +1661,7 @@ impl Definition {
                         spec.id
                     )));
                 }
-                policy.validate(&spec.id, gate.as_ref())?;
+                policy.validate(&spec.id, gate.as_ref(), spec.gated_by.as_deref())?;
                 warm.insert(spec.id.clone(), *policy);
             }
             if reviewer_like {

@@ -2175,7 +2175,12 @@ impl<'a> Kernel<'a> {
                     .domain
                     .materialize_build_cache(node_id, warm_set.as_ref(), &sandbox)
                 {
-                    Ok(environment) => environment,
+                    Ok((environment, evidence)) => {
+                        if let Some(evidence) = evidence {
+                            self.domain.retain_build_cache_evidence(node_id, evidence);
+                        }
+                        environment
+                    }
                     Err(error) => {
                         self.release_prepared_attempt(
                             node_id,

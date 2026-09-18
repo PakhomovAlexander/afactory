@@ -101,6 +101,10 @@ pub(super) struct ReviewDomainState<'a> {
     /// Reviewer nodes with a pinned warm-layer policy. Absent nodes run cold, exactly as every
     /// pipeline written before warm layers existed.
     pub(super) warm_policies: BTreeMap<String, review_config::WarmSpec>,
+    /// Reviewer nodes that carry a Build Cache, mapped to the exact Gate that captures it: the
+    /// node's `gated_by`. Selection reads only that Gate's published capture, so two Gates in
+    /// one pipeline can never hand a reviewer the other's build.
+    pub(super) warm_build_cache_gates: BTreeMap<String, String>,
     /// Warm Sets selected and durably recorded for this Round, by node.
     pub(super) warm_sets: Mutex<BTreeMap<String, crate::warm::WarmSetRecord>>,
 }
@@ -203,6 +207,24 @@ impl<'a> ReviewDomainState<'a> {
         self.closeouts = loaded.closeouts().clone();
         self.static_node_ids = loaded.plan_order().iter().cloned().collect();
         self.warm_policies = loaded.warm_policies().clone();
+        self.warm_build_cache_gates = self
+            .warm_policies
+            .iter()
+            .filter(|(_, policy)| !policy.build_cache.kinds().is_empty())
+            .map(|(node, _)| {
+                loaded
+                    .planned()
+                    .nodes
+                    .get(node)
+                    .and_then(|planned| planned.gated_by.clone())
+                    .map(|gate| (node.clone(), gate))
+                    .ok_or_else(|| {
+                        format!(
+                            "reviewer `{node}` carries a Build Cache but is not gated_by the Gate that captures it"
+                        )
+                    })
+            })
+            .collect::<Result<_, String>>()?;
         Ok(())
     }
 
@@ -260,6 +282,7 @@ impl<'a> ReviewDomainState<'a> {
             input_bindings: BTreeMap::new(),
             node_outputs: Mutex::new(BTreeMap::new()),
             warm_policies: BTreeMap::new(),
+            warm_build_cache_gates: BTreeMap::new(),
             warm_sets: Mutex::new(BTreeMap::new()),
         })
     }

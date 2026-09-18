@@ -58,13 +58,17 @@ impl ReviewDomainState<'_> {
     /// this Round's Gate rather than from the previous Round.
     pub(crate) fn select_warm_set(&self, node_id: &str) -> Result<Option<WarmSetRecord>, String> {
         let notes = self.notes_max_bytes(node_id).is_some() && self.authority.round > 1;
-        let build_cache = self.node_build_cache_kind(node_id);
+        let build_cache = match self.node_build_cache_kind(node_id) {
+            Some(kind) => {
+                // Refused before the node's first Attempt of the Round is reserved or
+                // dispatched; the cache is read only from the Gate this node waits on.
+                self.build_cache_policy_admits()?;
+                Some((kind, self.build_cache_gate(node_id)?))
+            }
+            None => None,
+        };
         if !notes && build_cache.is_none() {
             return Ok(None);
-        }
-        if build_cache.is_some() {
-            // Refused before the node's first Attempt of the Round is reserved or dispatched.
-            self.build_cache_policy_admits()?;
         }
         if let Some(record) = self.warm_sets.lock().expect("warm sets").get(node_id) {
             return Ok(Some(record.clone()));
@@ -324,7 +328,7 @@ fn select(
     head: &Manifest,
     node_id: &str,
     notes: bool,
-    build_cache: Option<BuildCacheKindV1>,
+    build_cache: Option<(BuildCacheKindV1, String)>,
 ) -> Result<WarmSetV1, String> {
     let mut set = WarmSetV1 {
         node: node_id.to_string(),
@@ -336,9 +340,9 @@ fn select(
         build_cache_artifact_id: None,
         build_cache_dropped: None,
     };
-    if let Some(kind) = build_cache {
+    if let Some((kind, gate)) = build_cache {
         let (artifact_id, dropped) =
-            crate::build_cache::select_build_cache(cas, events, authority, kind)?;
+            crate::build_cache::select_build_cache(cas, events, authority, &gate, kind)?;
         set.build_cache_artifact_id = artifact_id;
         set.build_cache_dropped = dropped;
     }

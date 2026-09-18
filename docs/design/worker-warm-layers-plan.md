@@ -298,6 +298,37 @@ cold-versus-warm dogfood comparison exists yet: the package was implemented with
 Campaign, so the build-minute Demand from the design review stays open until the first
 trusted-local warm Campaign records it.
 
+The P2 review (Campaign `warm-p2-review-b`, the same two reviewers as P1) closed with ten Major
+Findings that reduce to six defects, all fixed before verification:
+
+- **Capture read past its bound.** `publish` streamed an opened file into the CAS unbounded and
+  compared sizes afterwards, so a file growing during capture cost a full read of whatever it
+  became. Every CAS pass over the descriptor is now bounded to one byte past the admitted size,
+  through a source that only rewinds; a grown or shrunk file is refused as a concurrent change
+  and is never filed under its admitted size.
+- **Capture published before its decision.** `BuildCacheCaptured@1` was appended immediately
+  while the check results and `GateDecision@1` waited for the node receipt, so a crash in
+  between left a capture without a decision. The record is now buffered with the Gate's other
+  facts and published in the same batch, immediately before the decision.
+- **Selection global to the Round.** Any Gate's capture satisfied any reviewer, and a second
+  capture was an error. A build-cache reviewer must now be `gated_by` its Gate (refused at
+  load), and selection reads only that Gate's record published before its passing decision.
+- **Clone measurement never settled.** The Worker's clone was recorded beside the node, where
+  only a Gate settlement collects it. A Task-hosted Worker now settles the clone as its own
+  `TaskRuntimeEvidence@1` after its raw reply; the legacy Kernel keeps it in memory as before.
+- **Wrapper stripped the environment.** The production provider wrapper implemented
+  `invoke_controlled` only, so the trait default refused the sandbox environment and every
+  model reviewer would have run cold. The wrapper now has one invocation path that rechecks
+  identity and forwards the environment.
+- **`WarmSetSelected@1` widened in place.** Rejected as a defect: the event was introduced by P1
+  on this same unreleased branch, no released kernel has written it, and ADR-0107 now states
+  that its vocabulary stays open until the release that first ships it.
+
+New evidence: unit tests for the bounded source and the Gate-bound selection, a config refusal
+for an unbound reviewer, a batch-adjacency assertion in the pipeline test, a Task-hosted test
+that the Worker's clone settles with its own Attempt, and a wrapper test that the environment
+path rechecks identity rather than refusing the layer.
+
 ## 9. Kernel findings from running the campaign
 
 Dogfooding the Task runtime for P1 and P2 surfaced two kernel defects that are not part of any
