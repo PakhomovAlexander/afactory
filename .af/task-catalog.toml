@@ -17,8 +17,8 @@ bugs = "required"
 correctness = "required"
 
 [packages."warm/implementer"]
-version = "1.1.0"
-digest = "sha256:f58fb59428360224b6aad7d53d9a257db54787a0eb62b1f003059dea0b5d0ab3"
+version = "1.2.0"
+digest = "sha256:d466c9eec40868c07027860373ab096fdf62e59f06e117273d383e724b7878f3"
 path = ".af/task-packages/warm/implementer"
 
 [packages."warm/correctness"]
