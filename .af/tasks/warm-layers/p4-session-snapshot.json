@@ -1,6 +1,6 @@
 {
   "schema": "af.task-file/1",
-  "task_id": "warm-p4-session-snapshot",
+  "task_id": "warm-p4-session-snapshot-v2",
   "kind": "implement",
   "goal": "P4: Session Snapshot for Claude Workers: kernel-assigned session IDs, crash-consistent capture to CAS, forked resume with a delta prompt, gated by age and reservation.",
   "requirements": {

@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "warm/implementer"
-version = "1.0.0"
+version = "1.1.0"
 
 [signature]
 effects = ["write-source"]
@@ -54,7 +54,7 @@ report = ["requirements", "source"]
 
 [signature.attempt]
 tokens = 1500000
-wall_ms = 3600000
+wall_ms = 10800000
 
 [runner]
 kind = "model"
