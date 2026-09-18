@@ -34,7 +34,7 @@
   "limits": {
     "tokens": 4000000,
     "max_attempts": 9,
-    "wall_ms": 21600000,
+    "wall_ms": 43200000,
     "verification": {
       "tokens": 1400000,
       "attempts": 7,
