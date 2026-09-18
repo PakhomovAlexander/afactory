@@ -352,6 +352,17 @@ package and belong to their own follow-up:
   and the only way forward is a new Campaign. The P2 review therefore ran as
   `warm-p2-review-b`; the wedged `warm-p2-review` holds no Findings.
 
+- **A harness that switches model mid-Attempt loses the Attempt.** P4's second implementer
+  Attempt ran 287 turns and answered with a complete report, but the Claude harness served
+  three quarters of the session from `claude-opus-4-8` instead of the bound `claude-fable-5-1`
+  (no subagents, no fallback flag, no fallback setting). The adapter correctly refused the
+  mixed-model usage as incomplete billing and the kernel failed the node, yet the whole
+  reservation was charged and the candidate tree went with the sandbox. Two follow-ups belong
+  to the kernel: seal and retain the candidate even when billing is incomplete, so a human can
+  salvage it, and detect a model switch from the stream as it happens instead of after an hour.
+  P4's first Attempt, which timed out at the one-hour wall with no output and was also charged
+  in full, may have been the same downgrade running slower.
+
 Until the lease is load-tolerant, run one kernel execution at a time on this machine and keep
 Spotlight away from the state and cache directories.
 
