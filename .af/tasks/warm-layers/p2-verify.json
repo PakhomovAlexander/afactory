@@ -1,6 +1,6 @@
 {
   "schema": "af.task-file/1",
-  "task_id": "warm-p2-verify-v2",
+  "task_id": "warm-p2-verify-v3",
   "kind": "verification",
   "goal": "Verify that the P2 build cache carry satisfies its requirements on the exact fixed Snapshot.",
   "requirements": {
