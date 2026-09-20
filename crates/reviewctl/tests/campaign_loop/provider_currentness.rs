@@ -130,10 +130,18 @@ fn review_account_change_after_admission_refuses_private_context_and_keeps_admis
         "account status leaked to ordinary output"
     );
     let shown = Command::new(env!("CARGO_BIN_EXE_af"))
+        .current_dir(&repo)
+        .env("HOME", &home)
+        .env("AF_SELF_OFFLINE", "1")
         .args(["task", "show", id, "--state", &state, "--json"])
         .output()
         .unwrap();
-    assert!(shown.status.success());
+    assert!(
+        shown.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&shown.stdout),
+        String::from_utf8_lossy(&shown.stderr)
+    );
     let shown: Value = serde_json::from_slice(&shown.stdout).unwrap();
     assert_eq!(shown["chargeable_tokens"], "2");
     assert_eq!(

@@ -1,0 +1,92 @@
+# One definition for PR checks, main checks and tagged release checks.
+name: Validate
+
+on:
+  workflow_call:
+    inputs:
+      release:
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: 1
+  CARGO_PROFILE_TEST_DEBUG: 1
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    name: check (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: ${{ fromJSON(inputs.release && '["ubuntu-latest", "macos-latest"]' || '["ubuntu-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --component clippy,rustfmt
+      - uses: ./.github/actions/cargo-cache
+        id: cargo-cache
+        with:
+          kind: check-debug1
+      - name: Check
+        env:
+          AF_CI_METRICS: ${{ runner.temp }}/check-metrics.jsonl
+        run: make check
+      - name: CLI smoke
+        run: python3 scripts/ci-step.py cli-smoke cargo run --locked -p reviewctl --bin af -- --version
+        env:
+          AF_CI_METRICS: ${{ runner.temp }}/check-metrics.jsonl
+      - name: Save Cargo cache
+        if: always() && !cancelled()
+        uses: ./.github/actions/cargo-cache
+        with:
+          mode: save
+          primary-key: ${{ steps.cargo-cache.outputs.primary-key }}
+          matched-key: ${{ steps.cargo-cache.outputs.matched-key }}
+      - name: Retain timings and test results
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: validation-${{ runner.os }}-${{ runner.arch }}
+          path: |
+            ${{ runner.temp }}/cache-metrics.json
+            ${{ runner.temp }}/check-metrics.jsonl
+            target/nextest/ci/junit.xml
+          if-no-files-found: warn
+
+  container-probes:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal
+      - uses: ./.github/actions/cargo-cache
+        id: cargo-cache
+        with:
+          kind: container-debug1
+      - name: Verify container runtime
+        run: docker info
+      - name: Run live container probes
+        run: python3 scripts/ci-step.py container-probes make review-kernel-container-probes
+        env:
+          AF_CI_METRICS: ${{ runner.temp }}/container-metrics.jsonl
+      - name: Save Cargo cache
+        if: always() && !cancelled()
+        uses: ./.github/actions/cargo-cache
+        with:
+          mode: save
+          primary-key: ${{ steps.cargo-cache.outputs.primary-key }}
+          matched-key: ${{ steps.cargo-cache.outputs.matched-key }}
+      - name: Retain timings
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: container-metrics
+          path: |
+            ${{ runner.temp }}/container-metrics.jsonl
+            ${{ runner.temp }}/cache-metrics.json
+          if-no-files-found: warn
