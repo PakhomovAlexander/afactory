@@ -83,7 +83,7 @@ fn heartbeat_refuses_expiry_future_clocks_and_changed_latest_writer() {
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
             "future" => {
-                connection.execute("UPDATE events SET payload=json_set(payload,'$.now_unix_ms',?2) WHERE run_id=?1 AND sequence=1", rusqlite::params![run, now().unwrap()+10_000]).unwrap();
+                connection.execute("UPDATE events SET payload=json_set(payload,'$.now_unix_ms',?2) WHERE run_id=?1 AND sequence=1", rusqlite::params![run, i64::try_from(now().unwrap()+10_000).unwrap()]).unwrap();
             }
             "writer" | "epoch" => {
                 let (field, value) = if case == "writer" {

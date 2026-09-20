@@ -417,7 +417,7 @@ impl<'a> Capture<'a> {
         let listing = self.repo.bytes(&["ls-files", "-s", "-z"])?;
         let mut hasher = Sha256::new();
         hasher.update(&listing);
-        Ok(format!("{:x}", hasher.finalize()))
+        Ok(review_core::hex::encode(&hasher.finalize()))
     }
 
     /// One complete pass over every path under review — tracked plus untracked-not-ignored —
@@ -830,5 +830,5 @@ pub fn worktree_state(repo: &Repo) -> Result<String, CaptureError> {
             }
         }
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(review_core::hex::encode(&hasher.finalize()))
 }

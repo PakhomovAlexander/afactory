@@ -6183,7 +6183,7 @@ fn derive_event_id(run_id: &str, sequence: i64) -> String {
     hasher.update(run_id.as_bytes());
     hasher.update(b"\0");
     hasher.update(sequence.to_string().as_bytes());
-    format!("{:x}", hasher.finalize())[..26].to_string()
+    review_core::hex::encode(&hasher.finalize())[..26].to_string()
 }
 
 fn insert_events(

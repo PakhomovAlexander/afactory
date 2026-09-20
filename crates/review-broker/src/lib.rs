@@ -732,7 +732,10 @@ impl BrokerClient for Broker<'_> {
 }
 
 fn digest(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format!(
+        "sha256:{}",
+        review_core::hex::encode(&Sha256::digest(bytes))
+    )
 }
 
 fn credential_representations(bytes: &[u8]) -> Result<Vec<Vec<u8>>, BrokerError> {
@@ -838,5 +841,5 @@ fn handle_id<'a>(
             hasher.update(value);
         }
     }
-    format!("{:x}", hasher.finalize())[..26].to_string()
+    review_core::hex::encode(&hasher.finalize())[..26].to_string()
 }

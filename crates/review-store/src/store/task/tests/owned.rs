@@ -1045,7 +1045,7 @@ fn owned_canonical_receipt_is_fenced_by_parent_seal_but_recorded_selection_repla
             )
         };
         check().unwrap();
-        let (registered_sequence, registered_refs): (u64, String) = sql.query_row(
+        let (registered_sequence, registered_refs): (i64, String) = sql.query_row(
             "SELECT sequence,artifact_refs FROM events WHERE run_id=?1 AND instr(artifact_refs,?2)>0 ORDER BY sequence LIMIT 1",
             rusqlite::params![run, id], |r| Ok((r.get(0)?,r.get(1)?)),
         ).unwrap();
@@ -1061,7 +1061,7 @@ fn owned_canonical_receipt_is_fenced_by_parent_seal_but_recorded_selection_repla
                 )
             })
             .unwrap();
-        let (published_sequence, published_refs): (u64, String) = sql.query_row(
+        let (published_sequence, published_refs): (i64, String) = sql.query_row(
             "SELECT sequence,artifact_refs FROM events WHERE run_id=?1 AND json_extract(payload,'$.change.record_id')=?2",
             rusqlite::params![run, publication], |r| Ok((r.get(0)?,r.get(1)?)),
         ).unwrap();
@@ -1101,7 +1101,7 @@ fn owned_canonical_receipt_is_fenced_by_parent_seal_but_recorded_selection_repla
             rusqlite::params![run, published_sequence, published_refs],
         )
         .unwrap();
-        let temporary = f.store.len(&run).unwrap() + 1;
+        let temporary = i64::try_from(f.store.len(&run).unwrap() + 1).unwrap();
         let swap = || {
             sql.execute(
                 "UPDATE events SET sequence=?3 WHERE run_id=?1 AND sequence=?2",

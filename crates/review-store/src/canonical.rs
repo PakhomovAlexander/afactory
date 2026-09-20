@@ -166,7 +166,7 @@ fn digest(domain: &[u8], bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(domain);
     hasher.update(bytes);
-    format!("sha256:{:x}", hasher.finalize())
+    format!("sha256:{}", review_core::hex::encode(&hasher.finalize()))
 }
 
 /// `content_id` — the identity of the payload bytes alone.
@@ -210,7 +210,10 @@ pub fn blob_content_id_reader_with_buffer(
             .checked_add(read as u64)
             .ok_or_else(|| std::io::Error::other("blob size exceeds u64"))?;
     }
-    Ok((format!("sha256:{:x}", hasher.finalize()), size))
+    Ok((
+        format!("sha256:{}", review_core::hex::encode(&hasher.finalize())),
+        size,
+    ))
 }
 
 /// `artifact_id` — the identity of the record: type, content, producer, exact inputs, subject.

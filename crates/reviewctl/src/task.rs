@@ -1482,7 +1482,10 @@ fn delivery_id(
         value["result_id"] = serde_json::json!(id);
     }
     let bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
-    Ok(format!("delivery-{:x}", Sha256::digest(bytes)))
+    Ok(format!(
+        "delivery-{}",
+        review_core::hex::encode(&Sha256::digest(bytes))
+    ))
 }
 
 fn owner_ref(prepared: &DeliveryPrepared) -> Result<String, String> {
@@ -2292,7 +2295,7 @@ fn resolve_task_state(state: &Option<PathBuf>, repository: &Path) -> Result<Path
             normalize_absolute(
                 &xdg_state_root()?
                     .join("af/task/local")
-                    .join(&format!("{identity:x}")[..16]),
+                    .join(&review_core::hex::encode(&identity)[..16]),
             )
         }
     }
@@ -2309,7 +2312,10 @@ pub(crate) fn task_id(repository: &Path, source: &str, goal: &str) -> String {
     digest.update(goal.as_bytes());
     digest.update(now.to_be_bytes());
     digest.update(std::process::id().to_be_bytes());
-    format!("task-{}", &format!("{:x}", digest.finalize())[..20])
+    format!(
+        "task-{}",
+        &review_core::hex::encode(&digest.finalize())[..20]
+    )
 }
 
 pub(crate) fn load_authority(

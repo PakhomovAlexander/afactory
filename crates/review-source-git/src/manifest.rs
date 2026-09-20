@@ -310,7 +310,7 @@ impl Manifest {
                 hash_entry(&mut hasher, identity_path.as_bytes(), entry);
             }
         }
-        format!("sha256:{:x}", hasher.finalize())
+        format!("sha256:{}", review_core::hex::encode(&hasher.finalize()))
     }
 }
 
