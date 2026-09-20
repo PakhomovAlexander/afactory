@@ -195,6 +195,10 @@ pub struct NodeSpec {
     /// before the field existed behaves exactly as it did. Refines `[budgets]`; requires it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub budget: Option<NodeBudgetSpec>,
+    /// This reviewer's warm-layer policy. `None` is cold: no Notes are requested, carried or
+    /// rendered, and every pipeline written before the field existed behaves exactly as it did.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub warm: Option<WarmSpec>,
 }
 
 /// A Worker node's own Attempt cap, in the pipeline's budget unit. On a Scatter it is each
@@ -203,6 +207,264 @@ pub struct NodeSpec {
 #[serde(deny_unknown_fields)]
 pub struct NodeBudgetSpec {
     pub attempt: u64,
+}
+
+/// How a reviewer node's sandboxes are templated across Rounds (package P3).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceSpec {
+    /// A temporary template materialized per Round, exactly as before warm layers existed.
+    #[default]
+    Fresh,
+    /// A stable template root per node per Campaign under the machine's cache directory,
+    /// re-based to each new head by tree diff and verified against the head's Tree Digest, with
+    /// a full materialization as the recorded fallback. Per-Attempt sandboxes stay fresh clones.
+    Rebase,
+}
+
+impl WorkspaceSpec {
+    pub fn is_fresh(&self) -> bool {
+        *self == Self::Fresh
+    }
+}
+
+/// How a reviewer node carries its harness session across Rounds (package P4). Claude adapters
+/// only: an adapter that cannot host a kernel-assigned session and resume it forked drops the
+/// layer with a recorded reason and runs on Notes alone.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionSpec {
+    /// No session is assigned, captured, or resumed. The default, and what every pipeline
+    /// written before the field existed does.
+    #[default]
+    Off,
+    /// Capture at seal, and resume the previous admitted Attempt's transcript only while it is
+    /// younger than `session_max_age_secs`, so a provider prompt cache can plausibly serve it.
+    IfRecent,
+    /// Capture at seal, and resume whatever the age, subject to the reservation gate. The age
+    /// bound still decides nothing else: a transcript that does not fit is still dropped.
+    Always,
+}
+
+impl SessionSpec {
+    pub fn is_off(&self) -> bool {
+        *self == Self::Off
+    }
+
+    /// Whether the node assigns a session identity and captures its transcript at seal. Capture
+    /// is what makes the *next* Round's resume possible; resume itself is gated separately.
+    pub fn captures(&self) -> bool {
+        !self.is_off()
+    }
+
+    /// The age bound that applies to a resume under this policy, in seconds. `always` still
+    /// refuses a transcript beyond the hard bound, because a transcript that old cannot be
+    /// serving a prompt cache and is only prefix cost.
+    pub fn max_age_secs(&self, configured: u64) -> u64 {
+        match self {
+            Self::Off => 0,
+            Self::IfRecent => configured,
+            Self::Always => review_core::MAX_SESSION_MAX_AGE_SECS,
+        }
+    }
+}
+
+/// Which required reviewers with warm layers get a compiled Cold Closeout: a conditional cold
+/// Attempt of the same node inside the Round, dispatched only when the warm result would
+/// otherwise close the Round clean, holding a reservation protected before the warm Attempt ran.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColdCloseoutSpec {
+    /// No closeout is compiled. The default, so every pipeline written before the field existed
+    /// dispatches exactly the Attempts it did before.
+    #[default]
+    None,
+    /// The first warm reviewer in plan order confirms a would-be-clean Round cold.
+    OneRequired,
+    /// Every warm reviewer confirms a would-be-clean Round cold.
+    All,
+}
+
+impl ColdCloseoutSpec {
+    pub fn is_none(&self) -> bool {
+        *self == Self::None
+    }
+}
+
+/// A reviewer node's warm-layer policy (package P1: Notes and Head Delta; package P2: the
+/// Gate's build cache; package P3: the Warm Workspace). Every layer is a declared CAS artifact
+/// in the Attempt's context manifest, never ambient state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct WarmSpec {
+    /// Ask each admitted Attempt for Worker Notes and carry them, with Delta Marking against
+    /// the previous head, to the next Round's Attempt of this same node. On by default once a
+    /// node opts into warm layers; `notes = false` keeps such a node cold.
+    #[serde(default = "default_true")]
+    pub notes: bool,
+    /// Byte bound for one encoded `WorkerNotes@1`. Larger notes are dropped with a recorded
+    /// reason and the Attempt is still admitted.
+    #[serde(default = "default_notes_max_bytes")]
+    pub notes_max_bytes: u64,
+    /// Build cache kinds this node's sandboxes receive from the Round's Gate, cloned from the
+    /// explicitly unsafe `BuildCache@1` the Gate captured. Every kind must be declared by a
+    /// `trusted_local` Gate Execution Binding; a safe pipeline refuses the handoff at load.
+    #[serde(default, skip_serializing_if = "BuildCacheKindsSpec::is_empty")]
+    pub build_cache: BuildCacheKindsSpec,
+    /// `workspace = "rebase"` gives the node a stable Warm Workspace re-based per head; absent
+    /// or `"fresh"` keeps a temporary template per Round.
+    #[serde(default, skip_serializing_if = "WorkspaceSpec::is_fresh")]
+    pub workspace: WorkspaceSpec,
+    /// `session = "if_recent"` or `"always"` assigns each Attempt a kernel-derived session
+    /// identity, captures its transcript at seal and resumes the previous admitted Attempt's
+    /// transcript forked. Absent or `"off"` is the default: no session is assigned, captured or
+    /// resumed, and the node's prompt is byte-identical to a pre-P4 Attempt.
+    #[serde(default, skip_serializing_if = "SessionSpec::is_off")]
+    pub session: SessionSpec,
+    /// `warm.session.max_age`, in seconds: how recent the previous admitted Attempt must be for
+    /// `session = "if_recent"` to resume it. Omitted from a pinned policy that keeps the
+    /// default, so a cold or notes-only pipeline serializes exactly as it did before.
+    #[serde(default = "default_session_max_age_secs")]
+    #[serde(skip_serializing_if = "is_default_session_max_age")]
+    pub session_max_age_secs: u64,
+}
+
+fn default_notes_max_bytes() -> u64 {
+    review_core::DEFAULT_WORKER_NOTES_BYTES as u64
+}
+
+fn default_session_max_age_secs() -> u64 {
+    review_core::DEFAULT_SESSION_MAX_AGE_SECS
+}
+
+fn is_default_session_max_age(value: &u64) -> bool {
+    *value == review_core::DEFAULT_SESSION_MAX_AGE_SECS
+}
+
+impl WarmSpec {
+    fn validate(
+        &self,
+        node: &str,
+        gate: Option<&GateExecutionSpec>,
+        gated_by: Option<&str>,
+    ) -> Result<(), ConfigError> {
+        let maximum = review_core::MAX_WORKER_NOTES_BYTES as u64;
+        if self.notes_max_bytes == 0 || self.notes_max_bytes > maximum {
+            return Err(ConfigError::Binding(format!(
+                "reviewer `{node}` warm.notes_max_bytes must be between 1 and {maximum}"
+            )));
+        }
+        if !self.build_cache.kinds().is_empty() && gated_by.is_none() {
+            return Err(ConfigError::Binding(format!(
+                "reviewer `{node}` warm.build_cache requires `gated_by`: a candidate-built cache is carried only from the exact Gate the reviewer waits on"
+            )));
+        }
+        for kind in self.build_cache.kinds() {
+            let declared = gate.is_some_and(|gate| gate.build_caches.contains(&kind));
+            if !declared {
+                return Err(ConfigError::Binding(format!(
+                    "reviewer `{node}` warm.build_cache names `{}` but no `trusted_local` `[gate]` Execution Binding declares it in `build_caches`; a candidate-built cache is carried only from a Gate that declares the kind",
+                    kind.as_str()
+                )));
+            }
+        }
+        let age_bound = review_core::MAX_SESSION_MAX_AGE_SECS;
+        if self.session_max_age_secs == 0 || self.session_max_age_secs > age_bound {
+            return Err(ConfigError::Binding(format!(
+                "reviewer `{node}` warm.session_max_age_secs must be between 1 and {age_bound}"
+            )));
+        }
+        // Notes are the default carry and the declared fallback for every session gate failure:
+        // provider support, age and the reservation all fall back to Notes alone. A
+        // session-only node would silently carry nothing the moment a gate refused.
+        if self.session.captures() && !self.notes {
+            return Err(ConfigError::Binding(format!(
+                "reviewer `{node}` warm.session requires `notes = true`: every session gate falls back to Notes alone"
+            )));
+        }
+        Ok(())
+    }
+}
+
+/// The closed vocabulary of build cache kinds a Gate may capture and a reviewer may receive.
+/// `cargo_target` points `CARGO_TARGET_DIR` at the sandbox-local clone. The registry-only
+/// `cargo` Cache Snapshot under `[gate] caches` keeps its existing meaning.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildCacheKindSpec {
+    CargoTarget,
+}
+
+impl BuildCacheKindSpec {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::CargoTarget => "cargo_target",
+        }
+    }
+
+    /// The kernel vocabulary this pipeline spelling names.
+    pub const fn kind(self) -> review_core::BuildCacheKindV1 {
+        match self {
+            Self::CargoTarget => review_core::BuildCacheKindV1::CargoTarget,
+        }
+    }
+}
+
+/// The set of build cache kinds one reviewer node declares, written as a TOML array such as
+/// `build_cache = ["cargo_target"]`. The vocabulary is closed, so the set is a fixed shape
+/// rather than a list: duplicates and unknown kinds are refused at parse time.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BuildCacheKindsSpec {
+    cargo_target: bool,
+}
+
+impl BuildCacheKindsSpec {
+    pub fn is_empty(&self) -> bool {
+        !self.cargo_target
+    }
+
+    pub fn contains(&self, kind: BuildCacheKindSpec) -> bool {
+        match kind {
+            BuildCacheKindSpec::CargoTarget => self.cargo_target,
+        }
+    }
+
+    /// The declared kinds in vocabulary order.
+    pub fn kinds(&self) -> Vec<BuildCacheKindSpec> {
+        self.cargo_target
+            .then_some(BuildCacheKindSpec::CargoTarget)
+            .into_iter()
+            .collect()
+    }
+
+    pub fn from_kinds(kinds: &[BuildCacheKindSpec]) -> Result<Self, String> {
+        let mut set = Self::default();
+        for kind in kinds {
+            if set.contains(*kind) {
+                return Err(format!(
+                    "build cache kind `{}` is declared more than once",
+                    kind.as_str()
+                ));
+            }
+            match kind {
+                BuildCacheKindSpec::CargoTarget => set.cargo_target = true,
+            }
+        }
+        Ok(set)
+    }
+}
+
+impl Serialize for BuildCacheKindsSpec {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.kinds().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BuildCacheKindsSpec {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let kinds = Vec::<BuildCacheKindSpec>::deserialize(deserializer)?;
+        Self::from_kinds(&kinds).map_err(serde::de::Error::custom)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -795,6 +1057,11 @@ pub struct ConvergenceSpec {
     pub max_rounds: u32,
     #[serde(default = "major")]
     pub gate: SeveritySpec,
+    /// Which warm reviewers get a compiled Cold Closeout. Defaults to `none`, so a pipeline
+    /// written before the field existed dispatches exactly the Attempts it did before; the
+    /// example warm policy sets it explicitly.
+    #[serde(default, skip_serializing_if = "ColdCloseoutSpec::is_none")]
+    pub cold_closeout: ColdCloseoutSpec,
 }
 
 fn one() -> u32 {
@@ -813,6 +1080,7 @@ impl Default for ConvergenceSpec {
             clean_rounds: 1,
             max_rounds: 3,
             gate: SeveritySpec::Major,
+            cold_closeout: ColdCloseoutSpec::None,
         }
     }
 }
@@ -943,6 +1211,31 @@ pub struct GateExecutionSpec {
     /// Symbolic cache kinds resolved only through machine-local administrator policy.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub caches: Vec<CacheKindSpec>,
+    /// Build cache kinds this Gate captures after its checks pass, as explicitly unsafe
+    /// `BuildCache@1` artifacts for reviewer nodes that declare the same kind. Candidate code
+    /// produces these bytes, so the declaration is admitted only under `trusted_local`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub build_caches: Vec<BuildCacheKindSpec>,
+    /// Byte bound one build cache capture applies; the kernel default when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_cache_max_bytes: Option<u64>,
+    /// Filesystem-entry bound (directories included) one build cache capture applies; the
+    /// kernel default when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_cache_max_entries: Option<u64>,
+}
+
+impl GateExecutionSpec {
+    /// The limits every build cache capture of this Gate applies: declared bounds over the
+    /// kernel defaults, with the fixed depth and path bounds of the closed layout.
+    pub fn build_cache_limits(&self) -> review_core::BuildCacheLimitsV1 {
+        let defaults = review_core::BuildCacheLimitsV1::default_v1();
+        review_core::BuildCacheLimitsV1 {
+            max_bytes: self.build_cache_max_bytes.unwrap_or(defaults.max_bytes),
+            max_entries: self.build_cache_max_entries.unwrap_or(defaults.max_entries),
+            ..defaults
+        }
+    }
 }
 
 /// A whole pipeline definition, as a project writes it.
@@ -994,6 +1287,12 @@ pub struct Loaded {
     /// Worker nodes that declared their own Attempt cap. Absent nodes reserve `[budgets].attempt`.
     node_attempt_caps: BTreeMap<String, u64>,
     integration: Option<IntegrationSpec>,
+    /// Reviewer nodes that declared a warm-layer policy. Absent nodes run cold.
+    warm: BTreeMap<String, WarmSpec>,
+    /// The pinned Cold Closeout policy and the exact warm reviewer nodes it compiles a
+    /// conditional cold Attempt for, in plan order.
+    cold_closeout: ColdCloseoutSpec,
+    cold_closeout_nodes: Vec<String>,
 }
 
 /// A dispatcher that declares the Subject semantics it actually executes.
@@ -1078,6 +1377,22 @@ impl Loaded {
 
     pub fn integration(&self) -> Option<&IntegrationSpec> {
         self.integration.as_ref()
+    }
+
+    /// Reviewer nodes with a declared warm-layer policy, by node ID.
+    pub fn warm_policies(&self) -> &BTreeMap<String, WarmSpec> {
+        &self.warm
+    }
+
+    /// The pinned Cold Closeout policy.
+    pub fn cold_closeout(&self) -> ColdCloseoutSpec {
+        self.cold_closeout
+    }
+
+    /// The exact warm reviewer nodes this pipeline compiled a conditional cold Attempt for.
+    /// Empty under the default policy, so nothing extra is ever dispatched by accident.
+    pub fn cold_closeout_nodes(&self) -> &[String] {
+        &self.cold_closeout_nodes
     }
 
     pub fn plan_order(&self) -> &[String] {
@@ -1184,6 +1499,74 @@ impl Loaded {
     }
 }
 
+/// The warm reviewer nodes a pinned Cold Closeout policy compiles a conditional cold Attempt
+/// for, in definition order, with the feasibility the design requires: a policy whose budget
+/// cannot admit the extra Attempts is refused here, before anything runs, rather than
+/// discovered when the warm result turns out to be clean.
+///
+/// Only a node with warm layers is a candidate: a cold reviewer's result needs no cold
+/// confirmation, so a pipeline with no warm policy compiles no closeout whatever the setting.
+fn cold_closeout_nodes(
+    convergence: &ConvergenceSpec,
+    nodes: &[NodeSpec],
+    budgets: Option<&BudgetSpec>,
+) -> Result<Vec<String>, ConfigError> {
+    if convergence.cold_closeout.is_none() {
+        return Ok(Vec::new());
+    }
+    let warm: Vec<&NodeSpec> = nodes
+        .iter()
+        .filter(|node| node.kind == NodeKindSpec::Reviewer && node.warm.is_some())
+        .collect();
+    let selected: Vec<&NodeSpec> = match convergence.cold_closeout {
+        ColdCloseoutSpec::None => Vec::new(),
+        ColdCloseoutSpec::OneRequired => warm.iter().take(1).copied().collect(),
+        ColdCloseoutSpec::All => warm.clone(),
+    };
+    if selected.is_empty() {
+        return Err(ConfigError::Binding(
+            "convergence.cold_closeout names a confirmation Attempt but no reviewer declares warm layers; a cold reviewer needs no cold confirmation".into(),
+        ));
+    }
+    for node in &selected {
+        // A brokered reviewer's Attempt runs under a Broker Handle issued for exactly that
+        // Attempt. A closeout would need its own lease, which this package does not compile.
+        if node.execution.as_ref().is_some_and(|execution| {
+            execution.credential_mode == review_core::BrokerCredentialModeV1::Brokered
+        }) {
+            return Err(ConfigError::Binding(format!(
+                "reviewer `{}` is brokered and cannot take a compiled Cold Closeout: its confirmation Attempt would need a Broker Handle of its own",
+                node.id
+            )));
+        }
+    }
+    if let Some(budgets) = budgets {
+        let reservation = |node: &NodeSpec| {
+            node.budget
+                .map(|budget| budget.attempt)
+                .unwrap_or(budgets.attempt)
+        };
+        // Every Worker's first Attempt plus every closeout's protected Attempt must fit the run
+        // cap, or the reservation this policy promises to protect could never be taken.
+        let workers: u128 = nodes
+            .iter()
+            .filter(|node| matches!(node.kind, NodeKindSpec::Reviewer | NodeKindSpec::Scatter))
+            .map(|node| u128::from(reservation(node)))
+            .sum();
+        let closeouts: u128 = selected
+            .iter()
+            .map(|node| u128::from(reservation(node)))
+            .sum();
+        if workers + closeouts > u128::from(budgets.run) {
+            return Err(ConfigError::Binding(format!(
+                "convergence.cold_closeout needs {closeouts} protected tokens beside {workers} for the Round's Workers, which exceeds the run cap ({}); raise the cap or set cold_closeout = \"none\"",
+                budgets.run
+            )));
+        }
+    }
+    Ok(selected.iter().map(|node| node.id.clone()).collect())
+}
+
 impl Definition {
     pub fn from_toml(text: &str) -> Result<Definition, ConfigError> {
         toml::from_str(text).map_err(|e| ConfigError::Parse(e.to_string()))
@@ -1256,6 +1639,34 @@ impl Definition {
                 return Err(ConfigError::Binding(
                     "Gate cache kinds must be unique".to_string(),
                 ));
+            }
+            let unique_build_caches: std::collections::BTreeSet<_> =
+                binding.build_caches.iter().copied().collect();
+            if unique_build_caches.len() != binding.build_caches.len() {
+                return Err(ConfigError::Binding(
+                    "Gate build cache kinds must be unique".to_string(),
+                ));
+            }
+            if !binding.build_caches.is_empty()
+                && (binding.provider != SandboxProviderSpec::TrustedLocal
+                    || binding.required_isolation != IsolationSpec::None)
+            {
+                return Err(ConfigError::Binding(
+                    "`[gate] build_caches` is refused under the safe policy: a candidate-built cache carries no administrator approval and is admitted only from a `trusted_local` Gate with `required_isolation = \"none\"`"
+                        .to_string(),
+                ));
+            }
+            if binding.build_cache_max_bytes.is_some() || binding.build_cache_max_entries.is_some()
+            {
+                if binding.build_caches.is_empty() {
+                    return Err(ConfigError::Binding(
+                        "`[gate]` build cache limits require `build_caches`".to_string(),
+                    ));
+                }
+                binding
+                    .build_cache_limits()
+                    .validate()
+                    .map_err(|error| ConfigError::Binding(format!("`[gate]` {error}")))?;
             }
             match binding.provider {
                 SandboxProviderSpec::TrustedLocal => {
@@ -1382,6 +1793,8 @@ impl Definition {
                 self.convergence.clean_rounds, self.convergence.max_rounds
             )));
         }
+        let cold_closeout_nodes =
+            cold_closeout_nodes(&self.convergence, &self.nodes, self.budgets.as_ref())?;
         if let Some(policy) = &integration {
             if self.version != 5 {
                 return Err(ConfigError::Binding(
@@ -1447,10 +1860,21 @@ impl Definition {
         let mut reviewer_execution = BTreeMap::new();
         let mut slicing = BTreeMap::new();
         let mut closeouts = BTreeMap::new();
+        let mut warm = BTreeMap::new();
         let mut resolved_packages: BTreeMap<String, std::sync::Arc<lock::ResolvedReviewer>> =
             BTreeMap::new();
         for spec in &self.nodes {
             let reviewer_like = matches!(spec.kind, NodeKindSpec::Reviewer | NodeKindSpec::Scatter);
+            if let Some(policy) = &spec.warm {
+                if !reviewer_like {
+                    return Err(ConfigError::Binding(format!(
+                        "node `{}` is not a reviewer but declares a warm-layer policy",
+                        spec.id
+                    )));
+                }
+                policy.validate(&spec.id, gate.as_ref(), spec.gated_by.as_deref())?;
+                warm.insert(spec.id.clone(), *policy);
+            }
             if reviewer_like {
                 demand_requirements.insert(
                     spec.id.clone(),
@@ -1634,6 +2058,9 @@ impl Definition {
             budgets: self.budgets,
             node_attempt_caps,
             integration,
+            warm,
+            cold_closeout: self.convergence.cold_closeout,
+            cold_closeout_nodes,
             convergence: ConvergencePolicy {
                 clean_rounds: self.convergence.clean_rounds,
                 max_rounds: self.convergence.max_rounds,

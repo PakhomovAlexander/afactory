@@ -9,6 +9,9 @@ pub mod document;
 pub mod event;
 pub mod execution;
 pub mod feedback;
+pub mod optimization;
+pub mod optimization_experiment;
+pub mod optimization_light;
 pub mod owned_children;
 pub mod pipeline;
 pub mod plan;
@@ -21,6 +24,7 @@ pub mod review_compat;
 pub mod review_context;
 pub mod review_handoff;
 pub mod review_integration;
+pub mod runtime;
 pub mod source;
 pub mod usage;
 pub mod verification;
@@ -39,6 +43,9 @@ pub const PLAN_DECISION_V1: &str = "af/PlanDecision@1";
 pub const REVIEW_HISTORY_V1: &str = "af/ReviewHistory@1";
 pub const VERIFICATION_CONTINUATION_V1: &str = "af/VerificationContinuation@1";
 pub const REPAIR_ASSESSMENT_V1: &str = "af/RepairAssessment@1";
+/// Task-path spelling of the same `WorkerNotes@1` payload: an optional, node-private Worker
+/// port that the compiler wires only between nodes of one slot.
+pub const WORKER_NOTES_V1: &str = "af/WorkerNotes@1";
 
 pub(super) fn require(condition: bool, message: &str) -> Result<(), String> {
     if condition {

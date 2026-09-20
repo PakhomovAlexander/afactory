@@ -701,6 +701,35 @@ fn validate_report_gate_failures(
             continue;
         };
         for id in raw_artifact_ids {
+            let observed = cas
+                .get_artifact(id)
+                .map_err(|error| StoreError::Artifact(error.to_string()))?;
+            if observed.artifact_type == review_core::task::runtime::TASK_RUNTIME_EVIDENCE_V1 {
+                let evidence: review_core::task::runtime::TaskRuntimeEvidenceV1 =
+                    serde_json::from_value(observed.payload)?;
+                evidence.validate().map_err(conflict)?;
+                let context_id = execution.attempts[attempt_id]
+                    .context_id
+                    .as_ref()
+                    .ok_or_else(|| conflict("Review Gate has no admitted context"))?;
+                if evidence.task_id != state.task_id
+                    || evidence.attempt_id != *attempt_id
+                    || evidence.node != attempt.reservation.node
+                    || evidence.context_id != *context_id
+                    || observed.producer
+                        != (review_core::Producer::Attempt {
+                            run_id: task_run_id(&state.task_id)?,
+                            node_id: attempt.reservation.node.clone(),
+                            attempt_id: attempt_id.clone(),
+                        })
+                    || observed.subject_snapshot_id.as_deref() != Some(&round.head_snapshot_id)
+                {
+                    return Err(conflict(
+                        "Review Gate runtime evidence changed its settled Attempt authority",
+                    ));
+                }
+                continue;
+            }
             let frame = envelope(cas, id, TASK_REVIEW_GATE_FACTS_V1)?;
             let facts: TaskReviewGateFactsV1 = serde_json::from_value(frame.payload)?;
             facts.validate().map_err(conflict)?;

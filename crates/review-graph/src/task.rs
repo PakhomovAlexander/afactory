@@ -158,6 +158,38 @@ pub struct OwnedChildTemplateV1 {
     pub inherited_inputs: BTreeMap<String, String>,
 }
 
+/// Captured preparation authority for a generated experimental closure.  Unlike an owned-child
+/// template this does not supply an operator or allowance: those bytes arrive in a separately
+/// approved child plan and are checked against the immutable slot before registration.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentalSlotTemplateV1 {
+    pub slot_id: String,
+    pub max_concurrency: u32,
+}
+
+/// One executable child in an approved experimental closure.  The invocation contains the
+/// complete typed inputs; the compiled definition contains the exact Worker/operator binding.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentPlannedChildV1 {
+    pub definition: CompiledNode,
+    pub invocation: review_core::task::execution::TaskInvocationV1,
+    pub allowance: NodeAllowance,
+}
+
+pub const EXPERIMENT_EXECUTION_PLAN_V1: &str = "af/ExperimentExecutionPlan@1";
+
+/// Runtime form of the complete child closure.  It is deliberately separate from CompiledTask:
+/// registering it never mutates the captured outer graph.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ExperimentExecutionPlanV1 {
+    pub schema: String,
+    pub parent_node: String,
+    pub children: BTreeMap<String, ExperimentPlannedChildV1>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompiledTask {
@@ -176,6 +208,8 @@ pub struct CompiledTask {
     pub allowances: BTreeMap<String, NodeAllowance>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub owned_children: BTreeMap<String, OwnedChildTemplateV1>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub experimental_slots: BTreeMap<String, ExperimentalSlotTemplateV1>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -403,6 +437,7 @@ impl CompiledTask {
     }
 
     pub fn budget(&self, limits: review_core::task::TaskLimitsV1) -> Result<TaskBudget, String> {
+        self.validate_experimental_slots()?;
         let templates = self.owned_template_allowances()?;
         // Before dispatch, protect the declared verifier reserve and one Attempt for every
         // unconditional non-verifier. Provider admission guards cannot hide mandatory work.
@@ -493,6 +528,21 @@ impl CompiledTask {
             )?
             .with_owned_templates(templates)?
             .with_token_scopes(self.token_scopes.clone())
+    }
+
+    pub fn validate_experimental_slots(&self) -> Result<(), String> {
+        for (owner, slot) in &self.experimental_slots {
+            if !self.nodes.contains_key(owner)
+                || self.allowances.contains_key(owner)
+                || self.owned_children.contains_key(owner)
+                || !review_core::is_digest(&slot.slot_id)
+                || slot.max_concurrency == 0
+                || slot.max_concurrency > self.max_parallel.max(1)
+            {
+                return Err("Experimental slot needs a static zero-Attempt owner, exact slot identity and bounded concurrency".into());
+            }
+        }
+        Ok(())
     }
 
     pub fn owned_template_allowances(
@@ -774,6 +824,7 @@ fn compile_structure_mode(
             max_parallel: definition.max_parallel,
             allowances: BTreeMap::new(),
             owned_children: BTreeMap::new(),
+            experimental_slots: BTreeMap::new(),
             review_integration: None,
             token_scopes: BTreeMap::new(),
         },
@@ -1060,6 +1111,17 @@ impl Compiler<'_> {
             .ok_or_else(|| format!("Unknown producer {}", address.qualified()))
     }
 
+    /// The effective slot of an already compiled Worker node, or `None` for any other producer.
+    fn worker_slot(&self, node: &str) -> Option<&str> {
+        match &self.graph.nodes.get(node)?.operator {
+            CompiledOperator::Primitive {
+                operator: TaskOperatorV1::Worker { slot },
+                ..
+            } => Some(slot.as_str()),
+            _ => None,
+        }
+    }
+
     fn compatible(&self, source: &Address, target: &PipelinePortV1) -> Result<(), String> {
         let produced = self.port(source)?;
         if produced.artifact_type != target.artifact_type
@@ -1240,6 +1302,79 @@ impl Compiler<'_> {
             .iter()
             .map(|n| (n.id.clone(), n.clone()))
             .collect();
+        // Worker Notes are a node-private warm layer. A Worker node that declares an optional
+        // Notes input and binds nothing receives the Notes of the one earlier Worker node on the
+        // same effective slot, in definition order (a repair or a second pass), and nothing
+        // else: the binding is inserted here so the scheduler orders the two nodes and the
+        // cross-slot check below still validates it; two candidates are ambiguous and refused.
+        {
+            let notes_ports = |slot: &str| -> Option<(Option<String>, Option<String>)> {
+                let effective = slots.get(slot)?;
+                let declaration = self.graph.slots.get(effective)?;
+                let signature = self
+                    .context
+                    .signatures
+                    .get(&format!("worker/{}", declaration.worker))?;
+                let notes = |port: &PipelinePortV1| {
+                    port.artifact_type == review_core::task::WORKER_NOTES_V1
+                };
+                let input = signature
+                    .contract
+                    .inputs
+                    .iter()
+                    .find(|(_, port)| notes(port) && port.optional)
+                    .map(|(name, _)| name.clone());
+                let output = signature
+                    .contract
+                    .outputs
+                    .iter()
+                    .find(|(_, port)| notes(port))
+                    .map(|(name, _)| name.clone());
+                Some((input, output))
+            };
+            for (index, node) in definition.nodes.iter().enumerate() {
+                let TaskOperatorV1::Worker { slot } = &node.operator else {
+                    continue;
+                };
+                let Some((Some(input_port), _)) = notes_ports(slot) else {
+                    continue;
+                };
+                if node.inputs.contains_key(&input_port) {
+                    continue;
+                }
+                let sources: Vec<(String, String)> = definition.nodes[..index]
+                    .iter()
+                    .filter_map(|earlier| {
+                        let TaskOperatorV1::Worker { slot: earlier_slot } = &earlier.operator
+                        else {
+                            return None;
+                        };
+                        if slots.get(earlier_slot) != slots.get(slot) {
+                            return None;
+                        }
+                        let (_, output_port) = notes_ports(earlier_slot)?;
+                        Some((earlier.id.clone(), output_port?))
+                    })
+                    .collect();
+                match sources.len() {
+                    0 => {}
+                    1 => {
+                        let (source, port) = sources.into_iter().next().expect("one source");
+                        pending
+                            .get_mut(&node.id)
+                            .expect("every definition node is pending")
+                            .inputs
+                            .insert(input_port, ValueRefV1::Node { node: source, port });
+                    }
+                    _ => {
+                        return Err(format!(
+                            "{scope}.{} has more than one same-slot Notes source",
+                            node.id
+                        ));
+                    }
+                }
+            }
+        }
         while !pending.is_empty() {
             let mut progressed = false;
             for local in pending.keys().cloned().collect::<Vec<_>>() {
@@ -1358,6 +1493,16 @@ impl Compiler<'_> {
                                 };
                                 (key, operator)
                             }
+                            TaskOperatorV1::OptimizationExperiment {
+                                baseline_slot,
+                                candidate_slot,
+                            } => (
+                                "operator/optimization-experiment".into(),
+                                TaskOperatorV1::OptimizationExperiment {
+                                    baseline_slot: slots[baseline_slot].clone(),
+                                    candidate_slot: slots[candidate_slot].clone(),
+                                },
+                            ),
                             other => (format!("operator/{}", operator_name(other)?), other.clone()),
                         };
                         let signature = self
@@ -1415,6 +1560,27 @@ impl Compiler<'_> {
                                 }
                                 None if port.optional => (),
                                 None => return Err(format!("{qualified} lacks {port_name}")),
+                            }
+                        }
+                        // Worker Notes are a node-private warm layer: a retry or repair node
+                        // may receive the notes of an earlier node on the SAME slot, and nothing
+                        // else. Slots declared independent are different slots by construction.
+                        for (port_name, port) in &signature.contract.inputs {
+                            if port.artifact_type != review_core::task::WORKER_NOTES_V1 {
+                                continue;
+                            }
+                            let Some(source) = bound.get(port_name) else {
+                                continue;
+                            };
+                            let TaskOperatorV1::Worker { slot } = &operator else {
+                                return Err(format!(
+                                    "{qualified} is not a Worker but consumes Worker Notes"
+                                ));
+                            };
+                            if self.worker_slot(&source.node) != Some(slot.as_str()) {
+                                return Err(format!(
+                                    "{qualified} consumes Worker Notes from another slot; Notes never cross slots"
+                                ));
                             }
                         }
                         if bound
@@ -1673,6 +1839,11 @@ fn resolve(
 
 fn operator_name(operator: &TaskOperatorV1) -> Result<&'static str, String> {
     match operator {
+        TaskOperatorV1::OptimizationProject {} => Ok("optimization-project"),
+        TaskOperatorV1::OptimizationProfile {} => Ok("optimization-profile"),
+        TaskOperatorV1::OptimizationPrepare {} => Ok("optimization-prepare"),
+        TaskOperatorV1::OptimizationFinalize {} => Ok("optimization-finalize"),
+        TaskOperatorV1::OptimizationExperiment { .. } => Ok("optimization-experiment"),
         TaskOperatorV1::PlanningContext {} => Ok("planning-context"),
         TaskOperatorV1::DocumentSeal {} => Ok("document-seal"),
         TaskOperatorV1::DocumentCheck {} => Ok("document-check"),

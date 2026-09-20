@@ -84,16 +84,72 @@ struct PackageBytes {
     files: BTreeMap<String, Vec<u8>>,
 }
 
+/// A fully validated captured Worker package. Runtime adapters use this only for a package
+/// artifact already named by separately approved execution authority; loading it does not add it
+/// to the ordinary compiler catalog or grant a new binding.
+#[derive(Debug, Clone)]
+pub struct CapturedWorkerPackage {
+    pub name: String,
+    pub version: String,
+    pub digest: String,
+    pub files: BTreeMap<String, Vec<u8>>,
+    pub worker: TaskWorkerManifest,
+}
+
 #[derive(Debug, Clone)]
 struct Package {
     bytes: PackageBytes,
     dependency: PlanDependencyV1,
 }
 
+#[derive(Debug)]
 enum ParsedPackage {
     Pipeline(PipelineDefinitionV1),
     Worker(TaskWorkerManifest),
     TaskKind(TaskKindManifest),
+}
+
+/// `af/WorkerNotes@1` ports are node-private warm layers: one optional Notes in, one optional
+/// Notes out, never a required input and never a Subject-bound one. The compiler separately
+/// refuses wiring them between different slots.
+fn validate_notes_ports(
+    contract: &review_core::task::pipeline::PipelineContractV1,
+) -> Result<(), String> {
+    use review_core::task::pipeline::PortAffinityV1;
+    let is_notes = |port: &review_core::task::pipeline::PipelinePortV1| {
+        port.artifact_type == review_core::task::WORKER_NOTES_V1
+    };
+    let notes_inputs = contract
+        .inputs
+        .values()
+        .filter(|port| is_notes(port))
+        .count();
+    let notes_outputs = contract
+        .outputs
+        .values()
+        .filter(|port| is_notes(port))
+        .count();
+    if notes_inputs > 1 || notes_outputs > 1 {
+        return Err("A Worker declares at most one Notes input and one Notes output".into());
+    }
+    for (name, port) in contract.inputs.iter().filter(|(_, port)| is_notes(port)) {
+        if !port.optional
+            || port.cardinality != review_core::PortCardinality::One
+            || port.affinity != (PortAffinityV1::Unbound {})
+        {
+            return Err(format!(
+                "Worker notes input {name} must be one optional unbound af/WorkerNotes@1 port"
+            ));
+        }
+    }
+    for (name, port) in contract.outputs.iter().filter(|(_, port)| is_notes(port)) {
+        if !port.optional || port.cardinality != review_core::PortCardinality::One {
+            return Err(format!(
+                "Worker notes output {name} must be one optional af/WorkerNotes@1 port"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Resolved by the host's Provider and invocation-policy admission, never by a Worker or a
@@ -124,6 +180,7 @@ pub struct TaskPlanCompiler {
     independence: IndependencePolicyV1,
     provider_admission: Option<review_graph::task::OperatorAttemptCost>,
     preparation_roots: BTreeSet<String>,
+    experimental_slots: BTreeMap<String, review_graph::task::ExperimentalSlotTemplateV1>,
     /// Installed domain artifact types that establish authorship independently of a
     /// Worker's removable role/effect declarations (for example a data-only document draft).
     authored_artifacts: BTreeSet<String>,
@@ -163,6 +220,90 @@ fn read_envelope(cas: &Cas, id: &str, expected: &str) -> Result<ArtifactEnvelope
 }
 
 impl TaskPlanCompiler {
+    /// Validate an exact TaskPackage artifact as a Worker without installing it into the
+    /// compiler's ordinary trusted package map.
+    pub fn captured_worker_package(
+        cas: &Cas,
+        artifact_id: &str,
+    ) -> Result<CapturedWorkerPackage, String> {
+        let envelope = read_envelope(cas, artifact_id, TASK_PACKAGE_V1)?;
+        let bytes: PackageBytes =
+            serde_json::from_value(envelope.payload).map_err(|e| e.to_string())?;
+        if package_digest_from_files(&bytes.files) != bytes.digest {
+            return Err("Captured Worker package digest disagrees with its bytes".into());
+        }
+        let ParsedPackage::Worker(worker) = Self::parse_package(&bytes)? else {
+            return Err("Captured experimental package is not a Worker".into());
+        };
+        Ok(CapturedWorkerPackage {
+            name: bytes.name,
+            version: bytes.version,
+            digest: bytes.digest,
+            files: bytes.files,
+            worker,
+        })
+    }
+
+    /// Publish the sole supported prospective Worker derivation: one replacement of
+    /// `instructions.md`. All runner, manifest, contract, effects, limits, dependencies and
+    /// remaining package bytes stay byte-identical to the originally captured package.
+    #[allow(clippy::too_many_arguments)]
+    pub fn derive_worker_instructions_package(
+        cas: &Cas,
+        original_artifact_id: &str,
+        expected_original_digest: &str,
+        expected_derived_digest: &str,
+        instructions_id: &str,
+        instructions: &str,
+        producer: Producer,
+        mut refs: Vec<String>,
+    ) -> Result<String, String> {
+        let original = Self::captured_worker_package(cas, original_artifact_id)?;
+        if original.digest != expected_original_digest
+            || review_store::canonical::blob_content_id(instructions.as_bytes()) != instructions_id
+        {
+            return Err(
+                "Instruction derivation changed its original package or instruction bytes".into(),
+            );
+        }
+        let mut files = original.files.clone();
+        let old = files
+            .insert("instructions.md".into(), instructions.as_bytes().to_vec())
+            .ok_or("Instruction derivation requires an existing instructions.md")?;
+        if old == instructions.as_bytes() {
+            return Err("Instruction derivation did not change instructions.md".into());
+        }
+        let digest = package_digest_from_files(&files);
+        if digest != expected_derived_digest {
+            return Err("Instruction derivation disagrees with the trusted candidate repin".into());
+        }
+        let bytes = PackageBytes {
+            schema: "af.task-package/1".into(),
+            name: original.name,
+            version: original.version,
+            digest,
+            files,
+        };
+        let ParsedPackage::Worker(derived) = Self::parse_package(&bytes)? else {
+            return Err("Instruction derivation no longer describes a Worker".into());
+        };
+        if derived != original.worker {
+            return Err("Instruction derivation changed Worker manifest authority".into());
+        }
+        refs.extend([original_artifact_id.into(), instructions_id.into()]);
+        refs.sort();
+        refs.dedup();
+        cas.put_artifact(
+            TASK_PACKAGE_V1,
+            producer,
+            refs,
+            None,
+            serde_json::to_value(bytes).map_err(|e| e.to_string())?,
+        )
+        .map(|(id, _)| id)
+        .map_err(|e| e.to_string())
+    }
+
     pub fn with_authored_artifacts(mut self, types: BTreeSet<String>) -> Result<Self, String> {
         if types.len() > 32 || types.iter().any(|ty| !review_core::is_artifact_type(ty)) {
             return Err("Domain authorship requires bounded versioned artifact types".into());
@@ -178,6 +319,26 @@ impl TaskPlanCompiler {
     ) -> Self {
         self.provider_admission = Some(cost);
         self
+    }
+
+    /// Install a protected dynamic slot from trusted Task-kind policy. Pipeline or Worker bytes
+    /// cannot call this method; recompilation retains the same slot artifact and parent.
+    pub fn with_experimental_slot(
+        mut self,
+        parent: String,
+        slot: review_graph::task::ExperimentalSlotTemplateV1,
+    ) -> Result<Self, String> {
+        if !parent.split('.').all(review_core::task::is_name)
+            || !review_core::is_digest(&slot.slot_id)
+            || slot.max_concurrency == 0
+            || self.experimental_slots.insert(parent, slot).is_some()
+        {
+            return Err(
+                "Experimental slot must have one exact trusted parent and bounded concurrency"
+                    .into(),
+            );
+        }
+        Ok(self)
     }
     /// Apply only constructors explicitly declared on this root contract. A child call has
     /// no access to this adapter operation and must bind every required input itself.
@@ -262,6 +423,7 @@ impl TaskPlanCompiler {
             independence,
             provider_admission: None,
             preparation_roots: BTreeSet::new(),
+            experimental_slots: BTreeMap::new(),
             authored_artifacts: BTreeSet::new(),
         })
     }
@@ -434,6 +596,7 @@ impl TaskPlanCompiler {
                     return Err("Worker manifest has incompatible identity or protocol".into());
                 }
                 worker.signature.contract.validate()?;
+                validate_notes_ports(&worker.signature.contract)?;
                 let cost = worker
                     .signature
                     .attempt
@@ -859,6 +1022,8 @@ impl TaskPlanCompiler {
         cas.verify(&self.engine_id).map_err(|e| e.to_string())?;
         cas.verify(&self.policy_id).map_err(|e| e.to_string())?;
         let mut graph = self.compile_graph(&task, root)?;
+        graph.experimental_slots = self.experimental_slots.clone();
+        graph.validate_experimental_slots()?;
         self.validate_replacement_schemas(&graph)?;
         let bindings = self.effective_bindings(cas, &graph)?;
         let mut used: BTreeSet<String> = graph
@@ -918,15 +1083,23 @@ impl TaskPlanCompiler {
         let used_slots: BTreeSet<_> = graph
             .nodes
             .values()
-            .filter_map(|node| match &node.operator {
+            .flat_map(|node| match &node.operator {
                 CompiledOperator::Primitive {
                     operator:
                         TaskOperatorV1::Worker { slot }
                         | TaskOperatorV1::Verify { slot }
                         | TaskOperatorV1::FixVerify { slot },
                     ..
-                } => Some(slot),
-                _ => None,
+                } => vec![slot],
+                CompiledOperator::Primitive {
+                    operator:
+                        TaskOperatorV1::OptimizationExperiment {
+                            baseline_slot,
+                            candidate_slot,
+                        },
+                    ..
+                } => vec![baseline_slot, candidate_slot],
+                _ => vec![],
             })
             .collect();
         if graph.slots.keys().any(|slot| !used_slots.contains(slot)) {

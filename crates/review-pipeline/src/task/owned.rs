@@ -20,6 +20,115 @@ pub(super) fn port(name: &str, value: &PipelinePortV1) -> PortContract {
 }
 
 impl TaskRuntime<'_, '_> {
+    pub(super) fn expand_experiment(&self, node: &Node) -> Result<Vec<OwnedChildDispatch>, String> {
+        let state = self
+            .projection()?
+            .execution
+            .ok_or("Task has no execution")?;
+        let (_, parent) = state
+            .invocations
+            .get(&node.id)
+            .ok_or("Experimental parent invocation is not admitted")?;
+        let registered = self
+            .store
+            .lock()
+            .expect("Task Store")
+            .task_experiment(self.cas, self.lease.task_id(), &node.id)
+            .map_err(|e| e.to_string())?;
+        let experiment = match registered {
+            Some(value) => value,
+            None => {
+                let prepared =
+                    self.host
+                        .prepare_experiment(self.cas, parent, self.lease.epoch())?;
+                self.store
+                    .lock()
+                    .expect("Task Store")
+                    .prepare_task_experiment(
+                        self.cas,
+                        &self.lease,
+                        &prepared.prepared_id,
+                        self.authority,
+                    )
+                    .map_err(|e| e.to_string())?;
+                return Err("Experimental closure needs signed developer review".into());
+            }
+        };
+        experiment
+            .child_plan
+            .children
+            .iter()
+            .map(|(name, child)| {
+                let mut inputs = artifact_map(&child.invocation.inputs);
+                for port in child.definition.contract.inputs.keys() {
+                    inputs.entry(port.clone()).or_default();
+                }
+                Ok(OwnedChildDispatch {
+                    node: Node::new(name, NodeKind::Task)
+                        .accepting_contracts(
+                            child
+                                .definition
+                                .contract
+                                .inputs
+                                .iter()
+                                .map(|(n, p)| port(n, p))
+                                .collect(),
+                        )
+                        .emitting_contracts(
+                            child
+                                .definition
+                                .contract
+                                .outputs
+                                .iter()
+                                .map(|(n, p)| port(n, p))
+                                .collect(),
+                        ),
+                    inputs,
+                })
+            })
+            .collect()
+    }
+
+    pub(super) fn complete_experiment(
+        &self,
+        node: &Node,
+        _children: &[(String, NodeOutcome)],
+    ) -> Result<ArtifactMap, String> {
+        let state = self
+            .projection()?
+            .execution
+            .ok_or("Task has no execution")?;
+        if let Some((_, output)) = state.outputs.get(&node.id) {
+            return Ok(artifact_map(&output.outputs));
+        }
+        let (parent_id, parent) = state
+            .invocations
+            .get(&node.id)
+            .ok_or("Experimental parent invocation is not admitted")?;
+        let experiment = self
+            .store
+            .lock()
+            .expect("Task Store")
+            .task_experiment(self.cas, self.lease.task_id(), &node.id)
+            .map_err(|e| e.to_string())?
+            .ok_or("Experimental closure is not registered")?;
+        let facts = self
+            .store
+            .lock()
+            .expect("Task Store")
+            .task_experiment_evidence(self.cas, self.lease.task_id(), &experiment.prepared_id)
+            .map_err(|e| e.to_string())?;
+        let values = self
+            .host
+            .complete_experiment(self.cas, parent, &experiment, &facts)?;
+        let id = self.record_output(parent_id, parent, values.clone(), None)?;
+        self.pending_outputs
+            .lock()
+            .expect("Task outputs")
+            .insert(node.id.clone(), (id, None));
+        Ok(artifact_map(&values))
+    }
+
     pub(super) fn resolve_node(&self, node: &str) -> Result<ResolvedTaskNode, String> {
         if let Some(definition) = self.graph.nodes.get(node) {
             return Ok(ResolvedTaskNode {

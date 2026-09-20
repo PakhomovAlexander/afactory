@@ -21,6 +21,94 @@ release pages only.
   fail-closed recovery with `af provider recover`, and make the README's Codex-only quickstart
   complete.
 
+## [0.9.0-rc.4] - 2026-09-20
+
+### Authority compatibility
+
+Prerelease: committed .af authority keeps working as is. Every warm layer is opt-in per reviewer node (warm = { notes, build_cache, workspace, session }); a pipeline that declares none behaves exactly as before, and the Store, the run events and the pinned authority mirrors gain additive records only, with no migration. The session layer is Claude-only and defaults to off: Codex reviewers and Task-hosted Review Attempts record a drop reason and run on Notes instead. A candidate-built build cache is an explicitly unsafe artifact, never a Cache Snapshot, and is refused under the safe policy at load, at selection and at capture. WarmSetSelected@1 first ships here, so its vocabulary closes with this release (ADR-0107). Refresh a consumer pin explicitly with af onboard --refresh-lock after verifying the release and its archive digests, and keep the previous release for rollback. No cold-versus-warm savings Evidence exists yet, so the design review's build-minute and forked-resume Demands stay open and both session and workspace policy defaults ship off.
+
+### Changes
+
+- release: v0.9.0-rc.2 (#93)
+- Add self-optimizer economics, experiments and light optimization (#94)
+- release: v0.9.0-rc.3 (#95)
+- Reduce release latency with shared validation and concurrent builds (#96)
+- Start Workers warm from declared layers and confirm clean Rounds cold (#97)
+### Changes
+
+- Add the first Worker warm layer: a reviewer node with `warm = { notes = true }` asks each
+  admitted Attempt for bounded Worker Notes, carries them to the next Round's Attempt of the same
+  node as `review.kernel/WorkerNotes@1`, marks every path against the previous head in a
+  `review.kernel/HeadDelta@1`, and records the selection as `review.kernel/WarmSet@1` with
+  `WarmSetSelected@1` before dispatch. Notes are parsed beside the flat Reviewer Result, dropped
+  with a recorded `WorkerNotesRecorded@1` reason when malformed or over `notes_max_bytes`, and
+  rendered as data with their own context manifest entries; `af review report` shows the layers
+  and rendered input per Attempt. Task Workers may declare optional `af/WorkerNotes@1` ports that
+  the compiler wires only within one slot. With `warm` absent nothing changes
+  ([ADR-0107](docs/adr/0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md)).
+- Carry the Gate's build to Worker sandboxes as the second warm layer: a `trusted_local` Gate
+  that declares `build_caches = ["cargo_target"]` builds into the reserved `.af-cache` root with
+  `CARGO_TARGET_DIR` pointed at it, captures the result after its checks pass as an explicitly
+  unsafe `review.kernel/BuildCache@1` (regular files only, no-follow traversal, entry, depth,
+  path and byte limits, fixed modes, stripped xattrs and ACLs, producer and head provenance),
+  and records `BuildCacheCaptured@1` with the artifact or a refusal reason. A reviewer node with
+  `warm = { build_cache = ["cargo_target"] }` receives a per-Attempt clone from the CAS through
+  its `WarmSet@1`, the bytes are removed before seal so the sealed diff equals a cold run's, and
+  the safe policy refuses the declaration at load and the handoff before any dispatch. The
+  registry-only `cargo` Cache Snapshot and the self-optimizer cache path are unchanged
+  ([ADR-0108](docs/adr/0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md)).
+- Add the Warm Workspace as the third warm layer: a reviewer node with
+  `warm = { workspace = "rebase" }` keeps one stable template root per Campaign under
+  `$XDG_CACHE_HOME/af/workspaces`, named in its `WarmSet@1` by an opaque workspace identity
+  rather than a host path. On a new head the kernel applies the tree diff to a copy-on-write
+  clone of the previous template, scans the result and swaps it in only when its manifest digest
+  equals the head's Tree Digest; any other outcome falls back to a full materialization from the
+  CAS with the reason recorded. An unchanged head materializes nothing and is verified by a read-only scan before it is reused; the root's marker is trusted only against the Campaign log's last `WorkspaceRebased@1`, and a marker the log never recorded rebuilds the head as `unrecorded_preparation`. Preparation failures carry no host path, cold pipelines touch no cache configuration, and the event records the preparation time. `WorkspaceRebased@1`
+  records the previous and current head, the basis, the fallback reason, the verified digest and
+  the entries touched before the Warm Set is recorded, and the `workspace` layer joins
+  `WarmSetSelected@1` when the template was carried. Per-Attempt sandboxes remain fresh clones,
+  so a warm Attempt's sealed diff is what the reviewer wrote; nodes without the policy and
+  pipelines written before it are unchanged
+  ([ADR-0109](docs/adr/0109-rebase-warm-workspaces-at-stable-roots-with-digest-verification.md)).
+- Add the Session Snapshot as the fourth warm layer, for Claude reviewers only, and the compiled
+  Cold Closeout beside it. A node with `warm = { session = "if_recent" }` runs each Attempt under
+  a `--session-id` the kernel derives from the Attempt ID; at seal the bounded transcript enters
+  the CAS as `review.kernel/SessionSnapshot@1`, `SessionSnapshotPrepared@1` records it with the
+  bytes, the estimated tokens and a path-free source identity, the harness copy is deleted, and
+  `SessionSnapshotCleaned@1` closes the protocol. What is stored carries no host path and no
+  credential: the sandbox and harness paths become reversible placeholders a materialization puts
+  back, and a transcript carrying a credential shape is refused whole. Every component below the
+  granted harness root is opened `O_NOFOLLOW`, and the directory a transcript was validated in
+  stays open through its unlink. An Attempt that ends any way but an admitted capture deletes its
+  own transcript before its retry. A sweep before the
+  Round's first Attempt finishes any cleanup a crash interrupted and removes every transcript the
+  node's Attempts could have left, without a provider call. The next Round re-materializes the
+  transcript and resumes it with `--resume --fork-session`, sending only the delta prompt — no
+  package instructions, no Change Set patch — with both the transcript and the delta listed in the
+  Attempt's context manifest. Provider support, `warm.session.max_age` and fitting the reservation
+  beside the delta are gates whose every failure is a recorded `WarmSet@1` drop back to Notes
+  alone, including a Head Delta dropped over its bound; Codex implements nothing and keeps
+  `--ephemeral`. `[convergence] cold_closeout` compiles a conditional cold Attempt of a warm
+  reviewer, reserved before its warm Attempt so a retry cannot consume it, dispatched at the
+  Ledger only when every warm result of the Round would otherwise close it clean, run through the
+  ordinary Attempt lifecycle under its own closeout slot, and folded through
+  `ColdCloseoutDispatched@1` as a stage of its own before the convergence decision. A confirmation
+  that produced no admissible result leaves the Round incomplete.
+  Both policies default to off, so a pipeline written before this package is unchanged
+  ([ADR-0110](docs/adr/0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md)).
+
+## [0.9.0-rc.3] - 2026-09-17
+
+### Authority compatibility
+
+Prerelease: existing .af authority remains supported. Self-optimization is opt-in and requires a reviewed project optimizer catalog, bounded policy and the RC3 binary; generated experiments still require exact signed developer approval. Refresh a consumer pin explicitly with the supported onboard refresh-lock path after verifying the release. New optimizer state and Task inspection/transition formats require a compatible binary; preserve the prior Store and known-good release for rollback. Heavy redesign, live paid savings demonstrations, longitudinal adoption and stable-release migration/pilot gates remain pending. This release does not switch consumer pins or claim stable readiness.
+
+### Changes
+
+- Add project-history capture and reporting with explicit token, elapsed-time and cache evidence (#94).
+- Run bounded optimization experiments with signed approvals, independent evaluation and exact accounting (#94).
+- Add light optimization for Worker instructions and safe Cargo cache selection, with payoff gates and durable adoption evidence (#94).
+- Exercise candidate model contexts and delivered cache settings through real Task paths; coordinate the completion-order test explicitly to avoid scheduling flakes (#94).
 ## [0.9.0-rc.2] - 2026-09-15
 
 ### Authority compatibility

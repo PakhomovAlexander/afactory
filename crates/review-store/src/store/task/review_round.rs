@@ -154,7 +154,10 @@ pub(super) fn fence_for_transition(
                 | TaskExecutionRecordV1::Published { .. }
                 | TaskExecutionRecordV1::OwnedChildrenRegistered { .. }
                 | TaskExecutionRecordV1::OwnedChildPublished { .. }
-                | TaskExecutionRecordV1::OwnedChildrenCompleted { .. } => {}
+                | TaskExecutionRecordV1::OwnedChildrenCompleted { .. }
+                | TaskExecutionRecordV1::ExperimentPrepared { .. }
+                | TaskExecutionRecordV1::ExperimentPlanDecided { .. }
+                | TaskExecutionRecordV1::ExperimentChildrenRegistered { .. } => {}
                 // A stale Round stops new effects, not accounting for work already paid for.
                 TaskExecutionRecordV1::Released { .. }
                 | TaskExecutionRecordV1::Settled { .. }
@@ -173,7 +176,8 @@ pub(super) fn fence_for_transition(
         | TaskChangeV1::Waiting { .. }
         | TaskChangeV1::Finished { .. }
         | TaskChangeV1::RunReported { .. }
-        | TaskChangeV1::DeliveryRecorded { .. } => return Ok(None),
+        | TaskChangeV1::DeliveryRecorded { .. }
+        | TaskChangeV1::AdoptionObservationRecorded { .. } => return Ok(None),
     }
     state
         .map(|state| ReviewRoundFence::for_state(cas, state))

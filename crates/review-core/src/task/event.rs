@@ -31,6 +31,11 @@ pub enum TaskChangeV1 {
     ReviewContinued {
         handoff_id: String,
     },
+    /// Internal normalized form. Only TaskTransition@5 carries adoption observation authority.
+    #[serde(skip)]
+    AdoptionObservationRecorded {
+        observation_id: String,
+    },
     Opened {
         revision_id: String,
         lease_until_unix_ms: u64,
@@ -140,6 +145,9 @@ impl TaskTransitionV1 {
             TaskChangeV1::ReviewContinued { .. } => {
                 Err("Review continuation requires TaskTransition@2".into())
             }
+            TaskChangeV1::AdoptionObservationRecorded { .. } => {
+                Err("Adoption observation requires TaskTransition@5".into())
+            }
             TaskChangeV1::SourceRefreshed {
                 plan_id, waiting, ..
             } => require(
@@ -191,6 +199,7 @@ impl TaskTransitionV1 {
                 ..
             } => vec![phase_id, report_id],
             TaskChangeV1::ReviewContinued { handoff_id } => vec![handoff_id],
+            TaskChangeV1::AdoptionObservationRecorded { observation_id } => vec![observation_id],
             TaskChangeV1::SourceRefreshed {
                 revision_id,
                 plan_id,
@@ -224,6 +233,62 @@ impl TaskTransitionV1 {
             TaskChangeV1::ExecutionRecorded { record_id }
             | TaskChangeV1::DeliveryRecorded { record_id } => vec![record_id],
             _ => Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum TaskChangeV5 {
+    AdoptionObservationRecorded { observation_id: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TaskTransitionV5 {
+    pub writer: String,
+    pub epoch: u64,
+    pub now_unix_ms: u64,
+    pub change: TaskChangeV5,
+}
+
+impl TaskTransitionV5 {
+    pub fn validate(&self) -> Result<(), String> {
+        let TaskChangeV5::AdoptionObservationRecorded { observation_id } = &self.change;
+        require(
+            is_digest(observation_id),
+            "Invalid adoption observation identity",
+        )?;
+        TaskTransitionV1 {
+            writer: self.writer.clone(),
+            epoch: self.epoch,
+            now_unix_ms: self.now_unix_ms,
+            change: TaskChangeV1::Resumed {},
+        }
+        .validate()
+    }
+
+    pub fn from_adoption(value: &TaskTransitionV1) -> Option<Self> {
+        let TaskChangeV1::AdoptionObservationRecorded { observation_id } = &value.change else {
+            return None;
+        };
+        Some(Self {
+            writer: value.writer.clone(),
+            epoch: value.epoch,
+            now_unix_ms: value.now_unix_ms,
+            change: TaskChangeV5::AdoptionObservationRecorded {
+                observation_id: observation_id.clone(),
+            },
+        })
+    }
+
+    pub fn into_transition(self) -> TaskTransitionV1 {
+        let TaskChangeV5::AdoptionObservationRecorded { observation_id } = self.change;
+        TaskTransitionV1 {
+            writer: self.writer,
+            epoch: self.epoch,
+            now_unix_ms: self.now_unix_ms,
+            change: TaskChangeV1::AdoptionObservationRecorded { observation_id },
         }
     }
 }

@@ -145,6 +145,7 @@ impl ReviewerAdapter for BrokeredReviewer {
             returned: ReviewerReturn {
                 output: clean_output(),
                 proposal: Ok(None),
+                notes: Ok(None),
                 cost_tokens: self.reported_cost,
                 raw_artifact: cas.put(b"redacted model answer").unwrap(),
             },

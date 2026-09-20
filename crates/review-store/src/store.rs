@@ -380,6 +380,7 @@ impl EventStore {
                     | EventType::TaskTransitionV2
                     | EventType::TaskTransitionV3
                     | EventType::TaskTransitionV4
+                    | EventType::TaskTransitionV5
                     | EventType::TaskBrokerTransitionV1
             )
         }) && task_permit.is_none()
@@ -962,6 +963,9 @@ struct AuthorityNode {
     /// that declares one still validates here.
     #[serde(default)]
     budget: Option<AuthorityNodeBudget>,
+    /// A reviewer's warm-layer policy (review-config `WarmSpec`); mirrored for the same reason.
+    #[serde(default)]
+    warm: Option<AuthorityWarm>,
 }
 
 #[allow(dead_code)]
@@ -969,6 +973,31 @@ struct AuthorityNode {
 #[serde(deny_unknown_fields)]
 struct AuthorityNodeBudget {
     attempt: u64,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AuthorityWarm {
+    #[serde(default)]
+    notes: Option<bool>,
+    #[serde(default)]
+    notes_max_bytes: Option<u64>,
+    /// Package P2: build cache kinds the node's Gate carries; the config crate validates the
+    /// closed vocabulary, the Store only keeps the pinned shape readable.
+    #[serde(default)]
+    build_cache: Vec<String>,
+    /// Package P3: the Warm Workspace basis (`fresh` or `rebase`); the config crate validates
+    /// the closed vocabulary, the Store only keeps the pinned shape readable.
+    #[serde(default)]
+    workspace: Option<String>,
+    /// Package P4: the session layer (`off`, `if_recent` or `always`) and its age bound; the
+    /// config crate validates the closed vocabulary and the provider restriction, the Store
+    /// only keeps the pinned shape readable.
+    #[serde(default)]
+    session: Option<String>,
+    #[serde(default)]
+    session_max_age_secs: Option<u64>,
 }
 
 #[allow(dead_code)]
@@ -1402,6 +1431,28 @@ fn typed_json_artifacts(
                     &mut artifacts,
                     snapshot.source_digest,
                     review_core::contract::CACHE_MANIFEST_V1.into(),
+                )?;
+                continue;
+            }
+            EventType::BuildCacheCapturedV1 => {
+                let captured: review_core::BuildCacheCapturedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                if let Some(artifact_id) = captured.build_cache_artifact_id {
+                    insert_artifact_type(
+                        &mut artifacts,
+                        artifact_id,
+                        review_core::contract::BUILD_CACHE_V1.into(),
+                    )?;
+                }
+                continue;
+            }
+            EventType::SessionSnapshotPreparedV1 => {
+                let prepared: review_core::SessionSnapshotPreparedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())?;
+                insert_artifact_type(
+                    &mut artifacts,
+                    prepared.session_artifact_id,
+                    review_core::contract::SESSION_SNAPSHOT_V1.into(),
                 )?;
                 continue;
             }
@@ -5287,6 +5338,13 @@ fn round_runtime_event(event_type: EventType) -> bool {
                 | EventType::SliceSetAcceptedV1
                 | EventType::ShardSetRecordedV1
                 | EventType::SemanticClosureCheckedV1
+                | EventType::WarmSetSelectedV1
+                | EventType::WorkerNotesRecordedV1
+                | EventType::BuildCacheCapturedV1
+                | EventType::WorkspaceRebasedV1
+                | EventType::SessionSnapshotPreparedV1
+                | EventType::SessionSnapshotCleanedV1
+                | EventType::ColdCloseoutDispatchedV1
         )
 }
 

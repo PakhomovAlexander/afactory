@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:review-kernel:schema:build-cache:1",
+  "title": "BuildCache@1 payload",
+  "description": "A candidate-built artifact captured from a Gate's declared cache directory after its check Attempt on the head, carried Gate to Worker within one Round. EXPLICITLY UNSAFE: it was produced by candidate code under the trusted-local policy, carries no administrator approval and no credential-free guarantee, is admitted only under trusted_local and refused under the safe policy. It is never a Cache Snapshot. The closed capture layout admits regular files only through descriptor-relative no-follow traversal under entry, depth, path and byte limits, with two fixed modes and extended attributes and ACLs stripped. manifest_id names a source Manifest of file and executable entries whose bytes live in the CAS, so the cache re-materializes on a resumed Round like every other warm layer.",
+  "x-semantic-constraints": [
+    "entries is at least 1 and at most limits.max_entries",
+    "bytes is at most limits.max_bytes",
+    "the manifest names no symlink and every path satisfies the closed layout under limits"
+  ],
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "kind",
+    "trust",
+    "gate_node",
+    "head_snapshot_id",
+    "manifest_id",
+    "content_digest",
+    "entries",
+    "bytes",
+    "limits"
+  ],
+  "properties": {
+    "kind": {
+      "enum": [
+        "cargo_target"
+      ]
+    },
+    "trust": {
+      "description": "The one trust a Build Cache can carry. It is stated in the payload so no reader mistakes the artifact for an administrator-approved Cache Snapshot.",
+      "const": "candidate_built"
+    },
+    "gate_node": {
+      "type": "string",
+      "minLength": 1
+    },
+    "gate_attempt_id": {
+      "description": "The common Task Attempt the Gate ran under, when the Task runtime executed it.",
+      "$ref": "#/$defs/id"
+    },
+    "head_snapshot_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "manifest_id": {
+      "$ref": "#/$defs/digest"
+    },
+    "content_digest": {
+      "$ref": "#/$defs/digest"
+    },
+    "entries": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500000
+    },
+    "bytes": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 8589934592
+    },
+    "limits": {
+      "$ref": "#/$defs/limits"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[0-9a-z]{26}$"
+    },
+    "digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "limits": {
+      "description": "The limits the capture applied: bytes, traversed filesystem entries (directories included), directory depth and portable path length.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_bytes",
+        "max_entries",
+        "max_depth",
+        "max_path_bytes"
+      ],
+      "properties": {
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 8589934592
+        },
+        "max_entries": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500000
+        },
+        "max_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "max_path_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        }
+      }
+    }
+  }
+}

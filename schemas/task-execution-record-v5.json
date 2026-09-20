@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-execution-record:5",
+  "title": "TaskExecutionRecord@5",
+  "oneOf": [
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "prepared_id"],
+      "properties": {
+        "kind": {"const": "experiment_prepared"},
+        "prepared_id": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"}
+      }
+    },
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "prepared_id", "decision_id"],
+      "properties": {
+        "kind": {"const": "experiment_plan_decided"},
+        "prepared_id": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"},
+        "decision_id": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"}
+      }
+    },
+    {
+      "type": "object", "additionalProperties": false,
+      "required": ["kind", "prepared_id", "decision_id", "child_plan_id"],
+      "properties": {
+        "kind": {"const": "experiment_children_registered"},
+        "prepared_id": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"},
+        "decision_id": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"},
+        "child_plan_id": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"}
+      }
+    }
+  ]
+}

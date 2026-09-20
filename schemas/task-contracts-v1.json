@@ -1073,7 +1073,63 @@
           ],
           "properties": {
             "op": {
+              "const": "optimization_project"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op",
+            "baseline_slot",
+            "candidate_slot"
+          ],
+          "properties": {
+            "op": {
+              "const": "optimization_experiment"
+            },
+            "baseline_slot": {
+              "$ref": "#/$defs/name"
+            },
+            "candidate_slot": {
+              "$ref": "#/$defs/name"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
               "const": "review_continue"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "optimization_prepare"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "op"
+          ],
+          "properties": {
+            "op": {
+              "const": "optimization_finalize"
             }
           }
         }

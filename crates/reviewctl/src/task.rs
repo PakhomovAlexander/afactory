@@ -1,7 +1,7 @@
 //! Local Tasks: v2 seals one independently verified internal Snapshot; the first v3 slice may
 //! deliver that exact result only to a new local branch and linked worktree.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::path::{Component, Path, PathBuf};
@@ -805,6 +805,425 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
             )),
         },
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn observe_adoption(
+    task_id: &str,
+    commit: &str,
+    workload: &str,
+    model: &str,
+    environment: &str,
+    evidence_task: Option<&str>,
+    repo: &Path,
+    explicit_state: Option<&PathBuf>,
+    json_output: bool,
+) -> Result<(), String> {
+    use review_core::task::optimization_light::{
+        AdoptionEquivalenceV1, OPTIMIZATION_ADOPTION_OBSERVATION_V1,
+        OPTIMIZATION_ADOPTION_RECEIPT_V1, OPTIMIZATION_ADOPTION_TASK_EVIDENCE_V1,
+        OptimizationAdoptionObservationV1, OptimizationAdoptionReceiptV1,
+        OptimizationAdoptionTaskEvidenceV1,
+    };
+
+    validate_task_id(task_id)?;
+    if commit.trim().is_empty()
+        || workload.trim().is_empty()
+        || model.trim().is_empty()
+        || environment.trim().is_empty()
+    {
+        return Err(
+            "adoption observation requires commit, workload, model and environment identities"
+                .into(),
+        );
+    }
+    let repository = std::fs::canonicalize(repo)
+        .map_err(|error| format!("opening repository {}: {error}", repo.display()))?;
+    let state = resolve_task_state(&explicit_state.cloned(), &repository)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|error| error.to_string())?;
+    let mut store = review_store::EventStore::open(state.join("events.sqlite"))
+        .map_err(|error| error.to_string())?;
+    let task = store
+        .task_projection(&cas, task_id)
+        .map_err(|error| error.to_string())?
+        .ok_or("Unknown Task")?;
+    let delivery_record_id = task
+        .deliveries
+        .iter()
+        .rev()
+        .find(|(_, record)| {
+            record.status == review_core::task::delivery::TaskDeliveryStatusV1::Delivered
+        })
+        .map(|(id, _)| id)
+        .ok_or("Optimization Task has no completed local delivery")?;
+    let delivery_record = cas
+        .get_artifact(delivery_record_id)
+        .map_err(|error| error.to_string())?;
+    let adoption_receipts = delivery_record
+        .input_artifacts
+        .iter()
+        .filter_map(|id| {
+            cas.get_artifact(id)
+                .ok()
+                .filter(|artifact| artifact.artifact_type == OPTIMIZATION_ADOPTION_RECEIPT_V1)
+        })
+        .collect::<Vec<_>>();
+    let [receipt_envelope] = adoption_receipts.as_slice() else {
+        return Err("Delivered Task has no unique optimization adoption receipt".into());
+    };
+    let receipt: OptimizationAdoptionReceiptV1 =
+        serde_json::from_value(receipt_envelope.payload.clone()).map_err(|e| e.to_string())?;
+    receipt.validate()?;
+
+    let git_home = state.join("git-home");
+    std::fs::create_dir_all(&git_home).map_err(|error| error.to_string())?;
+    let source = Capture::new(&Repo::open(&repository, &git_home), &cas)
+        .committed(commit)
+        .map_err(|error| error.to_string())?;
+    let commit_snapshot_id = cas
+        .put_json(&serde_json::json!({
+            "schema":"af.optimization-adoption-commit/1",
+            "repository_id":source.repository_id,
+            "source_revision":source.source_revision,
+            "content_digest":source.content_digest,
+        }))
+        .map_err(|error| error.to_string())?;
+    let identify = |domain: &str, value: &str| {
+        cas.put_json(&serde_json::json!([domain, value]))
+            .map_err(|error| error.to_string())
+    };
+    let plan_id = task
+        .plan_id
+        .as_ref()
+        .ok_or("Optimization Task has no captured plan")?;
+    let plan_envelope = cas
+        .get_artifact(plan_id)
+        .map_err(|error| error.to_string())?;
+    let plan: review_core::task::plan::ExecutionPlanV1 =
+        serde_json::from_value(plan_envelope.payload).map_err(|error| error.to_string())?;
+    plan.validate()?;
+    let observed_unix_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?
+        .as_millis() as u64;
+    let observation = OptimizationAdoptionObservationV1 {
+        schema: "af.optimization-adoption-observation/1".into(),
+        adoption_receipt_id: receipt_envelope.artifact_id.clone(),
+        commit_snapshot_id,
+        commit_tree_id: source.content_digest.clone(),
+        equivalence: if source.content_digest == receipt.delivered_tree_id {
+            AdoptionEquivalenceV1::Equivalent
+        } else {
+            AdoptionEquivalenceV1::Edited
+        },
+        observed_unix_ms: observed_unix_ms.into(),
+        workload_id: identify("af/optimization-workload/1", workload)?,
+        model_id: identify("af/optimization-model/1", model)?,
+        engine_id: plan.engine_id,
+        environment_id: identify("af/optimization-environment/1", environment)?,
+        causal_claim: false,
+    };
+    observation.validate()?;
+    let task_evidence = if let Some(observed_task_id) = evidence_task {
+        validate_task_id(observed_task_id)?;
+        if observed_task_id == task_id {
+            return Err(
+                "adoption evidence must name a later Task, not the optimization Task".into(),
+            );
+        }
+        let observed = store
+            .task_projection(&cas, observed_task_id)
+            .map_err(|error| error.to_string())?
+            .ok_or("Unknown adoption evidence Task")?;
+        let result_id = match &observed.phase {
+            review_core::task::TaskPhaseV1::Finished { result_id } => result_id.clone(),
+            _ => return Err("adoption evidence Task is not finished".into()),
+        };
+        let result_envelope = cas
+            .get_artifact(&result_id)
+            .map_err(|error| error.to_string())?;
+        let result: review_core::task::TaskResultV1 =
+            serde_json::from_value(result_envelope.payload).map_err(|error| error.to_string())?;
+        result.validate()?;
+        let observed_plan_id = observed
+            .plan_id
+            .clone()
+            .ok_or("adoption evidence Task has no captured plan")?;
+        let observed_plan_envelope = cas
+            .get_artifact(&observed_plan_id)
+            .map_err(|error| error.to_string())?;
+        let observed_plan: review_core::task::plan::ExecutionPlanV1 =
+            serde_json::from_value(observed_plan_envelope.payload)
+                .map_err(|error| error.to_string())?;
+        observed_plan.validate()?;
+
+        let mut binding_ids = observed_plan
+            .bindings
+            .values()
+            .map(|binding| {
+                serde_json::to_value(binding)
+                    .map_err(|error| error.to_string())
+                    .and_then(|value| cas.put_json(&value).map_err(|error| error.to_string()))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        binding_ids.sort();
+        binding_ids.dedup();
+        let accounting = observed
+            .execution
+            .as_ref()
+            .map(|execution| execution.attempt_accounting())
+            .unwrap_or_default();
+        let mut attempt_ids = accounting
+            .iter()
+            .map(|attempt| attempt.attempt_id.clone())
+            .collect::<Vec<_>>();
+        attempt_ids.sort();
+        attempt_ids.dedup();
+        let mut unsuccessful_attempt_ids = accounting
+            .iter()
+            .filter(|attempt| {
+                !matches!(
+                    attempt.result,
+                    Some(review_core::task::execution::TaskAttemptResultV1::Succeeded { .. })
+                )
+            })
+            .map(|attempt| attempt.attempt_id.clone())
+            .collect::<Vec<_>>();
+        unsuccessful_attempt_ids.sort();
+        unsuccessful_attempt_ids.dedup();
+        let mut usage_ids = accounting
+            .iter()
+            .filter_map(|attempt| attempt.usage_id.clone())
+            .collect::<Vec<_>>();
+        usage_ids.sort();
+        usage_ids.dedup();
+        let mut runtime_evidence_ids = accounting
+            .iter()
+            .flat_map(|attempt| attempt.raw_artifact_ids.iter())
+            .filter_map(|id| {
+                cas.get_optional_artifact(id)
+                    .ok()
+                    .flatten()
+                    .filter(|artifact| {
+                        artifact.artifact_type
+                            == review_core::task::runtime::TASK_RUNTIME_EVIDENCE_V1
+                    })
+                    .map(|_| id.clone())
+            })
+            .collect::<Vec<_>>();
+        runtime_evidence_ids.sort();
+        runtime_evidence_ids.dedup();
+        let mut missing_fields = BTreeSet::new();
+        if accounting.is_empty() {
+            missing_fields.insert("attempts".into());
+        }
+        if accounting.iter().any(|attempt| attempt.usage_id.is_none()) {
+            missing_fields.insert("usage".into());
+        }
+        if accounting.iter().any(|attempt| {
+            !attempt.raw_artifact_ids.iter().any(|id| {
+                cas.get_optional_artifact(id)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|artifact| {
+                        artifact.artifact_type
+                            == review_core::task::runtime::TASK_RUNTIME_EVIDENCE_V1
+                    })
+            })
+        }) {
+            missing_fields.insert("runtime_evidence".into());
+        }
+        if binding_ids.is_empty() {
+            missing_fields.insert("worker_bindings".into());
+        }
+        let evidence = OptimizationAdoptionTaskEvidenceV1 {
+            schema: "af.optimization-adoption-task-evidence/1".into(),
+            adoption_receipt_id: receipt_envelope.artifact_id.clone(),
+            commit_snapshot_id: observation.commit_snapshot_id.clone(),
+            observed_task_id: observed_task_id.into(),
+            observed_task_revision_id: observed.revision_id,
+            observed_task_result_id: result_id,
+            observed_plan_id,
+            outcome: result.domain_conclusion,
+            attempt_ids,
+            unsuccessful_attempt_ids,
+            usage_ids,
+            runtime_evidence_ids,
+            binding_ids,
+            engine_id: observed_plan.engine_id,
+            environment_id: observed_plan.authority.policy_id,
+            missing_fields,
+            causal_claim: false,
+        };
+        evidence.validate()?;
+        let refs = [
+            evidence.adoption_receipt_id.clone(),
+            evidence.commit_snapshot_id.clone(),
+            evidence.observed_task_revision_id.clone(),
+            evidence.observed_task_result_id.clone(),
+            evidence.observed_plan_id.clone(),
+            evidence.engine_id.clone(),
+            evidence.environment_id.clone(),
+        ]
+        .into_iter()
+        .chain(evidence.usage_ids.iter().cloned())
+        .chain(evidence.runtime_evidence_ids.iter().cloned())
+        .chain(evidence.binding_ids.iter().cloned())
+        .collect();
+        Some(
+            cas.put_artifact(
+                OPTIMIZATION_ADOPTION_TASK_EVIDENCE_V1,
+                review_core::Producer::KernelOperation {
+                    run_id: review_store::store::task::task_run_id(task_id)
+                        .map_err(|error| error.to_string())?,
+                    node_id: None,
+                    operation_id: "optimization-adoption-task-evidence-v1".into(),
+                },
+                refs,
+                None,
+                serde_json::to_value(&evidence).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?
+            .0,
+        )
+    } else {
+        None
+    };
+    let same_observation = |existing: &OptimizationAdoptionObservationV1| {
+        existing.adoption_receipt_id == observation.adoption_receipt_id
+            && existing.commit_snapshot_id == observation.commit_snapshot_id
+            && existing.commit_tree_id == observation.commit_tree_id
+            && existing.equivalence == observation.equivalence
+            && existing.workload_id == observation.workload_id
+            && existing.model_id == observation.model_id
+            && existing.engine_id == observation.engine_id
+            && existing.environment_id == observation.environment_id
+    };
+    if let Some((observation_id, existing)) = task
+        .adoption_observations
+        .iter()
+        .find(|(_, existing)| same_observation(existing))
+    {
+        let envelope = cas
+            .get_artifact(observation_id)
+            .map_err(|e| e.to_string())?;
+        if task_evidence
+            .as_ref()
+            .is_none_or(|id| envelope.input_artifacts.contains(id))
+        {
+            return print_adoption_observation(
+                observation_id,
+                existing,
+                task_evidence.as_deref(),
+                json_output,
+            );
+        }
+        return Err(
+            "matching adoption observation already exists with different Task evidence".into(),
+        );
+    }
+    let observation_id = cas
+        .put_artifact(
+            OPTIMIZATION_ADOPTION_OBSERVATION_V1,
+            review_core::Producer::KernelOperation {
+                run_id: review_store::store::task::task_run_id(task_id)
+                    .map_err(|error| error.to_string())?,
+                node_id: None,
+                operation_id: "optimization-adoption-observation-v1".into(),
+            },
+            vec![
+                receipt_envelope.artifact_id.clone(),
+                observation.commit_snapshot_id.clone(),
+                observation.workload_id.clone(),
+                observation.model_id.clone(),
+                observation.engine_id.clone(),
+                observation.environment_id.clone(),
+            ]
+            .into_iter()
+            .chain(task_evidence.iter().cloned())
+            .collect(),
+            None,
+            serde_json::to_value(&observation).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?
+        .0;
+    cas.flush().map_err(|error| error.to_string())?;
+    let lease = store
+        .take_task_lease(
+            &cas,
+            task_id,
+            &format!("observe-adoption-{}", std::process::id()),
+            60_000,
+        )
+        .map_err(|error| error.to_string())?;
+    let current = store
+        .task_projection(&cas, task_id)
+        .map_err(|error| error.to_string())?
+        .ok_or("Unknown Task")?;
+    if let Some((existing_id, existing)) = current
+        .adoption_observations
+        .iter()
+        .find(|(_, existing)| same_observation(existing))
+    {
+        store
+            .release_task_lease(&cas, &lease)
+            .map_err(|error| error.to_string())?;
+        let envelope = cas.get_artifact(existing_id).map_err(|e| e.to_string())?;
+        if task_evidence
+            .as_ref()
+            .is_none_or(|id| envelope.input_artifacts.contains(id))
+        {
+            return print_adoption_observation(
+                existing_id,
+                existing,
+                task_evidence.as_deref(),
+                json_output,
+            );
+        }
+        return Err(
+            "matching adoption observation already exists with different Task evidence".into(),
+        );
+    }
+    let recorded = store
+        .record_task_adoption_observation(&cas, &lease, &observation_id)
+        .map_err(|error| error.to_string());
+    let released = store
+        .release_task_lease(&cas, &lease)
+        .map_err(|error| error.to_string());
+    recorded?;
+    released?;
+    print_adoption_observation(
+        &observation_id,
+        &observation,
+        task_evidence.as_deref(),
+        json_output,
+    )
+}
+
+fn print_adoption_observation(
+    observation_id: &str,
+    observation: &review_core::task::optimization_light::OptimizationAdoptionObservationV1,
+    task_evidence_id: Option<&str>,
+    json_output: bool,
+) -> Result<(), String> {
+    use review_core::task::optimization_light::AdoptionEquivalenceV1;
+    let output = serde_json::json!({"observation_id":observation_id,"observation":observation,"task_evidence_id":task_evidence_id});
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string(&output).map_err(|e| e.to_string())?
+        );
+    } else {
+        println!(
+            "Adoption {}: {}",
+            observation_id,
+            match observation.equivalence {
+                AdoptionEquivalenceV1::Equivalent => "equivalent",
+                AdoptionEquivalenceV1::Edited => "edited",
+            }
+        );
+    }
+    Ok(())
 }
 
 pub(super) fn list(options: InspectOptions) -> Result<(), String> {

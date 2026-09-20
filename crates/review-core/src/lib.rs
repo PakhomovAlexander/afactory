@@ -12,6 +12,7 @@
 //!   so a value cannot change meaning between producer and consumer.
 
 pub mod broker;
+pub mod build_cache;
 pub mod cache;
 pub mod campaign;
 pub mod change_set;
@@ -29,10 +30,40 @@ pub mod legacy;
 pub mod patch;
 pub mod path;
 pub mod resolution;
+pub mod session;
 pub mod slice;
 pub mod snapshot;
 pub mod subject;
 pub mod task;
+pub mod warm;
+pub mod workspace;
+
+pub use workspace::{
+    WORKSPACE_ID_HEX_LEN, WorkspaceBasisV1, WorkspaceFallbackReasonV1, WorkspaceRebasedPayloadV1,
+    is_workspace_id,
+};
+
+pub use warm::{
+    BuildCacheDropReasonV1, DEFAULT_WORKER_NOTES_BYTES, HeadDeltaDropReasonV1, HeadDeltaEntryV1,
+    HeadDeltaInputs, HeadDeltaMarkV1, HeadDeltaV1, InspectedPathV1, MAX_HEAD_DELTA_BYTES,
+    MAX_WORKER_NOTES_BYTES, PathHintV1, TreeView, WarmLayerV1, WarmSetSelectedPayloadV1, WarmSetV1,
+    WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1, WorkerNotesV1, compute_head_delta_marks,
+};
+
+pub use session::{
+    ColdCloseoutDispatchedPayloadV1, DEFAULT_SESSION_MAX_AGE_SECS, MAX_SESSION_MAX_AGE_SECS,
+    MAX_SESSION_TRANSCRIPT_BYTES, SessionCleanupOutcomeV1, SessionCleanupRefusalV1,
+    SessionDropReasonV1, SessionSnapshotCleanedPayloadV1, SessionSnapshotPreparedPayloadV1,
+    SessionSnapshotV1, SessionSourceV1, attempt_of_session_id, is_session_id,
+    session_id_for_attempt,
+};
+
+pub use build_cache::{
+    BUILD_CACHE_MAX_DEPTH_V1, BUILD_CACHE_MAX_PATH_BYTES_V1, BuildCacheCapturedPayloadV1,
+    BuildCacheKindV1, BuildCacheLimitsV1, BuildCacheRefusalReasonV1, BuildCacheTrustV1,
+    BuildCacheV1, DEFAULT_BUILD_CACHE_BYTES_V1, DEFAULT_BUILD_CACHE_ENTRIES_V1,
+    MAX_BUILD_CACHE_BYTES_V1, MAX_BUILD_CACHE_ENTRIES_V1, validate_build_cache_path_v1,
+};
 
 pub use task::broker::{
     TASK_BROKER_BINDING_V1, TASK_BROKER_OPERATION_V1, TaskBrokerBindingV1, TaskBrokerOperationV1,
@@ -160,4 +191,11 @@ pub mod contract {
     pub const SHARD_SET_V1: &str = "review.kernel/ShardSet@1";
     pub const SEMANTIC_CLOSURE_V1: &str = "review.kernel/SemanticClosure@1";
     pub const REVIEWER_PACKAGE_V1: &str = "review.kernel/ReviewerPackage@1";
+    pub const WORKER_NOTES_V1: &str = "review.kernel/WorkerNotes@1";
+    pub const HEAD_DELTA_V1: &str = "review.kernel/HeadDelta@1";
+    pub const WARM_SET_V1: &str = "review.kernel/WarmSet@1";
+    /// Explicitly unsafe candidate-built output carried Gate to Worker; never a Cache Snapshot.
+    pub const BUILD_CACHE_V1: &str = "review.kernel/BuildCache@1";
+    /// One Attempt's captured harness transcript, resumed forked and never mutated in place.
+    pub const SESSION_SNAPSHOT_V1: &str = "review.kernel/SessionSnapshot@1";
 }

@@ -163,6 +163,7 @@ impl ReviewerAdapter for ProposingShard {
                 description: "set the fixture constant to two".into(),
                 auto_apply_nominated: true,
             })),
+            notes: Ok(None),
             cost_tokens: 10,
             raw_artifact: cas.put(b"proposing shard").unwrap(),
         })
@@ -188,6 +189,7 @@ impl ReviewerAdapter for CleanCloseout {
             }))
             .unwrap(),
             proposal: Ok(None),
+            notes: Ok(None),
             cost_tokens: 10,
             raw_artifact: cas.put(b"clean closeout").unwrap(),
         })

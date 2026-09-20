@@ -108,6 +108,22 @@
         "$ref": "#/$defs/ownedChildTemplate"
       }
     },
+    "experimental_slots": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slot_id", "max_concurrency"],
+        "properties": {
+          "slot_id": {"$ref": "urn:af:schema:task-contracts:1#/$defs/digest"},
+          "max_concurrency": {"type": "integer", "minimum": 1, "maximum": 4294967295}
+        }
+      }
+    },
     "review_integration": {
       "type": "object",
       "additionalProperties": false,

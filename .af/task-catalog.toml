@@ -1,0 +1,76 @@
+schema = "af.task-catalog/2"
+# Campaign catalog for the Worker warm layers implementation: every package of the plan runs
+# through warm/implementation-reviewed with the same four native Workers. Provider labels here
+# are neutral; a developer's local bindings file maps them to admitted machine-local accounts.
+code_policy = ".af/code-policy.toml"
+no_match = "refuse"
+
+[review]
+generation = 2
+gate = "major"
+clean_rounds = 1
+max_rounds = 2
+allow_targeted_repairs = false
+
+[review.reviewers]
+bugs = "required"
+correctness = "required"
+
+[packages."warm/implementer"]
+version = "1.2.0"
+digest = "sha256:d466c9eec40868c07027860373ab096fdf62e59f06e117273d383e724b7878f3"
+path = ".af/task-packages/warm/implementer"
+
+[packages."warm/correctness"]
+version = "1.0.0"
+digest = "sha256:261c6943e13b49b535a0d4ff037027dc15a7695732d9cccd014b8b88eb00c28f"
+path = ".af/task-packages/warm/correctness"
+
+[packages."warm/bugs"]
+version = "1.0.0"
+digest = "sha256:68ae1790f59e3045b536edb689fce04d4d5783440c31448efb610e5a19f7f08d"
+path = ".af/task-packages/warm/bugs"
+
+[packages."warm/evaluator"]
+version = "1.0.0"
+digest = "sha256:346caf4b211a07ed1b0efcacf079ebeb7bec0b01846243f823eb1cba8acdc8cf"
+path = ".af/task-packages/warm/evaluator"
+
+[packages."warm/review-light"]
+version = "1.0.0"
+digest = "sha256:b1eba94b4b2fe151b0327652a2203ff09067eea0dc0cad942167293c8b339685"
+path = ".af/task-packages/warm/review-light"
+
+[packages."warm/implementation-reviewed"]
+version = "1.0.0"
+digest = "sha256:3ac1aaa73fe0dbf444bf4bc4fec75e5aa8362bac91e763000f54a4c3ea947bb0"
+path = ".af/task-packages/warm/implementation-reviewed"
+
+[packages."warm/verification"]
+version = "1.0.0"
+digest = "sha256:198ece7f7da58241216800f550a1e5cb65dda88da5534fbf8a1979bc9d74f480"
+path = ".af/task-packages/warm/verification"
+
+[packages."warm/verification-kind"]
+version = "1.0.0"
+digest = "sha256:1356e5cfe8f8444f0244b4a74686536d9340aefd8b0d7f289222fe66cbcf9f32"
+path = ".af/task-packages/warm/verification-kind"
+
+[kinds]
+verification = "warm/verification-kind"
+
+[independence]
+command_workers_by_package = true
+distinct_principals = true
+distinct_providers = false
+distinct_models = false
+
+[providers]
+"warm/implementer" = "claude-main"
+"warm/correctness" = "codex-main"
+"warm/bugs" = "codex-main"
+"warm/evaluator" = "codex-main"
+
+[provider_admission]
+tokens = 32768
+wall_ms = 45000

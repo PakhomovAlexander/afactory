@@ -55,6 +55,12 @@ pub(super) struct ReviewDomainState<'a> {
     pub(super) execution_bindings: Mutex<BTreeMap<String, RunExecutionBindingV4>>,
     pub(super) cache_snapshots: Mutex<BTreeMap<(String, RunCacheKindV5), RunCacheSnapshotV5>>,
     pub(super) cache_failures: Mutex<BTreeMap<(String, RunCacheKindV5), RunCacheFailureV5>>,
+    /// Measured common-runtime evidence is retained with the owning Task Gate Attempt. It is
+    /// separate from deterministic Review verdict artifacts and cannot affect convergence.
+    pub(super) runtime_spans:
+        Mutex<BTreeMap<String, Vec<review_core::task::runtime::TaskRuntimeSpanV1>>>,
+    pub(super) runtime_caches:
+        Mutex<BTreeMap<String, Vec<review_core::task::runtime::TaskCacheObservationV1>>>,
     pub(super) demand_requirements: BTreeMap<String, review_core::DemandRequirement>,
     pub(super) slicing: BTreeMap<String, scatter::StaticSlicePolicy>,
     pub(super) closeouts: BTreeMap<String, String>,
@@ -92,6 +98,41 @@ pub(super) struct ReviewDomainState<'a> {
     /// Outputs made durable in this scheduler run, keyed by their producing node. Downstream
     /// canonical reducers consult only this map plus the validated graph when binding artifacts.
     pub(super) node_outputs: Mutex<BTreeMap<String, ArtifactMap>>,
+    /// Reviewer nodes with a pinned warm-layer policy. Absent nodes run cold, exactly as every
+    /// pipeline written before warm layers existed.
+    pub(super) warm_policies: BTreeMap<String, review_config::WarmSpec>,
+    /// Reviewer nodes that carry a Build Cache, mapped to the exact Gate that captures it: the
+    /// node's `gated_by`. Selection reads only that Gate's published capture, so two Gates in
+    /// one pipeline can never hand a reviewer the other's build.
+    pub(super) warm_build_cache_gates: BTreeMap<String, String>,
+    /// Warm Sets selected and durably recorded for this Round, by node.
+    pub(super) warm_sets: Mutex<BTreeMap<String, crate::warm::WarmSetRecord>>,
+    /// Package P3: the machine-local root Warm Workspaces live under, resolved by the CLI to the
+    /// XDG cache directory and by tests to a temporary one. `None` resolves the default at the
+    /// first warm workspace. The path never enters a durable record.
+    pub(super) workspace_cache_root: Option<std::path::PathBuf>,
+    /// Warm Workspace templates prepared in this kernel run, by node. Each was verified to hold
+    /// the Round head before it was cached here.
+    pub(super) warm_workspaces: Mutex<BTreeMap<String, crate::warm::WarmWorkspace>>,
+    /// Package P4: what the execution frontend hosting each node can do with the session layer,
+    /// installed before the node's Warm Set is selected. An absent entry is a frontend that does
+    /// not run the session protocol, and the Warm Set records `host_unsupported`.
+    pub(super) session_hosts: Mutex<BTreeMap<String, crate::session::SessionCapability>>,
+}
+
+/// One Cold Closeout result folded into the Ledger beside the warm result it confirms: the
+/// node both Attempts belong to, the confirmation's own result artifact and Attempt, and the
+/// result value itself.
+struct FoldedColdCloseout {
+    /// The warm reviewer node both Attempts belong to. It is where the confirmation's exact
+    /// Worker Input and its Demand requirement come from.
+    node: String,
+    /// The Ledger source the confirmation reduces under: the node's closeout slot, so warm and
+    /// cold are two distinct stages of one reviewer rather than one source delivered twice.
+    source: String,
+    result_artifact_id: String,
+    cold_attempt_id: String,
+    result: serde_json::Value,
 }
 
 impl<'a> ReviewDomainState<'a> {
@@ -191,6 +232,25 @@ impl<'a> ReviewDomainState<'a> {
             .collect::<Result<_, String>>()?;
         self.closeouts = loaded.closeouts().clone();
         self.static_node_ids = loaded.plan_order().iter().cloned().collect();
+        self.warm_policies = loaded.warm_policies().clone();
+        self.warm_build_cache_gates = self
+            .warm_policies
+            .iter()
+            .filter(|(_, policy)| !policy.build_cache.kinds().is_empty())
+            .map(|(node, _)| {
+                loaded
+                    .planned()
+                    .nodes
+                    .get(node)
+                    .and_then(|planned| planned.gated_by.clone())
+                    .map(|gate| (node.clone(), gate))
+                    .ok_or_else(|| {
+                        format!(
+                            "reviewer `{node}` carries a Build Cache but is not gated_by the Gate that captures it"
+                        )
+                    })
+            })
+            .collect::<Result<_, String>>()?;
         Ok(())
     }
 
@@ -231,6 +291,8 @@ impl<'a> ReviewDomainState<'a> {
             execution_bindings: Mutex::new(BTreeMap::new()),
             cache_snapshots: Mutex::new(BTreeMap::new()),
             cache_failures: Mutex::new(BTreeMap::new()),
+            runtime_spans: Mutex::new(BTreeMap::new()),
+            runtime_caches: Mutex::new(BTreeMap::new()),
             demand_requirements: BTreeMap::new(),
             slicing: BTreeMap::new(),
             closeouts: BTreeMap::new(),
@@ -245,6 +307,12 @@ impl<'a> ReviewDomainState<'a> {
             reviewer_input_artifacts: Mutex::new(BTreeMap::new()),
             input_bindings: BTreeMap::new(),
             node_outputs: Mutex::new(BTreeMap::new()),
+            warm_policies: BTreeMap::new(),
+            warm_build_cache_gates: BTreeMap::new(),
+            warm_sets: Mutex::new(BTreeMap::new()),
+            workspace_cache_root: None,
+            warm_workspaces: Mutex::new(BTreeMap::new()),
+            session_hosts: Mutex::new(BTreeMap::new()),
         })
     }
     /// Emit the run's generation state — the campaign's prior findings — as the artifact a
@@ -271,14 +339,17 @@ impl<'a> ReviewDomainState<'a> {
         node_id: &str,
         deadline: Option<std::time::Instant>,
     ) -> Result<Vec<String>, String> {
-        self.run_gate_controlled(node_id, deadline, None)
+        self.run_gate_controlled(node_id, deadline, None, None)
     }
 
+    /// `gate_attempt` is the common Task Attempt the Gate runs under, when the Task runtime
+    /// executes it; a captured Build Cache records it as producer provenance.
     pub(super) fn run_gate_controlled(
         &self,
         node_id: &str,
         deadline: Option<std::time::Instant>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
+        gate_attempt: Option<&str>,
     ) -> Result<Vec<String>, String> {
         crate::task::control::check(cancellation)?;
 
@@ -459,6 +530,60 @@ impl<'a> ReviewDomainState<'a> {
                         return Err(error.to_string());
                     }
                 };
+                let cache_observation_id = self
+                    .cas
+                    .put_json(&serde_json::json!([
+                        self.run_id,
+                        node_id,
+                        "dependency_preparation",
+                        snapshot.kind.name(),
+                        snapshot.source_digest,
+                        snapshot.started_unix_ms,
+                        snapshot.lookup_ms,
+                        snapshot.materialization_ms
+                    ]))
+                    .map_err(|error| error.to_string())?;
+                let span_id = self
+                    .cas
+                    .put_json(&serde_json::json!([
+                        self.run_id,
+                        node_id,
+                        "dependency_preparation",
+                        snapshot.started_unix_ms,
+                        snapshot
+                            .lookup_ms
+                            .saturating_add(snapshot.materialization_ms)
+                    ]))
+                    .map_err(|error| error.to_string())?;
+                self.runtime_spans
+                    .lock()
+                    .expect("runtime spans")
+                    .entry(node_id.to_string())
+                    .or_default()
+                    .push(review_core::task::runtime::TaskRuntimeSpanV1 {
+                        span_id,
+                        kind: review_core::task::runtime::TaskRuntimeSpanKindV1::DependencyPreparation,
+                        label: snapshot.kind.name().into(),
+                        started_unix_ms: snapshot.started_unix_ms,
+                        elapsed_ms: snapshot.lookup_ms.saturating_add(snapshot.materialization_ms),
+                    });
+                self.runtime_caches
+                    .lock()
+                    .expect("runtime caches")
+                    .entry(node_id.to_string())
+                    .or_default()
+                    .push(review_core::task::runtime::TaskCacheObservationV1 {
+                        observation_id: cache_observation_id,
+                        layer: review_core::task::runtime::TaskCacheLayerV1::DependencyPreparation,
+                        kind: snapshot.kind.name().into(),
+                        eligible: true,
+                        result: review_core::task::runtime::TaskCacheResultV1::Prepared,
+                        source_digest: snapshot.source_digest.clone(),
+                        toolchain_id: None,
+                        bytes_available: snapshot.bytes,
+                        lookup_ms: snapshot.lookup_ms,
+                        materialization_ms: snapshot.materialization_ms,
+                    });
                 let receipt = RunCacheSnapshotV5 {
                     node: node_id.to_string(),
                     kind: run_cache_kind(snapshot.kind),
@@ -494,6 +619,14 @@ impl<'a> ReviewDomainState<'a> {
                 cache_environments.push(kind.environment(sandbox.root()));
             }
         }
+        // A trusted-local Gate that declares build caches builds into empty private
+        // directories below the same reserved cache root; its checks see the pointing
+        // environment. Prepared after the safe caches so the root exists exactly once.
+        let build_cache_environments =
+            self.prepare_gate_build_caches(node_id, &sandbox, container.is_some())?;
+        let cache_root_created =
+            !cache_receipt_artifacts.is_empty() || !build_cache_environments.is_empty();
+        cache_environments.extend(build_cache_environments);
         // Run the checks holding no lock: each is a build or a test, and the store lock is
         // shared with every other node, so holding it across a check would stall the whole
         // pipeline for the build's duration. The lock is taken only to append each result.
@@ -515,8 +648,8 @@ impl<'a> ReviewDomainState<'a> {
             crate::task::control::check(cancellation)?;
             runner = runner.with_timeout(gate_remaining(self.check_timeout, deadline)?);
             let mut cleanup_failure = None;
-            let result = match container.as_ref() {
-                Some(provider) => runner.run_with(check, |program, args, env, timeout| {
+            let execution = match container.as_ref() {
+                Some(provider) => runner.run_with_observed(check, |program, args, env, timeout| {
                     match provider.exec_evidenced_controlled(
                         sandbox.root(),
                         program,
@@ -534,8 +667,32 @@ impl<'a> ReviewDomainState<'a> {
                         }
                     }
                 }),
-                None => runner.run(check),
+                None => runner.run_observed(check),
             };
+            let result = execution.result;
+            let span_id = self
+                .cas
+                .put_json(&serde_json::json!([
+                    self.run_id,
+                    node_id,
+                    "check",
+                    check.name,
+                    execution.started_unix_ms,
+                    execution.elapsed_ms
+                ]))
+                .map_err(|error| error.to_string())?;
+            self.runtime_spans
+                .lock()
+                .expect("runtime spans")
+                .entry(node_id.to_string())
+                .or_default()
+                .push(review_core::task::runtime::TaskRuntimeSpanV1 {
+                    span_id,
+                    kind: review_core::task::runtime::TaskRuntimeSpanKindV1::Check,
+                    label: check.name.clone(),
+                    started_unix_ms: execution.started_unix_ms,
+                    elapsed_ms: execution.elapsed_ms,
+                });
             self.buffer_reviewer_event(node_id, check_event(&result, node_id));
             results.push(result);
             if let Some(error) = cleanup_failure {
@@ -552,7 +709,13 @@ impl<'a> ReviewDomainState<'a> {
         }
 
         let decision = GateDecision::evaluate(&results);
-        if !cache_receipt_artifacts.is_empty() {
+        if decision.passed() {
+            // Only a passing Gate dispatches reviewers, so only a passing Gate's build output
+            // is worth carrying. The capture records its own refusals; it never changes the
+            // verdict.
+            self.capture_gate_build_caches(node_id, gate_attempt, &sandbox)?;
+        }
+        if cache_root_created {
             remove_materialized_caches(&sandbox)?;
         }
         let sealed = sandbox.seal().map_err(|e| e.to_string())?;
@@ -771,6 +934,71 @@ impl<'a> ReviewDomainState<'a> {
         // Frozen projection retains only the original declared ports.
         drop(outputs.canonical);
         Ok(outputs.original)
+    }
+
+    /// One Cold Closeout result, ready to fold beside the warm result it confirms.
+    ///
+    /// The Cold Closeout results this Round recorded for the warm results `results` already
+    /// holds: for each delivered reviewer result, the cold confirmation of that exact artifact,
+    /// attributed to the same node. A closeout that failed contributes nothing to reduce; its
+    /// record still says the Round has no cold confirmation.
+    fn cold_closeout_results(
+        &self,
+        results: &[(String, String, ReviewerResultContract, LegacyStageOutput)],
+    ) -> Result<Vec<FoldedColdCloseout>, String> {
+        let delivered: BTreeSet<(&str, &str)> = results
+            .iter()
+            .map(|(node, id, _, _)| (node.as_str(), id.as_str()))
+            .collect();
+        if delivered.is_empty() {
+            return Ok(Vec::new());
+        }
+        let events = self
+            .store
+            .lock()
+            .expect("event store")
+            .replay(&self.run_id)
+            .map_err(|error| error.to_string())?;
+        let mut folded = Vec::new();
+        for event in events.iter().filter(|event| {
+            event.event_type == EventType::ColdCloseoutDispatchedV1
+                && event.causation_id.as_deref() == Some(self.authority.round_event_id.as_str())
+        }) {
+            let payload: review_core::ColdCloseoutDispatchedPayloadV1 =
+                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
+            payload.validate()?;
+            if !delivered.contains(&(
+                payload.node.as_str(),
+                payload.warm_result_artifact_id.as_str(),
+            )) {
+                continue;
+            }
+            let Some(result_id) = payload.cold_result_artifact_id else {
+                // A required confirmation that produced no admissible result leaves the Round
+                // without the cold opinion its policy compiled. The Ledger refuses to reduce
+                // rather than let the warm result close the Round alone.
+                return Err(format!(
+                    "node `{}` owes a cold confirmation that produced no admissible result: {}",
+                    payload.node,
+                    payload
+                        .failed
+                        .as_deref()
+                        .unwrap_or("the Cold Closeout Attempt recorded no reason")
+                ));
+            };
+            let result = self
+                .cas
+                .get_json(&result_id)
+                .map_err(|error| error.to_string())?;
+            folded.push(FoldedColdCloseout {
+                source: crate::closeout::closeout_slot(&payload.node),
+                node: payload.node,
+                result_artifact_id: result_id,
+                cold_attempt_id: payload.cold_attempt_id,
+                result,
+            });
+        }
+        Ok(folded)
     }
 
     pub(super) fn reduce_ledger(
@@ -1005,6 +1233,30 @@ impl<'a> ReviewDomainState<'a> {
                 }
             }
         }
+        // Package P4: a Cold Closeout is a second Attempt of the same node inside this Round,
+        // and its result folds beside the exact warm result an edge delivered. The closure is
+        // anchored to that delivered artifact, so the Ledger still reduces what its edges
+        // delivered rather than a global scan of whatever happened to run. It is folded after
+        // the selection binding above, which pairs delivered artifacts with selected Attempts:
+        // a confirmation is not the node's selected result and never competes for that slot.
+        // Keyed by the closeout's own Ledger source, never by its result digest: a
+        // confirmation that answers exactly as the warm Attempt did is the same content and
+        // would otherwise be mistaken for it.
+        let mut closeout_attempts: BTreeMap<String, (String, String)> = BTreeMap::new();
+        for closeout in self.cold_closeout_results(&results)? {
+            let (contract, output) = reviewer_stage_output(closeout.result)
+                .map_err(|error| format!("artifact {}: {error}", closeout.result_artifact_id))?;
+            closeout_attempts.insert(
+                closeout.source.clone(),
+                (closeout.cold_attempt_id, closeout.node),
+            );
+            results.push((
+                closeout.source,
+                closeout.result_artifact_id,
+                contract,
+                output,
+            ));
+        }
         // Canonical gather order: reviewer node id — not completion order, input-port label, or
         // artifact digest order. Legacy campaigns retain their frozen port-labelled projection.
         results.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
@@ -1022,6 +1274,23 @@ impl<'a> ReviewDomainState<'a> {
                 results
                     .iter()
                     .map(|(node, result_id, _, _)| {
+                        // A Cold Closeout result belongs to its own Attempt under its own
+                        // slot, run on the warm node's exact invocation inputs. It is not the
+                        // node's selection, so it is bound from its own durable record instead.
+                        if let Some((attempt_id, warm_node)) = closeout_attempts.get(node) {
+                            return Ok((
+                                attempt_id.clone(),
+                                reviewer_inputs
+                                    .get(node)
+                                    .or_else(|| reviewer_inputs.get(warm_node))
+                                    .cloned()
+                                    .ok_or_else(|| {
+                                        format!(
+                                            "Cold Closeout of `{warm_node}` has no exact invocation inputs"
+                                        )
+                                    })?,
+                            ));
+                        }
                         let selection = selections.get(node).ok_or_else(|| {
                             format!("selected reviewer result for `{node}` has no Attempt")
                         })?;
@@ -1075,7 +1344,12 @@ impl<'a> ReviewDomainState<'a> {
                                 (node, result_id, result_contract, stage),
                                 (attempt_id, input_artifacts),
                             )| {
-                                let binding_node = self.reviewer_binding_node(node);
+                                // A confirmation answers for the reviewer it confirms, so its
+                                // Demand requirement is that reviewer's, not its slot's.
+                                let subject = closeout_attempts
+                                    .get(node)
+                                    .map_or(node.as_str(), |(_, warm)| warm.as_str());
+                                let binding_node = self.reviewer_binding_node(subject);
                                 review_store::CanonicalStage {
                                     source: node,
                                     demand_requirement: self
@@ -1649,6 +1923,17 @@ impl<'a> ReviewDomainState<'a> {
     pub(super) fn sandbox(&self, mode: Mode) -> Result<Sandbox, String> {
         let template = self.sandbox_template()?;
         Sandbox::from_template(&template, mode).map_err(|e| e.to_string())
+    }
+
+    /// A fresh sandbox for one node's Attempt: a clone of the node's Warm Workspace template
+    /// when its policy keeps one, and of the run's temporary template otherwise. Either way
+    /// every Attempt gets its own copy-on-write clone and nothing it writes reaches a sibling,
+    /// the template or the source.
+    pub(super) fn sandbox_for(&self, node_id: &str, mode: Mode) -> Result<Sandbox, String> {
+        match self.warm_workspace_template(node_id)? {
+            Some(template) => Sandbox::from_template(&template, mode).map_err(|e| e.to_string()),
+            None => self.sandbox(mode),
+        }
     }
 
     pub(super) fn record_cache_failure(

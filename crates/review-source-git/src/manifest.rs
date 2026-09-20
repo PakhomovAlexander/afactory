@@ -31,7 +31,7 @@ impl PathEncoding {
     }
 }
 
-fn encode_path_for(encoding: PathEncoding, bytes: &[u8]) -> String {
+pub(crate) fn encode_path_for(encoding: PathEncoding, bytes: &[u8]) -> String {
     if encoding == PathEncoding::PercentV2 {
         return encode_path(bytes);
     }

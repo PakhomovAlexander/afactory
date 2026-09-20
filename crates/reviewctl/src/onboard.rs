@@ -774,6 +774,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         slicing: None,
         closeout_for: None,
         budget: None,
+        warm: None,
     };
     let generation = NodeSpec {
         id: "generation".into(),
@@ -791,6 +792,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         slicing: None,
         closeout_for: None,
         budget: None,
+        warm: None,
     };
     let reviewers: Vec<NodeSpec> = ["correctness", "architecture"]
         .into_iter()
@@ -811,6 +813,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
             slicing: None,
             closeout_for: None,
             budget: None,
+            warm: None,
         })
         .collect();
     let gather = NodeSpec {
@@ -829,6 +832,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         slicing: None,
         closeout_for: None,
         budget: None,
+        warm: None,
     };
     let ledger = NodeSpec {
         id: "ledger".into(),
@@ -846,6 +850,7 @@ fn build_definition(gates: &[Gate]) -> Definition {
         slicing: None,
         closeout_for: None,
         budget: None,
+        warm: None,
     };
 
     let mut nodes = vec![gate, generation];
@@ -875,6 +880,9 @@ fn build_definition(gates: &[Gate]) -> Definition {
             mode: GateModeSpec::EphemeralWrite,
             image: None,
             caches: Vec::new(),
+            build_caches: Vec::new(),
+            build_cache_max_bytes: None,
+            build_cache_max_entries: None,
         }),
         nodes,
         edges,
@@ -882,6 +890,9 @@ fn build_definition(gates: &[Gate]) -> Definition {
             clean_rounds: 1,
             max_rounds: 2,
             gate: SeveritySpec::Major,
+            // Emitted authority stays cold: `af onboard` writes no warm policy, so a compiled
+            // Cold Closeout would have no warm reviewer to confirm.
+            cold_closeout: review_config::ColdCloseoutSpec::None,
         },
         budgets: Some(BudgetSpec {
             unit: BudgetUnit::Tokens,

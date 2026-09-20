@@ -9,6 +9,9 @@ pub mod host;
 mod integration;
 pub mod lease;
 pub mod legacy_review;
+pub mod optimization;
+pub mod optimization_configuration;
+pub mod optimization_producers;
 mod owned;
 pub mod planning;
 pub mod provider;
@@ -38,6 +41,12 @@ pub struct TaskOwnedChildrenInputs {
     pub source_item_ids: Vec<String>,
 }
 
+/// The domain prepares immutable experiment artifacts. The Store owns approval and registration;
+/// returning this value grants no reservation or dispatch authority.
+pub struct TaskExperimentInputs {
+    pub prepared_id: String,
+}
+
 pub struct TaskWorkOutput {
     pub usage_observation: Option<review_core::task::usage::TaskUsageObservationV1>,
     /// Adapter-reported counters survive output/CAS failure until durable accounting.
@@ -51,6 +60,47 @@ pub struct TaskWorkOutput {
 }
 
 pub trait TaskOperatorHost: Sync {
+    fn prepare_experiment(
+        &self,
+        _cas: &Cas,
+        _parent: &TaskInvocationV1,
+        _writer_epoch: u64,
+    ) -> Result<TaskExperimentInputs, String> {
+        Err("Task operator has no installed experiment preparation".into())
+    }
+
+    fn prepare_context_for_resolved_attempt(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
+        attempt: &ReservedTaskAttempt,
+    ) -> Result<String, String> {
+        self.prepare_context_for_attempt(cas, input, attempt)
+    }
+
+    fn execute_resolved_controlled(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
+        attempt: Option<&PreparedTaskAttempt>,
+        broker: Option<&dyn review_broker::ExactBrokerClient>,
+        cancellation: Option<&AtomicBool>,
+    ) -> TaskWorkOutput {
+        self.execute_controlled(cas, input, attempt, broker, cancellation)
+    }
+
+    fn complete_experiment(
+        &self,
+        _cas: &Cas,
+        _parent: &TaskInvocationV1,
+        _experiment: &review_store::store::task::execution::experiment::RegisteredTaskExperiment,
+        _facts: &[review_store::store::task::execution::experiment::ExperimentChildEvidence],
+    ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
+        Err("Task operator has no installed experiment completion".into())
+    }
+
     fn prepare_owned_children(
         &self,
         _cas: &Cas,
@@ -439,8 +489,12 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             .map_err(|e| e.to_string())?;
         // Release the Store lock before pure host capture; it may read shared domain evidence.
         let context = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.host
-                .prepare_context_for_attempt(self.cas, input, &attempt)
+            self.host.prepare_context_for_resolved_attempt(
+                self.cas,
+                input,
+                &self.resolve_node(&input.node)?.definition,
+                &attempt,
+            )
         }))
         .unwrap_or_else(|_| Err("Task context capture panicked".into()));
         let result = context.and_then(|context_id| {
@@ -882,6 +936,14 @@ impl TaskRuntime<'_, '_> {
 impl Dispatch for TaskRuntime<'_, '_> {
     fn coordinates_owned_children(&self, node: &Node) -> bool {
         self.graph.owned_children.contains_key(&node.id)
+            || self.graph.experimental_slots.contains_key(&node.id)
+    }
+
+    fn owned_child_parallelism(&self, node: &Node) -> Option<usize> {
+        self.graph
+            .experimental_slots
+            .get(&node.id)
+            .map(|slot| slot.max_concurrency as usize)
     }
 
     fn expand_owned_children(
@@ -889,7 +951,11 @@ impl Dispatch for TaskRuntime<'_, '_> {
         node: &Node,
         _inputs: &ArtifactMap,
     ) -> Result<Vec<review_graph::OwnedChildDispatch>, String> {
-        self.expand_children(node)
+        if self.graph.experimental_slots.contains_key(&node.id) {
+            self.expand_experiment(node)
+        } else {
+            self.expand_children(node)
+        }
     }
 
     fn complete_owned_children(
@@ -898,7 +964,11 @@ impl Dispatch for TaskRuntime<'_, '_> {
         _inputs: &ArtifactMap,
         children: &[(String, review_graph::NodeOutcome)],
     ) -> Result<ArtifactMap, String> {
-        self.complete_children(node, children)
+        if self.graph.experimental_slots.contains_key(&node.id) {
+            self.complete_experiment(node, children)
+        } else {
+            self.complete_children(node, children)
+        }
     }
 
     fn requires_successful_predecessors(&self, node: &Node) -> bool {
@@ -906,7 +976,8 @@ impl Dispatch for TaskRuntime<'_, '_> {
     }
 
     fn task_node_selected(&self, node: &Node, inputs: &ArtifactMap) -> Result<bool, String> {
-        if self.resolve_node(&node.id)?.owned.is_some() {
+        if self.resolve_node(&node.id)?.owned.is_some() || !self.graph.nodes.contains_key(&node.id)
+        {
             return Ok(true); // The captured Provider/condition barriers admit the owner.
         }
         self.graph.node_selected(&node.id, inputs, |id| {
@@ -969,7 +1040,9 @@ impl Dispatch for TaskRuntime<'_, '_> {
         }
         self.check_node_authority(
             &node.id,
-            !replayed && !self.graph.owned_children.contains_key(&node.id),
+            !replayed
+                && !self.graph.owned_children.contains_key(&node.id)
+                && !self.graph.experimental_slots.contains_key(&node.id),
         )?;
         if self.resolve_node(&node.id)?.allowance.is_some() && !replayed {
             let attempt = self.prepare(&input)?;

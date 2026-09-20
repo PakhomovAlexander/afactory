@@ -1,0 +1,83 @@
+"schema" = "af.worker/1"
+"name" = "builtin/optimization-check-evaluator"
+"version" = "1.0.0"
+
+["signature"]
+"effects" = []
+"roles" = ["evaluate"]
+"worker_input_type" = "af/OptimizationEvaluationInput@1"
+"worker_output_type" = "af/OptimizationEvaluation@1"
+
+["signature"."contract"]
+
+["signature"."contract"."inputs"]
+
+["signature"."contract"."inputs"."source"]
+"artifact_type" = "af/SourceTree@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["signature"."contract"."inputs"."source"."affinity"]
+"kind" = "unbound"
+
+["signature"."contract"."inputs"."requirements"]
+"artifact_type" = "af/Requirements@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["signature"."contract"."inputs"."requirements"."affinity"]
+"kind" = "unbound"
+
+["signature"."contract"."inputs"."configuration"]
+"artifact_type" = "af/OptimizationConfiguration@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["signature"."contract"."inputs"."configuration"."affinity"]
+"kind" = "unbound"
+
+["signature"."contract"."inputs"."comparison"]
+"artifact_type" = "af/ExperimentComparison@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["signature"."contract"."inputs"."comparison"."affinity"]
+"kind" = "unbound"
+
+["signature"."contract"."outputs"]
+
+["signature"."contract"."outputs"."evaluation"]
+"artifact_type" = "af/OptimizationEvaluation@1"
+"cardinality" = "one"
+"optional" = false
+"covers" = []
+
+["signature"."contract"."outputs"."evaluation"."affinity"]
+"kind" = "unbound"
+
+["signature"."evidence"]
+
+["signature"."retains"]
+"evaluation" = ["source", "requirements", "configuration", "comparison"]
+
+["signature"."attempt"]
+"tokens" = 0
+"wall_ms" = 30000
+
+["runner"]
+"kind" = "command"
+
+["runner"."command"]
+"program" = "/usr/bin/python3"
+
+[["runner"."command"."args"]]
+"value" = "-B"
+"provenance" = "literal"
+
+[["runner"."command"."args"]]
+"value" = "@package/worker.py"
+"provenance" = "literal"

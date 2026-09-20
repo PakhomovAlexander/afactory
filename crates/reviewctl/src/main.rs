@@ -48,6 +48,7 @@ mod project;
 mod providers;
 mod report_tasks;
 mod review_task;
+mod self_optimizer;
 mod selfmgmt;
 mod task;
 mod task_execution;
@@ -814,6 +815,7 @@ fn task_review_options(args: cli::RunArgs, plan_only: bool) -> task_execution::S
         json: args.json,
         plan_only,
         timeout_secs: args.timeout_secs,
+        optimization_history: None,
     }
 }
 
@@ -1301,6 +1303,7 @@ fn main() {
                             json,
                             plan_only: !execute,
                             timeout_secs,
+                            optimization_history: None,
                         })
                     } else {
                         task::options_from_cli(
@@ -1339,6 +1342,7 @@ fn main() {
                     json,
                     plan_only: true,
                     timeout_secs: None,
+                    optimization_history: None,
                 }),
                 cli::TaskCommand::DecisionPayload {
                     task_id,
@@ -1459,6 +1463,26 @@ fn main() {
                 } => task::delivery_from_cli(task_id, repo, branch, worktree, confirm, state, json)
                     .and_then(task::deliver)
                     .map(|()| 0),
+                cli::TaskCommand::ObserveAdoption {
+                    task_id,
+                    commit,
+                    workload,
+                    model,
+                    environment,
+                    evidence_task,
+                    inspect,
+                } => task::observe_adoption(
+                    &task_id,
+                    &commit,
+                    &workload,
+                    &model,
+                    &environment,
+                    evidence_task.as_deref(),
+                    &inspect.repo,
+                    inspect.state.as_ref(),
+                    inspect.json,
+                )
+                .map(|()| 0),
                 cli::TaskCommand::List { inspect } => {
                     task::inspect_from_cli(None, inspect.repo, inspect.state, inspect.json)
                         .and_then(task::list)
@@ -1486,6 +1510,29 @@ fn main() {
         cli::Command::SelfCmd { command } => (
             "af self",
             match command {
+                cli::SelfCommand::Optimize {
+                    since,
+                    all_history,
+                    strategy,
+                    history_config,
+                    execute,
+                    experiment,
+                    candidate,
+                    repo,
+                    state,
+                    json,
+                } => self_optimizer::run(self_optimizer::Options {
+                    since,
+                    all_history,
+                    strategy,
+                    history_config,
+                    execute,
+                    experiment,
+                    candidate,
+                    repo,
+                    state,
+                    json,
+                }),
                 cli::SelfCommand::Status { json } => selfmgmt::status(json).map(|()| 0),
                 cli::SelfCommand::Update { check, version, rc } => {
                     selfmgmt::update(check, version, rc).map(|()| 0)
@@ -2762,6 +2809,9 @@ struct ReviewerSpendView {
     provider_tokens: u64,
     attempts: Vec<AttemptSpendView>,
     provider_operations: Vec<ProviderSpendView>,
+    /// The Warm Set this node's Attempts started from in the Round, when one was recorded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warm: Option<WarmSelectionView>,
 }
 
 #[derive(serde::Serialize)]
@@ -2776,6 +2826,41 @@ struct AttemptSpendView {
     reserved: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wall: Option<AttemptWallView>,
+    /// Which warm layers this Attempt used and what its rendered input cost, when the node
+    /// ran warm. Input and cache-read tokens are in `wall.usage`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warm: Option<AttemptWarmView>,
+}
+
+/// The recorded `WarmSetSelected@1` of one node in one Round.
+#[derive(serde::Serialize, Clone)]
+struct WarmSelectionView {
+    warm_set_artifact_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_attempt_id: Option<String>,
+    layers: Vec<String>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct AttemptWarmView {
+    layers: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rendered_bytes: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    estimated_tokens: Option<u64>,
+    /// The node's Warm Workspace preparation for this Round, joined from `WorkspaceRebased@1`:
+    /// it ran before the Attempt was reserved, so no Attempt wall clock includes it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    workspace: Option<WorkspacePreparationView>,
+}
+
+#[derive(serde::Serialize, Clone)]
+struct WorkspacePreparationView {
+    basis: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    fallback: Option<String>,
+    entries_touched: u64,
+    preparation_ms: u64,
 }
 
 /// Wall-clock and provider usage from the store's sidecar; absent when the Attempt predates it.
@@ -2932,6 +3017,82 @@ fn attempt_wall_suffix(wall: Option<&AttemptWallView>) -> String {
     .unwrap_or_default()
 }
 
+/// Which warm layers an Attempt used and what its rendered input cost; empty for cold nodes.
+/// Whether any pinned reviewer policy keeps a Warm Workspace (`warm = { workspace = "rebase" }`).
+fn keeps_warm_workspace(loaded: &review_config::Loaded) -> bool {
+    loaded
+        .warm_policies()
+        .values()
+        .any(|policy| policy.workspace == review_config::WorkspaceSpec::Rebase)
+}
+
+fn attempt_warm_suffix(warm: Option<&AttemptWarmView>) -> String {
+    let Some(warm) = warm else {
+        return String::new();
+    };
+    let layers = if warm.layers.is_empty() {
+        "none".to_string()
+    } else {
+        warm.layers.join(",")
+    };
+    let rendered = match (warm.rendered_bytes, warm.estimated_tokens) {
+        (Some(bytes), Some(tokens)) => format!(" rendered {bytes} B (~{tokens} tokens)"),
+        (Some(bytes), None) => format!(" rendered {bytes} B"),
+        _ => String::new(),
+    };
+    let workspace = warm
+        .workspace
+        .as_ref()
+        .map(|workspace| {
+            let basis = match &workspace.fallback {
+                Some(reason) => format!("{}:{reason}", workspace.basis),
+                None => workspace.basis.clone(),
+            };
+            format!(
+                "; workspace {basis} ({} touched, {})",
+                workspace.entries_touched,
+                human_duration(workspace.preparation_ms)
+            )
+        })
+        .unwrap_or_default();
+    format!(", warm[{layers}]{rendered}{workspace}")
+}
+
+/// Rendered input size of one admitted Attempt from its durable provenance. Evidence for a
+/// report, never accounting: an unreadable provenance yields nothing rather than an error.
+fn admitted_context_size(cas: &Cas, provenance_id: &str) -> Option<(u64, u64)> {
+    let manifest = match cas.get_optional_artifact(provenance_id).ok()? {
+        Some(envelope) => {
+            let context_id = envelope.payload.get("context_id")?.as_str()?;
+            let context = cas.get_artifact(context_id).ok()?;
+            let manifest_id = context.payload.get("context_manifest_id")?.as_str()?;
+            cas.get_json(manifest_id).ok()?
+        }
+        None => {
+            let provenance = cas.get_json(provenance_id).ok()?;
+            provenance["context_manifest"].clone()
+        }
+    };
+    let rendered_bytes = manifest.get("rendered_bytes")?.as_u64()?;
+    let estimated_tokens = manifest.get("estimated_tokens")?.as_u64()?;
+    Some((rendered_bytes, estimated_tokens))
+}
+
+fn attempt_warm_view(
+    selection: Option<&WarmSelectionView>,
+    context_size: Option<(u64, u64)>,
+) -> Option<AttemptWarmView> {
+    let selection = selection?;
+    Some(AttemptWarmView {
+        layers: selection.layers.clone(),
+        rendered_bytes: context_size.map(|size| size.0),
+        estimated_tokens: context_size.map(|size| size.1),
+        // The pre-Task renderer serves logs written before Warm Workspaces existed; every
+        // Task-backed review joins its preparation in `report_tasks`.
+        workspace: None,
+    })
+}
+
 #[derive(serde::Serialize)]
 struct ProviderSpendView {
     operation_id: String,
@@ -2951,6 +3112,7 @@ struct RoundSpendAccumulator {
 struct ReviewerSpendAccumulator {
     attempts: BTreeMap<String, AttemptSpendAccumulator>,
     providers: BTreeMap<String, ProviderSpendAccumulator>,
+    warm: Option<WarmSelectionView>,
 }
 
 struct AttemptSpendAccumulator {
@@ -2961,6 +3123,8 @@ struct AttemptSpendAccumulator {
     broker_observed_tokens: u64,
     detail: Option<String>,
     terminal: bool,
+    /// Rendered input bytes and estimated tokens of an admitted Attempt, from its provenance.
+    context_size: Option<(u64, u64)>,
 }
 
 struct ProviderSpendAccumulator {
@@ -3008,7 +3172,7 @@ fn read_report_view(
     let recorded_not_gathered = latest_round_evidence(&events, cas)?.filter(|evidence| {
         evidence.ledger_was_not_produced() && !evidence.available_node_results.is_empty()
     });
-    let mut spend = report_spend(&events, &round_authority)?;
+    let mut spend = report_spend(&events, &round_authority, Some(cas))?;
     let task_accounting = report_tasks::read(store, cas, &run_id, &events)?;
     // An empty legacy accumulator says nothing about common Task work in that Round.
     spend.retain(|round| {
@@ -3092,6 +3256,7 @@ fn report_round_authority(
 fn report_spend(
     events: &[review_core::RunEvent],
     round_authority: &BTreeMap<String, (u32, u32)>,
+    cas: Option<&Cas>,
 ) -> Result<Vec<RoundSpendView>, String> {
     let mut rounds: BTreeMap<String, RoundSpendAccumulator> = round_authority
         .iter()
@@ -3134,8 +3299,28 @@ fn report_spend(
                             broker_observed_tokens: 0,
                             detail: None,
                             terminal: false,
+                            context_size: None,
                         },
                     );
+            }
+            EventType::WarmSetSelectedV1 => {
+                let payload: review_core::WarmSetSelectedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                let node = event
+                    .node_id
+                    .as_deref()
+                    .ok_or("WarmSetSelected@1 has no reviewer node")?;
+                round.reviewers.entry(node.to_string()).or_default().warm =
+                    Some(WarmSelectionView {
+                        warm_set_artifact_id: payload.warm_set_artifact_id,
+                        source_attempt_id: payload.source_attempt_id,
+                        layers: payload
+                            .layers
+                            .iter()
+                            .map(|layer| layer.as_str().to_string())
+                            .collect(),
+                    });
             }
             EventType::ReviewerExecutionBoundV1 => {
                 let binding: review_core::ReviewerExecutionBindingV1 =
@@ -3172,7 +3357,18 @@ fn report_spend(
                 let payload: review_core::event::AttemptAdmittedPayloadV1 =
                     serde_json::from_value(event.payload.clone())
                         .map_err(|error| error.to_string())?;
+                let provenance = payload.provenance_artifact.clone();
                 settle_attempt(round, event, payload.selection, payload.cost_tokens, None)?;
+                if let (Some(cas), Some(provenance)) = (cas, provenance.as_deref()) {
+                    let (node, attempt_id) = event_attempt_identity(event)?;
+                    let attempt = round
+                        .reviewers
+                        .get_mut(node)
+                        .and_then(|reviewer| reviewer.attempts.get_mut(attempt_id));
+                    if let Some(attempt) = attempt {
+                        attempt.context_size = admitted_context_size(cas, provenance);
+                    }
+                }
             }
             EventType::AttemptFailedV1 => {
                 let payload: review_core::event::AttemptFailedPayloadV1 =
@@ -3274,6 +3470,7 @@ fn settle_attempt(
             broker_observed_tokens: 0,
             detail: None,
             terminal: false,
+            context_size: None,
         });
     if attempt.terminal {
         // A late response to an already-fenced Attempt is durably quarantined but must not be
@@ -3291,6 +3488,12 @@ fn round_spend_view(round: RoundSpendAccumulator) -> Result<RoundSpendView, Stri
     let mut spent_tokens = 0_u64;
     let mut reviewers = Vec::new();
     for (reviewer, accumulator) in round.reviewers {
+        if accumulator.attempts.is_empty() && accumulator.providers.is_empty() {
+            // A Task-backed warm node records its selection here but its Attempts in the
+            // Task accounting; an empty legacy row would only duplicate that reviewer.
+            continue;
+        }
+        let warm = accumulator.warm;
         let attempts = accumulator
             .attempts
             .into_iter()
@@ -3301,6 +3504,7 @@ fn round_spend_view(round: RoundSpendAccumulator) -> Result<RoundSpendView, Stri
                 detail: attempt.detail,
                 reserved: attempt.reserved,
                 wall: None,
+                warm: attempt_warm_view(warm.as_ref(), attempt.context_size),
             })
             .collect::<Vec<_>>();
         let attempt_tokens = attempts.iter().try_fold(0_u64, |sum, attempt| {
@@ -3350,6 +3554,7 @@ fn round_spend_view(round: RoundSpendAccumulator) -> Result<RoundSpendView, Stri
             provider_tokens,
             attempts,
             provider_operations,
+            warm,
         });
     }
     Ok(RoundSpendView {
@@ -3412,7 +3617,7 @@ fn print_report_text(report: &ReviewReportView) {
             );
             for attempt in &reviewer.attempts {
                 println!(
-                    "      attempt {}: {}, {} tokens{}{}{}",
+                    "      attempt {}: {}, {} tokens{}{}{}{}",
                     attempt.attempt_id,
                     attempt.outcome,
                     attempt.spent_tokens,
@@ -3421,6 +3626,7 @@ fn print_report_text(report: &ReviewReportView) {
                         .map(|cap| format!(" (cap {cap})"))
                         .unwrap_or_default(),
                     attempt_wall_suffix(attempt.wall.as_ref()),
+                    attempt_warm_suffix(attempt.warm.as_ref()),
                     attempt
                         .detail
                         .as_deref()
@@ -3561,7 +3767,7 @@ fn print_report_markdown(report: &ReviewReportView) {
             for attempt in &reviewer.attempts {
                 println!();
                 println!(
-                    "- Round {}, **{}**, Attempt `{}`: {}, {} tokens{}{}{}",
+                    "- Round {}, **{}**, Attempt `{}`: {}, {} tokens{}{}{}{}",
                     round.round,
                     reviewer.reviewer,
                     attempt.attempt_id,
@@ -3572,6 +3778,7 @@ fn print_report_markdown(report: &ReviewReportView) {
                         .map(|cap| format!(" (cap {cap})"))
                         .unwrap_or_default(),
                     attempt_wall_suffix(attempt.wall.as_ref()),
+                    attempt_warm_suffix(attempt.warm.as_ref()),
                     attempt
                         .detail
                         .as_deref()
@@ -4823,6 +5030,12 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
         .with_checks(loaded.checks().to_vec())
         .with_cache_source_resolver(caches::resolve_kind)
         .with_check_timeout(check_timeout);
+    // Only a pipeline that keeps a Warm Workspace needs the cache root; a cold pipeline
+    // neither validates nor touches the machine's cache configuration.
+    if keeps_warm_workspace(&loaded) {
+        kernel =
+            kernel.with_workspace_cache_root(config::cache_home()?.join("af").join("workspaces"));
+    }
     if let Some(budgets) = loaded.budgets() {
         run_progress(
             options,
@@ -5572,7 +5785,7 @@ mod option_tests {
         ];
 
         let authority = report_round_authority(&events).unwrap();
-        let spend = report_spend(&events, &authority).unwrap();
+        let spend = report_spend(&events, &authority, None).unwrap();
         assert_eq!(spend.len(), 1);
         assert_eq!(spend[0].spent_tokens, 152);
         let architecture = &spend[0].reviewers[0];

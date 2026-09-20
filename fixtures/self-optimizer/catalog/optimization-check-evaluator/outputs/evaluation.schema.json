@@ -1,0 +1,58 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "task_revision_id",
+    "requirements_id",
+    "candidate_snapshot_id",
+    "specification_id",
+    "prepared_id",
+    "comparison_id",
+    "conclusion",
+    "reason"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.optimization-evaluation/1"
+    },
+    "task_revision_id": {
+      "$ref": "#/$defs/id"
+    },
+    "requirements_id": {
+      "$ref": "#/$defs/id"
+    },
+    "candidate_snapshot_id": {
+      "$ref": "#/$defs/id"
+    },
+    "specification_id": {
+      "$ref": "#/$defs/id"
+    },
+    "prepared_id": {
+      "$ref": "#/$defs/id"
+    },
+    "comparison_id": {
+      "$ref": "#/$defs/id"
+    },
+    "conclusion": {
+      "enum": [
+        "accepted",
+        "rejected",
+        "inconclusive"
+      ]
+    },
+    "reason": {
+      "$ref": "#/$defs/name"
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"
+    }
+  }
+}

@@ -5,6 +5,7 @@ use review_store::{Cas, EventStore, NewEvent, StoreError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use review_core::{
     EventType,
@@ -65,6 +66,15 @@ pub struct CheckResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stderr: Option<String>,
     pub required: bool,
+}
+
+/// Host-clock observation of the shared check boundary. It is retained separately from the
+/// reproducible `CheckResult@1` payload, whose identity must not vary with wall time.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CheckExecution {
+    pub result: CheckResult,
+    pub started_unix_ms: u64,
+    pub elapsed_ms: u64,
 }
 
 impl CheckResult {
@@ -213,6 +223,20 @@ impl<'a> CheckRunner<'a> {
         self.finish(base, output, stderr_held)
     }
 
+    /// Execute through the normal shared runner and retain the actual AF-observed host interval.
+    pub fn run_observed(&self, definition: &CheckDefinition) -> CheckExecution {
+        let started = SystemTime::now();
+        let timer = Instant::now();
+        let result = self.run(definition);
+        CheckExecution {
+            result,
+            started_unix_ms: started
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_millis() as u64),
+            elapsed_ms: timer.elapsed().as_millis() as u64,
+        }
+    }
+
     /// Run one typed check through an admitted external execution provider. Command resolution
     /// remains owned here, so a container route cannot bypass argument provenance validation;
     /// the provider owns only where the already-resolved program executes.
@@ -251,6 +275,29 @@ impl<'a> CheckRunner<'a> {
                 reason: Some(format!("execution provider refused or failed: {error}")),
                 ..base
             },
+        }
+    }
+
+    /// Container/provider counterpart to [`Self::run_observed`]. The interval covers only the
+    /// admitted check invocation; provider-internal phases remain unknown.
+    pub fn run_with_observed<F>(&self, definition: &CheckDefinition, execute: F) -> CheckExecution
+    where
+        F: FnOnce(
+            &str,
+            &[String],
+            &[(String, String)],
+            std::time::Duration,
+        ) -> Result<(std::process::Output, bool), String>,
+    {
+        let started = SystemTime::now();
+        let timer = Instant::now();
+        let result = self.run_with(definition, execute);
+        CheckExecution {
+            result,
+            started_unix_ms: started
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |duration| duration.as_millis() as u64),
+            elapsed_ms: timer.elapsed().as_millis() as u64,
         }
     }
 

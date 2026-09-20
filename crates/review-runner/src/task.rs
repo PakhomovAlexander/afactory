@@ -589,6 +589,35 @@ pub trait WorkerModelAdapter: Send + Sync {
         }
         self.invoke_with_broker(cas, workdir, input, timeout, writable, broker)
     }
+
+    /// Controlled invocation with sandbox-local, non-secret variables the kernel resolved for
+    /// this exact Attempt, such as `CARGO_TARGET_DIR` pointing at a cloned Build Cache. An
+    /// adapter that does not thread the environment into its process must refuse a non-empty
+    /// one rather than silently run without it.
+    #[allow(clippy::too_many_arguments)]
+    fn invoke_controlled_with_environment(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+        broker: Option<&dyn ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        environment: &[(String, String)],
+    ) -> ModelWorkerReturn {
+        if !environment.is_empty() {
+            return ModelWorkerReturn {
+                usage_observation: None,
+                message: Err(
+                    "Worker model adapter does not support a sandbox-local environment".into(),
+                ),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
+                raw_artifact_ids: vec![],
+            };
+        }
+        self.invoke_controlled(cas, workdir, input, timeout, writable, broker, cancellation)
+    }
 }
 
 impl ModelWorkerReturn {
@@ -780,6 +809,15 @@ fn command_runner(
     runtime_root: &Path,
     timeout: Duration,
 ) -> Result<ModelRunner, RunnerError> {
+    command_runner_with_environment(workdir, runtime_root, timeout, &[])
+}
+
+fn command_runner_with_environment(
+    workdir: &Path,
+    runtime_root: &Path,
+    timeout: Duration,
+    additional_environment: &[(String, String)],
+) -> Result<ModelRunner, RunnerError> {
     let deadline = std::time::Instant::now()
         .checked_add(timeout)
         .ok_or_else(|| RunnerError::Refused("Command deadline overflow".into()))?;
@@ -811,8 +849,23 @@ fn command_runner(
     for (key, value) in environment {
         runner = runner.with_env(key, value);
     }
+    for (key, value) in additional_environment {
+        if key.is_empty()
+            || key.contains('=')
+            || key.chars().any(char::is_control)
+            || value.contains('\0')
+        {
+            return Err(RunnerError::Refused(
+                "Worker environment contains an invalid variable".into(),
+            ));
+        }
+        runner = runner.with_env(key, value);
+    }
     Ok(runner)
 }
 
 mod command_control;
-pub use command_control::{invoke_command_bytes_controlled, invoke_command_controlled};
+pub use command_control::{
+    invoke_command_bytes_controlled, invoke_command_bytes_controlled_with_environment,
+    invoke_command_controlled, invoke_command_controlled_with_environment,
+};

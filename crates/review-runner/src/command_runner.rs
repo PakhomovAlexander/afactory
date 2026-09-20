@@ -63,6 +63,9 @@ pub struct CommandRunner<'a> {
     cas: &'a Cas,
     workdir: std::path::PathBuf,
     timeout: Duration,
+    /// Sandbox-local variables the kernel resolved for this invocation, added on top of the
+    /// rebuilt allowlist. Never credentials: those have no path into a command reviewer.
+    environment: Vec<(String, String)>,
 }
 
 impl<'a> CommandRunner<'a> {
@@ -71,12 +74,19 @@ impl<'a> CommandRunner<'a> {
             cas,
             workdir: workdir.as_ref().to_path_buf(),
             timeout: DEFAULT_COMMAND_TIMEOUT,
+            environment: Vec::new(),
         }
     }
 
     /// Override the default bounded command-reviewer deadline.
     pub fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Set one non-secret sandbox-local variable, such as a cloned Build Cache location.
+    pub fn with_env(mut self, name: impl Into<String>, value: impl Into<String>) -> Self {
+        self.environment.push((name.into(), value.into()));
         self
     }
 
@@ -130,6 +140,9 @@ impl<'a> CommandRunner<'a> {
         cmd.env_clear();
         cmd.env("PATH", std::env::var("PATH").unwrap_or_default());
         cmd.env("LC_ALL", "C");
+        for (name, value) in &self.environment {
+            cmd.env(name, value);
+        }
         let output =
             run_supervised(&mut cmd, input, self.timeout).map_err(|error| match error {
                 SupervisedError::TimedOut { stdout, .. } => RunnerError::TimedOut {

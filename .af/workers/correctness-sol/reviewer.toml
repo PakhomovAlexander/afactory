@@ -1,0 +1,7 @@
+name = "correctness-sol"
+version = "1.0.0"
+subjects = ["diff", "whole-tree"]
+
+[runner]
+program = "codex"
+args = [{ value = "--model" }, { value = "gpt-5.6-sol" }, { value = "-c" }, { value = "model_reasoning_effort=\"high\"" }]

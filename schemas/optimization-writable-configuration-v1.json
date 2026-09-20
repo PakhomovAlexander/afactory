@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://afactory.dev/schemas/optimization-writable-configuration-v1.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "source_snapshot_id", "allowed_paths", "files", "omitted_paths", "total_bytes"],
+  "properties": {
+    "schema": {"const": "af.optimization-writable-configuration/1"},
+    "source_snapshot_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "allowed_paths": {"type": "array", "minItems": 1, "maxItems": 128, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 1024}},
+    "files": {
+      "type": "object",
+      "maxProperties": 128,
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["content_id", "text", "executable"],
+        "properties": {
+          "content_id": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "text": {"type": "string", "maxLength": 1048576},
+          "executable": {"type": "boolean"}
+        }
+      }
+    },
+    "omitted_paths": {"type": "array", "maxItems": 1024, "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 1024}},
+    "total_bytes": {"type": "string", "pattern": "^(0|[1-9][0-9]*)$"}
+  }
+}

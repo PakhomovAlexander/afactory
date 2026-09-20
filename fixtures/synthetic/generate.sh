@@ -30,7 +30,9 @@ command -v jq >/dev/null || { echo "generate.sh: jq is required" >&2; exit 2; }
 
 MODE="write"
 [ "${1:-}" = "--check" ] && MODE="check"
-WORK="$(mktemp -d)"
+# macOS `mktemp -d` may ignore TMPDIR and select the per-user Darwin cache directory.
+# Supplying the template explicitly keeps CI/sandbox runs inside their declared writable root.
+WORK="$(mktemp -d "${TMPDIR:-/tmp}/af-synthetic.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 OUT="$WORK/out"; mkdir -p "$OUT"
 FAILURES=0

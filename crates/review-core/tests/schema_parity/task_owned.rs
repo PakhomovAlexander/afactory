@@ -1,10 +1,35 @@
 use super::{assert_invalid, assert_valid};
-use review_core::task::execution::{TaskExecutionRecordV1, TaskExecutionRecordV4};
+use review_core::task::execution::{
+    TaskExecutionRecordV1, TaskExecutionRecordV4, TaskExecutionRecordV5,
+};
 use review_core::task::owned_children::{TaskOwnedChildSetV1, TaskOwnedChildV1};
 use serde_json::json;
 
 fn id(c: char) -> String {
     format!("sha256:{}", c.to_string().repeat(64))
+}
+
+#[test]
+fn experimental_execution_records_have_a_distinct_generation() {
+    for record in [
+        TaskExecutionRecordV5::ExperimentPrepared {
+            prepared_id: id('1'),
+        },
+        TaskExecutionRecordV5::ExperimentPlanDecided {
+            prepared_id: id('1'),
+            decision_id: id('2'),
+        },
+        TaskExecutionRecordV5::ExperimentChildrenRegistered {
+            prepared_id: id('1'),
+            decision_id: id('2'),
+            child_plan_id: id('3'),
+        },
+    ] {
+        record.validate().unwrap();
+        let value = serde_json::to_value(&record).unwrap();
+        assert_valid("task-execution-record-v5.json", &value);
+        assert!(serde_json::from_value::<TaskExecutionRecordV1>(value).is_err());
+    }
 }
 
 #[test]

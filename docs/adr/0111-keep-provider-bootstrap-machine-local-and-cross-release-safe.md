@@ -1,4 +1,4 @@
-# ADR-0105: Keep Provider bootstrap machine-local and cross-release safe
+# ADR-0111: Keep Provider bootstrap machine-local and cross-release safe
 
 **Status:** accepted (2026-09-15)
 

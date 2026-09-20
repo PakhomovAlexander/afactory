@@ -5,8 +5,9 @@
 #                                 macOS, builds every target, plans the consumer fixtures with
 #                                 each built binary, signs SHA256SUMS, and publishes the release.
 #
-# A manually pushed vX.Y.Z tag takes the same path from the tag onward. Nothing is published
-# unless `make check` passed on the tagged commit on both operating systems and every archive
+# A manually pushed vX.Y.Z tag takes the same path from the tag onward.
+# Builds run alongside validation; publish joins both required branches.
+# Nothing is published unless `make check` passed on the tagged commit on both operating systems and every archive
 # planned the consumer fixtures; nothing is published unsigned.
 name: Release
 
@@ -19,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ github.sha }}
   cancel-in-progress: false
 
 env:
@@ -38,59 +39,26 @@ jobs:
       version: ${{ steps.resolve.outputs.version }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 2 # eligibility compares the first-parent workspace version
       - name: Decide whether this commit is a release, and tag it
         id: resolve
-        shell: bash
-        run: |
-          set -euo pipefail
-          version="$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)"
-          [[ -n "$version" ]] || { echo "Cargo.toml has no workspace version"; exit 1; }
-          tag=""
-          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
-            tag="$GITHUB_REF_NAME"
-            [[ "$tag" == "v$version" ]] || { echo "tag $tag does not match Cargo.toml version $version"; exit 1; }
-          elif git ls-remote --exit-code --tags origin "refs/tags/v$version" >/dev/null; then
-            echo "v$version is already released; nothing to do"
-          elif ! grep -q "^## \[$version\]" CHANGELOG.md; then
-            echo "Cargo.toml is at $version but CHANGELOG.md has no [$version] section: not a release commit (scripts/release.sh writes both)"
-          else
-            tag="v$version"
-            git config user.name "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git tag -a "$tag" -m "$tag"
-            git push origin "refs/tags/$tag"
-            echo "tagged $tag"
-          fi
-          prerelease=false
-          [[ "$version" == *-* ]] && prerelease=true
-          {
-            echo "tag=$tag"
-            echo "version=$version"
-            echo "prerelease=$prerelease"
-          } >> "$GITHUB_OUTPUT"
+        run: bash scripts/resolve-release.sh
 
+  # This also provides ordinary main CI when resolve finds no new release.
+  # github.sha is the exact commit just tagged by resolve (or the pushed tag commit).
   check:
-    name: make check (${{ matrix.os }})
     needs: resolve
-    if: needs.resolve.outputs.tag != ''
-    strategy:
-      fail-fast: true
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-        with:
-          ref: ${{ needs.resolve.outputs.tag }}
-      - name: Install the pinned Rust toolchain
-        run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt
-      - name: Check the tagged commit
-        run: make check
+    uses: ./.github/workflows/validate.yml
+    with:
+      release: ${{ needs.resolve.outputs.tag != '' }}
 
   build:
     name: build ${{ matrix.target }}
-    needs: [resolve, check]
+    needs: resolve
+    if: needs.resolve.outputs.tag != ''
     strategy:
       fail-fast: true
       matrix:
@@ -106,14 +74,18 @@ jobs:
             cross: zig-qemu
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.resolve.outputs.tag }}
+          ref: ${{ github.sha }}
       - name: Install the pinned Rust toolchain and target
         # With the components rust-toolchain.toml declares: without them the first cargo
         # invocation makes rustup install them into the toolchain it just wrote, and that
         # collides ("detected conflict: 'bin/cargo-fmt'"). The check job installs them too.
         run: rustup toolchain install "$RUST_TOOLCHAIN" --profile minimal --component clippy,rustfmt --target "${{ matrix.target }}"
+      - uses: ./.github/actions/cargo-cache
+        id: cargo-cache
+        with:
+          kind: release-${{ matrix.target }}-zig0.15.2-zigbuild0.23.4
       - name: Install zig (static Linux builds)
         if: matrix.cross != 'none'
         run: pip install --user "$CARGO_ZIGBUILD" "$ZIG"
@@ -123,13 +95,15 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends qemu-user-static
       - name: Build
+        env:
+          AF_CI_METRICS: ${{ runner.temp }}/build-metrics.jsonl
         shell: bash
         run: |
           set -euo pipefail
           if [[ "${{ matrix.cross }}" == "none" ]]; then
-            cargo build --release --locked --bin af --target "${{ matrix.target }}"
+            python3 scripts/ci-step.py release-build cargo build --release --locked --bin af --target "${{ matrix.target }}"
           else
-            cargo zigbuild --release --locked --bin af --target "${{ matrix.target }}"
+            python3 scripts/ci-step.py release-build cargo zigbuild --release --locked --bin af --target "${{ matrix.target }}"
           fi
       - name: Prove, plan, and package
         shell: bash
@@ -162,24 +136,41 @@ jobs:
           done
           "$run" self man dist/man
           tar -czf "af-$tag-$target.tar.gz" -C dist af completions man
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: af-${{ needs.resolve.outputs.tag }}-${{ matrix.target }}
           path: af-${{ needs.resolve.outputs.tag }}-${{ matrix.target }}.tar.gz
           if-no-files-found: error
           retention-days: 7
 
+      - name: Save Cargo cache
+        if: always() && !cancelled()
+        uses: ./.github/actions/cargo-cache
+        with:
+          mode: save
+          primary-key: ${{ steps.cargo-cache.outputs.primary-key }}
+          matched-key: ${{ steps.cargo-cache.outputs.matched-key }}
+      - name: Retain build timings
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: build-metrics-${{ matrix.target }}
+          path: |
+            ${{ runner.temp }}/build-metrics.jsonl
+            ${{ runner.temp }}/cache-metrics.json
+          if-no-files-found: warn
+
   publish:
     name: sign and publish
-    needs: [resolve, build]
+    needs: [resolve, check, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ needs.resolve.outputs.tag }}
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+          ref: ${{ github.sha }}
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: af-*
           path: dist

@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:optimization-economics:1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "project_id", "capture_ids", "cutoff_unix_ms", "rows", "af_usage", "outer_session_usage", "active_ms", "elapsed_ms", "summed_work_ms", "verified", "failed_or_incomplete", "repeated_failures"],
+  "properties": {
+    "schema": {"const": "af.optimization-economics/1"}, "project_id": {"$ref": "#/$defs/digest"},
+    "capture_ids": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"$ref": "#/$defs/digest"}}, "cutoff_unix_ms": {"$ref": "#/$defs/u64"},
+    "rows": {"type": "array", "items": {"$ref": "#/$defs/row"}}, "af_usage": {"$ref": "#/$defs/usage"}, "outer_session_usage": {"$ref": "#/$defs/usage"},
+    "active_ms": {"$ref": "#/$defs/u128"}, "elapsed_ms": {"$ref": "#/$defs/u128"}, "summed_work_ms": {"$ref": "#/$defs/u128"}, "span_ms": {"$ref": "#/$defs/spans"},
+    "context_tokens": {"$ref": "#/$defs/u128"}, "retrieval_tokens": {"$ref": "#/$defs/u128"}, "repeated_context_tokens": {"$ref": "#/$defs/u128"},
+    "verified": {"type": "integer", "minimum": 0}, "failed_or_incomplete": {"type": "integer", "minimum": 0}, "repeated_failures": {"type": "integer", "minimum": 0},
+    "cache_results": {"type": "object", "additionalProperties": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}}},
+    "cache_economics": {"type": "object", "additionalProperties": {"$ref": "#/$defs/cache"}},
+    "missing_fields": {"$ref": "#/$defs/names"}, "exposed_case_families": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 256}}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, "u64": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,19})$"}, "u128": {"type": "string", "pattern": "^(0|[1-9][0-9]{0,38})$"},
+    "name": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$"}, "names": {"type": "array", "uniqueItems": true, "items": {"$ref": "#/$defs/name"}}, "spans": {"type":"object","propertyNames":{"enum":["end_to_end","active","check","dependency_preparation","queue","approval_waiting","user_waiting","retrieval","verification"]},"additionalProperties":{"$ref":"#/$defs/u128"}},
+    "usage": {"type": "object", "additionalProperties": false, "required": ["chargeable_tokens"], "properties": {"input_tokens": {"$ref": "#/$defs/u128"}, "output_tokens": {"$ref": "#/$defs/u128"}, "cache_read_tokens": {"$ref": "#/$defs/u128"}, "cache_write_tokens": {"$ref": "#/$defs/u128"}, "reasoning_tokens": {"$ref": "#/$defs/u128"}, "chargeable_tokens": {"$ref": "#/$defs/u128"}}},
+    "cache": {"type": "object", "additionalProperties": false, "required": ["eligible", "ineligible", "hits", "misses", "unknown_results", "cold", "warm", "unknown_temperature"], "properties": {"eligible": {"type": "integer", "minimum": 0}, "ineligible": {"type": "integer", "minimum": 0}, "hits": {"type": "integer", "minimum": 0}, "misses": {"type": "integer", "minimum": 0}, "unknown_results": {"type": "integer", "minimum": 0}, "cold": {"type": "integer", "minimum": 0}, "warm": {"type": "integer", "minimum": 0}, "unknown_temperature": {"type": "integer", "minimum": 0}, "bytes_reused": {"$ref": "#/$defs/u128"}, "tokens_reused": {"$ref": "#/$defs/u128"}, "lookup_ms": {"$ref": "#/$defs/u128"}, "warmup_ms": {"$ref": "#/$defs/u128"}, "invalidation_ids": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1, "maxLength": 512}}, "missing_fields": {"$ref": "#/$defs/names"}}},
+    "row": {"type": "object", "additionalProperties": false, "required": ["execution_id", "case_family", "af_usage", "outer_session_usage", "active_ms", "elapsed_ms", "summed_work_ms", "outcome", "occurrences"], "properties": {"execution_id": {"type": "string", "minLength": 1, "maxLength": 256}, "case_family": {"type": "string", "minLength": 1, "maxLength": 256}, "af_usage": {"$ref": "#/$defs/usage"}, "outer_session_usage": {"$ref": "#/$defs/usage"}, "active_ms": {"$ref": "#/$defs/u128"}, "elapsed_ms": {"$ref": "#/$defs/u128"}, "summed_work_ms": {"$ref": "#/$defs/u128"}, "span_ms":{"$ref":"#/$defs/spans"}, "context_tokens": {"$ref": "#/$defs/u128"}, "retrieval_tokens": {"$ref": "#/$defs/u128"}, "repeated_context_tokens": {"$ref": "#/$defs/u128"}, "outcome": {"enum": ["verified", "failed", "incomplete", "cancelled", "abandoned"]}, "occurrences": {"type": "integer", "minimum": 0}, "missing_fields": {"$ref": "#/$defs/names"}}}
+  }
+}

@@ -17,7 +17,9 @@ pub use review_core::{
     MAX_CACHE_BYTES_V1 as MAX_CACHE_BYTES, MAX_CACHE_COPY_BYTES_V1 as MAX_CACHE_COPY_BYTES,
     MAX_CACHE_ENTRIES_V1 as MAX_CACHE_FILES,
 };
-const CACHE_ROOT: &str = ".af-cache";
+/// The one reserved sandbox path every cache kind lives below: administrator-approved Cache
+/// Snapshots and explicitly unsafe Build Caches alike, so one removal before seal covers both.
+pub(crate) const CACHE_ROOT: &str = ".af-cache";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CacheErrorKind {
@@ -73,8 +75,54 @@ impl std::fmt::Display for CacheError {
 
 impl std::error::Error for CacheError {}
 
-fn cache_error(kind: CacheErrorKind, detail: impl Into<String>) -> CacheError {
+pub(crate) fn cache_error(kind: CacheErrorKind, detail: impl Into<String>) -> CacheError {
     CacheError::new(kind, detail)
+}
+
+/// The reserved cache root of one sandbox, created on first use with the fixed private mode.
+/// A Subject that already contains the reserved path is refused, exactly as `materialize_cache`
+/// refuses it, so candidate content can never pre-seed a cache directory.
+pub(crate) fn ensure_cache_root(sandbox: &Sandbox) -> Result<PathBuf, CacheError> {
+    let cache_root = sandbox.root().join(CACHE_ROOT);
+    match std::fs::symlink_metadata(&cache_root) {
+        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+            if sandbox.baseline().entries.iter().any(|entry| {
+                entry.path == CACHE_ROOT || entry.path.starts_with(&format!("{CACHE_ROOT}/"))
+            }) {
+                return Err(cache_error(
+                    CacheErrorKind::MaterializationFailed,
+                    format!("Subject already contains reserved cache path `{CACHE_ROOT}`"),
+                ));
+            }
+            return Ok(cache_root);
+        }
+        Ok(_) => {
+            return Err(cache_error(
+                CacheErrorKind::MaterializationFailed,
+                format!("Subject already contains reserved cache path `{CACHE_ROOT}`"),
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(cache_error(
+                CacheErrorKind::MaterializationFailed,
+                format!("inspecting sandbox cache root: {error}"),
+            ));
+        }
+    }
+    std::fs::create_dir(&cache_root).map_err(|error| {
+        cache_error(
+            CacheErrorKind::MaterializationFailed,
+            format!("creating sandbox cache root: {error}"),
+        )
+    })?;
+    normalize_materialized_metadata(&cache_root, true, 0o700).map_err(|error| {
+        cache_error(
+            CacheErrorKind::MaterializationFailed,
+            format!("normalizing sandbox cache root metadata: {error}"),
+        )
+    })?;
+    Ok(cache_root)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -177,6 +225,11 @@ pub struct CacheSnapshot {
     pub bytes: u64,
     pub files: u64,
     pub materialization: CacheMaterialization,
+    pub started_unix_ms: u64,
+    /// Host-observed time spent resolving and hashing the bounded source tree.
+    pub lookup_ms: u64,
+    /// Host-observed time spent making the admitted bytes available in the sandbox.
+    pub materialization_ms: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -205,6 +258,10 @@ pub fn materialize_cache(
     sandbox: &Sandbox,
     cas: &Cas,
 ) -> Result<CacheSnapshot, CacheError> {
+    let started_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_millis() as u64);
+    let lookup_started = std::time::Instant::now();
     source
         .limits
         .validate()
@@ -216,6 +273,7 @@ pub fn materialize_cache(
         ));
     }
     let preflight = preflight(source.kind, &source.source, source.limits)?;
+    let lookup_ms = lookup_started.elapsed().as_millis() as u64;
     let cache_root = sandbox.root().join(CACHE_ROOT);
     if std::fs::symlink_metadata(&cache_root).is_ok() {
         return Err(cache_error(
@@ -237,7 +295,13 @@ pub fn materialize_cache(
     })?;
     let target = sandbox.root().join(source.kind.relative_root());
 
-    let result = materialize_preflight(source, &preflight, &target, cas);
+    let materialization_started = std::time::Instant::now();
+    let result = materialize_preflight(source, &preflight, &target, cas).map(|mut snapshot| {
+        snapshot.lookup_ms = lookup_ms;
+        snapshot.materialization_ms = materialization_started.elapsed().as_millis() as u64;
+        snapshot.started_unix_ms = started_unix_ms;
+        snapshot
+    });
     if result.is_err() {
         let _ = remove_cache_root(&cache_root);
     }
@@ -514,6 +578,9 @@ fn materialize_preflight(
         files: u64::try_from(preflight.files.len())
             .map_err(|_| cache_error(CacheErrorKind::LimitExceeded, "cache file count overflow"))?,
         materialization,
+        started_unix_ms: 0,
+        lookup_ms: 0,
+        materialization_ms: 0,
     })
 }
 
@@ -735,7 +802,11 @@ fn digest_stable_file(
 }
 
 #[cfg(unix)]
-fn normalize_materialized_metadata(path: &Path, directory: bool, mode: u32) -> std::io::Result<()> {
+pub(crate) fn normalize_materialized_metadata(
+    path: &Path,
+    directory: bool,
+    mode: u32,
+) -> std::io::Result<()> {
     use nix::fcntl::OFlag;
     use nix::sys::stat::{Mode as NixMode, fchmod};
 
@@ -797,7 +868,7 @@ fn normalize_macos_metadata(_file: &std::fs::File, _directory: bool) -> std::io:
 }
 
 #[cfg(not(unix))]
-fn normalize_materialized_metadata(
+pub(crate) fn normalize_materialized_metadata(
     path: &Path,
     _directory: bool,
     _mode: u32,
@@ -807,7 +878,10 @@ fn normalize_materialized_metadata(
     std::fs::set_permissions(path, permissions)
 }
 
-/// Remove seeded and Gate-mutated cache bytes before the ordinary Subject seal.
+/// Remove seeded and Gate-mutated cache bytes before the ordinary Subject seal. Every cache
+/// kind lives below the one reserved root, so this also removes a cloned Build Cache before a
+/// Worker sandbox is sealed: its bytes never enter a candidate tree, a Proposal or a delivered
+/// worktree.
 pub fn remove_materialized_caches(sandbox: &Sandbox) -> Result<(), String> {
     let root = sandbox.root().join(CACHE_ROOT);
     match std::fs::symlink_metadata(&root) {

@@ -1,0 +1,52 @@
+schema = "af.worker/1"
+name = "builtin/optimization-candidate"
+version = "1.0.0"
+
+[signature]
+effects = []
+roles = ["optimize"]
+worker_input_type = "af/OptimizationArmInput@1"
+worker_output_type = "af/OptimizationArmReceipt@1"
+[signature.contract.inputs.history]
+artifact_type = "af/OptimizationHistory@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.inputs.history.affinity]
+kind = "unbound"
+[signature.contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.inputs.requirements.affinity]
+kind = "unbound"
+[signature.contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.inputs.source.affinity]
+kind = "unbound"
+[signature.contract.outputs.receipt]
+artifact_type = "af/OptimizationArmReceipt@1"
+cardinality = "one"
+optional = false
+covers = []
+[signature.contract.outputs.receipt.affinity]
+kind = "unbound"
+[signature.evidence]
+[signature.retains]
+[signature.attempt]
+tokens = 0
+wall_ms = 5000
+[runner]
+kind = "command"
+[runner.command]
+program = "/usr/bin/python3"
+[[runner.command.args]]
+value = "-B"
+provenance = "literal"
+[[runner.command.args]]
+value = "@package/worker.py"
+provenance = "literal"

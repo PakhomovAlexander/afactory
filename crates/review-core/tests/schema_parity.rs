@@ -32,7 +32,45 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 156] = [
+const SCHEMAS: [&str; 195] = [
+    "session-snapshot-v1.json",
+    "build-cache-v1.json",
+    "worker-notes-v1.json",
+    "head-delta-v1.json",
+    "warm-set-v1.json",
+    "optimization-recipe-catalog-v1.json",
+    "optimization-profile-v1.json",
+    "optimization-writable-configuration-v1.json",
+    "optimization-execution-configuration-v1.json",
+    "optimization-diagnostic-v1.json",
+    "optimization-proposal-v1.json",
+    "optimization-result-v1.json",
+    "optimization-adoption-receipt-v1.json",
+    "optimization-adoption-observation-v1.json",
+    "optimization-adoption-task-evidence-v1.json",
+    "experiment-trial-result-v1.json",
+    "optimization-evaluation-v1.json",
+    "experimental-slot-v2.json",
+    "task-inspection-v10.json",
+    "task-inspection-v11.json",
+    "task-execution-record-v5.json",
+    "experiment-execution-plan-v1.json",
+    "task-runtime-evidence-v1.json",
+    "task-inspection-v9.json",
+    "optimization-sources-v1.json",
+    "optimization-history-v1.json",
+    "optimization-economics-v1.json",
+    "optimization-report-v1.json",
+    "optimization-policy-v1.json",
+    "experimental-slot-v1.json",
+    "optimization-harness-v1.json",
+    "experiment-specification-v1.json",
+    "experiment-prepared-v1.json",
+    "experiment-plan-decision-v1.json",
+    "experiment-comparison-v1.json",
+    "optimization-verification-v1.json",
+    "optimization-package-repin-v1.json",
+    "harness-materialization-v1.json",
     "task-inspection-v8.json",
     "provider-doctor-v2.json",
     "review-outcome-v2.json",
@@ -125,6 +163,7 @@ const SCHEMAS: [&str; 156] = [
     "task-transition-v2.json",
     "task-transition-v3.json",
     "task-transition-v4.json",
+    "task-transition-v5.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
     "task-run-report-v2.json",
@@ -652,6 +691,76 @@ fn assert_invalid(name: &str, instance: &Value, why: &str) {
         !validator(name).is_valid(instance),
         "{name} accepted a value it must reject ({why})"
     );
+}
+
+#[test]
+fn light_optimizer_schemas_reject_rust_validator_divergences() {
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let proposal = |path: &str| {
+        json!({
+            "schema":"af.optimization-proposal/1",
+            "profile_id":digest,
+            "diagnostic_id":digest,
+            "recipe_catalog_id":digest,
+            "recipe_id":"context_dedup",
+            "hypothesis":"remove duplicate context",
+            "edits":{path:{"text":"x","executable":false}},
+            "expected":{
+                "comparable_future_runs":"10",
+                "gross_token_savings_per_run":"1",
+                "gross_time_savings_ms_per_run":"0",
+                "recurring_tokens_per_run":"0",
+                "recurring_time_ms_per_run":"0",
+                "maximum_validation_tokens":"10",
+                "maximum_validation_time_ms":"10"
+            }
+        })
+    };
+    assert_valid(
+        "optimization-proposal-v1.json",
+        &proposal(".af/workers/implementer/worker.toml"),
+    );
+    assert_invalid(
+        "optimization-proposal-v1.json",
+        &proposal("config/.git/index"),
+        ".git path components are reserved",
+    );
+    let catalog = json!({
+        "schema":"af.optimization-recipe-catalog/1",
+        "catalog_version":digest,
+        "recipes":[{
+            "recipe_id":"context_dedup",
+            "capability":"context",
+            "support":"installed",
+            "applicability":["repeated_context"],
+            "required_observations":["context_tokens"],
+            "writable_effects":["project_configuration"],
+            "validation":["matched_protected_trials"],
+            "invalidation":["source_policy_worker_package"],
+            "payoff_basis":"bad\u{0001}text"
+        }]
+    });
+    assert_invalid(
+        "optimization-recipe-catalog-v1.json",
+        &catalog,
+        "control characters are rejected by schema and Rust",
+    );
+    for control in ['\t', '\r', '\u{0085}'] {
+        let mut catalog = catalog.clone();
+        catalog["recipes"][0]["payoff_basis"] = Value::String(format!("bad{control}text"));
+        assert_invalid(
+            "optimization-recipe-catalog-v1.json",
+            &catalog,
+            "every Rust control character except newline is rejected",
+        );
+        let mut proposal = proposal(".af/workers/implementer/worker.toml");
+        proposal["hypothesis"] = Value::String(format!("bad{control}text"));
+        assert_invalid(
+            "optimization-proposal-v1.json",
+            &proposal,
+            "proposal text uses the same control-character contract",
+        );
+    }
 }
 
 #[test]
@@ -2608,6 +2717,804 @@ fn legacy_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
         );
     }
     assert!(!validator("task-review-round-v1.json").is_valid(&round));
+}
+
+#[test]
+fn warm_layer_contracts_roundtrip_and_stay_closed() {
+    use review_core::event::validate_event_payload;
+    use review_core::{
+        HeadDeltaEntryV1, HeadDeltaMarkV1, HeadDeltaV1, InspectedPathV1, PathHintV1, WarmLayerV1,
+        WarmSetSelectedPayloadV1, WarmSetV1, WorkerNotesDropReasonV1, WorkerNotesRecordedPayloadV1,
+        WorkerNotesV1,
+    };
+    let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let notes = WorkerNotesV1 {
+        node: "correctness".into(),
+        attempt_id: "a".repeat(26),
+        head_snapshot_id: digest('1'),
+        inspected: vec![InspectedPathV1 {
+            path: "src/lib.rs".into(),
+            tree_entry_digest: Some(digest('2')),
+        }],
+        model_of_change: "the retry loop gained a cap".into(),
+        open_questions: vec!["is the cap configurable?".into()],
+        hints: vec![PathHintV1 {
+            path: "src/retry.rs".into(),
+            note: "the cap is read once at start".into(),
+        }],
+    };
+    notes.validate().unwrap();
+    let mut value = serde_json::to_value(&notes).unwrap();
+    assert_valid("worker-notes-v1.json", &value);
+    let decoded: WorkerNotesV1 = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(decoded, notes);
+    assert_eq!(
+        notes.referenced_paths().into_iter().collect::<Vec<_>>(),
+        ["src/lib.rs", "src/retry.rs"]
+    );
+    value["verdict"] = json!("approve");
+    assert_invalid(
+        "worker-notes-v1.json",
+        &value,
+        "notes are an inspection map and never carry a verdict or a disposition",
+    );
+    assert!(serde_json::from_value::<WorkerNotesV1>(value).is_err());
+
+    let delta = HeadDeltaV1 {
+        node: "correctness".into(),
+        from_snapshot_id: digest('1'),
+        to_snapshot_id: digest('3'),
+        diff_policy_version: "review.kernel/git-tree-diff@test".into(),
+        rename_detection_truncated: true,
+        changed_paths: vec!["src/new.rs".into(), "src/old.rs".into()],
+        marks: vec![
+            HeadDeltaEntryV1 {
+                path: "src/lib.rs".into(),
+                mark: HeadDeltaMarkV1::Reverted,
+                renamed_from: None,
+            },
+            HeadDeltaEntryV1 {
+                path: "src/new.rs".into(),
+                mark: HeadDeltaMarkV1::Renamed,
+                renamed_from: Some("src/old.rs".into()),
+            },
+            HeadDeltaEntryV1 {
+                path: "src/old.rs".into(),
+                mark: HeadDeltaMarkV1::Removed,
+                renamed_from: None,
+            },
+        ],
+    };
+    delta.validate().unwrap();
+    let mut value = serde_json::to_value(&delta).unwrap();
+    assert_valid("head-delta-v1.json", &value);
+    let decoded: HeadDeltaV1 = serde_json::from_value(value.clone()).unwrap();
+    assert_eq!(decoded, delta);
+    value["base_snapshot_id"] = json!(digest('9'));
+    assert_invalid(
+        "head-delta-v1.json",
+        &value,
+        "a Head Delta names two consecutive heads and never a Base Snapshot",
+    );
+    assert!(serde_json::from_value::<HeadDeltaV1>(value).is_err());
+    let mut unmarked = delta.clone();
+    unmarked.marks.retain(|entry| entry.path != "src/old.rs");
+    assert!(unmarked.validate().is_err(), "every changed path is marked");
+
+    let set = WarmSetV1 {
+        node: "correctness".into(),
+        round: 2,
+        source_attempt_id: Some("a".repeat(26)),
+        notes_artifact_id: Some(digest('4')),
+        head_delta_artifact_id: Some(digest('5')),
+        head_delta_dropped: None,
+        build_cache_artifact_id: None,
+        build_cache_dropped: None,
+        workspace: None,
+        workspace_id: None,
+        session_artifact_id: None,
+        session_dropped: None,
+    };
+    set.validate().unwrap();
+    let dropped = WarmSetV1 {
+        head_delta_artifact_id: None,
+        head_delta_dropped: Some(review_core::HeadDeltaDropReasonV1::OverBound),
+        ..set.clone()
+    };
+    dropped.validate().unwrap();
+    assert_valid("warm-set-v1.json", &serde_json::to_value(&dropped).unwrap());
+    let mut value = serde_json::to_value(&set).unwrap();
+    assert_valid("warm-set-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<WarmSetV1>(value.clone()).unwrap(),
+        set
+    );
+    value["transcript_artifact_id"] = json!(digest('6'));
+    assert_invalid(
+        "warm-set-v1.json",
+        &value,
+        "a Warm Set carries exactly the layers the vocabulary names and nothing else",
+    );
+    assert!(serde_json::from_value::<WarmSetV1>(value).is_err());
+    let orphan = json!({"node": "correctness", "round": 2, "notes_artifact_id": digest('4')});
+    assert_invalid(
+        "warm-set-v1.json",
+        &orphan,
+        "Notes without their source Attempt",
+    );
+    let orphan: WarmSetV1 = serde_json::from_value(orphan).unwrap();
+    assert!(orphan.validate().is_err());
+
+    let selected = WarmSetSelectedPayloadV1 {
+        warm_set_artifact_id: digest('7'),
+        source_attempt_id: Some("a".repeat(26)),
+        layers: vec![WarmLayerV1::Notes, WarmLayerV1::HeadDelta],
+    };
+    selected.validate().unwrap();
+    validate_event_payload(
+        EventType::WarmSetSelectedV1,
+        &serde_json::to_value(&selected).unwrap(),
+    )
+    .unwrap();
+    let event = RunEvent {
+        event_id: "b".repeat(26),
+        run_id: "run".into(),
+        sequence: 8,
+        event_type: EventType::WarmSetSelectedV1,
+        occurred_at: "2026-09-17T00:00:00Z".into(),
+        node_id: Some("correctness".into()),
+        attempt_id: None,
+        causation_id: Some("c".repeat(26)),
+        correlation_id: None,
+        artifact_refs: vec![digest('7')],
+        payload: serde_json::to_value(&selected).unwrap(),
+    };
+    assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
+    let mut duplicate = serde_json::to_value(&event).unwrap();
+    duplicate["payload"]["layers"] = json!(["notes", "notes"]);
+    assert_invalid("run-event-v1.json", &duplicate, "layers are unique");
+    let payload = duplicate["payload"].clone();
+    assert!(validate_event_payload(EventType::WarmSetSelectedV1, &payload).is_err());
+
+    for recorded in [
+        WorkerNotesRecordedPayloadV1 {
+            result_artifact_id: digest('8'),
+            notes_artifact_id: Some(digest('4')),
+            dropped: None,
+            bytes: 512,
+        },
+        WorkerNotesRecordedPayloadV1 {
+            result_artifact_id: digest('8'),
+            notes_artifact_id: None,
+            dropped: Some(WorkerNotesDropReasonV1::OverBound),
+            bytes: 70_000,
+        },
+    ] {
+        recorded.validate().unwrap();
+        let payload = serde_json::to_value(&recorded).unwrap();
+        validate_event_payload(EventType::WorkerNotesRecordedV1, &payload).unwrap();
+        let event = RunEvent {
+            event_type: EventType::WorkerNotesRecordedV1,
+            attempt_id: Some("a".repeat(26)),
+            artifact_refs: vec![digest('8')],
+            payload,
+            ..event.clone()
+        };
+        assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
+    }
+    let both = json!({
+        "result_artifact_id": digest('8'), "notes_artifact_id": digest('4'),
+        "dropped": "over_bound", "bytes": 1
+    });
+    let mut event_value = serde_json::to_value(&event).unwrap();
+    event_value["type"] = json!("WorkerNotesRecorded@1");
+    event_value["payload"] = both.clone();
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a notes record is either an artifact or a drop, never both",
+    );
+    assert!(validate_event_payload(EventType::WorkerNotesRecordedV1, &both).is_err());
+}
+
+#[test]
+fn build_cache_contracts_are_explicitly_unsafe_bounded_and_closed() {
+    use review_core::event::validate_event_payload;
+    use review_core::{
+        BuildCacheCapturedPayloadV1, BuildCacheDropReasonV1, BuildCacheKindV1, BuildCacheLimitsV1,
+        BuildCacheRefusalReasonV1, BuildCacheTrustV1, BuildCacheV1, WarmLayerV1,
+        WarmSetSelectedPayloadV1, WarmSetV1,
+    };
+    let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let cache = BuildCacheV1 {
+        kind: BuildCacheKindV1::CargoTarget,
+        trust: BuildCacheTrustV1::CandidateBuilt,
+        gate_node: "gate".into(),
+        gate_attempt_id: Some("a".repeat(26)),
+        head_snapshot_id: digest('1'),
+        manifest_id: digest('2'),
+        content_digest: digest('3'),
+        entries: 12,
+        bytes: 4096,
+        limits: BuildCacheLimitsV1::default_v1(),
+    };
+    cache.validate().unwrap();
+    let mut value = serde_json::to_value(&cache).unwrap();
+    assert_valid("build-cache-v1.json", &value);
+    assert_eq!(
+        value["trust"], "candidate_built",
+        "the payload itself says it was built by candidate code"
+    );
+    assert_eq!(
+        serde_json::from_value::<BuildCacheV1>(value.clone()).unwrap(),
+        cache
+    );
+    value["trust"] = json!("administrator_approved");
+    assert_invalid(
+        "build-cache-v1.json",
+        &value,
+        "a Build Cache can never claim Cache Snapshot approval",
+    );
+    assert!(serde_json::from_value::<BuildCacheV1>(value.clone()).is_err());
+    value["trust"] = json!("candidate_built");
+    value["kind"] = json!("cargo");
+    assert_invalid(
+        "build-cache-v1.json",
+        &value,
+        "the registry-only cargo snapshot is not a build cache kind",
+    );
+    value["kind"] = json!("cargo_target");
+    value["source_path"] = json!("/home/operator/.cargo");
+    assert_invalid(
+        "build-cache-v1.json",
+        &value,
+        "a Build Cache never records a host path",
+    );
+    assert!(serde_json::from_value::<BuildCacheV1>(value).is_err());
+    let mut empty = serde_json::to_value(&cache).unwrap();
+    empty["entries"] = json!(0);
+    assert_invalid("build-cache-v1.json", &empty, "an empty capture is refused");
+
+    let captured = BuildCacheCapturedPayloadV1 {
+        gate_node: "gate".into(),
+        gate_attempt_id: None,
+        head_snapshot_id: digest('1'),
+        kind: BuildCacheKindV1::CargoTarget,
+        limits: BuildCacheLimitsV1::default_v1(),
+        build_cache_artifact_id: Some(digest('4')),
+        refused: None,
+        entries: 12,
+        bytes: 4096,
+    };
+    let refused = BuildCacheCapturedPayloadV1 {
+        build_cache_artifact_id: None,
+        refused: Some(BuildCacheRefusalReasonV1::UnsafeContent),
+        entries: 0,
+        bytes: 0,
+        ..captured.clone()
+    };
+    let event = RunEvent {
+        event_id: "b".repeat(26),
+        run_id: "run".into(),
+        sequence: 9,
+        event_type: EventType::BuildCacheCapturedV1,
+        occurred_at: "2026-09-17T00:00:00Z".into(),
+        node_id: Some("gate".into()),
+        attempt_id: None,
+        causation_id: Some("c".repeat(26)),
+        correlation_id: None,
+        artifact_refs: vec![digest('4'), digest('2')],
+        payload: json!({}),
+    };
+    for payload in [&captured, &refused] {
+        payload.validate().unwrap();
+        let payload = serde_json::to_value(payload).unwrap();
+        validate_event_payload(EventType::BuildCacheCapturedV1, &payload).unwrap();
+        let event = RunEvent {
+            payload,
+            ..event.clone()
+        };
+        assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
+    }
+    let both = json!({
+        "gate_node": "gate", "head_snapshot_id": digest('1'), "kind": "cargo_target",
+        "limits": serde_json::to_value(BuildCacheLimitsV1::default_v1()).unwrap(),
+        "build_cache_artifact_id": digest('4'), "refused": "limit_exceeded",
+        "entries": 1, "bytes": 1
+    });
+    let mut event_value = serde_json::to_value(&event).unwrap();
+    event_value["payload"] = both.clone();
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a capture record is either an artifact or a refusal, never both",
+    );
+    assert!(validate_event_payload(EventType::BuildCacheCapturedV1, &both).is_err());
+
+    let set = WarmSetV1 {
+        node: "tdd".into(),
+        round: 1,
+        source_attempt_id: None,
+        notes_artifact_id: None,
+        head_delta_artifact_id: None,
+        head_delta_dropped: None,
+        build_cache_artifact_id: Some(digest('4')),
+        build_cache_dropped: None,
+        workspace: None,
+        workspace_id: None,
+        session_artifact_id: None,
+        session_dropped: None,
+    };
+    set.validate().unwrap();
+    assert_eq!(set.layers(), vec![WarmLayerV1::BuildCache]);
+    let value = serde_json::to_value(&set).unwrap();
+    assert_valid("warm-set-v1.json", &value);
+    assert_eq!(serde_json::from_value::<WarmSetV1>(value).unwrap(), set);
+    let dropped = WarmSetV1 {
+        build_cache_artifact_id: None,
+        build_cache_dropped: Some(BuildCacheDropReasonV1::Refused),
+        ..set
+    };
+    dropped.validate().unwrap();
+    assert_valid("warm-set-v1.json", &serde_json::to_value(&dropped).unwrap());
+    let selected = WarmSetSelectedPayloadV1 {
+        warm_set_artifact_id: digest('7'),
+        source_attempt_id: None,
+        layers: vec![WarmLayerV1::BuildCache],
+    };
+    selected.validate().unwrap();
+    let payload = serde_json::to_value(&selected).unwrap();
+    validate_event_payload(EventType::WarmSetSelectedV1, &payload).unwrap();
+    let event = RunEvent {
+        event_type: EventType::WarmSetSelectedV1,
+        node_id: Some("tdd".into()),
+        artifact_refs: vec![digest('7')],
+        payload,
+        ..event
+    };
+    assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
+}
+
+#[test]
+fn warm_workspace_contracts_roundtrip_and_stay_closed() {
+    use review_core::event::validate_event_payload;
+    use review_core::{
+        WarmLayerV1, WarmSetSelectedPayloadV1, WarmSetV1, WorkspaceBasisV1,
+        WorkspaceFallbackReasonV1, WorkspaceRebasedPayloadV1,
+    };
+    let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let workspace_id = "c".repeat(32);
+
+    let set = WarmSetV1 {
+        node: "correctness".into(),
+        round: 2,
+        source_attempt_id: None,
+        notes_artifact_id: None,
+        head_delta_artifact_id: None,
+        head_delta_dropped: None,
+        build_cache_artifact_id: None,
+        build_cache_dropped: None,
+        workspace: Some(WorkspaceBasisV1::Rebased),
+        workspace_id: Some(workspace_id.clone()),
+        session_artifact_id: None,
+        session_dropped: None,
+    };
+    set.validate().unwrap();
+    assert_eq!(set.layers(), vec![WarmLayerV1::Workspace]);
+    let mut value = serde_json::to_value(&set).unwrap();
+    assert_valid("warm-set-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<WarmSetV1>(value.clone()).unwrap(),
+        set
+    );
+    for basis in [WorkspaceBasisV1::Full, WorkspaceBasisV1::Reused] {
+        let other = WarmSetV1 {
+            workspace: Some(basis),
+            ..set.clone()
+        };
+        other.validate().unwrap();
+        assert_valid("warm-set-v1.json", &serde_json::to_value(&other).unwrap());
+    }
+    value["workspace_id"] = json!("/Users/operator/.cache/af/workspaces/c");
+    assert_invalid(
+        "warm-set-v1.json",
+        &value,
+        "a workspace is named by an opaque identity, never a host path",
+    );
+    assert!(
+        serde_json::from_value::<WarmSetV1>(value)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let nameless = json!({"node": "correctness", "round": 2, "workspace": "rebased"});
+    assert_invalid(
+        "warm-set-v1.json",
+        &nameless,
+        "a workspace basis without its identity",
+    );
+    assert!(
+        serde_json::from_value::<WarmSetV1>(nameless)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+    let baseless = json!({"node": "correctness", "round": 2, "workspace_id": &workspace_id});
+    assert_invalid(
+        "warm-set-v1.json",
+        &baseless,
+        "a workspace identity without its basis",
+    );
+
+    let selected = WarmSetSelectedPayloadV1 {
+        warm_set_artifact_id: digest('7'),
+        source_attempt_id: None,
+        layers: vec![WarmLayerV1::Workspace],
+    };
+    selected.validate().unwrap();
+    let payload = serde_json::to_value(&selected).unwrap();
+    validate_event_payload(EventType::WarmSetSelectedV1, &payload).unwrap();
+    let event = RunEvent {
+        event_id: "b".repeat(26),
+        run_id: "run".into(),
+        sequence: 10,
+        event_type: EventType::WarmSetSelectedV1,
+        occurred_at: "2026-09-18T00:00:00Z".into(),
+        node_id: Some("correctness".into()),
+        attempt_id: None,
+        causation_id: Some("c".repeat(26)),
+        correlation_id: None,
+        artifact_refs: vec![digest('7')],
+        payload,
+    };
+    assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
+
+    let rebased = WorkspaceRebasedPayloadV1 {
+        node: "correctness".into(),
+        workspace_id: workspace_id.clone(),
+        from_snapshot_id: Some(digest('1')),
+        to_snapshot_id: digest('2'),
+        basis: WorkspaceBasisV1::Rebased,
+        fallback: None,
+        verified_digest: digest('3'),
+        entries_touched: 4,
+        preparation_ms: 250,
+    };
+    let full = WorkspaceRebasedPayloadV1 {
+        from_snapshot_id: None,
+        basis: WorkspaceBasisV1::Full,
+        fallback: Some(WorkspaceFallbackReasonV1::NoVerifiedTemplate),
+        entries_touched: 12,
+        ..rebased.clone()
+    };
+    let fallen_back = WorkspaceRebasedPayloadV1 {
+        basis: WorkspaceBasisV1::Full,
+        fallback: Some(WorkspaceFallbackReasonV1::DigestMismatch),
+        ..rebased.clone()
+    };
+    let reused = WorkspaceRebasedPayloadV1 {
+        basis: WorkspaceBasisV1::Reused,
+        entries_touched: 0,
+        ..rebased.clone()
+    };
+    let unrecorded = WorkspaceRebasedPayloadV1 {
+        basis: WorkspaceBasisV1::Full,
+        fallback: Some(WorkspaceFallbackReasonV1::UnrecordedPreparation),
+        entries_touched: 12,
+        ..rebased.clone()
+    };
+    for payload in [&rebased, &full, &fallen_back, &reused, &unrecorded] {
+        payload.validate().unwrap();
+        let value = serde_json::to_value(payload).unwrap();
+        validate_event_payload(EventType::WorkspaceRebasedV1, &value).unwrap();
+        assert_eq!(
+            serde_json::from_value::<WorkspaceRebasedPayloadV1>(value.clone()).unwrap(),
+            *payload
+        );
+        let event = RunEvent {
+            event_type: EventType::WorkspaceRebasedV1,
+            artifact_refs: vec![digest('1'), digest('2')],
+            payload: value,
+            ..event.clone()
+        };
+        assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
+    }
+    let mut event_value = serde_json::to_value(&RunEvent {
+        event_type: EventType::WorkspaceRebasedV1,
+        payload: serde_json::to_value(&rebased).unwrap(),
+        ..event.clone()
+    })
+    .unwrap();
+    event_value["payload"]["fallback"] = json!("apply_failed");
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a rebase that succeeded records no fallback reason",
+    );
+    assert!(
+        validate_event_payload(EventType::WorkspaceRebasedV1, &event_value["payload"]).is_err()
+    );
+    event_value["payload"] = serde_json::to_value(&full).unwrap();
+    event_value["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("fallback");
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a full materialization records why the template was not re-based",
+    );
+    assert!(
+        validate_event_payload(EventType::WorkspaceRebasedV1, &event_value["payload"]).is_err()
+    );
+    event_value["payload"] = serde_json::to_value(&reused).unwrap();
+    event_value["payload"]["entries_touched"] = json!(1);
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a reused template materializes nothing",
+    );
+    assert!(
+        validate_event_payload(EventType::WorkspaceRebasedV1, &event_value["payload"]).is_err()
+    );
+    event_value["payload"] = serde_json::to_value(&rebased).unwrap();
+    event_value["payload"]["root"] = json!("/Users/operator/.cache/af/workspaces/c/tree");
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a workspace record never carries a host path",
+    );
+    assert!(
+        validate_event_payload(EventType::WorkspaceRebasedV1, &event_value["payload"]).is_err()
+    );
+}
+
+#[test]
+fn session_snapshot_and_cold_closeout_contracts_roundtrip_and_stay_closed() {
+    use review_core::event::validate_event_payload;
+    use review_core::{
+        ColdCloseoutDispatchedPayloadV1, SessionCleanupOutcomeV1, SessionCleanupRefusalV1,
+        SessionDropReasonV1, SessionSnapshotCleanedPayloadV1, SessionSnapshotPreparedPayloadV1,
+        SessionSnapshotV1, SessionSourceV1, WarmLayerV1, WarmSetSelectedPayloadV1, WarmSetV1,
+        session_id_for_attempt,
+    };
+    let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let attempt_id = "a".repeat(26);
+    let session_id = session_id_for_attempt(&attempt_id).unwrap();
+    let event = RunEvent {
+        event_id: "b".repeat(26),
+        run_id: "run".into(),
+        sequence: 11,
+        event_type: EventType::SessionSnapshotPreparedV1,
+        occurred_at: "2026-09-18T00:00:00Z".into(),
+        node_id: Some("correctness".into()),
+        attempt_id: Some(attempt_id.clone()),
+        causation_id: Some("c".repeat(26)),
+        correlation_id: None,
+        artifact_refs: vec![digest('4'), digest('3')],
+        payload: json!({}),
+    };
+
+    let source = SessionSourceV1 {
+        provider_kind: "claude".into(),
+        path_digest: digest('2'),
+    };
+    let snapshot = SessionSnapshotV1 {
+        node: "correctness".into(),
+        attempt_id: attempt_id.clone(),
+        session_id: session_id.clone(),
+        head_snapshot_id: digest('1'),
+        source: source.clone(),
+        transcript_artifact_id: digest('3'),
+        bytes: 4096,
+        estimated_tokens: 1024,
+    };
+    snapshot.validate().unwrap();
+    let mut value = serde_json::to_value(&snapshot).unwrap();
+    assert_valid("session-snapshot-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<SessionSnapshotV1>(value.clone()).unwrap(),
+        snapshot
+    );
+    value["source"]["path_digest"] = json!("/Users/operator/.claude/projects/x/s.jsonl");
+    assert_invalid(
+        "session-snapshot-v1.json",
+        &value,
+        "a captured session names its source by identity, never by host path",
+    );
+    let mut value = serde_json::to_value(&snapshot).unwrap();
+    value["session_id"] = json!("not-a-session");
+    assert_invalid(
+        "session-snapshot-v1.json",
+        &value,
+        "a session identity is the canonical shape the pinned CLI accepts",
+    );
+    assert!(
+        serde_json::from_value::<SessionSnapshotV1>(value)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+
+    let prepared = SessionSnapshotPreparedPayloadV1 {
+        session_id: session_id.clone(),
+        session_artifact_id: digest('4'),
+        transcript_artifact_id: digest('3'),
+        source,
+        bytes: 4096,
+        estimated_tokens: 1024,
+        captured_at_unix_ms: 1_789_000_000_000,
+    };
+    prepared.validate().unwrap();
+    let payload = serde_json::to_value(&prepared).unwrap();
+    validate_event_payload(EventType::SessionSnapshotPreparedV1, &payload).unwrap();
+    assert_eq!(
+        serde_json::from_value::<SessionSnapshotPreparedPayloadV1>(payload.clone()).unwrap(),
+        prepared
+    );
+    let event = RunEvent { payload, ..event };
+    assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
+
+    for outcome in [
+        SessionCleanupOutcomeV1::Deleted,
+        SessionCleanupOutcomeV1::AlreadyAbsent,
+    ] {
+        let cleaned = SessionSnapshotCleanedPayloadV1 {
+            session_id: session_id.clone(),
+            outcome,
+            refusal: None,
+        };
+        cleaned.validate().unwrap();
+        assert!(cleaned.completed());
+        let payload = serde_json::to_value(&cleaned).unwrap();
+        validate_event_payload(EventType::SessionSnapshotCleanedV1, &payload).unwrap();
+        let event = RunEvent {
+            event_type: EventType::SessionSnapshotCleanedV1,
+            artifact_refs: Vec::new(),
+            payload,
+            ..event.clone()
+        };
+        assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
+    }
+    let refused = SessionSnapshotCleanedPayloadV1 {
+        session_id: session_id.clone(),
+        outcome: SessionCleanupOutcomeV1::Refused,
+        refusal: Some(SessionCleanupRefusalV1::SymlinkedParent),
+    };
+    refused.validate().unwrap();
+    assert!(!refused.completed());
+    let mut event_value = serde_json::to_value(&RunEvent {
+        event_type: EventType::SessionSnapshotCleanedV1,
+        artifact_refs: Vec::new(),
+        payload: serde_json::to_value(&refused).unwrap(),
+        ..event.clone()
+    })
+    .unwrap();
+    assert_valid("run-event-v1.json", &event_value);
+    event_value["payload"]["outcome"] = json!("deleted");
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a completed deletion records no refusal reason",
+    );
+    assert!(
+        validate_event_payload(EventType::SessionSnapshotCleanedV1, &event_value["payload"])
+            .is_err()
+    );
+    event_value["payload"] = json!({"session_id": session_id, "outcome": "refused"});
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a refusal says what stood where the transcript was",
+    );
+
+    let dispatched = ColdCloseoutDispatchedPayloadV1 {
+        node: "correctness".into(),
+        round: 2,
+        warm_attempt_id: attempt_id.clone(),
+        warm_result_artifact_id: digest('5'),
+        cold_attempt_id: "b".repeat(26),
+        reserved_tokens: Some(300_000),
+        charged_tokens: 120_000,
+        cold_result_artifact_id: Some(digest('6')),
+        failed: None,
+    };
+    dispatched.validate().unwrap();
+    let payload = serde_json::to_value(&dispatched).unwrap();
+    validate_event_payload(EventType::ColdCloseoutDispatchedV1, &payload).unwrap();
+    assert_eq!(
+        serde_json::from_value::<ColdCloseoutDispatchedPayloadV1>(payload.clone()).unwrap(),
+        dispatched
+    );
+    let mut event_value = serde_json::to_value(&RunEvent {
+        event_type: EventType::ColdCloseoutDispatchedV1,
+        attempt_id: Some("b".repeat(26)),
+        artifact_refs: vec![digest('5'), digest('6')],
+        payload,
+        ..event.clone()
+    })
+    .unwrap();
+    assert_valid("run-event-v1.json", &event_value);
+    event_value["payload"]["failed"] = json!("timed out");
+    assert_invalid(
+        "run-event-v1.json",
+        &event_value,
+        "a closeout names exactly one of a cold result or a failure",
+    );
+    assert!(
+        validate_event_payload(EventType::ColdCloseoutDispatchedV1, &event_value["payload"])
+            .is_err()
+    );
+    event_value["payload"]
+        .as_object_mut()
+        .unwrap()
+        .remove("cold_result_artifact_id");
+    assert_valid("run-event-v1.json", &event_value);
+
+    let set = WarmSetV1 {
+        node: "correctness".into(),
+        round: 3,
+        source_attempt_id: Some(attempt_id),
+        notes_artifact_id: None,
+        head_delta_artifact_id: None,
+        head_delta_dropped: None,
+        build_cache_artifact_id: None,
+        build_cache_dropped: None,
+        workspace: None,
+        workspace_id: None,
+        session_artifact_id: Some(digest('4')),
+        session_dropped: None,
+    };
+    set.validate().unwrap();
+    assert_eq!(set.layers(), vec![WarmLayerV1::Session]);
+    let value = serde_json::to_value(&set).unwrap();
+    assert_valid("warm-set-v1.json", &value);
+    assert_eq!(serde_json::from_value::<WarmSetV1>(value).unwrap(), set);
+    for reason in [
+        SessionDropReasonV1::ProviderUnsupported,
+        SessionDropReasonV1::HostUnsupported,
+        SessionDropReasonV1::NoSource,
+        SessionDropReasonV1::NotCaptured,
+        SessionDropReasonV1::CleanupIncomplete,
+        SessionDropReasonV1::TooOld,
+        SessionDropReasonV1::OverReservation,
+        SessionDropReasonV1::MaterializationFailed,
+        SessionDropReasonV1::HeadDeltaDropped,
+    ] {
+        let dropped = WarmSetV1 {
+            session_artifact_id: None,
+            session_dropped: Some(reason),
+            ..set.clone()
+        };
+        dropped.validate().unwrap();
+        assert!(
+            dropped.layers().is_empty(),
+            "a dropped session carries none"
+        );
+        assert_valid("warm-set-v1.json", &serde_json::to_value(&dropped).unwrap());
+    }
+    let orphan = json!({"node": "correctness", "round": 3, "session_artifact_id": digest('4')});
+    assert_invalid(
+        "warm-set-v1.json",
+        &orphan,
+        "a transcript without its source Attempt is not a warm layer",
+    );
+    let selected = WarmSetSelectedPayloadV1 {
+        warm_set_artifact_id: digest('7'),
+        source_attempt_id: Some("a".repeat(26)),
+        layers: vec![WarmLayerV1::Session],
+    };
+    selected.validate().unwrap();
+    let payload = serde_json::to_value(&selected).unwrap();
+    validate_event_payload(EventType::WarmSetSelectedV1, &payload).unwrap();
+    let event = RunEvent {
+        event_type: EventType::WarmSetSelectedV1,
+        attempt_id: None,
+        artifact_refs: vec![digest('7')],
+        payload,
+        ..event
+    };
+    assert_valid("run-event-v1.json", &serde_json::to_value(&event).unwrap());
 }
 
 #[path = "schema_parity/task_usage.rs"]

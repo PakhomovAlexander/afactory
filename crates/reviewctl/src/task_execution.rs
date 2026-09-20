@@ -22,6 +22,9 @@ use review_pipeline::task::document::{
 use review_pipeline::task::host::{
     CapturedTaskAuthority, CommandTaskHost, NoTaskDeveloper, TaskDomain, TaskModelBinding,
 };
+use review_pipeline::task::optimization::{
+    OptimizationCandidateTaskDomain, OptimizationTaskDomain, optimization_signatures,
+};
 use review_pipeline::task::provider::ProviderTaskDomain;
 use review_pipeline::task::review::{ReviewTaskDomain, ReviewTaskPolicy, review_signatures};
 use review_pipeline::task::source::SnapshotTaskEnvironment;
@@ -59,6 +62,9 @@ pub(super) struct StartOptions {
     pub json: bool,
     pub plan_only: bool,
     pub timeout_secs: Option<u64>,
+    /// Pre-captured by the token-free `self optimize` adapter. Ordinary Task files leave this
+    /// absent and may instead name a project-contained deterministic fixture.
+    pub optimization_history: Option<review_core::task::optimization::OptimizationHistoryV1>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +87,12 @@ struct TaskFile {
         deserialize_with = "present_option"
     )]
     document_sources: Option<String>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    optimization_history: Option<String>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -360,7 +372,7 @@ pub(super) fn engine(cas: &Cas) -> Result<String, String> {
     cas.put_json(&json!({"schema":"af.task-engine/1","binary_digest":digest,"version":env!("CARGO_PKG_VERSION"),"graph":"af.compiled-task/1"})).map_err(|e|e.to_string())
 }
 
-fn state_path(repo: &Path, state: Option<&Path>) -> Result<(PathBuf, PathBuf), String> {
+pub(crate) fn state_path(repo: &Path, state: Option<&Path>) -> Result<(PathBuf, PathBuf), String> {
     let repo = std::fs::canonicalize(repo).map_err(|e| e.to_string())?;
     let state = match state {
         Some(path) => super::resolve_filesystem_path(path)?,
@@ -637,10 +649,16 @@ fn restore_compiler(
             serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
         (
-            code_signatures(id, &policy)?,
+            {
+                let mut signatures = code_signatures(id, &policy)?;
+                signatures.extend(optimization_signatures(id)?);
+                signatures
+            },
             BTreeMap::from([
                 ("verified".into(), "snapshot".into()),
                 ("goal".into(), "snapshot".into()),
+                ("analysis".into(), "report".into()),
+                ("experiment".into(), "comparison".into()),
             ]),
         )
     };
@@ -873,7 +891,10 @@ fn start_captured(
 ) -> Result<i32, String> {
     let profile = selected_profile(&compiler, &authority, &file.kind, file.verification)?;
     let origin=cas.put_json(&json!({"schema":"af.task-source-origin/1","repository_id":source.repository_id,"source_revision":source.source_revision,"content_digest":source.content_digest})).map_err(|e|e.to_string())?;
-    let source_port = if profile == TaskKindProfile::Document {
+    let source_port = if matches!(
+        profile,
+        TaskKindProfile::Document | TaskKindProfile::OptimizationAnalysis
+    ) {
         None
     } else {
         if file.document_sources.is_some() {
@@ -938,6 +959,7 @@ fn start_captured(
         Some(issue) => format!("{}\n\n{}", file.goal, issue.requirements.text),
         None => file.goal.clone(),
     };
+    let optimization_finalize = file.facts.get("finalize") == Some(&TaskFactV1::Boolean(true));
     let mut revision=TaskRevisionV1 {
         task_id:file.task_id,revision:1,previous_revision_id:None,kind:file.kind,goal,
         inputs:BTreeMap::from([("requirements".into(),ArtifactInputV1 {artifact_ids:vec![requirements.clone()],artifact_type:"af/Requirements@1".into(),cardinality:PortCardinality::One,snapshot_id:None})]),
@@ -968,7 +990,7 @@ fn start_captured(
             .put_artifact(
                 DOCUMENT_SOURCES_V1,
                 producer(),
-                vec![raw, origin],
+                vec![raw, origin.clone()],
                 None,
                 serde_json::to_value(sources).map_err(|e| e.to_string())?,
             )
@@ -994,6 +1016,116 @@ fn start_captured(
                 verifier_policy: authority.invocation_policy_id()?.into(),
             },
         )]);
+    }
+    if matches!(
+        profile,
+        TaskKindProfile::OptimizationAnalysis | TaskKindProfile::OptimizationCandidate
+    ) {
+        use review_core::task::optimization::*;
+        if file.document_sources.is_some() {
+            return Err("Document source input is not valid for an Optimization Task".into());
+        }
+        let (history, raw) = if let Some(history) = options.optimization_history.clone() {
+            let bytes = serde_json::to_vec(&history).map_err(|e| e.to_string())?;
+            let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
+            (history, raw)
+        } else {
+            let path = file.optimization_history.as_deref().ok_or(
+                "Optimization Task needs captured history or an optimization_history fixture",
+            )?;
+            if !review_config::task::shared::safe_relative_path(path) {
+                return Err("Optimization history path must be project-relative".into());
+            }
+            let bytes = captured_file(&cas, &source.manifest, path)?;
+            let history: OptimizationHistoryV1 = parse(Path::new(path), &bytes)?;
+            let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
+            (history, raw)
+        };
+        history.validate()?;
+        let mut refs = vec![raw, origin.clone()];
+        if let Some(previous) = &history.previous_capture_id {
+            cas.verify(previous).map_err(|_| {
+                "Optimization history predecessor is not retained in this Task Store".to_string()
+            })?;
+            refs.push(previous.clone());
+        }
+        let id = cas
+            .put_artifact(
+                OPTIMIZATION_HISTORY_V1,
+                producer(),
+                refs,
+                None,
+                serde_json::to_value(history).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?
+            .0;
+        let history_port = ArtifactInputV1 {
+            artifact_ids: vec![id.clone()],
+            artifact_type: OPTIMIZATION_HISTORY_V1.into(),
+            cardinality: PortCardinality::One,
+            snapshot_id: None,
+        };
+        if profile == TaskKindProfile::OptimizationAnalysis {
+            revision.inputs = BTreeMap::from([("history".into(), history_port)]);
+        } else {
+            revision.inputs.insert("history".into(), history_port);
+        }
+        revision.provenance.input_artifact_ids.push(id);
+        revision.provenance.input_artifact_ids.sort();
+        revision.authority.allowed_effects.clear();
+        revision.required_outputs = if profile == TaskKindProfile::OptimizationAnalysis {
+            serde_json::from_value(json!({
+                "economics":{"artifact_type":OPTIMIZATION_ECONOMICS_V1,"cardinality":"one"},
+                "report":{"artifact_type":OPTIMIZATION_REPORT_V1,"cardinality":"one"}
+            }))
+        } else {
+            serde_json::from_value(json!({
+                "comparison":{"artifact_type":review_core::task::optimization_experiment::EXPERIMENT_COMPARISON_V1,"cardinality":"one"}
+            }))
+        }
+        .map_err(|e| e.to_string())?;
+        revision.acceptance = BTreeMap::from([(
+            if profile == TaskKindProfile::OptimizationAnalysis {
+                "analysis".into()
+            } else {
+                "experiment".into()
+            },
+            AcceptanceObligationV1 {
+                evidence_type: if profile == TaskKindProfile::OptimizationAnalysis {
+                    OPTIMIZATION_REPORT_V1.into()
+                } else {
+                    review_core::task::optimization_experiment::EXPERIMENT_COMPARISON_V1.into()
+                },
+                verifier_policy: authority.code_policy_id()?.into(),
+            },
+        )]);
+    }
+    if profile == TaskKindProfile::OptimizationCandidate
+        && (file
+            .requirements
+            .as_ref()
+            .is_some_and(|v| v.get("candidate").is_some())
+            || optimization_finalize)
+    {
+        revision.required_outputs.insert(
+            "snapshot".into(),
+            serde_json::from_value(json!({"artifact_type":"af/SourceTree@1","cardinality":"one"}))
+                .map_err(|e| e.to_string())?,
+        );
+        revision.required_outputs.insert(
+            "verification".into(),
+            serde_json::from_value(
+                json!({"artifact_type":"af/OptimizationVerification@1","cardinality":"one"}),
+            )
+            .map_err(|e| e.to_string())?,
+        );
+        revision.acceptance.insert(
+            "verified".into(),
+            AcceptanceObligationV1 {
+                evidence_type: "af/OptimizationVerification@1".into(),
+                verifier_policy: authority.code_policy_id()?.into(),
+            },
+        );
     }
     if profile == TaskKindProfile::Review {
         if file.requirements.is_none() && file.issue.is_none() {
@@ -1081,10 +1213,28 @@ fn start_captured(
         revision_id,
         compiler: selected_compiler,
         adapters,
-        plan,
-        graph,
+        mut plan,
+        mut graph,
     } = *selected;
     compiler = selected_compiler;
+    if profile == TaskKindProfile::OptimizationCandidate {
+        (compiler, plan, graph) = install_candidate_experiment(
+            &cas,
+            compiler,
+            &authority,
+            &revision,
+            &revision_id,
+            &graph,
+            &plan,
+        )?;
+    }
+    if plan.task_revision_id != revision_id
+        || plan.authority != revision.authority
+        || plan.limits != revision.limits
+        || plan.inputs != revision.inputs
+    {
+        return Err("Optimization plan recompilation changed captured Task authority".into());
+    }
     let plan_id = cas
         .put_artifact(
             EXECUTION_PLAN_V1,
@@ -1095,14 +1245,14 @@ fn start_captured(
         )
         .map_err(|e| e.to_string())?
         .0;
-    let inner = captured_domain(&cas, &authority, profile, graph.clone())?;
+    let inner = captured_domain(&cas, &authority, profile, graph.clone(), &plan, &compiler)?;
     let models = model_bindings(&plan, &graph, &adapters)?;
     let domain = ProviderTaskDomain {
         graph: &graph,
         models: &models,
         inner: inner.as_ref(),
     };
-    let environment = domain::environment(&cas, &authority)?;
+    let environment = domain::environment(&cas, &authority, profile)?;
     let host = CommandTaskHost::capture_with_models(
         &cas,
         &compiler,
@@ -1189,6 +1339,7 @@ fn selected_profile(
             "implement" => TaskKindProfile::Implementation,
             "review" => TaskKindProfile::Review,
             "document" => TaskKindProfile::Document,
+            "optimize" => TaskKindProfile::OptimizationAnalysis,
             _ => return Err("Task requires a configured kind package".into()),
         }
     };
@@ -1212,11 +1363,165 @@ fn selected_profile(
     Ok(profile)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn install_candidate_experiment(
+    cas: &Cas,
+    compiler: TaskPlanCompiler,
+    authority: &RunAuthority,
+    revision: &TaskRevisionV1,
+    revision_id: &str,
+    graph: &CompiledTask,
+    plan: &ExecutionPlanV1,
+) -> Result<(TaskPlanCompiler, ExecutionPlanV1, CompiledTask), String> {
+    use review_core::task::optimization_experiment::{
+        EXPERIMENTAL_SLOT_V2, ExperimentAllowanceV1, ExperimentalSlotV2,
+    };
+    use review_graph::task::ExperimentalSlotTemplateV1;
+
+    let coordinators = graph
+        .nodes
+        .iter()
+        .filter_map(|(name, node)| match &node.operator {
+            review_graph::task::CompiledOperator::Primitive {
+                operator:
+                    pipeline::TaskOperatorV1::OptimizationExperiment {
+                        baseline_slot,
+                        candidate_slot,
+                    },
+                ..
+            } => Some((name.clone(), baseline_slot.clone(), candidate_slot.clone())),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let [(parent, baseline_local, candidate_local)] = coordinators.as_slice() else {
+        return Err(
+            "Candidate Optimization Pipeline needs exactly one installed experiment coordinator"
+                .into(),
+        );
+    };
+    let scope = parent
+        .split_once(".nodes.")
+        .map(|(scope, _)| scope)
+        .ok_or("Optimization coordinator has no compiled scope")?;
+    let qualify = |slot: &str| {
+        if graph.slots.contains_key(slot) {
+            slot.to_owned()
+        } else {
+            format!("{scope}.slots.{slot}")
+        }
+    };
+    let baseline_slot = qualify(baseline_local);
+    let candidate_slot = qualify(candidate_local);
+    let slots = [&baseline_slot, &candidate_slot];
+    let mut packages = BTreeSet::new();
+    let mut package_ids = BTreeSet::new();
+    let mut effects = BTreeSet::new();
+    let mut efforts = BTreeSet::new();
+    for slot in slots {
+        let package = &graph
+            .slots
+            .get(slot)
+            .ok_or("Optimization experiment lost a declared Worker slot")?
+            .worker;
+        let worker = compiler
+            .worker(package)
+            .ok_or("Optimization experiment Worker package is absent")?;
+        let binding = plan
+            .bindings
+            .get(slot)
+            .ok_or("Optimization experiment Worker has no exact binding")?;
+        efforts.insert(match &binding.execution {
+            WorkerExecutionV1::Command {} => "command".into(),
+            WorkerExecutionV1::Model { effort, .. } => effort.clone(),
+        });
+        packages.insert(package.clone());
+        package_ids.insert(binding.package_artifact_id.clone());
+        effects.extend(worker.signature.effects.iter().cloned());
+        worker
+            .signature
+            .attempt
+            .as_ref()
+            .filter(|attempt| attempt.wall_ms > 0)
+            .ok_or("Optimization experiment Worker has no Attempt bound")?;
+    }
+    if packages.len() != 2 || package_ids.len() != 2 {
+        return Err("Baseline and candidate must be separate captured Worker packages".into());
+    }
+    let policy_id = authority.code_policy_id()?.to_owned();
+    let oracle_id = revision
+        .inputs
+        .get("requirements")
+        .and_then(|port| port.artifact_ids.first())
+        .cloned()
+        .ok_or("Candidate Optimization lacks captured Requirements")?;
+    let binding_id =
+        review_store::content_id(&json!([revision_id, policy_id, "optimization-experiment"]))
+            .map_err(|error| error.to_string())?;
+    let slot = ExperimentalSlotV2 {
+        schema: "af.experimental-slot/2".into(),
+        slot: "optimization-experiment".into(),
+        outer_plan_binding_id: binding_id,
+        policy_id: policy_id.clone(),
+        protected_oracle_id: oracle_id.clone(),
+        allowed_task_kinds: BTreeSet::from(["optimize".into()]),
+        allowed_packages: packages,
+        allowed_worker_package_ids: package_ids,
+        allowed_efforts: efforts,
+        allowed_effects: effects,
+        max_children: revision.limits.max_attempts.min(4096),
+        max_depth: 8,
+        max_concurrency: 1,
+        max_development_candidates: 1,
+        allowance: ExperimentAllowanceV1 {
+            tokens: revision.limits.tokens,
+            attempts: revision.limits.max_attempts,
+            wall_ms: revision.limits.deadline_unix_ms,
+        },
+    };
+    slot.validate()?;
+    let slot_id = cas
+        .put_artifact(
+            EXPERIMENTAL_SLOT_V2,
+            producer(),
+            vec![revision_id.into(), policy_id, oracle_id],
+            None,
+            serde_json::to_value(slot).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?
+        .0;
+    let compiler = compiler.with_experimental_slot(
+        parent.clone(),
+        ExperimentalSlotTemplateV1 {
+            slot_id,
+            max_concurrency: 1,
+        },
+    )?;
+    let root = &graph
+        .calls
+        .get("root")
+        .ok_or("Optimization plan has no root Pipeline")?
+        .pipeline;
+    let (plan, graph) = compiler.compile(cas, revision_id, root)?;
+    Ok((compiler, plan, graph))
+}
+
+pub(super) fn restore_experimental_slots(
+    mut compiler: TaskPlanCompiler,
+    graph: &CompiledTask,
+) -> Result<TaskPlanCompiler, String> {
+    for (parent, slot) in &graph.experimental_slots {
+        compiler = compiler.with_experimental_slot(parent.clone(), slot.clone())?;
+    }
+    Ok(compiler)
+}
+
 fn captured_domain(
     cas: &Cas,
     authority: &RunAuthority,
     profile: TaskKindProfile,
     graph: CompiledTask,
+    plan: &ExecutionPlanV1,
+    compiler: &TaskPlanCompiler,
 ) -> Result<Box<dyn TaskDomain>, String> {
     match profile {
         TaskKindProfile::Implementation if authority.review_policy_id.is_none() => Ok(Box::new(
@@ -1244,6 +1549,13 @@ fn captured_domain(
                 .ok_or("Task lost its document policy")?,
             graph,
         )?)),
+        TaskKindProfile::OptimizationAnalysis => Ok(Box::new(OptimizationTaskDomain::captured(
+            authority.code_policy_id()?,
+            graph,
+        )?)),
+        TaskKindProfile::OptimizationCandidate => Ok(Box::new(
+            OptimizationCandidateTaskDomain::captured(graph, plan.clone(), compiler)?,
+        )),
     }
 }
 
@@ -1353,6 +1665,7 @@ pub(super) fn run(
         EXECUTION_PLAN_V1,
     )?;
     let graph: CompiledTask = artifact(&cas, &plan.compiled_graph_id, COMPILED_TASK_V1)?;
+    compiler = restore_experimental_slots(compiler, &graph)?;
     if plan.preparation.is_some() {
         return planning::resume(
             cas, store, authority, compiler, projection, plan, graph, json,
@@ -1393,14 +1706,14 @@ pub(super) fn run(
         &projection.revision.kind,
         verification,
     )?;
-    let inner = captured_domain(&cas, &authority, profile, graph.clone())?;
+    let inner = captured_domain(&cas, &authority, profile, graph.clone(), &plan, &compiler)?;
     let models = model_bindings(&plan, &graph, &adapters)?;
     let domain = ProviderTaskDomain {
         graph: &graph,
         models: &models,
         inner: inner.as_ref(),
     };
-    let environment = domain::environment(&cas, &authority)?;
+    let environment = domain::environment(&cas, &authority, profile)?;
     let host = CommandTaskHost::capture_with_models(
         &cas,
         &compiler,
@@ -1541,6 +1854,9 @@ fn present_with_format(
     let mut execution = Vec::new();
     let mut broker_records = Vec::new();
     let mut owned_child_sets = Vec::new();
+    let mut experiments = Vec::new();
+    let mut runtime_observations = Vec::new();
+    let mut runtime_attempt_ids = BTreeSet::new();
     let mut decisions = Vec::new();
     for event in events {
         if event.event_type == review_core::EventType::TaskBrokerTransitionV1 {
@@ -1565,6 +1881,49 @@ fn present_with_format(
                     .map_err(|error| error.to_string())?;
             let mut entry = json!({"artifact_id":record_id,"artifact_type":decoded.envelope.artifact_type,"record":decoded.envelope.payload});
             let record = decoded.record;
+            if let review_core::task::execution::TaskExecutionRecordV1::Settled {
+                attempt_id,
+                raw_artifact_ids,
+                ..
+            } = &record
+            {
+                for id in raw_artifact_ids {
+                    // Raw Worker/provider captures deliberately share this list with typed
+                    // sidecars and may use a provider-native identity rather than a CAS blob
+                    // digest. Only successfully decoded envelopes can be public observations.
+                    let Ok(artifact) = cas.get_artifact(id) else {
+                        continue;
+                    };
+                    if artifact.artifact_type
+                        == review_core::task::runtime::TASK_RUNTIME_EVIDENCE_V1
+                    {
+                        let evidence: review_core::task::runtime::TaskRuntimeEvidenceV1 =
+                            serde_json::from_value(artifact.payload.clone())
+                                .map_err(|e| e.to_string())?;
+                        evidence.validate()?;
+                        if evidence.task_id != state.task_id
+                            || evidence.attempt_id != *attempt_id
+                            || artifact.producer
+                                != (review_core::Producer::Attempt {
+                                    run_id: review_store::store::task::task_run_id(&state.task_id)
+                                        .map_err(|e| e.to_string())?,
+                                    node_id: evidence.node.clone(),
+                                    attempt_id: attempt_id.clone(),
+                                })
+                        {
+                            return Err(
+                                "Task runtime evidence contradicts its settled Attempt".into()
+                            );
+                        }
+                        runtime_attempt_ids.insert(attempt_id.clone());
+                        runtime_observations.push(json!({
+                            "artifact_id": id,
+                            "artifact_type": artifact.artifact_type,
+                            "record": evidence,
+                        }));
+                    }
+                }
+            }
             if let review_core::task::execution::TaskExecutionRecordV1::OwnedChildrenRegistered {
                 child_set_id,
             } = &record
@@ -1575,6 +1934,21 @@ fn present_with_format(
                 )
                 .map_err(|e| e.to_string())?;
                 owned_child_sets.push(json!({"artifact_id":child_set_id,"artifact_type":review_core::task::owned_children::TASK_OWNED_CHILD_SET_V1,"record":set}));
+            }
+            match &record {
+                review_core::task::execution::TaskExecutionRecordV1::ExperimentPrepared { prepared_id } => {
+                    let prepared = cas.get_artifact(prepared_id).map_err(|e| e.to_string())?;
+                    experiments.push(json!({"kind":"prepared","artifact_id":prepared_id,"artifact_type":prepared.artifact_type,"record":prepared.payload}));
+                }
+                review_core::task::execution::TaskExecutionRecordV1::ExperimentPlanDecided { prepared_id, decision_id } => {
+                    let decision = cas.get_artifact(decision_id).map_err(|e| e.to_string())?;
+                    experiments.push(json!({"kind":"decision","prepared_id":prepared_id,"artifact_id":decision_id,"artifact_type":decision.artifact_type,"record":decision.payload}));
+                }
+                review_core::task::execution::TaskExecutionRecordV1::ExperimentChildrenRegistered { prepared_id, decision_id, child_plan_id } => {
+                    let plan = cas.get_artifact(child_plan_id).map_err(|e| e.to_string())?;
+                    experiments.push(json!({"kind":"registered","prepared_id":prepared_id,"decision_id":decision_id,"artifact_id":child_plan_id,"artifact_type":plan.artifact_type,"record":plan.payload}));
+                }
+                _ => {}
             }
             if let review_core::task::execution::TaskExecutionRecordV1::Settled {
                 result:
@@ -1601,6 +1975,17 @@ fn present_with_format(
     }
     value["history"] = json!(history);
     value["execution_records"] = json!(execution);
+    if !runtime_observations.is_empty() {
+        let run_id = review_store::store::task::task_run_id(id).map_err(|e| e.to_string())?;
+        let walls = store
+            .task_attempt_wall(&run_id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .filter(|wall| runtime_attempt_ids.contains(&wall.attempt_id))
+            .collect::<Vec<_>>();
+        value["attempt_walls"] = serde_json::to_value(walls).map_err(|e| e.to_string())?;
+        value["runtime_observations"] = json!(runtime_observations);
+    }
     if !broker_records.is_empty() {
         value["schema"] = json!("af/task-inspection@4");
         value["broker_records"] = json!(broker_records);
@@ -1608,6 +1993,10 @@ fn present_with_format(
     if !owned_child_sets.is_empty() {
         value["schema"] = json!("af/task-inspection@5");
         value["owned_child_sets"] = json!(owned_child_sets);
+    }
+    if !experiments.is_empty() {
+        value["schema"] = json!("af/task-inspection@10");
+        value["experiments"] = json!(experiments);
     }
     if !state.review_handoffs.is_empty() {
         value["schema"] = json!("af/task-inspection@6");
@@ -1636,7 +2025,11 @@ fn present_with_format(
             })).collect::<Vec<_>>());
         }
     }
-    if recording_recovery {
+    if !experiments.is_empty() {
+        value["schema"] = json!("af/task-inspection@10");
+    } else if !runtime_observations.is_empty() {
+        value["schema"] = json!("af/task-inspection@9");
+    } else if recording_recovery {
         value["schema"] = json!("af/task-inspection@8");
     }
     let mut reports = Vec::new();
@@ -1661,6 +2054,45 @@ fn present_with_format(
         reports.push(json!({"artifact_id":id,"report":report,"diagnostics":diagnostics}));
     }
     value["run_reports"] = json!(reports);
+    if !state.adoption_observations.is_empty() {
+        use review_core::task::optimization_light::{
+            OPTIMIZATION_ADOPTION_TASK_EVIDENCE_V1, OptimizationAdoptionTaskEvidenceV1,
+        };
+        let mut observations = Vec::new();
+        for (observation_id, observation) in &state.adoption_observations {
+            let envelope = cas
+                .get_artifact(observation_id)
+                .map_err(|error| error.to_string())?;
+            let mut task_evidence = Vec::new();
+            for id in &envelope.input_artifacts {
+                let Some(candidate) = cas
+                    .get_optional_artifact(id)
+                    .map_err(|error| error.to_string())?
+                else {
+                    continue;
+                };
+                if candidate.artifact_type != OPTIMIZATION_ADOPTION_TASK_EVIDENCE_V1 {
+                    continue;
+                }
+                let evidence: OptimizationAdoptionTaskEvidenceV1 =
+                    serde_json::from_value(candidate.payload).map_err(|error| error.to_string())?;
+                evidence.validate()?;
+                if evidence.adoption_receipt_id != observation.adoption_receipt_id
+                    || evidence.commit_snapshot_id != observation.commit_snapshot_id
+                {
+                    return Err("adoption Task evidence contradicts its observation".into());
+                }
+                task_evidence.push(json!({"artifact_id":id,"record":evidence}));
+            }
+            observations.push(json!({
+                "artifact_id": observation_id,
+                "record": observation,
+                "task_evidence": task_evidence,
+            }));
+        }
+        value["schema"] = json!("af/task-inspection@11");
+        value["adoption_observations"] = json!(observations);
+    }
     if let Some(delivery) = delivery_view(cas, &state)? {
         value["delivery"] = delivery;
     }

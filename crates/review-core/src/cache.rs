@@ -8,7 +8,7 @@ pub const MAX_CACHE_BYTES_V1: u64 = 4 * 1024 * 1024 * 1024;
 pub const MAX_CACHE_COPY_BYTES_V1: u64 = 512 * 1024 * 1024;
 pub const MAX_CACHE_ENTRIES_V1: u64 = 250_000;
 
-const CREDENTIAL_COMPONENTS: &[&[u8]] = &[
+pub(crate) const CREDENTIAL_COMPONENTS: &[&[u8]] = &[
     b"credentials",
     b"credentials.toml",
     b"credentials.json",

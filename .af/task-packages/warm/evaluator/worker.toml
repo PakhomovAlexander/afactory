@@ -1,0 +1,64 @@
+schema = "af.worker/1"
+name = "warm/evaluator"
+version = "1.0.0"
+
+[signature]
+effects = ["read-source"]
+roles = ["evaluate"]
+worker_input_type = "af/EvaluationInput@1"
+worker_output_type = "af/TaskEvaluation@1"
+outcome_port = "result"
+
+[signature.contract.inputs.checks]
+artifact_type = "af/TaskCheckReceipt@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.checks.affinity]
+kind = "same_as"
+input = "source"
+
+[signature.contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.source.affinity]
+kind = "unbound"
+
+[signature.contract.outputs.result]
+artifact_type = "af/TaskEvaluation@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.outputs.result.affinity]
+kind = "same_as"
+input = "source"
+
+[signature.evidence]
+result = ["sha256:55660f81401d0e9d8f7bed1537e089fd8d35c01b70d71f5b5ec7e7c08ca77b56"]
+
+[signature.retains]
+result = ["checks", "requirements", "source"]
+
+[signature.attempt]
+tokens = 300000
+wall_ms = 1200000
+
+[runner]
+kind = "model"
+provider_kind = "codex"
+model = "gpt-5.6-sol"
+effort = "high"

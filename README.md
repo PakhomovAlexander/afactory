@@ -1,6 +1,6 @@
 # Afactory
 
-[![CI](https://github.com/PakhomovAlexander/afactory/actions/workflows/ci.yml/badge.svg)](https://github.com/PakhomovAlexander/afactory/actions/workflows/ci.yml)
+[![CI](https://github.com/PakhomovAlexander/afactory/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/PakhomovAlexander/afactory/actions/workflows/release.yml)
 [![Latest release](https://img.shields.io/github/v/release/PakhomovAlexander/afactory)](https://github.com/PakhomovAlexander/afactory/releases/latest)
 [![Licence](https://img.shields.io/badge/licence-Apache--2.0-blue.svg)](LICENSE)
 

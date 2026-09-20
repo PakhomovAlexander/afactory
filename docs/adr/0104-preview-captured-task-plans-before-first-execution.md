@@ -1,7 +1,7 @@
 # ADR-0104: Preview captured Task plans before first execution
 
 Date: 2026-09-15
-Status: Proposed
+Status: Accepted (2026-09-17)
 
 ## Context
 

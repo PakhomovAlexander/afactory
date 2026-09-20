@@ -13,6 +13,20 @@ documented in [`docs/architecture.md`](docs/architecture.md); this file defines 
 The durable business request, with immutable revisions, typed inputs and required outputs,
 acceptance obligations, captured authority and bounded resources. Review is one Task kind.
 
+**Observation**:
+A normalized, source-addressed fact about project execution, intervention, cache behavior or
+outcome. It carries no instruction or causal authority, and absent measurements remain unknown.
+
+**History Capture**:
+One immutable, project-scoped set of Observation records plus exact source-prefix receipts,
+exclusions, cutoff and completeness. Appended captures retain predecessor identity; overlap is
+deduplicated by exact source/observation identity, never prose similarity.
+
+**Optimization Economics**:
+The deterministic retained-chain projection that keeps native counters, AF chargeable usage,
+outer-session usage, overlapping time and optional estimates distinct. It is evidence for a
+report, not a provider invoice or a verified savings claim.
+
 **Execution Plan**:
 The exact compiled Pipeline closure for one Task revision, including expanded child calls,
 effective Workers, input identities, allowed effects, acceptance coverage and resource limits.
@@ -300,6 +314,13 @@ cache, materialized inside one sandbox and discarded with it.
 _Avoid_: "passthrough" — a direct host mapping is not a Cache Snapshot and cannot satisfy safe
 isolation.
 
+**Build Cache**:
+A bounded, explicitly unsafe capture of a Gate's candidate-built output, admitted only under the
+trusted-local policy and cloned into Worker sandboxes that declare its kind within the same
+Round; removed before seal, so it never enters a candidate tree, Proposal or delivered worktree.
+_Avoid_: **Cache Snapshot**; a Build Cache was produced by candidate code and carries no
+administrator approval and no credential-free guarantee.
+
 **News**:
 Whether an in-scope claim was created, reopened, materially escalated, challenged, or moved to
 pending verification inside the clean window, independent of its current status; an exact
@@ -318,6 +339,57 @@ The proof that every verdict-bearing output from every selected node reached its
 reducer, gate, verifier, or integrator, or an explicitly trusted disposition.
 _Avoid_: assuming a successfully completed graph is closed; an unwired Finding or Demand makes
 the result incomplete.
+
+**Warm Set**:
+The exact, per-node set of carried layers one Round's Attempts start from: Notes, the Head Delta
+and the Session Snapshot selected from the previous closed Round's admitted Attempt of the same
+node, the Build Cache carried from this Round's Gate, and the basis of the node's Warm Workspace,
+recorded before the first dispatch and listed in every Attempt's context manifest. A layer that
+cannot be carried is recorded with its reason, never omitted silently.
+_Avoid_: "warm cache" or "the previous session" as ambient state; a Warm Set is an artifact, and
+a retry inherits the Round's Warm Set rather than its failed sibling's state.
+
+**Warm Workspace**:
+One node's stable template root within one Campaign, named by an opaque workspace identity and
+re-based to each new head by tree diff on a copy-on-write clone of the previous template. The
+result is trusted only when its manifest digest equals the head's Tree Digest; otherwise the head
+is materialized in full and the reason recorded. Per-Attempt sandboxes remain fresh clones of it.
+_Avoid_: treating the root as the sandbox or as shared state; a Warm Workspace never crosses
+nodes, and a host path never names it in a durable record.
+
+**Worker Notes**:
+A bounded, typed inspection map one admitted Attempt leaves for the next Attempt of the same
+node: paths inspected, a model of the change, open questions, per-path hints. Data, not a
+verdict, and never shared across nodes or slots.
+_Avoid_: treating Notes as a disposition; every prior Finding still needs its explicit Report,
+Dispute, or Drop.
+
+**Head Delta**:
+The kernel-derived relation between two consecutive heads of one node: exact from and to
+Snapshot IDs, diff policy identity, complete path set with rename truncation, and one mark per
+path over the union of the Notes paths and both Subject views.
+_Avoid_: **Change Set**; a Head Delta names no Base, carries no Subject identity and no Report
+Scope, and exists for whole-tree Subjects too.
+
+**Delta Marking**:
+The rendering of Head Delta marks beside the Change Set section: `changed`, `unchanged`, `new`,
+`reverted`, `removed`, or `renamed` since the previous Round's head.
+_Avoid_: a second full patch in the prompt; the marks exist to keep context minimal.
+
+**Session Snapshot**:
+The content-addressed transcript of one Attempt's harness session, running under a session
+identity the kernel derived from the Attempt ID, captured at seal through a two-phase protocol —
+capture and verify, prepared record, no-follow deletion, cleanup-completed record — and
+re-materialized for a forked resume that sends only the delta prompt. Selectable only from an
+Attempt that was admitted *and* whose cleanup completed.
+_Avoid_: "resume the session" as a verb on a live process; the process ended with its Attempt, and
+a resume forks a re-materialized copy rather than continuing anything.
+
+**Cold Closeout**:
+A compiled, conditionally dispatched cold Attempt of a warm reviewer inside the Round that would
+otherwise close on its warm result, holding a reservation taken before that warm Attempt ran.
+_Avoid_: reading a warm clean Round as convergence on its own, or a Round-level rule the scheduler
+could honor — the Round is only known to be closing after its results are reduced.
 
 ## Relationships
 

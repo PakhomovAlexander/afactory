@@ -33,6 +33,43 @@ fn main() {
         .unwrap_or_default();
     println!("cargo:rustc-env=AF_RELEASE_KEY={key}");
     println!("cargo:rerun-if-changed=keys");
-    println!("cargo:rerun-if-changed=../../.git/HEAD");
+    // A worktree's .git is a file, not a directory. Watching a nonexistent .git/HEAD
+    // makes every Cargo invocation dirty. Resolve the actual metadata paths through Git.
+    // Also watch the branch ref: committing normally changes that file, not HEAD itself.
+    watch_git_path("HEAD");
+    if let Some(branch) = git_text(&["symbolic-ref", "-q", "HEAD"])
+        && !watch_git_path(&branch)
+    {
+        watch_git_path("packed-refs");
+    }
     println!("cargo:rerun-if-changed=build.rs");
+}
+
+fn git_text(args: &[&str]) -> Option<String> {
+    Command::new("git")
+        .args(args)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn watch_git_path(name: &str) -> bool {
+    if let Some(path) = git_text(&["rev-parse", "--path-format=absolute", "--git-path", name]) {
+        // Packed refs can become loose and missing packed-refs can be created. Watch an
+        // existing ancestor in that case, so creation invalidates metadata without a
+        // permanently missing input that forces every subsequent invocation to rebuild.
+        let mut path = Path::new(&path);
+        let exact = path.exists();
+        while !path.exists() {
+            let Some(parent) = path.parent() else {
+                return false;
+            };
+            path = parent;
+        }
+        println!("cargo:rerun-if-changed={}", path.display());
+        return exact;
+    }
+    false
 }

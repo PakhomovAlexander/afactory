@@ -22,6 +22,7 @@ use crate::{Cas, content_id, validate_envelope};
 mod tests;
 
 mod delivery;
+pub use delivery::validate_optimization_delivery;
 pub mod execution;
 mod lease;
 pub mod planning;
@@ -39,11 +40,21 @@ fn conflict(message: impl Into<String>) -> StoreError {
     StoreError::Conflict(message.into())
 }
 fn now() -> Result<u64, StoreError> {
-    SystemTime::now()
+    let millis = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
         .and_then(|n| u64::try_from(n.as_millis()).ok())
-        .ok_or_else(|| conflict("Host clock is unavailable"))
+        .ok_or_else(|| conflict("Host clock is unavailable"))?;
+    // Deterministic command-path fixtures may choose a coarser observed host-clock boundary so
+    // matched per-run economics remain exactly representable. Production release binaries never
+    // read this setting; no Worker receives it through the isolated command environment.
+    #[cfg(debug_assertions)]
+    let millis = std::env::var("AF_TEST_CLOCK_QUANTUM_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| (1..=1_000).contains(value))
+        .map_or(millis, |quantum| millis / quantum * quantum);
+    Ok(millis)
 }
 
 pub fn task_run_id(task_id: &str) -> Result<String, StoreError> {
@@ -91,6 +102,26 @@ pub struct DeveloperGrant {
 /// package authority. Possession of actor strings or serialized PlanDecision does not implement
 /// this interface. Every execution adapter must use this same boundary on resume and dispatch.
 pub trait TaskAuthority: Sync {
+    /// Recompile and validate the complete experimental closure against the captured slot.
+    fn validate_experiment_preparation(
+        &self,
+        _cas: &Cas,
+        _task: &TaskRevisionV1,
+        _plan: &ExecutionPlanV1,
+        _prepared_id: &str,
+        _prepared: &task::optimization_experiment::ExperimentPreparedV1,
+    ) -> Result<(), String> {
+        Err("Experimental preparation is not configured".into())
+    }
+
+    /// Authenticate the detached signature and recheck current key policy and revocation.
+    fn experiment_authorization_current(
+        &self,
+        _decision: &task::optimization_experiment::ExperimentPlanDecisionV1,
+    ) -> Result<(), String> {
+        Err("Experimental developer authority is not configured".into())
+    }
+
     fn validate_review_integration_selection(
         &self,
         _cas: &Cas,
@@ -253,6 +284,21 @@ pub trait TaskAuthority: Sync {
     ) -> Result<(), String> {
         Err("Task output domain admission is not configured".into())
     }
+
+    /// Validate an output against the exact static or registered dynamic node resolved by the
+    /// Store. The default preserves existing adapters; experimental adapters use the definition
+    /// to reapply the captured Worker contract without admitting node-controlled authority.
+    fn validate_resolved_output(
+        &self,
+        cas: &Cas,
+        task: &TaskRevisionV1,
+        plan: &ExecutionPlanV1,
+        invocation: &review_core::task::execution::TaskInvocationV1,
+        output: &review_core::task::execution::TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
+    ) -> Result<(), String> {
+        self.validate_output(cas, task, plan, invocation, output)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -288,8 +334,65 @@ pub struct TaskProjection {
     pub execution: Option<execution::TaskExecutionProjection>,
     pub planning: Option<planning::TaskPlanningProof>,
     pub deliveries: Vec<(String, task::delivery::TaskDeliveryRecordV1)>,
+    pub adoption_observations: Vec<(
+        String,
+        task::optimization_light::OptimizationAdoptionObservationV1,
+    )>,
     pub run_reports: Vec<String>,
     pub review_handoffs: Vec<(String, task::review_handoff::TaskReviewHandoffV1)>,
+}
+
+/// The light optimizer's final DAG node can only know trial accounting. After every Attempt has
+/// settled, the domain replaces that one public value with a kernel-produced result that cites
+/// the admitted preliminary value and includes the exact common-ledger prefix. All other public
+/// outputs remain byte-for-byte identical to the graph projection.
+fn valid_exact_optimization_result_refinement(
+    cas: &Cas,
+    task_id: &str,
+    expected: &BTreeMap<String, task::ArtifactInputV1>,
+    actual: &BTreeMap<String, task::ArtifactInputV1>,
+) -> Result<bool, StoreError> {
+    use review_core::task::optimization_light::{OPTIMIZATION_RESULT_V1, OptimizationResultV1};
+
+    if expected.keys().collect::<Vec<_>>() != actual.keys().collect::<Vec<_>>() {
+        return Ok(false);
+    }
+    for (name, expected_port) in expected {
+        if name != "result" && actual.get(name) != Some(expected_port) {
+            return Ok(false);
+        }
+    }
+    let Some(expected_port) = expected.get("result") else {
+        return Ok(false);
+    };
+    let Some(actual_port) = actual.get("result") else {
+        return Ok(false);
+    };
+    if expected_port.artifact_type != OPTIMIZATION_RESULT_V1
+        || actual_port.artifact_type != OPTIMIZATION_RESULT_V1
+        || expected_port.artifact_ids.len() != 1
+        || actual_port.artifact_ids.len() != 1
+        || expected_port.cardinality != actual_port.cardinality
+        || expected_port.snapshot_id != actual_port.snapshot_id
+    {
+        return Ok(false);
+    }
+    let artifact = cas
+        .get_artifact(&actual_port.artifact_ids[0])
+        .map_err(|error| StoreError::Artifact(error.to_string()))?;
+    let value: OptimizationResultV1 = serde_json::from_value(artifact.payload)?;
+    value.validate().map_err(conflict)?;
+    Ok(artifact.artifact_type == OPTIMIZATION_RESULT_V1
+        && artifact
+            .input_artifacts
+            .iter()
+            .any(|id| id == &expected_port.artifact_ids[0])
+        && matches!(
+            artifact.producer,
+            review_core::Producer::KernelOperation { ref run_id, ref operation_id, .. }
+                if run_id == &task_run_id(task_id)?
+                    && operation_id == "optimization-exact-economics-v1"
+        ))
 }
 
 #[cfg(test)]
@@ -558,8 +661,53 @@ fn references(
             let value: task::delivery::TaskDeliveryRecordV1 =
                 payload(cas, record_id, task::delivery::TASK_DELIVERY_RECORD_V1)?;
             value.validate().map_err(conflict)?;
+            let envelope = cas
+                .get_artifact(record_id)
+                .map_err(|error| StoreError::Artifact(error.to_string()))?;
             refs.insert(record_id.clone());
             refs.extend(value.references().into_iter().map(str::to_owned));
+            refs.extend(envelope.input_artifacts);
+        }
+        TaskChangeV1::AdoptionObservationRecorded { observation_id } => {
+            let value: task::optimization_light::OptimizationAdoptionObservationV1 = payload(
+                cas,
+                observation_id,
+                task::optimization_light::OPTIMIZATION_ADOPTION_OBSERVATION_V1,
+            )?;
+            value.validate().map_err(conflict)?;
+            let state = state.ok_or_else(|| conflict("Adoption observation precedes Task"))?;
+            let receipt_is_delivered = state.deliveries.iter().any(|(id, record)| {
+                if record.status != task::delivery::TaskDeliveryStatusV1::Delivered {
+                    return false;
+                }
+                cas.get_artifact(id).is_ok_and(|envelope| {
+                    envelope
+                        .input_artifacts
+                        .contains(&value.adoption_receipt_id)
+                })
+            });
+            if state.revision.kind != "optimize" || !receipt_is_delivered {
+                return Err(conflict(
+                    "Adoption observation does not name this Task's delivered receipt",
+                ));
+            }
+            refs.insert(observation_id.clone());
+            let envelope = cas
+                .get_artifact(observation_id)
+                .map_err(|error| StoreError::Artifact(error.to_string()))?;
+            refs.extend(envelope.input_artifacts);
+            refs.extend(
+                [
+                    &value.adoption_receipt_id,
+                    &value.commit_snapshot_id,
+                    &value.workload_id,
+                    &value.model_id,
+                    &value.engine_id,
+                    &value.environment_id,
+                ]
+                .into_iter()
+                .cloned(),
+            );
         }
         TaskChangeV1::ExecutionRecorded { record_id } => {
             refs.extend(execution::references(cas, record_id)?);
@@ -681,6 +829,7 @@ impl TaskProjection {
             | TaskChangeV1::LeaseRenewed { .. }
             | TaskChangeV1::LeaseReleased {}
             | TaskChangeV1::DeliveryRecorded { .. }
+            | TaskChangeV1::AdoptionObservationRecorded { .. }
             | TaskChangeV1::SourceRefreshed { .. } => true,
             TaskChangeV1::ExecutionRecorded { record_id } => matches!(
                 execution::read_execution_record(cas, record_id)?.record,
@@ -734,6 +883,24 @@ impl TaskProjection {
                 }
                 TaskChangeV1::DeliveryRecorded { record_id } => {
                     self.apply_delivery(cas, record_id)?;
+                }
+                TaskChangeV1::AdoptionObservationRecorded { observation_id } => {
+                    let value: task::optimization_light::OptimizationAdoptionObservationV1 =
+                        payload(
+                            cas,
+                            observation_id,
+                            task::optimization_light::OPTIMIZATION_ADOPTION_OBSERVATION_V1,
+                        )?;
+                    value.validate().map_err(conflict)?;
+                    if self
+                        .adoption_observations
+                        .iter()
+                        .any(|(id, existing)| id == observation_id || existing == &value)
+                    {
+                        return Err(conflict("Duplicate adoption observation"));
+                    }
+                    self.adoption_observations
+                        .push((observation_id.clone(), value));
                 }
                 TaskChangeV1::ExecutionRecorded { record_id } => {
                     self.apply_execution(cas, record_id, transition.now_unix_ms)?;
@@ -1020,9 +1187,14 @@ impl TaskProjection {
                                 "Task acceptance requires the captured Integration disposition",
                             ));
                         }
-                        if result.outputs != expected_outputs
-                            || result.evidence != expected_evidence
-                        {
+                        let outputs_match = result.outputs == expected_outputs
+                            || valid_exact_optimization_result_refinement(
+                                cas,
+                                &self.task_id,
+                                &expected_outputs,
+                                &result.outputs,
+                            )?;
+                        if !outputs_match || result.evidence != expected_evidence {
                             return Err(conflict(
                                 "Task result does not retain its exact admitted public outputs and evidence",
                             ));
@@ -1230,6 +1402,23 @@ impl EventStore {
                     Some(state),
                 )?);
             }
+            for (id, recorded) in &state.adoption_observations {
+                let value: task::optimization_light::OptimizationAdoptionObservationV1 = payload(
+                    cas,
+                    id,
+                    task::optimization_light::OPTIMIZATION_ADOPTION_OBSERVATION_V1,
+                )?;
+                if &value != recorded {
+                    return Err(conflict("Cached adoption observation changed identity"));
+                }
+                active_refs.extend(references(
+                    cas,
+                    &TaskChangeV1::AdoptionObservationRecorded {
+                        observation_id: id.clone(),
+                    },
+                    Some(state),
+                )?);
+            }
             active_refs.extend(state.recording_recovery_refs(cas)?);
             active_refs.extend(state.artifact_refs.iter().cloned());
             for id in active_refs {
@@ -1255,6 +1444,7 @@ impl EventStore {
                     | EventType::TaskTransitionV2
                     | EventType::TaskTransitionV3
                     | EventType::TaskTransitionV4
+                    | EventType::TaskTransitionV5
             ) {
                 return Err(conflict("Task log contains a foreign event"));
             }
@@ -1314,6 +1504,7 @@ impl EventStore {
                     execution: None,
                     planning: None,
                     deliveries: Vec::new(),
+                    adoption_observations: Vec::new(),
                     run_reports: Vec::new(),
                     review_handoffs: Vec::new(),
                 });
