@@ -331,8 +331,15 @@ impl TaskStore {
             .map_err(|error| error.to_string())?;
         let rows = statement
             .query_map([task_id], |row| {
+                let sequence: i64 = row.get(0)?;
                 Ok(TaskEvent {
-                    sequence: row.get(0)?,
+                    sequence: u64::try_from(sequence).map_err(|error| {
+                        rusqlite::Error::FromSqlConversionFailure(
+                            0,
+                            rusqlite::types::Type::Integer,
+                            Box::new(error),
+                        )
+                    })?,
                     event_type: row.get(1)?,
                     artifact_id: row.get(2)?,
                 })
