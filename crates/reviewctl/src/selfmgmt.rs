@@ -847,10 +847,17 @@ fn onboard_af_from_argv(argv: &[String]) -> Option<String> {
 
 fn exempt_from_dispatch(argv: &[String]) -> bool {
     let first = argv.get(1).map(String::as_str);
+    // Bootstrap is machine-local, not project authority. Dispatching it through an older project
+    // pin would make the newly installed command disappear precisely where users need it.
+    // `self optimize` is the exception: it reads project authority, so it dispatches (ADR-0105).
     let binary_management_self =
         first == Some("self") && argv.get(2).map(String::as_str) != Some("optimize");
     matches!(first, None | Some("help" | "completions" | "config"))
         || binary_management_self
+        || matches!(
+            (first, argv.get(2).map(String::as_str)),
+            (Some("provider"), Some("setup" | "recover"))
+        )
         || argv
             .iter()
             .skip(1)
@@ -1726,6 +1733,15 @@ mod tests {
         assert!(exempt_from_dispatch(&argv(&[
             "af", "review", "plan", "--help"
         ])));
+        assert!(exempt_from_dispatch(&argv(&[
+            "af",
+            "provider",
+            "setup",
+            "codex-main",
+            "--kind",
+            "codex"
+        ])));
+        assert!(exempt_from_dispatch(&argv(&["af", "provider", "recover"])));
         assert!(!exempt_from_dispatch(&argv(&["af", "review", "plan"])));
         assert_eq!(
             repo_from_argv(&argv(&["af", "review", "plan", "--repo", "/x"])),

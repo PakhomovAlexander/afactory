@@ -97,7 +97,7 @@ are shorthand for `af review run`.",
 Providers are named in the user configuration (`~/.config/af/providers.toml`); `status` reads \
 that registry and the machine's harness logins without contacting any model. `doctor` runs a \
 bounded, charged preflight for the bindings you name.",
-        after_long_help = "Examples:\n  af provider status\n  af provider doctor --provider correctness=claude-code"
+        after_long_help = "Examples:\n  af provider status\n  af provider setup codex-main --kind codex\n  af provider doctor --provider correctness=claude-code"
     )]
     Provider {
         #[command(subcommand)]
@@ -744,6 +744,49 @@ pub(crate) enum ChallengeKindArg {
 pub(crate) enum ProviderCommand {
     /// Show the provider registry and each harness login, without a model call
     Status,
+    /// Authenticate and register one named machine-local Provider
+    #[command(
+        long_about = "Authenticate and register one named machine-local Provider.\n\n\
+Uses the selected Provider CLI's official interactive login, verifies that the chosen auth \
+directory is authenticated, then records only its kind and path in the machine-local registry. \
+Credentials remain owned by the Provider CLI. Re-running setup for the same binding is safe.",
+        after_long_help = "Examples:\n  af provider setup codex-main --kind codex\n  af provider setup claude-work --kind claude --auth-dir /secure/claude-work"
+    )]
+    Setup {
+        /// Stable ID used by --provider NODE=ID
+        id: String,
+        /// Provider CLI family
+        #[arg(long, value_enum)]
+        kind: ProviderKindArg,
+        /// Auth directory (defaults to the active CLI directory)
+        #[arg(long, value_name = "DIR")]
+        auth_dir: Option<PathBuf>,
+    },
+    /// Register one named machine-local Provider auth context
+    #[command(
+        long_about = "Register one named machine-local Provider auth context.\n\n\
+The registry stores only the Provider kind and auth directory, never credentials. When \
+--auth-dir is omitted, af uses the active CLI directory (CLAUDE_CONFIG_DIR or ~/.claude; \
+CODEX_HOME or ~/.codex). Existing entries and duplicate auth contexts are never overwritten.",
+        after_long_help = "Examples:\n  af provider add codex-main --kind codex\n  af provider add claude-work --kind claude --auth-dir /secure/claude-work"
+    )]
+    Add {
+        /// Stable ID used by --provider NODE=ID
+        id: String,
+        /// Provider CLI family
+        #[arg(long, value_enum)]
+        kind: ProviderKindArg,
+        /// Auth directory (defaults to the active CLI directory)
+        #[arg(long, value_name = "DIR")]
+        auth_dir: Option<PathBuf>,
+    },
+    /// Validate and close an interrupted Provider registry publication
+    #[command(
+        long_about = "Validate and close an interrupted Provider registry publication.\n\n\
+Checks the transaction marker, live registry, and preserved candidate/prior hashes before \
+archiving the marker. It never guesses which version committed and never deletes recovery files."
+    )]
+    Recover,
     /// Run a bounded, charged preflight for the named bindings
     #[command(
         long_about = "Run a bounded, charged preflight for the named provider bindings.\n\n\
@@ -752,6 +795,12 @@ one fenced preflight operation and reports identity, model, and spend.",
         after_long_help = "Examples:\n  af provider doctor --provider correctness=claude-code"
     )]
     Doctor(RunArgs),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum ProviderKindArg {
+    Claude,
+    Codex,
 }
 
 #[derive(Debug, Args, Clone)]

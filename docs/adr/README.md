@@ -200,3 +200,5 @@ Record the options you rejected and why — that is the part future readers need
 - [0110 — Capture Claude sessions in two phases and confirm a clean warm Round
   cold](0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md)
 - [0107 — Share release validation and overlap builds](0107-share-release-validation-and-overlap-builds.md)
+- [0111 — Keep Provider bootstrap machine-local and cross-release
+  safe](0111-keep-provider-bootstrap-machine-local-and-cross-release-safe.md)

@@ -42,16 +42,31 @@ cargo install --path crates/reviewctl --locked
 ## Quickstart
 
 ```sh
-af onboard --apply                 # create .af/ (pipeline, lock, Worker packages) in a Git repository
-af provider status                 # which Claude / Codex logins the machine can dispatch to
+af onboard                          # preview .af/ and the exact apply command; spends no tokens
+af onboard --runner codex --gate 'check=make check' --apply  # use the real Gate for this repository
+af provider setup codex-main --kind codex  # authenticate and register one explicit Provider
+af provider status                 # verify registered and ambient Claude / Codex contexts
 af review plan --policy-rev origin/main --base origin/main --uncommitted \
-  --provider correctness=codex-main
+  --provider correctness=codex-main --provider architecture=codex-main
 af review run --campaign pr-123 --policy-rev origin/main --base origin/main --uncommitted \
-  --provider correctness=codex-main --json
+  --provider correctness=codex-main --provider architecture=codex-main --json
 ```
 
 `af onboard` previews a deterministic authority bundle and writes nothing without `--apply`; it
-never executes a Gate or a model, reads a credential, or overwrites existing policy. `af review
+never executes a Gate or a model, reads a credential, or overwrites existing policy. Its preview
+prints a copyable apply command carrying the exact detected or explicit Gate; replace `make check`
+above when the repository uses another deterministic acceptance command. `af provider setup`
+runs the Provider CLI's official interactive login when needed, verifies it, then writes only an
+ID, Provider kind, and auth-directory path to the machine-local registry; credentials remain owned
+by that CLI. Login starts from an empty allowlisted environment in an owned auth directory that is
+not writable by other users, and one canonical auth context admits only one setup/login at a time.
+`setup` is machine-local and therefore does not dispatch to a repository's older pinned `af`;
+registry publication remains atomic for those older readers. `af provider add` registers an already
+authenticated context without opening a login and applies the same auth-directory safety checks.
+If a crash leaves publication fenced, `af provider recover` validates the marker plus the live,
+candidate, and prior hashes before archiving it; it reports which version is live and retains both
+preserved copies. Recovery is machine-local and also bypasses an older project pin.
+Ambient IDs shown by `status` are discovery labels and cannot be selected directly. `af review
 plan` resolves policy, Base, candidate, the exact Change Set, the selected route, Gates, budgets,
 and required Provider bindings without Campaign state, external calls, or tokens — the route line
 reads like `route    route => .af/pipelines/docs.toml (docs); 3 changed path(s)`. `af review run`
@@ -97,8 +112,9 @@ af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directori
 ## Requirements
 
 - Git, and a Rust toolchain at or above 1.88 for source builds (`rust-toolchain.toml` pins it).
-- The `claude` and/or `codex` CLIs, logged in, for model Workers. `af provider status` shows
-  what each login can do without reading credentials; command Workers need neither.
+- The `claude` and/or `codex` CLIs for model Workers. `af provider setup` owns interactive login,
+  verification, and registration in one command without reading credentials; `af provider status`
+  shows what each context can do. Command Workers need neither.
 - Optional: an OCI container runtime (Docker or compatible) for `provider = "container"` Gates.
   Detection runs the runtime's own `info`; an unusable runtime is refused, never silently downgraded.
 - Optional: `minisign`, for verifying release signatures at install time.

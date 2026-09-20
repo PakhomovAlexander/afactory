@@ -1146,10 +1146,22 @@ fn help_command(words: &[String]) -> Result<i32, String> {
 
 fn main() {
     use clap::{CommandFactory as _, Parser as _};
-    let argv: Vec<String> = std::env::args().collect();
+    let argv: Vec<String> = match std::env::args_os()
+        .map(|argument| argument.into_string())
+        .collect()
+    {
+        Ok(argv) => argv,
+        Err(argument) => {
+            eprintln!(
+                "af: command-line argument {} is not valid UTF-8",
+                argument.to_string_lossy()
+            );
+            std::process::exit(2);
+        }
+    };
     clap_complete::CompleteEnv::with_factory(cli::Af::command).complete();
     selfmgmt::maybe_dispatch(&argv);
-    let parsed = cli::Af::parse();
+    let parsed = cli::Af::parse_from(&argv);
     if parsed.version {
         if let Err(error) = selfmgmt::print_version(parsed.json) {
             eprintln!("af: {error}");
@@ -1170,6 +1182,25 @@ fn main() {
                     providers::print_status();
                     Ok(0)
                 }
+                cli::ProviderCommand::Setup { id, kind, auth_dir } => providers::setup(
+                    &id,
+                    match kind {
+                        cli::ProviderKindArg::Claude => "claude",
+                        cli::ProviderKindArg::Codex => "codex",
+                    },
+                    auth_dir.as_deref(),
+                )
+                .map(|()| 0),
+                cli::ProviderCommand::Add { id, kind, auth_dir } => providers::add(
+                    &id,
+                    match kind {
+                        cli::ProviderKindArg::Claude => "claude",
+                        cli::ProviderKindArg::Codex => "codex",
+                    },
+                    auth_dir.as_deref(),
+                )
+                .map(|()| 0),
+                cli::ProviderCommand::Recover => providers::recover().map(|()| 0),
                 cli::ProviderCommand::Doctor(args) => {
                     if args.task_file.is_some() {
                         Err(
