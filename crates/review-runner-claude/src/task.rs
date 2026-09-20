@@ -53,7 +53,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         timeout: Duration,
         writable: bool,
     ) -> ModelWorkerReturn {
-        self.invoke_inner(cas, workdir, input, timeout, writable, None)
+        self.invoke_inner(cas, workdir, input, timeout, writable, None, &[])
     }
 
     fn invoke_controlled(
@@ -69,11 +69,37 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         if broker.is_some() {
             return self.invoke_with_broker(cas, workdir, input, timeout, writable, broker);
         }
-        self.invoke_inner(cas, workdir, input, timeout, writable, cancellation)
+        self.invoke_inner(cas, workdir, input, timeout, writable, cancellation, &[])
+    }
+
+    fn invoke_controlled_with_environment(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+        broker: Option<&dyn review_runner::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        environment: &[(String, String)],
+    ) -> ModelWorkerReturn {
+        if broker.is_some() {
+            return self.invoke_with_broker(cas, workdir, input, timeout, writable, broker);
+        }
+        self.invoke_inner(
+            cas,
+            workdir,
+            input,
+            timeout,
+            writable,
+            cancellation,
+            environment,
+        )
     }
 }
 
 impl ClaudeTaskAdapter {
+    #[allow(clippy::too_many_arguments)]
     fn invoke_inner(
         &self,
         cas: &Cas,
@@ -82,6 +108,7 @@ impl ClaudeTaskAdapter {
         timeout: Duration,
         writable: bool,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
+        environment: &[(String, String)],
     ) -> ModelWorkerReturn {
         if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
             return ModelWorkerReturn {
@@ -102,7 +129,9 @@ impl ClaudeTaskAdapter {
                 };
             }
         };
-        let mut command = claude_command(&self.program, &self.model_flags);
+        // The common Task path installs no session layer (its Attempts record
+        // `host_unsupported`), so the command carries no session flags.
+        let mut command = claude_command(&self.program, &self.model_flags, None);
         if let Some(schema) = &output_schema {
             command
                 .args
@@ -124,6 +153,10 @@ impl ClaudeTaskAdapter {
             .with_env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
             .with_env("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1");
         for (name, value) in &self.grants {
+            runner = runner.with_env(name, value);
+        }
+        // Sandbox-local, non-secret context resolved by the kernel for this exact Attempt.
+        for (name, value) in environment {
             runner = runner.with_env(name, value);
         }
         let capture =

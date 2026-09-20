@@ -38,6 +38,7 @@ fn optimization_does_not_treat_a_native_reservation_floor_as_complete_billing() 
         released: false,
         charged_tokens: 100,
         state: None,
+        context_id: None,
         result: Some(TaskAttemptResultV1::Failed {
             diagnostic_id: id,
             feedback_id: None,

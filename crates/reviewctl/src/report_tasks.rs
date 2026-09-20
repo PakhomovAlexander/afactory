@@ -51,6 +51,10 @@ struct TaskAttemptView {
     result: Option<TaskAttemptResultV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
     wall: Option<TaskWallView>,
+    /// The warm layers this Attempt's review node used and what its bound context cost,
+    /// joined from the Round's `WarmSetSelected@1`; absent for cold nodes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    warm: Option<super::AttemptWarmView>,
 }
 
 #[derive(Clone, Copy, serde::Serialize, PartialEq, Eq)]
@@ -167,6 +171,8 @@ pub(super) fn read(
     events: &[review_core::RunEvent],
 ) -> Result<TaskAccountingReport, String> {
     let mut referenced = BTreeSet::new();
+    let warm_selections = warm_selections(events)?;
+    let workspace_preparations = workspace_preparations(events)?;
     for event in events {
         match event.event_type {
             review_core::EventType::RunReportV6 => {
@@ -277,7 +283,37 @@ pub(super) fn read(
                 row.epoch = round.epoch;
                 task_walls.push(row);
             }
+            let warm = review_node
+                .as_deref()
+                .zip(plan.round.as_ref())
+                .and_then(|(node, round)| {
+                    warm_selections.get(&(round.round, round.epoch, node.to_string()))
+                })
+                .map(|layers| {
+                    let size = attempt
+                        .context_id
+                        .as_deref()
+                        .and_then(|id| bound_context_size(cas, id));
+                    let workspace = review_node
+                        .as_deref()
+                        .zip(plan.round.as_ref())
+                        .and_then(|(node, round)| {
+                            workspace_preparations.get(&(
+                                round.round,
+                                round.epoch,
+                                node.to_string(),
+                            ))
+                        })
+                        .cloned();
+                    super::AttemptWarmView {
+                        layers: layers.clone(),
+                        rendered_bytes: size.map(|size| size.0),
+                        estimated_tokens: size.map(|size| size.1),
+                        workspace,
+                    }
+                });
             views.push(TaskAttemptView {
+                warm,
                 outcome: outcome(&attempt),
                 attempt_id: attempt.attempt_id,
                 invocation_id: attempt.invocation_id,
@@ -319,6 +355,127 @@ pub(super) fn read(
         report.wall_rows.extend(task_walls);
     }
     Ok(report)
+}
+
+/// `WarmSetSelected@1` layers by (Round, epoch, review node), read from the Campaign log so a
+/// Task-backed review Attempt reports its warm layers exactly as a legacy one does.
+type WarmSelections = BTreeMap<(u32, u32, String), Vec<String>>;
+
+/// `WorkspaceRebased@1` by (Round, epoch, review node): what preparing the node's Warm
+/// Workspace for that Round did and cost. Preparation precedes every Attempt of the Round, so
+/// the report shows it once per Attempt view without adding it to any wall clock.
+type WorkspacePreparations = BTreeMap<(u32, u32, String), super::WorkspacePreparationView>;
+
+fn workspace_preparations(
+    events: &[review_core::RunEvent],
+) -> Result<WorkspacePreparations, String> {
+    let mut rounds: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    let mut preparations = BTreeMap::new();
+    for event in events {
+        match event.event_type {
+            review_core::EventType::RoundStartedV1 => {
+                let payload: review_core::RoundStartedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                rounds.insert(event.event_id.clone(), (payload.round, payload.epoch));
+            }
+            review_core::EventType::WorkspaceRebasedV1 => {
+                let payload: review_core::WorkspaceRebasedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                let Some((round, epoch)) = event
+                    .causation_id
+                    .as_deref()
+                    .and_then(|round| rounds.get(round))
+                    .copied()
+                else {
+                    continue;
+                };
+                let basis = serde_json::to_value(payload.basis)
+                    .ok()
+                    .and_then(|value| value.as_str().map(str::to_owned))
+                    .unwrap_or_default();
+                let fallback = payload
+                    .fallback
+                    .and_then(|reason| serde_json::to_value(reason).ok())
+                    .and_then(|value| value.as_str().map(str::to_owned));
+                preparations.insert(
+                    (round, epoch, payload.node.clone()),
+                    super::WorkspacePreparationView {
+                        basis,
+                        fallback,
+                        entries_touched: payload.entries_touched,
+                        preparation_ms: payload.preparation_ms,
+                    },
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(preparations)
+}
+
+fn warm_selections(events: &[review_core::RunEvent]) -> Result<WarmSelections, String> {
+    let mut rounds: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    let mut selections = BTreeMap::new();
+    for event in events {
+        match event.event_type {
+            review_core::EventType::RoundStartedV1 => {
+                let payload: review_core::RoundStartedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                rounds.insert(event.event_id.clone(), (payload.round, payload.epoch));
+            }
+            review_core::EventType::WarmSetSelectedV1 => {
+                let payload: review_core::WarmSetSelectedPayloadV1 =
+                    serde_json::from_value(event.payload.clone())
+                        .map_err(|error| error.to_string())?;
+                let Some((round, epoch)) = event
+                    .causation_id
+                    .as_deref()
+                    .and_then(|round| rounds.get(round))
+                    .copied()
+                else {
+                    continue;
+                };
+                let node = event
+                    .node_id
+                    .clone()
+                    .ok_or("WarmSetSelected@1 has no reviewer node")?;
+                selections.insert(
+                    (round, epoch, node),
+                    payload
+                        .layers
+                        .iter()
+                        .map(|layer| layer.as_str().to_string())
+                        .collect(),
+                );
+            }
+            _ => {}
+        }
+    }
+    Ok(selections)
+}
+
+/// Rendered bytes and estimated tokens of an Attempt's bound Task context, whichever way the
+/// context was stored: a captured Review Attempt's `af/TaskReviewContext@1` names its manifest
+/// by `context_manifest_id`, a generic `af/TaskContext@1` carries it inline as `manifest`.
+fn bound_context_size(cas: &Cas, context_id: &str) -> Option<(u64, u64)> {
+    let context = match cas.get_optional_artifact(context_id).ok()? {
+        Some(envelope) => envelope.payload,
+        None => cas.get_json(context_id).ok()?,
+    };
+    let manifest = match context
+        .get("context_manifest_id")
+        .and_then(|id| id.as_str())
+    {
+        Some(manifest_id) => cas.get_json(manifest_id).ok()?,
+        None => context.get("manifest")?.clone(),
+    };
+    Some((
+        manifest.get("rendered_bytes")?.as_u64()?,
+        manifest.get("estimated_tokens")?.as_u64()?,
+    ))
 }
 
 fn classify(operator: &CompiledOperator) -> (Category, Option<String>, Vec<String>) {
@@ -376,7 +533,7 @@ pub(super) fn render(tasks: &[TaskAccountingView], markdown: bool) -> String {
             let name = attempt.review_node.as_deref().unwrap_or(&attempt.node);
             writeln!(
                 text,
-                "\n- {}{}: Attempt {}; {}; {} tokens (original cap {}){}{}",
+                "\n- {}{}: Attempt {}; {}; {} tokens (original cap {}){}{}{}",
                 attempt
                     .round
                     .zip(attempt.epoch)
@@ -396,7 +553,8 @@ pub(super) fn render(tasks: &[TaskAccountingView], markdown: bool) -> String {
                     .wall
                     .as_ref()
                     .map(|wall| format!("; {}", super::human_duration(wall.elapsed_ms)))
-                    .unwrap_or_default()
+                    .unwrap_or_default(),
+                super::attempt_warm_suffix(attempt.warm.as_ref())
             )
             .unwrap();
             if let Some(usage) = attempt.wall.as_ref().and_then(|wall| wall.usage.as_ref()) {

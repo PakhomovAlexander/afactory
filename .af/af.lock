@@ -1,12 +1,12 @@
 version = 1
 
 [af]
-version = "0.8.0"
+version = "0.9.0-rc.3"
 
 [af.digests]
-aarch64-apple-darwin = "sha256:31ceb11cab76d180ede3da22384249f83bb026167a7f8267dcf1d012e15e55c2"
-aarch64-unknown-linux-musl = "sha256:8de2ead6650e4048107529ec63e89dbcedac025c658c35850976cc30bfb8a465"
-x86_64-unknown-linux-musl = "sha256:befe9900ca6e717dbc1510da3b09f9b9bc8e973e351013723846895644ac2f37"
+aarch64-apple-darwin = "sha256:e571c111d21cb142b90eec7c9e4e30a2f16f46683c5531027a2f34c8396e1eff"
+aarch64-unknown-linux-musl = "sha256:b945104899e18deaa0840be724441d313d42a176efb023ef3a3657def73a4ed0"
+x86_64-unknown-linux-musl = "sha256:fded2f07f810fb141e08c92a99f92fddaf8166cbeb80a7c3467865f558ec020a"
 
 [reviewers]
 
@@ -14,9 +14,17 @@ x86_64-unknown-linux-musl = "sha256:befe9900ca6e717dbc1510da3b09f9b9bc8e973e3510
 version = "1.0.0"
 digest = "sha256:6dfae1e54d9381547512a5124c4d6d4cb0e5e8cab02d4560a2c49c7552abb311"
 
+[workers.bugs-xhigh]
+version = "1.0.0"
+digest = "sha256:75ddb131f51ba984f2969cd37070df24ef31c87525d859e711342b2af8887a8e"
+
 [workers.correctness]
 version = "1.2.0"
 digest = "sha256:50ab5d7ab98a1b0a5d314008316a82d575f2eeb04904d23b0f97ad515a0431a7"
+
+[workers.correctness-sol]
+version = "1.0.0"
+digest = "sha256:b741a7aa603bcc05aff05ba45ed50dd792dc9cfc2579ca1b8c49a66ebf7f70ee"
 
 [workers.evaluator]
 version = "1.0.0"
@@ -30,9 +38,17 @@ digest = "sha256:e67e0ecd6ccb7e20db6b050195600ff1a77679a44df6d535b37dc972307180b
 version = "1.1.0"
 digest = "sha256:0fa2ee413331cd53d1df8f488220c6a0da8c2882dc57cc8b755462768b565265"
 
+[pipelines.design-review]
+version = "1.0.0"
+digest = "sha256:0bf8057a99f68af429db7e4db08aaf86707a301d905da704ea370687f08f4a0a"
+
 [pipelines.implement]
 version = "1.0.0"
 digest = "sha256:93e750b071481afd9094a82ea86211143fe556b1aea44b7a227f46b9e25f245b"
+
+[pipelines.p1-review]
+version = "1.0.0"
+digest = "sha256:3d514584be32195c68c6c02c8df08fbd0a217ff61e1b91062c6b3b1ebbab6193"
 
 [pipelines.review]
 version = "1.0.0"

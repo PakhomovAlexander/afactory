@@ -1,0 +1,34 @@
+schema = "af.code-task-policy/1"
+# The kernel's own gate. verify.sh runs `make check` with a stable external target dir.
+check_wall_ms = 3600000
+require_container = false
+
+[checks.kernel]
+name = "kernel"
+required = true
+
+[checks.kernel.command]
+program = "bash"
+
+[[checks.kernel.command.args]]
+value = "scripts/verify.sh"
+provenance = "literal"
+
+[checks.markdownlint]
+name = "markdownlint"
+required = true
+
+[checks.markdownlint.command]
+program = "npx"
+
+[[checks.markdownlint.command.args]]
+value = "--yes"
+provenance = "literal"
+
+[[checks.markdownlint.command.args]]
+value = "markdownlint-cli2@0.22.1"
+provenance = "literal"
+
+[[checks.markdownlint.command.args]]
+value = "**/*.md"
+provenance = "literal"

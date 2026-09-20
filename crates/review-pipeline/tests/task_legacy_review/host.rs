@@ -1061,3 +1061,142 @@ fn late_usage_fences_task_finish_while_preserving_its_prior_review_conclusion() 
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0].payload, conclusion.payload);
 }
+
+#[test]
+fn a_task_hosted_worker_retains_its_build_cache_clone_with_its_own_attempt() {
+    use review_core::task::runtime::{
+        TASK_RUNTIME_EVIDENCE_V1, TaskCacheLayerV1, TaskCacheResultV1, TaskRuntimeEvidenceV1,
+        TaskRuntimeSpanKindV1,
+    };
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let build = "mkdir -p \"$CARGO_TARGET_DIR/debug/deps\" \
+                 && printf compiled > \"$CARGO_TARGET_DIR/debug/deps/libfixture.rlib\"";
+    let reviewer = "test \"$(cat \"$CARGO_TARGET_DIR/debug/deps/libfixture.rlib\")\" = compiled \
+                    && cat >/dev/null \
+                    && printf '%s' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}'";
+    let definition = PIPELINE
+        .replace(
+            "version = 2",
+            "version = 3\n[gate]\nprovider=\"trusted_local\"\nrequired_isolation=\"none\"\nmode=\"ephemeral-write\"\nbuild_caches=[\"cargo_target\"]",
+        )
+        .replace(
+            "id = \"reviewer\"\nkind = \"reviewer\"\noutputs = [\"result\"]\nrunner = { program = \"/bin/true\" }",
+            &format!(
+                "id = \"reviewer\"\nkind = \"reviewer\"\noutputs = [\"result\"]\ngated_by = \"gate\"\nwarm = {{ notes = false, build_cache = [\"cargo_target\"] }}\nrunner = {{ program = \"/bin/sh\", args = [{{value=\"-c\"}}, {{value={}}}] }}",
+                serde_json::to_string(reviewer).unwrap()
+            ),
+        )
+        + &format!(
+            "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[\"decision\"]\n[[checks]]\nname=\"build\"\nprogram=\"/bin/sh\"\nargs=[{{value=\"-c\"}},{{value={}}}]\n",
+            serde_json::to_string(build).unwrap()
+        );
+    assert!(
+        definition.contains("warm = { notes = false"),
+        "{definition}"
+    );
+    let (compiler, lease) = admit(&cas, &mut store, &definition);
+    let shared = SharedEventStore::new(&mut store);
+    let host = LegacyReviewTaskHost::new(
+        &cas,
+        shared.clone(),
+        &compiler,
+        lease.clone(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+    let runtime =
+        TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host).unwrap();
+    let report = runtime.execute().unwrap();
+    assert!(report.complete(), "{report:?}");
+    let execution = runtime.projection().unwrap().execution.unwrap();
+
+    let mut gate_evidence = 0;
+    let mut clones = Vec::new();
+    for (attempt, (task_node, ids)) in execution.settled_artifacts() {
+        for (position, id) in ids.iter().enumerate() {
+            let Ok(artifact) = cas.get_artifact(id) else {
+                continue;
+            };
+            if artifact.artifact_type != TASK_RUNTIME_EVIDENCE_V1 {
+                continue;
+            }
+            let evidence: TaskRuntimeEvidenceV1 = serde_json::from_value(artifact.payload).unwrap();
+            evidence.validate().unwrap();
+            assert_eq!(
+                evidence.attempt_id, attempt,
+                "evidence names its own Attempt"
+            );
+            assert_eq!(evidence.node, task_node);
+            if evidence
+                .spans
+                .iter()
+                .any(|span| span.kind == TaskRuntimeSpanKindV1::Check)
+            {
+                gate_evidence += 1;
+                assert!(
+                    evidence
+                        .caches
+                        .iter()
+                        .any(|cache| cache.kind == "cargo_target"),
+                    "the Gate settles its capture beside its checks"
+                );
+                continue;
+            }
+            clones.push((position, evidence));
+        }
+    }
+    assert_eq!(gate_evidence, 1);
+    assert_eq!(
+        clones.len(),
+        1,
+        "exactly one Worker Attempt cloned the cache"
+    );
+    let (position, clone) = &clones[0];
+    assert!(
+        *position > 0,
+        "the Worker's raw reply stays its first settled artifact"
+    );
+    assert_eq!(clone.spans.len(), 1);
+    assert_eq!(
+        clone.spans[0].kind,
+        TaskRuntimeSpanKindV1::DependencyPreparation
+    );
+    assert_eq!(clone.spans[0].label, "cargo_target");
+    assert_eq!(clone.caches.len(), 1);
+    assert_eq!(clone.caches[0].kind, "cargo_target");
+    assert_eq!(
+        clone.caches[0].layer,
+        TaskCacheLayerV1::DependencyPreparation
+    );
+    assert_eq!(clone.caches[0].result, TaskCacheResultV1::Prepared);
+    assert_eq!(
+        clone.caches[0].lookup_ms, 0,
+        "a clone is materialization only"
+    );
+    assert_eq!(clone.caches[0].bytes_available, 8);
+
+    let events = shared.lock().unwrap().replay("review").unwrap();
+    let captured: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == EventType::BuildCacheCapturedV1)
+        .collect();
+    let decisions: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == EventType::GateDecisionV1)
+        .collect();
+    assert_eq!((captured.len(), decisions.len()), (1, 1));
+    assert_eq!(
+        decisions[0].sequence,
+        captured[0].sequence + 1,
+        "a Task-hosted Gate publishes its capture in the batch that carries its decision"
+    );
+    let selected: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == EventType::WarmSetSelectedV1)
+        .collect();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].node_id.as_deref(), Some("reviewer"));
+}

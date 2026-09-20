@@ -1412,6 +1412,7 @@ name = "review-runner-claude"
 version = "0.9.0-rc.3"
 dependencies = [
  "jsonschema",
+ "nix 0.30.1",
  "review-config",
  "review-core",
  "review-runner",
@@ -1459,6 +1460,7 @@ name = "review-source-git"
 version = "0.9.0-rc.3"
 dependencies = [
  "jsonschema",
+ "nix 0.30.1",
  "notify",
  "reflink-copy",
  "review-core",

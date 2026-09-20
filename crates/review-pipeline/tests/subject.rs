@@ -57,6 +57,7 @@ impl ReviewerAdapter for Recorder {
             )
             .unwrap(),
             proposal: Ok(None),
+            notes: Ok(None),
             cost_tokens: 1,
             raw_artifact: cas.put(b"stub").unwrap(),
         })

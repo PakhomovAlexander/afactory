@@ -16,3 +16,5 @@ where a note and an ADR disagree, the ADR wins. Shared vocabulary is defined in
 - [`research.md`](research.md) — the research digest the design borrowed from, with sources.
 - [`task-execution.md`](task-execution.md) — the Task execution increment: Pipelines versus Execution Plans, selection before generation, bindings, catalog, and verification.
 - [`task-execution-examples.md`](task-execution-examples.md) — proposed TOML examples and conformance cases for that increment.
+- [`worker-warm-layers.md`](worker-warm-layers.md) — proposal: split a Worker Attempt into carried layers (Notes, workspace, caches, session) so later Rounds do not pay the cold start again.
+- [`worker-warm-layers-plan.md`](worker-warm-layers-plan.md) — implementation plan for the warm layers: packages P0–P4, the campaign Pipeline every package runs through, and the review Findings each package must prove.

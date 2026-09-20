@@ -53,7 +53,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         timeout: Duration,
         writable: bool,
     ) -> ModelWorkerReturn {
-        self.invoke_inner(cas, workdir, input, timeout, writable, None)
+        self.invoke_inner(cas, workdir, input, timeout, writable, None, &[])
     }
 
     fn invoke_controlled(
@@ -69,11 +69,37 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         if broker.is_some() {
             return self.invoke_with_broker(cas, workdir, input, timeout, writable, broker);
         }
-        self.invoke_inner(cas, workdir, input, timeout, writable, cancellation)
+        self.invoke_inner(cas, workdir, input, timeout, writable, cancellation, &[])
+    }
+
+    fn invoke_controlled_with_environment(
+        &self,
+        cas: &Cas,
+        workdir: &Path,
+        input: Vec<u8>,
+        timeout: Duration,
+        writable: bool,
+        broker: Option<&dyn review_runner::ExactBrokerClient>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        environment: &[(String, String)],
+    ) -> ModelWorkerReturn {
+        if broker.is_some() {
+            return self.invoke_with_broker(cas, workdir, input, timeout, writable, broker);
+        }
+        self.invoke_inner(
+            cas,
+            workdir,
+            input,
+            timeout,
+            writable,
+            cancellation,
+            environment,
+        )
     }
 }
 
 impl CodexTaskAdapter {
+    #[allow(clippy::too_many_arguments)]
     fn invoke_inner(
         &self,
         cas: &Cas,
@@ -82,6 +108,7 @@ impl CodexTaskAdapter {
         timeout: Duration,
         writable: bool,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
+        environment: &[(String, String)],
     ) -> ModelWorkerReturn {
         if cancellation.is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Acquire)) {
             return ModelWorkerReturn {
@@ -126,6 +153,10 @@ impl CodexTaskAdapter {
         let mut runner = ModelRunner::new(workdir, timeout);
         if let Some(home) = &self.codex_home {
             runner = runner.with_grant("CODEX_HOME", home);
+        }
+        // Sandbox-local, non-secret context resolved by the kernel for this exact Attempt.
+        for (name, value) in environment {
+            runner = runner.with_env(name, value);
         }
         let capture =
             runner.capture_settled_with_stdin_controlled(cas, &command, input, cancellation);

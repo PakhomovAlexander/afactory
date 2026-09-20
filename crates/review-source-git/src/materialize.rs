@@ -76,24 +76,7 @@ pub fn materialize(
         .map(|entry| checked_relative_path(&entry.path, manifest.path_encoding))
         .collect::<Result<_, _>>()?;
 
-    // A manifest-declared symlink must never become the parent of another entry.
-    if manifest
-        .entries
-        .iter()
-        .any(|entry| entry.kind == EntryKind::Symlink)
-    {
-        let mut symlinks = HashSet::new();
-        for (entry, path) in manifest.entries.iter().zip(&decoded_paths) {
-            if path.ancestors().skip(1).any(|path| symlinks.contains(path)) {
-                return Err(MaterializeError::Escape {
-                    path: entry.path.clone(),
-                });
-            }
-            if entry.kind == EntryKind::Symlink {
-                symlinks.insert(path.clone());
-            }
-        }
-    }
+    refuse_symlink_ancestors(manifest, &decoded_paths)?;
     prepare_directories(root, manifest, &decoded_paths)?;
 
     // Preserve first-occurrence order while grouping in O(entries): the hash map is lookup only,
@@ -137,6 +120,32 @@ pub fn materialize(
         set_executable(&target, entry.kind == EntryKind::Executable)?;
         Ok::<_, MaterializeError>(())
     })?;
+    Ok(())
+}
+
+/// A manifest-declared symlink must never become the parent of another entry: writing below
+/// it would follow the link out of the tree.
+pub(crate) fn refuse_symlink_ancestors(
+    manifest: &Manifest,
+    decoded_paths: &[PathBuf],
+) -> Result<(), MaterializeError> {
+    if manifest
+        .entries
+        .iter()
+        .any(|entry| entry.kind == EntryKind::Symlink)
+    {
+        let mut symlinks = HashSet::new();
+        for (entry, path) in manifest.entries.iter().zip(decoded_paths) {
+            if path.ancestors().skip(1).any(|path| symlinks.contains(path)) {
+                return Err(MaterializeError::Escape {
+                    path: entry.path.clone(),
+                });
+            }
+            if entry.kind == EntryKind::Symlink {
+                symlinks.insert(path.clone());
+            }
+        }
+    }
     Ok(())
 }
 
@@ -199,7 +208,7 @@ fn materialize_group_source(
     Ok(())
 }
 
-fn checked_relative_path(
+pub(crate) fn checked_relative_path(
     encoded: &str,
     path_encoding: PathEncoding,
 ) -> Result<PathBuf, MaterializeError> {

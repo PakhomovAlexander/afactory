@@ -258,6 +258,352 @@ gate = "major"
 }
 
 #[test]
+fn warm_layer_policy_is_reviewer_owned_and_bounded() {
+    let cold = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
+    assert!(
+        cold.warm_policies().is_empty(),
+        "a pipeline written before warm layers existed runs cold"
+    );
+
+    let warm = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = true }\n",
+    );
+    let loaded = Definition::from_toml(&warm).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert!(policy.notes);
+    assert_eq!(
+        policy.notes_max_bytes,
+        review_core::DEFAULT_WORKER_NOTES_BYTES as u64
+    );
+
+    let bounded = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = true, notes_max_bytes = 4096 }",
+    );
+    let loaded = Definition::from_toml(&bounded).unwrap().load().unwrap();
+    assert_eq!(loaded.warm_policies()["architecture"].notes_max_bytes, 4096);
+
+    let over = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = true, notes_max_bytes = 1048576 }",
+    );
+    assert!(matches!(
+        Definition::from_toml(&over).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("notes_max_bytes")
+    ));
+
+    let opted_in = warm.replace("warm = { notes = true }", "warm = {}");
+    let loaded = Definition::from_toml(&opted_in).unwrap().load().unwrap();
+    assert!(
+        loaded.warm_policies()["architecture"].notes,
+        "Notes default to on"
+    );
+    let cold = warm.replace("warm = { notes = true }", "warm = { notes = false }");
+    let loaded = Definition::from_toml(&cold).unwrap().load().unwrap();
+    assert!(!loaded.warm_policies()["architecture"].notes);
+
+    let unknown = warm.replace("warm = { notes = true }", "warm = { transcript = true }");
+    assert!(matches!(
+        Definition::from_toml(&unknown),
+        Err(ConfigError::Parse(_))
+    ));
+
+    let on_gate = MINIMAL.replace(
+        "id = \"gate\"\nkind = \"gate\"\n",
+        "id = \"gate\"\nkind = \"gate\"\nwarm = { notes = true }\n",
+    );
+    assert!(matches!(
+        Definition::from_toml(&on_gate).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("warm-layer policy")
+    ));
+}
+
+#[test]
+fn the_session_layer_is_off_by_default_and_always_falls_back_to_notes() {
+    let warm = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = true }\n",
+    );
+    let loaded = Definition::from_toml(&warm).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert_eq!(
+        policy.session,
+        review_config::SessionSpec::Off,
+        "the session layer ships behind a policy default of off"
+    );
+    assert!(policy.session.is_off() && !policy.session.captures());
+    assert_eq!(
+        policy.session_max_age_secs,
+        review_core::DEFAULT_SESSION_MAX_AGE_SECS
+    );
+
+    let recent = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = true, session = \"if_recent\", session_max_age_secs = 900 }",
+    );
+    let loaded = Definition::from_toml(&recent).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert_eq!(policy.session, review_config::SessionSpec::IfRecent);
+    assert!(policy.session.captures());
+    assert_eq!(
+        policy.session.max_age_secs(policy.session_max_age_secs),
+        900
+    );
+    let always = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = true, session = \"always\", session_max_age_secs = 900 }",
+    );
+    let loaded = Definition::from_toml(&always).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert_eq!(
+        policy.session.max_age_secs(policy.session_max_age_secs),
+        review_core::MAX_SESSION_MAX_AGE_SECS,
+        "`always` still refuses a transcript no prompt cache could be serving"
+    );
+
+    let over = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = true, session = \"if_recent\", session_max_age_secs = 604800 }",
+    );
+    assert!(matches!(
+        Definition::from_toml(&over).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("session_max_age_secs")
+    ));
+
+    // Every session gate falls back to Notes alone, so a session-only node would silently carry
+    // nothing the moment a gate refused.
+    let notes_off = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = false, session = \"if_recent\" }",
+    );
+    assert!(matches!(
+        Definition::from_toml(&notes_off).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("requires `notes = true`")
+    ));
+}
+
+#[test]
+fn cold_closeout_is_compiled_from_the_pinned_policy_and_refused_when_infeasible() {
+    let loaded = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
+    assert_eq!(
+        loaded.cold_closeout(),
+        review_config::ColdCloseoutSpec::None,
+        "a pipeline written before the field existed dispatches what it always did"
+    );
+    assert!(loaded.cold_closeout_nodes().is_empty());
+
+    let warm = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = true }\n",
+    );
+    let compiled = format!("{warm}\n[convergence]\ncold_closeout = \"one_required\"\n");
+    let loaded = Definition::from_toml(&compiled).unwrap().load().unwrap();
+    assert_eq!(
+        loaded.cold_closeout_nodes().to_vec(),
+        vec!["architecture".to_string()],
+        "the closeout names the exact warm reviewer it confirms, at load time"
+    );
+
+    // A cold reviewer's result needs no cold confirmation.
+    let cold = format!("{MINIMAL}\n[convergence]\ncold_closeout = \"all\"\n");
+    assert!(matches!(
+        Definition::from_toml(&cold).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("no reviewer declares warm layers")
+    ));
+
+    // Feasibility: the run cap must admit the protected Attempt beside the Round's Workers.
+    let budgets = "\n[budgets]\nunit = \"tokens\"\nattempt = 1000\nrun = ";
+    let tight = format!("{compiled}{budgets}1500\n");
+    assert!(matches!(
+        Definition::from_toml(&tight).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("protected tokens")
+    ));
+    let feasible = format!("{compiled}{budgets}4000\n");
+    assert_eq!(
+        Definition::from_toml(&feasible)
+            .unwrap()
+            .load()
+            .unwrap()
+            .cold_closeout_nodes()
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn warm_workspace_policy_defaults_to_a_fresh_template_per_round() {
+    let warm = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = true }\n",
+    );
+    let loaded = Definition::from_toml(&warm).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert_eq!(
+        policy.workspace,
+        review_config::WorkspaceSpec::Fresh,
+        "a warm node without the key keeps a temporary template per Round"
+    );
+    assert!(policy.workspace.is_fresh());
+    let serialized = serde_json::to_value(policy).unwrap();
+    assert!(
+        serialized.get("workspace").is_none(),
+        "the default is never written back, so earlier pipelines stay byte-identical"
+    );
+
+    let rebase = warm.replace(
+        "warm = { notes = true }",
+        "warm = { notes = false, workspace = \"rebase\" }",
+    );
+    let loaded = Definition::from_toml(&rebase).unwrap().load().unwrap();
+    let policy = loaded.warm_policies()["architecture"];
+    assert!(!policy.notes, "a workspace node need not carry Notes");
+    assert_eq!(policy.workspace, review_config::WorkspaceSpec::Rebase);
+    assert!(!policy.workspace.is_fresh());
+    assert_eq!(
+        serde_json::to_value(policy).unwrap()["workspace"],
+        serde_json::json!("rebase")
+    );
+
+    let explicit = warm.replace(
+        "warm = { notes = true }",
+        "warm = { workspace = \"fresh\" }",
+    );
+    let loaded = Definition::from_toml(&explicit).unwrap().load().unwrap();
+    assert!(loaded.warm_policies()["architecture"].workspace.is_fresh());
+
+    let unknown = warm.replace(
+        "warm = { notes = true }",
+        "warm = { workspace = \"shared\" }",
+    );
+    assert!(matches!(
+        Definition::from_toml(&unknown),
+        Err(ConfigError::Parse(_))
+    ));
+}
+
+#[test]
+fn build_cache_carry_requires_a_trusted_local_gate_that_declares_the_kind() {
+    let trusted_gate = "version = 3\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"\nbuild_caches = [\"cargo_target\"]";
+    let declared = MINIMAL.replace("version = 2", trusted_gate).replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { notes = false, build_cache = [\"cargo_target\"] }\n",
+    );
+    let loaded = Definition::from_toml(&declared).unwrap().load().unwrap();
+    let binding = loaded.gate_execution().expect("v3 Gate binding");
+    assert_eq!(
+        binding.build_caches,
+        [review_config::BuildCacheKindSpec::CargoTarget]
+    );
+    assert_eq!(
+        binding.build_cache_limits(),
+        review_core::BuildCacheLimitsV1::default_v1(),
+        "absent bounds are the kernel defaults with the fixed depth and path limits"
+    );
+    let policy = loaded.warm_policies()["architecture"];
+    assert!(!policy.notes, "a build cache node need not carry Notes");
+    assert_eq!(
+        policy.build_cache.kinds(),
+        [review_config::BuildCacheKindSpec::CargoTarget]
+    );
+    assert_eq!(
+        review_config::BuildCacheKindSpec::CargoTarget.kind(),
+        review_core::BuildCacheKindV1::CargoTarget
+    );
+
+    let bounded = declared.replace(
+        "build_caches = [\"cargo_target\"]",
+        "build_caches = [\"cargo_target\"]\nbuild_cache_max_bytes = 1048576\nbuild_cache_max_entries = 1000",
+    );
+    let loaded = Definition::from_toml(&bounded).unwrap().load().unwrap();
+    let limits = loaded.gate_execution().unwrap().build_cache_limits();
+    assert_eq!(limits.max_bytes, 1_048_576);
+    assert_eq!(limits.max_entries, 1000);
+    assert_eq!(limits.max_depth, review_core::BUILD_CACHE_MAX_DEPTH_V1);
+
+    // The safe policy refuses the handoff before anything runs: a container Gate cannot
+    // declare a candidate-built cache, whatever the reviewer asks for.
+    let safe = declared.replace(
+        "provider = \"trusted_local\"\nrequired_isolation = \"none\"",
+        &format!(
+            "provider = \"container\"\nrequired_isolation = \"container\"\nimage = \"ghcr.io/example/gate@sha256:{}\"",
+            "a".repeat(64)
+        ),
+    );
+    assert!(matches!(
+        Definition::from_toml(&safe).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("refused under the safe policy")
+    ));
+
+    // A reviewer may only receive a kind its Gate declares.
+    let undeclared = declared.replace("\nbuild_caches = [\"cargo_target\"]", "");
+    assert!(matches!(
+        Definition::from_toml(&undeclared).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("declares it in `build_caches`")
+    ));
+    let ungated = MINIMAL.replace(
+        "id = \"architecture\"\nkind = \"reviewer\"\n",
+        "id = \"architecture\"\nkind = \"reviewer\"\nwarm = { build_cache = [\"cargo_target\"] }\n",
+    );
+    assert!(matches!(
+        Definition::from_toml(&ungated).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("declares it in `build_caches`")
+    ));
+
+    // The cache travels from the exact Gate the reviewer waits on, so it must wait on one.
+    assert_eq!(declared.matches("gated_by = \"gate\"").count(), 1);
+    let unbound = declared.replace("gated_by = \"gate\"\n", "");
+    assert!(matches!(
+        Definition::from_toml(&unbound).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("requires `gated_by`")
+    ));
+
+    // The vocabulary is closed on both sides.
+    let duplicate = declared.replace(
+        "build_cache = [\"cargo_target\"]",
+        "build_cache = [\"cargo_target\", \"cargo_target\"]",
+    );
+    assert!(matches!(
+        Definition::from_toml(&duplicate),
+        Err(ConfigError::Parse(message)) if message.contains("more than once")
+    ));
+    let duplicate_gate = declared.replace(
+        "build_caches = [\"cargo_target\"]",
+        "build_caches = [\"cargo_target\", \"cargo_target\"]",
+    );
+    assert!(matches!(
+        Definition::from_toml(&duplicate_gate).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("build cache kinds must be unique")
+    ));
+    let registry_snapshot_is_not_a_build_cache = declared.replace(
+        "build_caches = [\"cargo_target\"]",
+        "build_caches = [\"cargo\"]",
+    );
+    assert!(
+        Definition::from_toml(&registry_snapshot_is_not_a_build_cache)
+            .unwrap_err()
+            .to_string()
+            .contains("unknown variant")
+    );
+    let over = declared.replace(
+        "build_caches = [\"cargo_target\"]",
+        "build_caches = [\"cargo_target\"]\nbuild_cache_max_bytes = 17179869184",
+    );
+    assert!(matches!(
+        Definition::from_toml(&over).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("build cache limits")
+    ));
+    let limits_without_kinds = MINIMAL.replace(
+        "version = 2",
+        "version = 3\n\n[gate]\nprovider = \"trusted_local\"\nrequired_isolation = \"none\"\nmode = \"ephemeral-write\"\nbuild_cache_max_entries = 10",
+    );
+    assert!(matches!(
+        Definition::from_toml(&limits_without_kinds).unwrap().load(),
+        Err(ConfigError::Binding(message)) if message.contains("require `build_caches`")
+    ));
+}
+
+#[test]
 fn reviewer_demand_classification_is_pipeline_owned() {
     let advisory = MINIMAL.replace(
         "id = \"architecture\"\nkind = \"reviewer\"\n",

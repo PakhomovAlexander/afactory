@@ -9,6 +9,9 @@ fn binding() -> review_config::GateExecutionSpec {
         mode: review_config::GateModeSpec::EphemeralWrite,
         image: None,
         caches: vec![],
+        build_caches: vec![],
+        build_cache_max_bytes: None,
+        build_cache_max_entries: None,
     }
 }
 

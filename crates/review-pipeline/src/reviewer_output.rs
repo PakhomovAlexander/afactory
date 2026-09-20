@@ -6,11 +6,12 @@ use review_core::{
     EventType, MAX_CHANGE_SET_BYTES, ProposalCandidateV1, ProposalPreparedPayloadV1,
     ProposalRefusalReasonV1, ProposalRefusedPayloadV1,
 };
-use review_runner::ReviewerProposalDeclaration;
-use review_source_git::manifest_diff;
+use review_runner::{ReviewerNotesDeclaration, ReviewerProposalDeclaration};
+use review_source_git::{Manifest, manifest_diff};
 use review_store::{Cas, NewEvent};
 
 use super::{PreparedProposal, RoundAuthority};
+use crate::warm::{NotesCapture, PreparedNotes};
 
 /// One already validated adapter reply. Capturing it seals the actual sandbox and creates
 /// immutable result/provenance artifacts; it cannot select an Attempt or publish domain facts.
@@ -20,6 +21,13 @@ pub(super) struct ReviewerResultCapture<'a, U = review_runner::TokenUsage, C = u
     pub result: &'a serde_json::Value,
     pub result_contract: review_core::ReviewerResultContract,
     pub proposal: Result<Option<ReviewerProposalDeclaration>, String>,
+    /// The Notes transported beside the same answer, the ADR-0038 pattern again.
+    pub notes: Result<Option<ReviewerNotesDeclaration>, String>,
+    /// The node's Notes bound. `None` for a cold node: nothing is recorded and the Attempt's
+    /// evidence stays byte-identical to a pre-warm Attempt.
+    pub notes_max_bytes: Option<u64>,
+    /// The head tree the Attempt inspected, so inspected paths bind to exact tree entries.
+    pub head_manifest: &'a Manifest,
     pub assigned_finding_ids: &'a [String],
     pub report_count: usize,
     pub cost_tokens: C,
@@ -31,6 +39,8 @@ pub(super) struct ReviewerResultCapture<'a, U = review_runner::TokenUsage, C = u
 pub(super) struct CapturedReviewerResult {
     pub metadata: TaskReviewResultMetadataV1,
     pub proposal: PreparedProposal,
+    /// Present only for warm nodes; the owner publishes its event beside the admission.
+    pub notes: Option<PreparedNotes>,
 }
 
 pub(super) fn capture_result(
@@ -82,6 +92,27 @@ fn capture_result_inner<U: serde::Serialize, C: Copy + Into<u128> + serde::Seria
         reply.report_count,
         &sealed,
     )?;
+    let notes = match reply.notes_max_bytes {
+        Some(max_bytes) => {
+            let capture = NotesCapture {
+                declaration: reply.notes,
+                max_bytes,
+                head_manifest: reply.head_manifest,
+            };
+            let node_id = reply.node_id;
+            let attempt_id = reply.attempt_id;
+            let prepared = crate::warm::prepare_notes(
+                cas,
+                authority,
+                node_id,
+                attempt_id,
+                &result_artifact,
+                capture,
+            )?;
+            Some(prepared)
+        }
+        None => None,
+    };
     // A build can leave thousands of mutations. Capture the complete set once, then retain
     // only its digest and bounded summary in provenance.
     let mutations_artifact = cas
@@ -186,7 +217,11 @@ fn capture_result_inner<U: serde::Serialize, C: Copy + Into<u128> + serde::Seria
         proposal: disposition,
     };
     metadata.validate()?;
-    Ok(CapturedReviewerResult { metadata, proposal })
+    Ok(CapturedReviewerResult {
+        metadata,
+        proposal,
+        notes,
+    })
 }
 
 #[allow(clippy::too_many_arguments)] // one exact Attempt boundary; grouping would obscure authority inputs

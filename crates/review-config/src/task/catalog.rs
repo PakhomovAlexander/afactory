@@ -102,10 +102,54 @@ struct Package {
     dependency: PlanDependencyV1,
 }
 
+#[derive(Debug)]
 enum ParsedPackage {
     Pipeline(PipelineDefinitionV1),
     Worker(TaskWorkerManifest),
     TaskKind(TaskKindManifest),
+}
+
+/// `af/WorkerNotes@1` ports are node-private warm layers: one optional Notes in, one optional
+/// Notes out, never a required input and never a Subject-bound one. The compiler separately
+/// refuses wiring them between different slots.
+fn validate_notes_ports(
+    contract: &review_core::task::pipeline::PipelineContractV1,
+) -> Result<(), String> {
+    use review_core::task::pipeline::PortAffinityV1;
+    let is_notes = |port: &review_core::task::pipeline::PipelinePortV1| {
+        port.artifact_type == review_core::task::WORKER_NOTES_V1
+    };
+    let notes_inputs = contract
+        .inputs
+        .values()
+        .filter(|port| is_notes(port))
+        .count();
+    let notes_outputs = contract
+        .outputs
+        .values()
+        .filter(|port| is_notes(port))
+        .count();
+    if notes_inputs > 1 || notes_outputs > 1 {
+        return Err("A Worker declares at most one Notes input and one Notes output".into());
+    }
+    for (name, port) in contract.inputs.iter().filter(|(_, port)| is_notes(port)) {
+        if !port.optional
+            || port.cardinality != review_core::PortCardinality::One
+            || port.affinity != (PortAffinityV1::Unbound {})
+        {
+            return Err(format!(
+                "Worker notes input {name} must be one optional unbound af/WorkerNotes@1 port"
+            ));
+        }
+    }
+    for (name, port) in contract.outputs.iter().filter(|(_, port)| is_notes(port)) {
+        if !port.optional || port.cardinality != review_core::PortCardinality::One {
+            return Err(format!(
+                "Worker notes output {name} must be one optional af/WorkerNotes@1 port"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Resolved by the host's Provider and invocation-policy admission, never by a Worker or a
@@ -552,6 +596,7 @@ impl TaskPlanCompiler {
                     return Err("Worker manifest has incompatible identity or protocol".into());
                 }
                 worker.signature.contract.validate()?;
+                validate_notes_ports(&worker.signature.contract)?;
                 let cost = worker
                     .signature
                     .attempt

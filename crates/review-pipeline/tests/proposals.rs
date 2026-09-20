@@ -120,6 +120,7 @@ impl ReviewerAdapter for Proposer {
                 description: "return the required value".into(),
                 auto_apply_nominated: true,
             })),
+            notes: Ok(None),
             cost_tokens: 10,
             raw_artifact: cas.put(b"proposal reviewer response").unwrap(),
         })

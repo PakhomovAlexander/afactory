@@ -1,0 +1,41 @@
+{
+  "schema": "af.task-file/1",
+  "task_id": "warm-p3-verify",
+  "kind": "verification",
+  "goal": "Verify that the P3 Warm Workspace satisfies its requirements on the exact fixed Snapshot.",
+  "requirements": {
+    "schema": "afactory.warm-layers/1",
+    "package": "P3",
+    "design": "docs/design/worker-warm-layers.md",
+    "plan": "docs/design/worker-warm-layers-plan.md",
+    "deliverables": [
+      "Stable workspace root per (Campaign, node) under the XDG cache directory, recorded in the Warm Set",
+      "Rebase: apply the tree diff to a copy-on-write clone of the previous template; the resulting manifest digest must equal the new head's Tree Digest or the kernel falls back to full materialization",
+      "WorkspaceRebased@1 event with from and to Snapshot IDs, verified digest and entries touched",
+      "Per-Attempt sandboxes remain fresh clones; sibling isolation is unchanged",
+      "Schemas, parity fixtures, one ADR numbered after the latest, README index entry, CHANGELOG Unreleased entry"
+    ],
+    "acceptance": [
+      "A corrupted rebase fails closed into full materialization and records why",
+      "Rebase and full materialization produce byte-identical trees on the existing fixtures",
+      "A Round on an unchanged head materializes nothing",
+      "make check passes"
+    ]
+  },
+  "pipeline": {
+    "name": "warm/verification",
+    "fallback": "refuse"
+  },
+  "strategy": "light",
+  "facts": {},
+  "limits": {
+    "tokens": 600000,
+    "max_attempts": 4,
+    "wall_ms": 6000000,
+    "verification": {
+      "tokens": 400000,
+      "attempts": 4,
+      "wall_ms": 5000000
+    }
+  }
+}

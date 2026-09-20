@@ -194,6 +194,12 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
         self
     }
 
+    /// Where Warm Workspaces live on this machine; see `Kernel::with_workspace_cache_root`.
+    pub fn with_workspace_cache_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
+        self.domain.workspace_cache_root = Some(root.into());
+        self
+    }
+
     fn providers(&self) -> crate::task::provider::ProviderTaskDomain<'_> {
         crate::task::provider::ProviderTaskDomain {
             graph: &self.captured.compilation.graph,
@@ -479,9 +485,12 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
             ReviewOperation::Gate => {
                 let deadline =
                     self.current(attempt.ok_or("Review Gate has no started Attempt")?)?;
-                let result =
-                    self.domain
-                        .run_gate_controlled(&node.id, Some(deadline), cancellation);
+                let result = self.domain.run_gate_controlled(
+                    &node.id,
+                    Some(deadline),
+                    cancellation,
+                    attempt.map(PreparedTaskAttempt::id),
+                );
                 if result.is_err() {
                     self.domain.record_unmaterialized_cache_failures(
                         &node.id,
@@ -702,6 +711,10 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
                 .lock()
                 .expect("Review inputs")
                 .insert(node.id.clone(), artifact_ids(&raw));
+            // Recorded before the common runtime reserves the node's first Attempt, so every
+            // Attempt of the Round starts from the same declared Warm Set.
+            // The Task-hosted frontend installs no session capability, so no delta is sized.
+            self.domain.select_warm_set(&node.id, None)?;
         }
         Ok(())
     }

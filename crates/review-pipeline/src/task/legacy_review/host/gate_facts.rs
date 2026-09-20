@@ -82,6 +82,43 @@ impl LegacyReviewTaskHost<'_, '_> {
         Ok(vec![facts_id, runtime_id])
     }
 
+    /// Retain one Worker Attempt's clone of a carried Build Cache as that Attempt's own
+    /// `TaskRuntimeEvidence@1`, the same shape a Gate settles its checks and caches in. It is
+    /// read back by `af task show` per Attempt and grants nothing: no selection, no acceptance.
+    pub(super) fn retain_worker_runtime_evidence(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: &PreparedTaskAttempt,
+        evidence: crate::build_cache::BuildCacheEvidence,
+    ) -> Result<String, String> {
+        let runtime = TaskRuntimeEvidenceV1 {
+            task_id: attempt.task_id().into(),
+            attempt_id: attempt.id().into(),
+            node: input.node.clone(),
+            context_id: attempt.context_id().into(),
+            spans: vec![evidence.span],
+            caches: vec![evidence.observation],
+        };
+        runtime.validate()?;
+        cas.put_artifact(
+            TASK_RUNTIME_EVIDENCE_V1,
+            self.producer(input, Some(attempt))?,
+            std::iter::once(attempt.context_id().to_owned())
+                .chain(runtime.spans.iter().map(|span| span.span_id.clone()))
+                .chain(
+                    runtime.caches.iter().flat_map(|cache| {
+                        [cache.observation_id.clone(), cache.source_digest.clone()]
+                    }),
+                )
+                .collect(),
+            Some(self.domain.authority.head_snapshot_id.clone()),
+            serde_json::to_value(runtime).map_err(|e| e.to_string())?,
+        )
+        .map(|v| v.0)
+        .map_err(|e| e.to_string())
+    }
+
     pub(super) fn restore_gate_facts(
         &self,
         cas: &Cas,

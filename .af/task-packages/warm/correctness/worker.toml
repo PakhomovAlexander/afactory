@@ -1,0 +1,91 @@
+schema = "af.worker/1"
+name = "warm/correctness"
+version = "1.0.0"
+
+[signature]
+effects = ["read-source"]
+roles = ["review"]
+worker_input_type = "af/ReviewInput@1"
+worker_output_type = "review.kernel/ReviewerResult@2"
+
+[signature.contract.inputs.assignment]
+artifact_type = "af/TaskReviewAssignment@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.assignment.affinity]
+kind = "same_as"
+input = "source"
+
+[signature.contract.inputs.checks]
+artifact_type = "af/TaskCheckReceipt@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.checks.affinity]
+kind = "same_as"
+input = "source"
+
+[signature.contract.inputs.history]
+artifact_type = "af/ReviewHistory@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.history.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.requirements]
+artifact_type = "af/Requirements@1"
+cardinality = "one"
+optional = true
+covers = []
+
+[signature.contract.inputs.requirements.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.source]
+artifact_type = "af/SourceTree@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.source.affinity]
+kind = "unbound"
+
+[signature.contract.inputs.subject]
+artifact_type = "af/TaskReviewSubject@2"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.subject.affinity]
+kind = "same_as"
+input = "source"
+
+[signature.contract.outputs.result]
+artifact_type = "review.kernel/ReviewerResult@2"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.outputs.result.affinity]
+kind = "same_as"
+input = "source"
+
+[signature.evidence]
+
+[signature.retains]
+result = ["assignment", "checks", "history", "requirements", "source", "subject"]
+
+[signature.attempt]
+tokens = 400000
+wall_ms = 1800000
+
+[runner]
+kind = "model"
+provider_kind = "codex"
+model = "gpt-5.6-sol"
+effort = "high"

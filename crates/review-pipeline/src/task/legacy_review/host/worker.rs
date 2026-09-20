@@ -132,13 +132,20 @@ impl LegacyReviewTaskHost<'_, '_> {
 
     fn inputs(&self, cas: &Cas, input: &TaskInvocationV1) -> Result<ReviewerInputs, String> {
         let (node, mapping, _) = self.operation(input)?.ok_or("Not a Review Worker")?;
-        crate::reviewer_inputs::prepare(
+        let mut inputs = crate::reviewer_inputs::prepare(
             cas,
             &self.domain.authority,
             self.domain.pipeline_version,
             &node,
             &self.raw_inputs(cas, input, &mapping)?,
-        )
+        )?;
+        // Warm layers are declared inputs bound before the exact context is captured; the
+        // Warm Set itself was recorded when the invocation was published, before reservation.
+        crate::warm::request_notes(&mut inputs, self.domain.notes_max_bytes(&node.id));
+        if let Some(record) = self.domain.select_warm_set(&node.id, None)? {
+            crate::warm::apply_warm_set(cas, &mut inputs, &record)?;
+        }
+        Ok(inputs)
     }
 
     pub(super) fn worker_context(
@@ -270,6 +277,7 @@ impl LegacyReviewTaskHost<'_, '_> {
             feedback_id: None,
         };
         let mut feedback_code = TaskFeedbackCodeV1::ContextRejected;
+        let mut runtime_evidence_id: Option<String> = None;
         result.outputs = (|| {
             let attempt = attempt.ok_or("Review Worker has no started common Attempt")?;
             let deadline = self.current(attempt)?;
@@ -305,7 +313,23 @@ impl LegacyReviewTaskHost<'_, '_> {
                     .map_err(|e| e.to_string())?,
             )
             .map_err(|e| e.to_string())?;
-            let sandbox = self.domain.sandbox(review_sandbox::Mode::EphemeralWrite)?;
+            let sandbox = self
+                .domain
+                .sandbox_for(&node.id, review_sandbox::Mode::EphemeralWrite)?;
+            // The Round's recorded Warm Set names the Build Cache, if any; it is cloned into
+            // this exact sandbox and its location reaches the adapter as sandbox-local
+            // environment, never as rendered context.
+            // The Task-hosted frontend installs no session capability, so no delta is sized.
+            let warm_set = self.domain.select_warm_set(&node.id, None)?;
+            let (environment, clone_evidence) =
+                self.domain
+                    .materialize_build_cache(&node.id, warm_set.as_ref(), &sandbox)?;
+            if let Some(evidence) = clone_evidence {
+                // The clone is this exact Attempt's preparation. It settles with the Attempt,
+                // whatever the Worker then does, and never as a node-wide fact.
+                runtime_evidence_id =
+                    Some(self.retain_worker_runtime_evidence(cas, input, attempt, evidence)?);
+            }
             let runtime = match self.execution(&node.id)? {
                 WorkerExecutionV1::Command {} => {
                     Some(tempfile::tempdir().map_err(|e| e.to_string())?)
@@ -324,7 +348,7 @@ impl LegacyReviewTaskHost<'_, '_> {
             };
             let returned = match self.execution(&node.id)? {
                 WorkerExecutionV1::Command {} => {
-                    review_runner::task::invoke_command_bytes_controlled(
+                    review_runner::task::invoke_command_bytes_controlled_with_environment(
                         cas,
                         sandbox.root(),
                         runtime.as_ref().expect("command runtime").path(),
@@ -333,13 +357,16 @@ impl LegacyReviewTaskHost<'_, '_> {
                         bytes,
                         timeout,
                         cancellation,
+                        &environment,
                     )
                 }
                 // Preserve the native Review capability profile: ADR-0042 keeps Claude
                 // read-only, while the legacy Codex adapter permits sandbox Proposals.
                 // A different installed backend has no implicit edit authority.
-                WorkerExecutionV1::Model { provider_kind, .. } => {
-                    self.model(&node.id)?.adapter.invoke_controlled(
+                WorkerExecutionV1::Model { provider_kind, .. } => self
+                    .model(&node.id)?
+                    .adapter
+                    .invoke_controlled_with_environment(
                         cas,
                         sandbox.root(),
                         bytes,
@@ -347,9 +374,14 @@ impl LegacyReviewTaskHost<'_, '_> {
                         provider_kind == "codex",
                         broker,
                         cancellation,
-                    )
-                }
+                        &environment,
+                    ),
             };
+            // Build cache bytes leave before the seal: they never enter the sealed diff, a
+            // Proposal, or provenance.
+            if !environment.is_empty() {
+                review_sandbox::remove_materialized_caches(&sandbox)?;
+            }
             result.usage = returned.usage;
             result.usage_observation = returned.usage_observation;
             result.charged_tokens = result
@@ -393,6 +425,9 @@ impl LegacyReviewTaskHost<'_, '_> {
                     result: &value,
                     result_contract: inputs.result_contract,
                     proposal: review_runner::parse_proposal_declaration(text),
+                    notes: review_runner::parse_notes_declaration(text),
+                    notes_max_bytes: self.domain.notes_max_bytes(&node.id),
+                    head_manifest: &self.domain.snapshot,
                     assigned_finding_ids: &assigned,
                     report_count: parsed.findings.len(),
                     cost_tokens: usage.chargeable_tokens.get(),
@@ -403,6 +438,12 @@ impl LegacyReviewTaskHost<'_, '_> {
                 attempt.context_id(),
                 result.usage.is_some(),
             )?;
+            // The Notes outcome is a durable Round fact of this exact Attempt. It is appended
+            // now, under the Attempt epoch, so a later Round's Warm Set selection reads it from
+            // the log rather than from process memory.
+            if let Some(notes) = captured.notes {
+                self.domain.append(notes.event)?;
+            }
             let raw_outputs = BTreeMap::from([(
                 node.outputs[0].name.clone(),
                 vec![captured.metadata.result_artifact_id.clone()],
@@ -444,6 +485,8 @@ impl LegacyReviewTaskHost<'_, '_> {
             );
             Ok(ports)
         })();
+        // Retained after the raw response, so the first raw artifact stays the Worker's reply.
+        result.raw_artifact_ids.extend(runtime_evidence_id);
         if result.outputs.is_err() {
             result.feedback_id = (|| {
                 let attempt = attempt.ok_or("Review feedback has no actual Attempt")?;
