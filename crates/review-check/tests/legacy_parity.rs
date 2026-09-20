@@ -200,7 +200,7 @@ fn every_result_validates_against_check_result_v1() {
         if !validator.is_valid(&value) {
             let errors: Vec<String> = validator
                 .iter_errors(&value)
-                .map(|e| format!("{} at {}", e, e.instance_path))
+                .map(|e| format!("{} at {}", e, e.instance_path()))
                 .collect();
             panic!("{} rejected: {}", result.name, errors.join("; "));
         }

@@ -32,7 +32,7 @@ impl EventStore {
         )?;
         let rows = query.query_map([&run_id], |row| {
             Ok((
-                row.get::<_, u64>(0)?,
+                crate::store::u64_column(row, 0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 (3..7).all(|column| {

@@ -2351,7 +2351,7 @@ fn digest_hex<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
         digest.update((part.len() as u64).to_be_bytes());
         digest.update(part.as_bytes());
     }
-    format!("{:x}", digest.finalize())
+    review_core::hex::encode(&digest.finalize())
 }
 
 #[cfg(test)]

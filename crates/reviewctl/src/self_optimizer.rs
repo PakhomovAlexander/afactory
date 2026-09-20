@@ -253,7 +253,10 @@ fn source_path(config_path: &Path, declared: &Path) -> Result<PathBuf, String> {
 }
 
 fn digest(bytes: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(bytes))
+    format!(
+        "sha256:{}",
+        review_core::hex::encode(&Sha256::digest(bytes))
+    )
 }
 
 /// The legacy field `prefix_digest` hashes the exact receipted byte range. Recheck all
@@ -301,7 +304,8 @@ fn verify_retained_ranges(
             *remaining_raw -= count as u64;
             hash.update(&buffer[..count]);
         }
-        if format!("sha256:{:x}", hash.finalize()) != receipt.prefix_digest {
+        if format!("sha256:{}", review_core::hex::encode(&hash.finalize())) != receipt.prefix_digest
+        {
             return Err("Retained source bytes changed; source rotation or rewriting requires explicit new provenance".into());
         }
     }
@@ -455,7 +459,7 @@ fn capture_source(
     }
     *remaining_raw -= selected;
     complete &= !filtered && !adapter_state.has_coverage_gap();
-    let prefix_digest = format!("sha256:{:x}", hasher.finalize());
+    let prefix_digest = format!("sha256:{}", review_core::hex::encode(&hasher.finalize()));
     let adapter_version = match adapter_state.version() {
         AdapterVersion::Normalized => "normalized-v1",
         AdapterVersion::LegacyNormalized => "legacy-normalized-v1",

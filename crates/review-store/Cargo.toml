@@ -11,10 +11,10 @@ license.workspace = true
 review-attempt = { path = "../review-attempt" }
 review-graph = { path = "../review-graph" }
 review-core = { path = "../review-core" }
-rusqlite = { version = "0.37.0", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 toml = "0.8.23"
 tempfile = "3.27.0"
 reflink-copy = "0.1.30"
@@ -22,7 +22,7 @@ reflink-copy = "0.1.30"
 # fsync(2) without unsafe in this crate: nix wraps the libc call behind a safe API. The CAS
 # must match the log's durability grade (plain fsync), not exceed it — see cas.rs.
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30.1", default-features = false, features = ["fs"] }
+nix = { version = "0.31.3", default-features = false, features = ["fs"] }
 
 [lints]
 workspace = true

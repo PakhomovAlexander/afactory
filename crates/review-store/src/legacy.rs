@@ -76,7 +76,7 @@ pub fn legacy_fingerprint(file: &str, title: &str) -> String {
     hasher.update(file.as_bytes());
     hasher.update(b"|");
     hasher.update(normalized.as_bytes());
-    format!("{:x}", hasher.finalize())[..12].to_string()
+    review_core::hex::encode(&hasher.finalize())[..12].to_string()
 }
 
 /// Permanent bridge identity for legacy campaigns. A report's location order is model output;
@@ -987,7 +987,7 @@ pub fn canonical_finding_id(report_id: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"review.kernel/finding-id/v1\0");
     hasher.update(report_id.as_bytes());
-    format!("sha256:{:x}", hasher.finalize())
+    format!("sha256:{}", review_core::hex::encode(&hasher.finalize()))
 }
 
 /// A reviewer re-stating the exact same obligation keeps one Demand identity across Rounds.
@@ -1003,7 +1003,7 @@ pub fn canonical_demand_id(source: &str, demand: &LegacyBenchmarkDemand) -> Stri
         hasher.update(field.as_bytes());
         hasher.update([0]);
     }
-    format!("sha256:{:x}", hasher.finalize())
+    format!("sha256:{}", review_core::hex::encode(&hasher.finalize()))
 }
 
 fn canonical_stage_keys(

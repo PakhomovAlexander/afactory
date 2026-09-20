@@ -724,7 +724,7 @@ fn inspection_keeps_one_attempts_wide_aggregate_and_native_components_exact() {
             let schema: serde_json::Value =
                 serde_json::from_str(include_str!("../../../../schemas/review-report-v4.json"))
                     .unwrap();
-            let mut options = jsonschema::options();
+            let mut registry = jsonschema::Registry::new();
             for raw in [
                 include_str!("../../../../schemas/task-contracts-v1.json"),
                 include_str!("../../../../schemas/task-token-usage-v1.json"),
@@ -732,12 +732,18 @@ fn inspection_keeps_one_attempts_wide_aggregate_and_native_components_exact() {
                 include_str!("../../../../schemas/task-review-accounting-v1.json"),
             ] {
                 let resource: serde_json::Value = serde_json::from_str(raw).unwrap();
-                options.with_resource(
-                    resource["$id"].as_str().unwrap().to_owned(),
-                    jsonschema::Resource::from_contents(resource).unwrap(),
-                );
+                let id = resource["$id"].as_str().unwrap().to_owned();
+                registry = registry
+                    .add(id, jsonschema::Resource::from_contents(resource))
+                    .unwrap();
             }
-            let validator = options.build(&schema).unwrap();
+            let validator = {
+                let registry = registry.prepare().unwrap();
+                jsonschema::options()
+                    .with_registry(&registry)
+                    .build(&schema)
+                    .unwrap()
+            };
             assert!(
                 validator.is_valid(&value),
                 "{:?}",
@@ -929,7 +935,7 @@ fn task_report_view_schema_requires_exact_decimals_and_snapshot_identity() {
     let value = serde_json::to_value(view).unwrap();
     let schema: serde_json::Value =
         serde_json::from_str(include_str!("../../../../schemas/review-report-v3.json")).unwrap();
-    let mut options = jsonschema::options();
+    let mut registry = jsonschema::Registry::new();
     for resource in [
         include_str!("../../../../schemas/task-contracts-v1.json"),
         include_str!("../../../../schemas/task-token-usage-v1.json"),
@@ -937,12 +943,18 @@ fn task_report_view_schema_requires_exact_decimals_and_snapshot_identity() {
         include_str!("../../../../schemas/task-review-accounting-v1.json"),
     ] {
         let resource: serde_json::Value = serde_json::from_str(resource).unwrap();
-        options.with_resource(
-            resource["$id"].as_str().unwrap().to_owned(),
-            jsonschema::Resource::from_contents(resource).unwrap(),
-        );
+        let id = resource["$id"].as_str().unwrap().to_owned();
+        registry = registry
+            .add(id, jsonschema::Resource::from_contents(resource))
+            .unwrap();
     }
-    let validator = options.build(&schema).unwrap();
+    let validator = {
+        let registry = registry.prepare().unwrap();
+        jsonschema::options()
+            .with_registry(&registry)
+            .build(&schema)
+            .unwrap()
+    };
     assert!(
         validator.is_valid(&value),
         "{:?}",

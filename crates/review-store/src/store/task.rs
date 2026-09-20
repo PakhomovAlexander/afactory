@@ -15,7 +15,7 @@ use review_core::{ArtifactEnvelope, EventType, RunEvent};
 use serde::de::DeserializeOwned;
 use serde_json::json;
 
-use super::{EventStore, NewEvent, StoreError};
+use super::{EventStore, NewEvent, StoreError, u64_column};
 use crate::{Cas, content_id, validate_envelope};
 
 #[cfg(test)]
@@ -461,7 +461,7 @@ impl WritePermit {
             let actual: u64 = connection.query_row(
                 "SELECT COALESCE(MAX(sequence)+1,0) FROM events WHERE run_id=?1",
                 [run_id],
-                |row| row.get(0),
+                |row| u64_column(row, 0),
             )?;
             if actual != *expected {
                 return Err(conflict(

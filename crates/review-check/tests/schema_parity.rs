@@ -27,7 +27,7 @@ fn assert_valid(instance: &Value) {
     if !v.is_valid(instance) {
         let errors: Vec<String> = v
             .iter_errors(instance)
-            .map(|e| format!("{} at {}", e, e.instance_path))
+            .map(|e| format!("{} at {}", e, e.instance_path()))
             .collect();
         panic!(
             "check-result-v1 rejected a live value: {}",

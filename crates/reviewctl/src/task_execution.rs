@@ -382,7 +382,7 @@ pub(crate) fn state_path(repo: &Path, state: Option<&Path>) -> Result<(PathBuf, 
             super::normalize_absolute(
                 &super::xdg_state_root()?
                     .join("af/task/local")
-                    .join(&format!("{identity:x}")[..16]),
+                    .join(&review_core::hex::encode(&identity)[..16]),
             )?
         }
     };
