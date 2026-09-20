@@ -36,30 +36,35 @@ fn workspace() -> PathBuf {
 
 fn validator(name: &str) -> jsonschema::Validator {
     let directory = workspace().join("schemas");
-    let mut options = jsonschema::options();
+    let mut registry = jsonschema::Registry::new();
     for entry in std::fs::read_dir(&directory).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
         let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        let Some(id) = value["$id"].as_str() else {
+        let Some(id) = value["$id"].as_str().map(str::to_owned) else {
             continue;
         };
-        options.with_resource(
-            id.to_owned(),
-            jsonschema::Resource::from_contents(value).unwrap(),
-        );
+        registry = registry
+            .add(id, jsonschema::Resource::from_contents(value))
+            .unwrap();
     }
     let value: Value =
         serde_json::from_slice(&std::fs::read(directory.join(name)).unwrap()).unwrap();
-    options.build(&value).unwrap()
+    {
+        let registry = registry.prepare().unwrap();
+        jsonschema::options()
+            .with_registry(&registry)
+            .build(&value)
+            .unwrap()
+    }
 }
 
 fn valid(schema: &jsonschema::Validator, value: &Value) {
     let errors: Vec<_> = schema
         .iter_errors(value)
-        .map(|e| format!("{} at {}", e, e.instance_path))
+        .map(|e| format!("{} at {}", e, e.instance_path()))
         .collect();
     assert!(errors.is_empty(), "{}", errors.join("\n"));
 }

@@ -138,7 +138,7 @@ fn campaign_id(campaign: &str) -> String {
     digest.update(b"af/campaign-id@1\0");
     digest.update(campaign.as_bytes());
     let digest = digest.finalize();
-    format!("c-{digest:x}")
+    format!("c-{}", review_core::hex::encode(&digest))
 }
 
 fn campaign_state_beneath(root: &Path, campaign: &str) -> Result<PathBuf, String> {
@@ -185,7 +185,7 @@ fn default_local_state(repository: &Path) -> Result<PathBuf, String> {
     let identity = Sha256::digest(repository.as_os_str().as_encoded_bytes());
     Ok(xdg_state_root()?
         .join("af/review/local")
-        .join(&format!("{identity:x}")[..16]))
+        .join(&review_core::hex::encode(&identity)[..16]))
 }
 
 fn validate_campaign_name(campaign: &str) -> Result<(), String> {
@@ -4395,7 +4395,10 @@ fn candidate_identity() -> Result<CandidateIdentity, String> {
     Ok(CandidateIdentity {
         version: env!("CARGO_PKG_VERSION"),
         executable: executable.display().to_string(),
-        binary_sha256: format!("sha256:{:x}", Sha256::digest(bytes)),
+        binary_sha256: format!(
+            "sha256:{}",
+            review_core::hex::encode(&Sha256::digest(bytes))
+        ),
     })
 }
 

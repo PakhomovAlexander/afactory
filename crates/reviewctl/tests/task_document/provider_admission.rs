@@ -388,15 +388,21 @@ fn catalog_schema(schema: &Value) -> jsonschema::Validator {
         "../../../../schemas/task-planner-settings-v1.json"
     ))
     .unwrap();
-    jsonschema::options()
-        .with_resource(
+    let registry = jsonschema::Registry::new()
+        .add(
             "urn:af:schema:task-contracts:1",
-            jsonschema::Resource::from_contents(contracts).unwrap(),
+            jsonschema::Resource::from_contents(contracts),
         )
-        .with_resource(
+        .unwrap()
+        .add(
             "urn:af:schema:task-planner-settings:1",
-            jsonschema::Resource::from_contents(planner).unwrap(),
+            jsonschema::Resource::from_contents(planner),
         )
+        .unwrap()
+        .prepare()
+        .unwrap();
+    jsonschema::options()
+        .with_registry(&registry)
         .build(schema)
         .unwrap()
 }

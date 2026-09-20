@@ -15,19 +15,25 @@ fn validator(name: &str) -> jsonschema::Validator {
     let read = |name: &str| {
         serde_json::from_slice::<Value>(&std::fs::read(root.join(name)).unwrap()).unwrap()
     };
-    let mut options = jsonschema::options();
+    let mut registry = jsonschema::Registry::new();
     for name in [
         "task-contracts-v1.json",
         "task-invocation-v1.json",
         "task-provider-admission-v2.json",
     ] {
         let schema = read(name);
-        options.with_resource(
-            schema["$id"].as_str().unwrap().to_string(),
-            jsonschema::Resource::from_contents(schema).unwrap(),
-        );
+        let id = schema["$id"].as_str().unwrap().to_owned();
+        registry = registry
+            .add(id, jsonschema::Resource::from_contents(schema))
+            .unwrap();
     }
-    options.build(&read(name)).unwrap()
+    {
+        let registry = registry.prepare().unwrap();
+        jsonschema::options()
+            .with_registry(&registry)
+            .build(&read(name))
+            .unwrap()
+    }
 }
 
 fn persist(cas: &Cas, original: &str, payload: Value) -> String {

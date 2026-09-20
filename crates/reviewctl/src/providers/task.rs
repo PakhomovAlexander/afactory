@@ -326,7 +326,10 @@ fn principal(kind: &str, email: Option<&str>) -> Result<String, String> {
     digest.update(kind.as_bytes());
     digest.update([0]);
     digest.update(normalized.as_bytes());
-    Ok(format!("sha256:{:x}", digest.finalize()))
+    Ok(format!(
+        "sha256:{}",
+        review_core::hex::encode(&digest.finalize())
+    ))
 }
 fn claude_principal(status: &serde_json::Value) -> Result<String, String> {
     if status["loggedIn"] != true

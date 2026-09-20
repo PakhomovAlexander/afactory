@@ -592,7 +592,7 @@ pub(crate) fn release_digests(
 fn sha256_file(path: &Path) -> Result<String, String> {
     let bytes =
         std::fs::read(path).map_err(|error| format!("reading {}: {error}", path.display()))?;
-    Ok(format!("{:x}", Sha256::digest(bytes)))
+    Ok(review_core::hex::encode(&Sha256::digest(bytes)))
 }
 
 /// Why an install did not happen. A mismatch is never a reason to run another version instead.

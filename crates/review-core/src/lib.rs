@@ -24,6 +24,7 @@ pub mod exec;
 pub mod finding;
 pub mod finding_set;
 pub mod grouping;
+pub mod hex;
 pub mod integration;
 pub mod json;
 pub mod legacy;

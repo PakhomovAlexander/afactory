@@ -314,7 +314,7 @@ fn task_id(campaign: &str) -> String {
     let mut digest = Sha256::new();
     digest.update(b"af.review-task-id/1\0");
     digest.update(campaign.as_bytes());
-    format!("review-{:x}", digest.finalize())
+    format!("review-{}", review_core::hex::encode(&digest.finalize()))
 }
 
 /// A paid historical Campaign keeps its original executor and accounting. A new capture

@@ -29,27 +29,27 @@ review-source-git = { path = "../review-source-git" }
 review-source-task = { path = "../review-source-task" }
 review-store = { path = "../review-store" }
 review-sandbox = { path = "../review-sandbox" }
-rusqlite = { version = "0.37.0", features = ["bundled"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 rustix = { version = "1.1.4", features = ["fs"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 semver = "1.0.27"
-sha2 = "0.10.9"
+sha2 = "0.11.0"
 shell-words = "1.1.1"
 tempfile = "3.27.0"
 toml = "0.8.23"
 clap = { version = "4.5.60", features = ["derive", "wrap_help", "env", "string"] }
 clap_complete = { version = "4.5.60", features = ["unstable-dynamic"] }
-clap_mangen = "0.2.31"
+clap_mangen = "0.3.3"
 toml_edit = "0.22"
 minisign-verify = "0.2.5"
 
 [target.'cfg(unix)'.dependencies]
-nix = { version = "0.30.1", default-features = false, features = ["fs", "signal", "user"] }
+nix = { version = "0.31.3", default-features = false, features = ["fs", "signal", "user"] }
 portable-pty = { version = "0.9.0", default-features = false }
 
 [dev-dependencies]
-jsonschema = { version = "0.26.1", default-features = false }
+jsonschema = { version = "0.56.0", default-features = false }
 # Signs test releases the way the release job signs real ones, so signature verification is
 # exercised end to end without a key on disk.
 minisign = "0.9.1"

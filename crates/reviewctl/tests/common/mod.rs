@@ -17,7 +17,7 @@ pub fn write(path: &Path, text: &str) {
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", <sha2::Sha256 as sha2::Digest>::digest(bytes))
+    review_core::hex::encode(&<sha2::Sha256 as sha2::Digest>::digest(bytes))
 }
 
 /// A minisign key pair for signing test releases; `AF_RELEASE_KEY` points the binary at it.
