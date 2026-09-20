@@ -496,6 +496,12 @@ moved, a credential-carrying transcript never filed, and three Claude-store test
 projects directory, a descriptor-stable deletion and a materialization that never writes through
 a link.
 
+P4 is verified: Task `warm-p4-verify-v2` ran alone against the fixed Snapshot and finished
+`verified` at 180,426 tokens. Its first attempt, `warm-p4-verify`, failed on a test the
+campaign never touched, under the load its own Gate creates; section 9 records that finding.
+With the sixteen attestations in `warm-p4-review`, P4 closes the way P1, P2 and P3 did, and the
+campaign's four packages are implemented, reviewed, fixed and verified.
+
 ## 12. First session
 
 Revise the design (P0), then run P1 through the campaign Pipeline:
