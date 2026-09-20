@@ -9,6 +9,19 @@ release pages only.
 
 ## [Unreleased]
 
+## [0.9.0-rc.4] - 2026-09-20
+
+### Authority compatibility
+
+Prerelease: committed .af authority keeps working as is. Every warm layer is opt-in per reviewer node (warm = { notes, build_cache, workspace, session }); a pipeline that declares none behaves exactly as before, and the Store, the run events and the pinned authority mirrors gain additive records only, with no migration. The session layer is Claude-only and defaults to off: Codex reviewers and Task-hosted Review Attempts record a drop reason and run on Notes instead. A candidate-built build cache is an explicitly unsafe artifact, never a Cache Snapshot, and is refused under the safe policy at load, at selection and at capture. WarmSetSelected@1 first ships here, so its vocabulary closes with this release (ADR-0107). Refresh a consumer pin explicitly with af onboard --refresh-lock after verifying the release and its archive digests, and keep the previous release for rollback. No cold-versus-warm savings Evidence exists yet, so the design review's build-minute and forked-resume Demands stay open and both session and workspace policy defaults ship off.
+
+### Changes
+
+- release: v0.9.0-rc.2 (#93)
+- Add self-optimizer economics, experiments and light optimization (#94)
+- release: v0.9.0-rc.3 (#95)
+- Reduce release latency with shared validation and concurrent builds (#96)
+- Start Workers warm from declared layers and confirm clean Rounds cold (#97)
 ### Changes
 
 - Add the first Worker warm layer: a reviewer node with `warm = { notes = true }` asks each
