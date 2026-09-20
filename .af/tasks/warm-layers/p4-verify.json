@@ -1,6 +1,6 @@
 {
   "schema": "af.task-file/1",
-  "task_id": "warm-p4-verify",
+  "task_id": "warm-p4-verify-v2",
   "kind": "verification",
   "goal": "Verify that the P4 Session Snapshot and Cold Closeout satisfy their requirements on the exact fixed Snapshot.",
   "requirements": {

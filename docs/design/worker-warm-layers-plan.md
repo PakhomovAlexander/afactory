@@ -363,6 +363,17 @@ package and belong to their own follow-up:
   P4's first Attempt, which timed out at the one-hour wall with no output and was also charged
   in full, may have been the same downgrade running slower.
 
+- **A fixed provider deadline in a test makes the Task's own Gate load-sensitive.** P4's first
+  verification failed on `review-runner-claude`'s `typed_reply_never_falls_back_and_failed_outputs_keep_accounting`,
+  which spawns a shell stub nine times with a five-second deadline and then unwraps the usage the
+  stub's output carries. A spawn that misses the deadline yields no output, so the unwrap panics
+  rather than reporting a timeout. The test is untouched by this campaign and passes locally, but
+  a Task Gate compiles the whole workspace fresh inside its sandbox and runs every test binary
+  under that load, which is exactly where a fixed deadline gives way. Two follow-ups belong to the
+  kernel rather than to any package: a provider deadline in a test should scale with observed host
+  load or be generous, and a test that depends on a spawned process should assert the spawn's
+  outcome instead of unwrapping what it produced.
+
 Until the lease is load-tolerant, run one kernel execution at a time on this machine and keep
 Spotlight away from the state and cache directories.
 
