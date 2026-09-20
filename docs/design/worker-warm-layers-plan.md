@@ -448,6 +448,36 @@ wall-time savings over cold and Notes-only Attempts at several ages — stays op
 Campaign runs with `session = "if_recent"`. Both policy defaults are off, which is what the design
 asks for until that Evidence exists.
 
+The P4 review (Campaign `warm-p4-review`, the same two reviewers) closed with one Blocker and
+eight Majors that reduce to six fixes, all applied before verification:
+
+- **A failed confirmation could not stop the Round** (the Blocker). The Ledger skipped a
+  `ColdCloseoutDispatched@1` with no result, so a clean warm result closed a Round whose required
+  cold opinion never answered. It now refuses to reduce, and the Round is incomplete.
+- **Dispatch read one reviewer, not the Round.** The confirmation is decided at the Ledger, where
+  every warm result is known, and skipped when any of them already blocks at the gate.
+- **The confirmation bypassed the Attempt lifecycle.** It now dispatches durably before the
+  provider call and settles with a terminal admitted or failed event, wall time and usage, under
+  its own closeout slot, so replay reconstructs its charge and a crash fences it.
+- **Canonical reduction rejected the pair.** Warm and cold fold as two distinct stages of one
+  reviewer, keyed by slot rather than by result digest, so two byte-identical answers are told
+  apart by Attempt.
+- **The session gate assumed its delta.** It now renders the prospective delta prompt and requires
+  transcript, delta and answer allowance to fit the reservation together, with a checked sum; and
+  a Head Delta dropped over its bound now drops the session too, under a new recorded reason.
+- **Transcripts could keep host paths, credentials, or outlive their Attempt.** Sanitization
+  replaces the sandbox and harness paths with reversible placeholders and refuses a transcript
+  carrying a credential shape; every Attempt deletes its own transcript on every ending; and the
+  Claude store opens every component below the granted root no-follow and unlinks in the directory
+  it validated.
+
+New evidence: a blocking sibling sparing the Round its confirmation, a confirmation that cannot
+answer leaving the Round incomplete, warm and cold folding as two stages under canonical identity,
+a failed Attempt taking its transcript with it, a session dropped when the Round cannot say what
+moved, a credential-carrying transcript never filed, and three Claude-store tests for a symlinked
+projects directory, a descriptor-stable deletion and a materialization that never writes through
+a link.
+
 ## 12. First session
 
 Revise the design (P0), then run P1 through the campaign Pipeline:

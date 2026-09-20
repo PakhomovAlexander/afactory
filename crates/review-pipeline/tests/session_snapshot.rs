@@ -113,6 +113,54 @@ const INSTRUCTIONS: &str = "You are the correctness reviewer for this repository
     exactly one JSON document matching the output contract that follows, with no prose before \
     or after it, because the kernel parses it mechanically and rejects anything else.";
 const TRANSCRIPT: &[u8] = b"{\"role\":\"user\"}\n{\"role\":\"assistant\"}\n";
+/// The Attempt ledger slot a compiled confirmation of `reviewer` runs under.
+const CLOSEOUT_SLOT: &str = "reviewer#cold-closeout";
+
+/// Two reviewers, a compiled confirmation for the warm one, and room for three Attempts.
+const SIBLING_CLOSEOUT_PIPELINE: &str = r#"
+version = 2
+[subject]
+kind = "whole-tree"
+[[nodes]]
+id = "reviewer"
+kind = "reviewer"
+outputs = ["result"]
+warm = { notes = true }
+runner = { program = "/bin/true" }
+[[nodes]]
+id = "sibling"
+kind = "reviewer"
+outputs = ["result"]
+runner = { program = "/bin/true" }
+[[nodes]]
+id = "gather"
+kind = "gather"
+inputs = ["reviewer", "sibling"]
+outputs = ["reports"]
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = ["reports"]
+outputs = ["findings"]
+[[edges]]
+from = { node = "reviewer", port = "result" }
+to = { node = "gather", port = "reviewer" }
+[[edges]]
+from = { node = "sibling", port = "result" }
+to = { node = "gather", port = "sibling" }
+[[edges]]
+from = { node = "gather", port = "reports" }
+to = { node = "ledger", port = "reports" }
+[convergence]
+clean_rounds = 1
+max_rounds = 2
+gate = "major"
+cold_closeout = "one_required"
+[budgets]
+unit = "tokens"
+attempt = 1000
+run = 3000
+"#;
 
 fn clean() -> LegacyStageOutput {
     serde_json::from_str(
@@ -152,6 +200,10 @@ impl TestSessions {
 impl SessionLayer for TestSessions {
     fn provider_kind(&self) -> &'static str {
         "claude"
+    }
+
+    fn credential_markers(&self) -> &'static [&'static [u8]] {
+        &[b"sk-ant-"]
     }
 
     fn capture(&self, session_id: &str, max_bytes: u64) -> Result<SessionCapture, String> {
@@ -210,6 +262,8 @@ struct SessionReviewer {
     seen: Arc<Mutex<Vec<SeenAttempt>>>,
     output: LegacyStageOutput,
     usage: TokenUsage,
+    /// What the harness writes as this Attempt's transcript.
+    transcript: Vec<u8>,
     /// Hosts a session at all. A reviewer without one is every adapter but Claude.
     hosts_sessions: bool,
 }
@@ -228,6 +282,7 @@ impl SessionReviewer {
                 reasoning_tokens: None,
                 chargeable_tokens: 4_900,
             },
+            transcript: TRANSCRIPT.to_vec(),
             hosts_sessions: true,
         }
     }
@@ -262,7 +317,7 @@ impl ReviewerAdapter for SessionReviewer {
                 .transcripts
                 .lock()
                 .unwrap()
-                .insert(session_id.clone(), TRANSCRIPT.to_vec());
+                .insert(session_id.clone(), self.transcript.clone());
         }
         Ok(ReviewerReturn {
             output: self.output.clone(),
@@ -292,6 +347,87 @@ impl ReviewerAdapter for SessionReviewer {
     fn session_layer(&self) -> Option<&dyn SessionLayer> {
         self.hosts_sessions
             .then(|| &*self.sessions as &dyn SessionLayer)
+    }
+}
+
+/// Writes its transcript and then times out once before answering, so a Round's failed Attempt
+/// and its successful retry each leave a session behind for the kernel to remove.
+struct TimingOutSessionReviewer {
+    sessions: Arc<TestSessions>,
+    assigned: Arc<Mutex<Vec<String>>>,
+    calls: Mutex<u32>,
+}
+
+impl ReviewerAdapter for TimingOutSessionReviewer {
+    fn invoke(
+        &self,
+        cas: &Cas,
+        _root: &Path,
+        inputs: &ReviewerInputs,
+    ) -> Result<ReviewerReturn, RunnerError> {
+        let call = {
+            let mut calls = self.calls.lock().unwrap();
+            *calls += 1;
+            *calls
+        };
+        // The harness writes the transcript before the Attempt's outcome is known.
+        if let Some(session_id) = &inputs.session_id {
+            self.assigned.lock().unwrap().push(session_id.clone());
+            self.sessions
+                .transcripts
+                .lock()
+                .unwrap()
+                .insert(session_id.clone(), TRANSCRIPT.to_vec());
+        }
+        if call == 1 {
+            return Err(RunnerError::TimedOut {
+                after_ms: 1,
+                raw_artifact: Some(cas.put(b"timed out").unwrap()),
+            });
+        }
+        Ok(ReviewerReturn {
+            output: clean(),
+            proposal: Ok(None),
+            notes: Ok(None),
+            cost_tokens: 1,
+            raw_artifact: cas.put(b"answer").unwrap(),
+        })
+    }
+
+    fn session_layer(&self) -> Option<&dyn SessionLayer> {
+        Some(&*self.sessions as &dyn SessionLayer)
+    }
+}
+
+/// Answers cleanly once, then cannot answer at all: a warm result whose confirmation fails.
+struct FailingConfirmation {
+    calls: Mutex<u32>,
+}
+
+impl ReviewerAdapter for FailingConfirmation {
+    fn invoke(
+        &self,
+        cas: &Cas,
+        _root: &Path,
+        _inputs: &ReviewerInputs,
+    ) -> Result<ReviewerReturn, RunnerError> {
+        let call = {
+            let mut calls = self.calls.lock().unwrap();
+            *calls += 1;
+            *calls
+        };
+        if call > 1 {
+            return Err(RunnerError::Unavailable(
+                "the confirmation provider is unavailable".into(),
+            ));
+        }
+        Ok(ReviewerReturn {
+            output: clean(),
+            proposal: Ok(None),
+            notes: Ok(None),
+            cost_tokens: 1,
+            raw_artifact: cas.put(b"answer").unwrap(),
+        })
     }
 }
 
@@ -838,15 +974,40 @@ fn cold_closeout_confirms_only_a_would_be_clean_warm_result() {
             cas.get_json(&payload.warm_result_artifact_id).unwrap(),
             "an identical answer is the same content"
         );
+        // The confirmation runs the same durable Attempt lifecycle as the Attempt it confirms,
+        // under its own slot: the reviewer node still has exactly one admitted Attempt, and the
+        // cold one is dispatched durably before the provider is called.
         let admitted = events_of(&store, EventType::AttemptAdmittedV1);
+        let warm_admitted: Vec<_> = admitted
+            .iter()
+            .filter(|event| event.node_id.as_deref() == Some("reviewer"))
+            .collect();
         assert_eq!(
-            admitted.len(),
+            warm_admitted.len(),
             1,
             "a confirmation is never the node's selected Attempt"
         );
         assert_eq!(
-            admitted[0].attempt_id.as_deref(),
+            warm_admitted[0].attempt_id.as_deref(),
             Some(payload.warm_attempt_id.as_str())
+        );
+        let cold_admitted: Vec<_> = admitted
+            .iter()
+            .filter(|event| event.node_id.as_deref() == Some(CLOSEOUT_SLOT))
+            .collect();
+        assert_eq!(cold_admitted.len(), 1);
+        assert_eq!(
+            cold_admitted[0].attempt_id.as_deref(),
+            Some(payload.cold_attempt_id.as_str())
+        );
+        let cold_dispatch = events_of(&store, EventType::AttemptDispatchedV1)
+            .into_iter()
+            .find(|event| event.attempt_id.as_deref() == Some(payload.cold_attempt_id.as_str()))
+            .expect("the confirmation was durably dispatched");
+        assert_eq!(cold_dispatch.node_id.as_deref(), Some(CLOSEOUT_SLOT));
+        assert!(
+            cold_dispatch.sequence < cold_admitted[0].sequence,
+            "dispatch is durable before the provider is called"
         );
         // The confirmation carried nothing: no session, no resume, the whole package prompt,
         // and no Notes contract, because a confirmation leaves no state for the next Round.
@@ -897,4 +1058,373 @@ fn a_retry_cannot_consume_the_confirmations_protected_reservation() {
         events_of(&store, EventType::ColdCloseoutDispatchedV1).is_empty(),
         "a node with no admitted result has no would-be-clean Round to confirm"
     );
+}
+
+#[test]
+fn a_blocking_sibling_spares_the_round_its_confirmation() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let loaded = Definition::from_toml(SIBLING_CLOSEOUT_PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
+    assert_eq!(
+        loaded.cold_closeout_nodes().to_vec(),
+        vec!["reviewer".to_string()],
+        "only the warm reviewer owes a confirmation"
+    );
+    let head = manifest(&cas, &[("a.rs", "one\n")]);
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &head,
+        SIBLING_CLOSEOUT_PIPELINE,
+    );
+    let sessions = Arc::new(TestSessions::default());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut warm = SessionReviewer::new(&sessions, &seen);
+    warm.hosts_sessions = false;
+    let mut sibling = SessionReviewer::new(&sessions, &seen);
+    sibling.hosts_sessions = false;
+    // The confirmation's own reviewer is clean; the Round is not, because its sibling blocks.
+    sibling.output = blocking();
+    let kernel = Kernel::from_loaded(&cas, &mut store, "run", head.clone(), &loaded, authority)
+        .unwrap()
+        .with_adapter("reviewer", Box::new(warm))
+        .with_adapter("sibling", Box::new(sibling))
+        .with_budgets(1_000, 3_000);
+    let report = loaded.run(&kernel).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    kernel
+        .publish_report(&report, ConvergencePolicy::default())
+        .unwrap();
+    drop(kernel);
+
+    assert!(
+        events_of(&store, EventType::ColdCloseoutDispatchedV1).is_empty(),
+        "a Round another reviewer already blocks needs no cold confirmation"
+    );
+    assert_eq!(
+        seen.lock().unwrap().len(),
+        2,
+        "and dispatches no third Attempt"
+    );
+}
+
+#[test]
+fn a_confirmation_that_cannot_answer_leaves_the_round_incomplete() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let loaded = Definition::from_toml(CLOSEOUT_PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
+    let head = manifest(&cas, &[("a.rs", "one\n")]);
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &head,
+        CLOSEOUT_PIPELINE,
+    );
+    let kernel = Kernel::from_loaded(&cas, &mut store, "run", head.clone(), &loaded, authority)
+        .unwrap()
+        .with_adapter(
+            "reviewer",
+            Box::new(FailingConfirmation {
+                calls: Mutex::new(0),
+            }),
+        )
+        .with_budgets(1_000, 2_000);
+    let report = loaded.run(&kernel).unwrap();
+    // The warm result is clean and admitted; the confirmation the policy requires produced no
+    // admissible result, so the Ledger refuses to reduce and the Round cannot converge.
+    assert!(
+        !report.complete(),
+        "a clean warm result must not close a Round whose required confirmation failed"
+    );
+    let ledger = report.outcome("ledger").expect("the Ledger ran");
+    assert!(
+        matches!(ledger, review_graph::NodeOutcome::Failed { error, .. }
+            if error.contains("owes a cold confirmation that produced no admissible result")),
+        "{ledger:?}"
+    );
+    let verdict = kernel
+        .publish_report(&report, ConvergencePolicy::default())
+        .unwrap();
+    assert!(!verdict.passed(), "{verdict:?}");
+    drop(kernel);
+
+    let dispatched = events_of(&store, EventType::ColdCloseoutDispatchedV1);
+    assert_eq!(dispatched.len(), 1, "the failure is recorded, never silent");
+    let payload: ColdCloseoutDispatchedPayloadV1 =
+        serde_json::from_value(dispatched[0].payload.clone()).unwrap();
+    payload.validate().unwrap();
+    assert!(payload.cold_result_artifact_id.is_none());
+    assert!(payload.failed.is_some());
+    assert_eq!(
+        payload.charged_tokens, 1_000,
+        "a confirmation that could not answer is charged its reservation in full"
+    );
+    let failed = events_of(&store, EventType::AttemptFailedV1);
+    assert_eq!(failed.len(), 1);
+    assert_eq!(failed[0].node_id.as_deref(), Some(CLOSEOUT_SLOT));
+    assert_eq!(
+        failed[0].attempt_id.as_deref(),
+        Some(payload.cold_attempt_id.as_str())
+    );
+}
+
+#[test]
+fn warm_and_cold_results_fold_as_two_stages_of_one_reviewer() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let loaded = Definition::from_toml(CLOSEOUT_PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
+    let head = manifest(&cas, &[("a.rs", "one\n")]);
+    // The production path: canonical Finding identity, where every stage of a reduction is a
+    // distinct source. A confirmation that answers exactly as its warm Attempt did is the same
+    // bytes, so the pair is told apart by Attempt and slot rather than by content.
+    let authority = support::test_canonical_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &head,
+        CLOSEOUT_PIPELINE,
+    );
+    let sessions = Arc::new(TestSessions::default());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut reviewer = SessionReviewer::new(&sessions, &seen);
+    reviewer.hosts_sessions = false;
+    let kernel = Kernel::from_loaded(&cas, &mut store, "run", head.clone(), &loaded, authority)
+        .unwrap()
+        .with_adapter("reviewer", Box::new(reviewer))
+        .with_budgets(1_000, 2_000);
+    let report = loaded.run(&kernel).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    kernel
+        .publish_report(&report, ConvergencePolicy::default())
+        .unwrap();
+    drop(kernel);
+
+    let dispatched = events_of(&store, EventType::ColdCloseoutDispatchedV1);
+    assert_eq!(dispatched.len(), 1);
+    let payload: ColdCloseoutDispatchedPayloadV1 =
+        serde_json::from_value(dispatched[0].payload.clone()).unwrap();
+    assert_eq!(
+        payload.cold_result_artifact_id.as_deref(),
+        Some(payload.warm_result_artifact_id.as_str()),
+        "the confirmation agreed, byte for byte"
+    );
+    assert_ne!(payload.cold_attempt_id, payload.warm_attempt_id);
+    assert_eq!(seen.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn a_failed_attempt_takes_its_transcript_with_it() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let loaded = Definition::from_toml(SESSION_PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
+    let head = manifest(&cas, &[("a.rs", "one\n")]);
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &head,
+        SESSION_PIPELINE,
+    );
+    let sessions = Arc::new(TestSessions::default());
+    let assigned = Arc::new(Mutex::new(Vec::new()));
+    let kernel = Kernel::from_loaded(&cas, &mut store, "run", head.clone(), &loaded, authority)
+        .unwrap()
+        .with_adapter(
+            "reviewer",
+            Box::new(TimingOutSessionReviewer {
+                sessions: Arc::clone(&sessions),
+                assigned: Arc::clone(&assigned),
+                calls: Mutex::new(0),
+            }),
+        );
+    let report = loaded.run(&kernel).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    drop(kernel);
+
+    let assigned = assigned.lock().unwrap().clone();
+    assert_eq!(
+        assigned.len(),
+        2,
+        "a retry is a new Attempt and a new session"
+    );
+    assert_ne!(assigned[0], assigned[1]);
+    assert!(
+        !sessions.holds(&assigned[0]),
+        "the timed-out Attempt's transcript left the harness directory with it, before the retry"
+    );
+    assert!(
+        !sessions.holds(&assigned[1]),
+        "and the admitted Attempt's left through the capture"
+    );
+    // Only the admitted Attempt's session is a capture; the failed one was never a capture and
+    // owes no record, so it is removed without one.
+    let prepared = events_of(&store, EventType::SessionSnapshotPreparedV1);
+    assert_eq!(prepared.len(), 1);
+    let capture: SessionSnapshotPreparedPayloadV1 =
+        serde_json::from_value(prepared[0].payload.clone()).unwrap();
+    assert_eq!(capture.session_id, assigned[1]);
+    let deleted = sessions.deleted.lock().unwrap().clone();
+    assert!(deleted.contains(&assigned[0]) && deleted.contains(&assigned[1]));
+}
+
+#[test]
+fn a_session_is_dropped_when_the_round_cannot_say_what_moved() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let loaded = Definition::from_toml(SESSION_PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
+    // Two heads that differ in every path, with paths long enough that the Delta Marking of the
+    // change exceeds its bound. A fork could not be told what moved.
+    let long = |index: usize| format!("src/{}/f{index:04}.rs", "deep".repeat(40));
+    let paths: Vec<String> = (0..1_400).map(long).collect();
+    let head_of = |content: &str| {
+        manifest(
+            &cas,
+            &paths
+                .iter()
+                .map(|path| (path.as_str(), content))
+                .collect::<Vec<_>>(),
+        )
+    };
+    let head_one = head_of("one\n");
+    let head_two = head_of("two\n");
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &head_one,
+        SESSION_PIPELINE,
+    );
+    let sessions = Arc::new(TestSessions::default());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        head_one.clone(),
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_adapter("reviewer", Box::new(SessionReviewer::new(&sessions, &seen)));
+    let report = loaded.run(&kernel).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    kernel
+        .publish_report(&report, ConvergencePolicy::default())
+        .unwrap();
+    drop(kernel);
+
+    let round_two = start_round(&cas, &mut store, &head_two, 2);
+    let authority = RoundAuthority::load(&store, &cas, "run", &round_two.event_id).unwrap();
+    let kernel = Kernel::from_loaded(
+        &cas,
+        &mut store,
+        "run",
+        head_two.clone(),
+        &loaded,
+        authority,
+    )
+    .unwrap()
+    .with_adapter("reviewer", Box::new(SessionReviewer::new(&sessions, &seen)));
+    let report = loaded.run(&kernel).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    drop(kernel);
+
+    // Round one carries nothing, so the Round two selection is the first recorded.
+    let set = warm_set(&cas, &store, 0);
+    assert_eq!(
+        set.head_delta_dropped,
+        Some(review_core::HeadDeltaDropReasonV1::OverBound)
+    );
+    assert_eq!(
+        set.session_dropped,
+        Some(SessionDropReasonV1::HeadDeltaDropped),
+        "a fork that cannot be told what moved is not carried"
+    );
+    assert!(set.session_artifact_id.is_none());
+    assert!(!set.layers().contains(&WarmLayerV1::Session));
+    assert!(
+        seen.lock().unwrap()[1].resumed_from.is_none(),
+        "the Attempt runs cold, with the current Change Set"
+    );
+}
+
+#[test]
+fn a_transcript_carrying_a_credential_is_never_filed() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let loaded = Definition::from_toml(SESSION_PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
+    let head = manifest(&cas, &[("a.rs", "one\n")]);
+    let authority = support::test_round_authority_for_pipeline(
+        &cas,
+        &mut store,
+        "run",
+        &head,
+        SESSION_PIPELINE,
+    );
+    let sessions = Arc::new(TestSessions::default());
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let mut reviewer = SessionReviewer::new(&sessions, &seen);
+    // The harness echoed a granted credential into the transcript.
+    reviewer.transcript = b"{\"role\":\"user\",\"text\":\"token sk-ant-abc123\"}\n".to_vec();
+    let kernel = Kernel::from_loaded(&cas, &mut store, "run", head.clone(), &loaded, authority)
+        .unwrap()
+        .with_adapter("reviewer", Box::new(reviewer));
+    let report = loaded.run(&kernel).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    kernel
+        .publish_report(&report, ConvergencePolicy::default())
+        .unwrap();
+    let session_id = seen.lock().unwrap()[0]
+        .session_id
+        .clone()
+        .expect("the kernel assigned one");
+    drop(kernel);
+
+    assert!(
+        events_of(&store, EventType::SessionSnapshotPreparedV1).is_empty(),
+        "nothing carrying a credential enters the CAS"
+    );
+    assert!(
+        !sessions.holds(&session_id),
+        "and the harness copy is removed anyway, so nothing stays ambient"
+    );
+
+    // The next Round has no source to resume: the drop is recorded, and the Attempt runs cold.
+    let round_two = start_round(&cas, &mut store, &head, 2);
+    let authority = RoundAuthority::load(&store, &cas, "run", &round_two.event_id).unwrap();
+    let kernel = Kernel::from_loaded(&cas, &mut store, "run", head.clone(), &loaded, authority)
+        .unwrap()
+        .with_adapter("reviewer", Box::new(SessionReviewer::new(&sessions, &seen)));
+    let report = loaded.run(&kernel).unwrap();
+    assert!(report.complete(), "{:?}", report.outcomes);
+    drop(kernel);
+    let set = warm_set(&cas, &store, 0);
+    assert_eq!(set.session_dropped, Some(SessionDropReasonV1::NotCaptured));
+    assert!(seen.lock().unwrap()[1].resumed_from.is_none());
 }

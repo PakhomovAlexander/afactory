@@ -17,8 +17,16 @@
 //! Every operation is located by the *kernel-assigned session identity alone*. Nothing here
 //! reconstructs the Attempt's working directory, because a kernel recovering from a crash no
 //! longer has the sandbox that produced the transcript — and because a durable record must
-//! never carry a host path. The search is bounded, opens every component `O_NOFOLLOW`, and
-//! refuses anything that is not the regular file a transcript is.
+//! never carry a host path. The search is bounded and refuses anything that is not the regular
+//! file a transcript is.
+//!
+//! The granted root is opened as the operator gave it: a grant is a path the operator chose,
+//! and refusing it because their home directory is reached through a link would refuse ordinary
+//! machines. Everything *below* that root — the projects directory, each project directory and
+//! the transcript itself — is opened descriptor-relative with `O_NOFOLLOW`, because that is the
+//! part of the tree a candidate process, a stale harness or a replaced project directory could
+//! have changed. The directory a transcript was validated in stays open from the search through
+//! the unlink, so the file removed is the file that was checked.
 
 use std::path::{Path, PathBuf};
 
@@ -103,7 +111,9 @@ impl SessionLayer for ClaudeSessionStore {
         located(self, session_id).map(|found| match found {
             Located::Missing => SessionCapture::Absent,
             Located::Refused(reason) => SessionCapture::Refused(reason),
-            Located::Found { path, bytes, read } => {
+            Located::Found {
+                path, bytes, read, ..
+            } => {
                 if bytes > max_bytes {
                     SessionCapture::OverBound { bytes }
                 } else {
@@ -129,7 +139,7 @@ impl SessionLayer for ClaudeSessionStore {
             Err(_) => SessionDeletion::Refused(SessionCleanupRefusalV1::Unreadable),
             Ok(Located::Missing) => SessionDeletion::AlreadyAbsent,
             Ok(Located::Refused(reason)) => SessionDeletion::Refused(reason),
-            Ok(Located::Found { path, .. }) => {
+            Ok(Located::Found { handles, path, .. }) => {
                 // A transcript found under another path is not the one the capture recorded.
                 // Recovery deletes what its own record describes, never what it stumbles on.
                 if expected_path_digest
@@ -137,7 +147,7 @@ impl SessionLayer for ClaudeSessionStore {
                 {
                     return SessionDeletion::Refused(SessionCleanupRefusalV1::NotRegularFile);
                 }
-                unlink_no_follow(&path)
+                unlink_located(handles, &ClaudeSessionStore::transcript_name(session_id))
             }
         }
     }
@@ -148,17 +158,62 @@ impl SessionLayer for ClaudeSessionStore {
         source_session_id: &str,
         transcript: &[u8],
     ) -> Result<String, String> {
-        let path = self.transcript_path(working_directory, source_session_id);
-        write_no_follow(&path, transcript)?;
-        Ok(ClaudeSessionStore::path_digest(&path))
+        write_no_follow(
+            &self.root,
+            &ClaudeSessionStore::project_slug(working_directory),
+            &ClaudeSessionStore::transcript_name(source_session_id),
+            transcript,
+        )?;
+        Ok(ClaudeSessionStore::path_digest(
+            &self.transcript_path(working_directory, source_session_id),
+        ))
+    }
+
+    fn store_root(&self) -> Option<&Path> {
+        Some(&self.root)
+    }
+
+    /// Credential shapes the harness could have echoed into a message or a tool record. A
+    /// transcript carrying one is refused rather than filed: the bound is deliberately coarse,
+    /// because a refused capture costs one cold Round and a filed secret costs more.
+    fn credential_markers(&self) -> &'static [&'static [u8]] {
+        &[
+            b"sk-ant-",
+            b"sk-proj-",
+            b"ghp_",
+            b"gho_",
+            b"github_pat_",
+            b"AKIA",
+            b"ASIA",
+            b"-----BEGIN ",
+            b"xoxb-",
+            b"xoxp-",
+        ]
     }
 }
+
+/// The directories a search validated, kept open so the deletion acts on what was checked
+/// rather than on a pathname that could name something else by then.
+#[cfg(unix)]
+struct ProjectHandles {
+    /// The store's `projects` directory.
+    projects: nix::dir::Dir,
+    /// The project directory the transcript was found in.
+    project: std::os::fd::OwnedFd,
+    /// Its name below `projects`, for removing it once it holds nothing.
+    project_name: String,
+}
+
+#[cfg(not(unix))]
+#[allow(dead_code)]
+struct ProjectHandles;
 
 /// What a bounded search for one session identity found.
 enum Located {
     Missing,
     Refused(SessionCleanupRefusalV1),
     Found {
+        handles: ProjectHandles,
         path: PathBuf,
         bytes: u64,
         read: Box<dyn FnOnce() -> std::io::Result<Vec<u8>>>,
@@ -169,19 +224,15 @@ enum Located {
 fn located(store: &ClaudeSessionStore, session_id: &str) -> Result<Located, String> {
     use std::io::Read;
 
-    use nix::dir::Dir;
     use nix::fcntl::{OFlag, openat};
     use nix::sys::stat::{Mode as NixMode, SFlag, fstat};
 
     let flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW;
     let projects = store.root.join(PROJECTS_DIRECTORY);
-    let mut directory = match Dir::open(&projects, flags | OFlag::O_DIRECTORY, NixMode::empty()) {
-        Ok(directory) => directory,
-        Err(nix::errno::Errno::ENOENT) => return Ok(Located::Missing),
-        Err(nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR) => {
-            return Ok(Located::Refused(SessionCleanupRefusalV1::SymlinkedParent));
-        }
-        Err(_) => return Ok(Located::Refused(SessionCleanupRefusalV1::Unreadable)),
+    let mut directory = match open_projects(&store.root) {
+        Ok(Some(directory)) => directory,
+        Ok(None) => return Ok(Located::Missing),
+        Err(reason) => return Ok(Located::Refused(reason)),
     };
     let wanted = ClaudeSessionStore::transcript_name(session_id);
     let mut names = Vec::new();
@@ -234,37 +285,76 @@ fn located(store: &ClaudeSessionStore, session_id: &str) -> Result<Located, Stri
                 .read_to_end(&mut transcript)?;
             Ok(transcript)
         });
-        return Ok(Located::Found { path, bytes, read });
+        return Ok(Located::Found {
+            handles: ProjectHandles {
+                projects: directory,
+                project,
+                project_name: name,
+            },
+            path,
+            bytes,
+            read,
+        });
     }
     Ok(Located::Missing)
 }
 
+/// The store's `projects` directory, opened `O_NOFOLLOW` below the granted root. `None` when
+/// the harness has written no session at all.
 #[cfg(unix)]
-fn unlink_no_follow(path: &Path) -> SessionDeletion {
+fn open_projects(root: &Path) -> Result<Option<nix::dir::Dir>, SessionCleanupRefusalV1> {
     use nix::dir::Dir;
-    use nix::fcntl::OFlag;
+    use nix::fcntl::{OFlag, open, openat};
     use nix::sys::stat::Mode as NixMode;
+
+    let flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY;
+    // The granted root is the operator's own path: opened as given, because a grant is what
+    // the operator chose to hand over. Every component below it is no-follow.
+    let root = match open(root, flags, NixMode::empty()) {
+        Ok(root) => root,
+        Err(nix::errno::Errno::ENOENT) => return Ok(None),
+        Err(nix::errno::Errno::ENOTDIR) => {
+            return Err(SessionCleanupRefusalV1::NotRegularFile);
+        }
+        Err(_) => return Err(SessionCleanupRefusalV1::Unreadable),
+    };
+    let projects = match openat(
+        &root,
+        PROJECTS_DIRECTORY,
+        flags | OFlag::O_NOFOLLOW,
+        NixMode::empty(),
+    ) {
+        Ok(projects) => projects,
+        Err(nix::errno::Errno::ENOENT) => return Ok(None),
+        Err(nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR) => {
+            return Err(SessionCleanupRefusalV1::SymlinkedParent);
+        }
+        Err(_) => return Err(SessionCleanupRefusalV1::Unreadable),
+    };
+    Dir::from_fd(projects)
+        .map(Some)
+        .map_err(|_| SessionCleanupRefusalV1::Unreadable)
+}
+
+/// Unlink the transcript in the exact directory the search validated. Nothing is resolved by
+/// pathname again, so a project directory replaced between lookup and unlink cannot redirect
+/// the deletion.
+#[cfg(unix)]
+fn unlink_located(handles: ProjectHandles, name: &str) -> SessionDeletion {
     use nix::unistd::{UnlinkatFlags, unlinkat};
 
-    let flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY;
-    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
-        return SessionDeletion::Refused(SessionCleanupRefusalV1::Unreadable);
-    };
-    let directory = match Dir::open(parent, flags, NixMode::empty()) {
-        Ok(directory) => directory,
-        Err(nix::errno::Errno::ENOENT) => return SessionDeletion::AlreadyAbsent,
-        Err(nix::errno::Errno::ELOOP | nix::errno::Errno::ENOTDIR) => {
-            return SessionDeletion::Refused(SessionCleanupRefusalV1::SymlinkedParent);
-        }
-        Err(_) => return SessionDeletion::Refused(SessionCleanupRefusalV1::Unreadable),
-    };
-    match unlinkat(&directory, name, UnlinkatFlags::NoRemoveDir) {
+    let ProjectHandles {
+        projects,
+        project,
+        project_name,
+    } = handles;
+    match unlinkat(&project, name, UnlinkatFlags::NoRemoveDir) {
         Ok(()) => {
             // Best effort: a project directory the harness keyed to a sandbox that no longer
             // exists holds nothing once its transcript is gone, and removing it keeps the
             // bounded search over the operator's harness directory bounded in practice too.
-            drop(directory);
-            let _ = std::fs::remove_dir(parent);
+            drop(project);
+            let _ = unlinkat(&projects, project_name.as_str(), UnlinkatFlags::RemoveDir);
             SessionDeletion::Deleted
         }
         Err(nix::errno::Errno::ENOENT) => SessionDeletion::AlreadyAbsent,
@@ -272,31 +362,48 @@ fn unlink_no_follow(path: &Path) -> SessionDeletion {
     }
 }
 
+/// Write one re-materialized transcript below the granted root. Only the root is created by
+/// path; the projects directory, the project directory and the file are opened or created
+/// descriptor-relative with `O_NOFOLLOW`, so nothing under the store can redirect the write.
 #[cfg(unix)]
-fn write_no_follow(path: &Path, transcript: &[u8]) -> Result<(), String> {
+fn write_no_follow(
+    root: &Path,
+    project_name: &str,
+    name: &str,
+    transcript: &[u8],
+) -> Result<(), String> {
     use std::io::Write;
+    use std::os::fd::{AsFd, OwnedFd};
 
-    use nix::dir::Dir;
-    use nix::fcntl::{OFlag, openat};
-    use nix::sys::stat::Mode as NixMode;
+    use nix::fcntl::{OFlag, open, openat};
+    use nix::sys::stat::{Mode as NixMode, mkdirat};
 
-    let parent = path
-        .parent()
-        .ok_or_else(|| "a session transcript needs a project directory".to_string())?;
-    let name = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| "a session transcript needs a portable name".to_string())?;
-    std::fs::create_dir_all(parent)
+    fn directory(parent: impl AsFd, name: &str) -> Result<OwnedFd, String> {
+        let flags = OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY | OFlag::O_NOFOLLOW;
+        match openat(&parent, name, flags, NixMode::empty()) {
+            Ok(descriptor) => Ok(descriptor),
+            Err(nix::errno::Errno::ENOENT) => {
+                mkdirat(&parent, name, NixMode::from_bits_truncate(0o700))
+                    .map_err(|error| format!("preparing the harness session store: {error}"))?;
+                openat(&parent, name, flags, NixMode::empty())
+                    .map_err(|error| format!("preparing the harness session store: {error}"))
+            }
+            Err(error) => Err(format!("preparing the harness session store: {error}")),
+        }
+    }
+
+    std::fs::create_dir_all(root)
         .map_err(|error| format!("preparing the harness session store: {error}"))?;
-    let directory = Dir::open(
-        parent,
-        OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW | OFlag::O_DIRECTORY,
+    let root = open(
+        root,
+        OFlag::O_RDONLY | OFlag::O_CLOEXEC | OFlag::O_DIRECTORY,
         NixMode::empty(),
     )
     .map_err(|error| format!("opening the harness session store: {error}"))?;
+    let projects = directory(&root, PROJECTS_DIRECTORY)?;
+    let project = directory(&projects, project_name)?;
     let descriptor = openat(
-        &directory,
+        &project,
         name,
         OFlag::O_WRONLY | OFlag::O_CREAT | OFlag::O_TRUNC | OFlag::O_CLOEXEC | OFlag::O_NOFOLLOW,
         NixMode::from_bits_truncate(0o600),
@@ -314,12 +421,17 @@ fn located(_store: &ClaudeSessionStore, _session_id: &str) -> Result<Located, St
 }
 
 #[cfg(not(unix))]
-fn unlink_no_follow(_path: &Path) -> SessionDeletion {
+fn unlink_located(_handles: ProjectHandles, _name: &str) -> SessionDeletion {
     SessionDeletion::Refused(SessionCleanupRefusalV1::Unreadable)
 }
 
 #[cfg(not(unix))]
-fn write_no_follow(_path: &Path, _transcript: &[u8]) -> Result<(), String> {
+fn write_no_follow(
+    _root: &Path,
+    _project_name: &str,
+    _name: &str,
+    _transcript: &[u8],
+) -> Result<(), String> {
     Err("session transcripts are captured only on unix hosts".into())
 }
 

@@ -298,3 +298,78 @@ fn a_re_materialized_transcript_is_found_under_the_source_identity() {
         SessionDeletion::Deleted
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn a_symlinked_projects_directory_is_never_followed() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    let session = session_id_for_attempt(&"a".repeat(26)).unwrap();
+    // The whole projects directory is a link out of the harness store, with a transcript of the
+    // right name below it. Everything under the granted root is opened no-follow, so the search
+    // refuses rather than reading or unlinking through the link.
+    let outside = dir.path().join("outside");
+    std::fs::create_dir_all(outside.join("-project")).unwrap();
+    let sentinel = outside.join("-project").join(format!("{session}.jsonl"));
+    std::fs::write(&sentinel, b"secret").unwrap();
+    std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&outside, dir.path().join(".claude").join("projects")).unwrap();
+
+    assert!(matches!(
+        store.capture(&session, 1_000_000).unwrap(),
+        SessionCapture::Refused(SessionCleanupRefusalV1::SymlinkedParent)
+    ));
+    assert_eq!(
+        store.delete(&session, None),
+        SessionDeletion::Refused(SessionCleanupRefusalV1::SymlinkedParent)
+    );
+    assert_eq!(
+        std::fs::read(&sentinel).unwrap(),
+        b"secret",
+        "nothing outside the harness directory was read or unlinked"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_deletion_unlinks_in_the_directory_the_search_validated() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    let session = session_id_for_attempt(&"a".repeat(26)).unwrap();
+    let cwd = dir.path().join("sandbox");
+    let path = write_transcript(&store, &cwd, &session, b"{\"role\":\"user\"}\n");
+    let project = path.parent().unwrap().to_path_buf();
+
+    assert_eq!(store.delete(&session, None), SessionDeletion::Deleted);
+    assert!(!path.exists());
+    assert!(
+        !project.exists(),
+        "an emptied project directory is removed relative to the projects directory"
+    );
+    assert!(
+        dir.path().join(".claude").join("projects").is_dir(),
+        "and the store itself stays"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn a_materialized_transcript_never_writes_through_a_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = store(dir.path());
+    let session = session_id_for_attempt(&"b".repeat(26)).unwrap();
+    let cwd = dir.path().join("sandbox");
+    let outside = dir.path().join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    std::fs::create_dir_all(dir.path().join(".claude")).unwrap();
+    std::os::unix::fs::symlink(&outside, dir.path().join(".claude").join("projects")).unwrap();
+
+    let refused = store
+        .materialize(&cwd, &session, b"transcript")
+        .unwrap_err();
+    assert!(refused.contains("harness session store"), "{refused}");
+    assert!(
+        std::fs::read_dir(&outside).unwrap().next().is_none(),
+        "nothing was written outside the harness directory"
+    );
+}

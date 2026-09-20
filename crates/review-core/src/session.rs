@@ -313,6 +313,10 @@ pub enum SessionDropReasonV1 {
     OverReservation,
     /// The transcript could not be re-materialized into this Attempt's harness directory.
     MaterializationFailed,
+    /// This Round's Head Delta was dropped over its bound, so a fork could not be told what
+    /// moved since the transcript it would continue; the Attempt runs cold with the current
+    /// Change Set instead.
+    HeadDeltaDropped,
 }
 
 /// Payload of `ColdCloseoutDispatched@1`: the compiled, conditional cold Attempt of a required

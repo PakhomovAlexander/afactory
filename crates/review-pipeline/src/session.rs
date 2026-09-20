@@ -36,10 +36,12 @@ use review_store::{Cas, NewEvent};
 
 use super::review_domain::ReviewDomainState;
 
-/// The tokens a resumed Attempt must keep free beside its transcript: the delta prompt it still
-/// sends and the answer it still has to write. A transcript that does not leave this much of
-/// the reservation is refused at selection, so no Attempt starts a session it cannot finish.
-pub(crate) const SESSION_DELTA_RESERVE_TOKENS: u64 = 32_768;
+/// The tokens a resumed Attempt must keep free beyond its transcript and its measured delta
+/// prompt: the answer it still has to write, plus the Attempt authority section the delta
+/// gains once the Attempt is bound. A transcript that does not leave this much of the
+/// reservation beside the delta is refused at selection, so no Attempt starts a session it
+/// cannot finish.
+pub(crate) const SESSION_ANSWER_ALLOWANCE_TOKENS: u64 = 16_384;
 
 /// What the execution frontend hosting a node can do with the session layer. Installed before
 /// the Round's first Warm Set is selected; an absent entry is a host that does not run the
@@ -106,6 +108,7 @@ pub(crate) fn select_session(
     max_age_secs: u64,
     source_attempt_id: Option<&str>,
     now_ms: u64,
+    delta_estimate_tokens: u64,
 ) -> Result<SessionSelection, String> {
     let dropped = |reason| -> Result<SessionSelection, String> { Ok((None, Some(reason))) };
     let Some(capability) = capability else {
@@ -130,8 +133,14 @@ pub(crate) fn select_session(
     if age_ms > max_age_secs.saturating_mul(1000) {
         return dropped(SessionDropReasonV1::TooOld);
     }
+    // The transcript, the delta this exact Attempt would send, and the answer allowance must
+    // all fit the reservation together; a checked sum, so an overflow drops rather than admits.
+    let needed = prepared
+        .estimated_tokens
+        .checked_add(delta_estimate_tokens)
+        .and_then(|sum| sum.checked_add(SESSION_ANSWER_ALLOWANCE_TOKENS));
     if let Some(reservation) = capability.reservation_tokens
-        && prepared.estimated_tokens > reservation.saturating_sub(SESSION_DELTA_RESERVE_TOKENS)
+        && needed.is_none_or(|needed| needed > reservation)
     {
         return dropped(SessionDropReasonV1::OverReservation);
     }
@@ -177,6 +186,10 @@ pub(crate) fn apply_session(
     let transcript = cas
         .get_bounded(&snapshot.transcript_artifact_id, snapshot.bytes)
         .map_err(|error| format!("re-materializing the carried session: {error}"))?;
+    // The stored bytes name no host path; this Attempt's sandbox and the current harness
+    // directory take the placeholders' place, and only here.
+    let transcript =
+        review_runner::rehydrate_transcript(&transcript, working_directory, layer.store_root());
     layer.materialize(working_directory, &snapshot.session_id, &transcript)?;
     inputs.session_resume = Some(SessionResume {
         session_id: snapshot.session_id,
@@ -185,6 +198,55 @@ pub(crate) fn apply_session(
         estimated_tokens: snapshot.estimated_tokens,
     });
     Ok(())
+}
+
+/// An Attempt's assigned session, removed from the harness directory when the Attempt ends
+/// without the two-phase capture claiming it: a timeout, a malformed answer, a refused
+/// result, a panic, or a retry. Dropped at the end of every Attempt, so no path through the
+/// reviewer loop can leave the transcript ambient until a later sweep.
+pub(crate) struct AssignedSession<'a> {
+    layer: Option<&'a dyn SessionLayer>,
+    session_id: Option<String>,
+    node_id: String,
+    kept: bool,
+}
+
+impl<'a> AssignedSession<'a> {
+    pub(crate) fn new(
+        layer: Option<&'a dyn SessionLayer>,
+        session_id: Option<String>,
+        node_id: &str,
+    ) -> Self {
+        Self {
+            layer,
+            session_id,
+            node_id: node_id.to_string(),
+            kept: false,
+        }
+    }
+
+    /// The capture protocol took ownership: it stored the transcript and deleted the copy.
+    pub(crate) fn keep(&mut self) {
+        self.kept = true;
+    }
+}
+
+impl Drop for AssignedSession<'_> {
+    fn drop(&mut self) {
+        if self.kept {
+            return;
+        }
+        if let (Some(layer), Some(session_id)) = (self.layer, self.session_id.as_deref())
+            && let SessionDeletion::Refused(reason) = layer.delete(session_id, None)
+        {
+            // The refusal is not silent: the operator sees it now, and the next Round's sweep
+            // retries the same deletion before any Attempt is dispatched.
+            eprintln!(
+                "session hygiene diagnostic for `{}`: the transcript of a failed Attempt could not be removed ({reason:?}); the next Round's sweep retries",
+                self.node_id
+            );
+        }
+    }
 }
 
 /// Remove the working copy a resume materialized. It is a byte-identical copy of a CAS object
@@ -207,6 +269,7 @@ pub(crate) fn capture_session(
     node_id: &str,
     attempt_id: &str,
     session_id: Option<&str>,
+    working_directory: &Path,
 ) -> Result<(), String> {
     let (Some(layer), Some(session_id)) = (layer, session_id) else {
         return Ok(());
@@ -222,10 +285,28 @@ pub(crate) fn capture_session(
             return Ok(());
         }
     };
-    let bytes = captured.transcript.len() as u64;
+    // What enters the CAS names no host path: the sandbox and the harness directory become
+    // placeholders the next Attempt's materialization rehydrates, and a transcript carrying
+    // a credential shape is not stored at all. The harness copy is removed either way.
+    let transcript = match review_runner::sanitize_transcript(
+        &captured.transcript,
+        working_directory,
+        layer.store_root(),
+        layer.credential_markers(),
+    ) {
+        Ok(transcript) => transcript,
+        Err(refusal) => {
+            eprintln!(
+                "session capture diagnostic for `{node_id}`: transcript of Attempt {attempt_id} refused ({refusal:?}); nothing stored"
+            );
+            let _ = layer.delete(session_id, None);
+            return Ok(());
+        }
+    };
+    let bytes = transcript.len() as u64;
     let transcript_artifact_id = domain
         .cas
-        .put(&captured.transcript)
+        .put(&transcript)
         .map_err(|error| format!("capturing the session transcript: {error}"))?;
     let snapshot = SessionSnapshotV1 {
         node: node_id.to_string(),
@@ -238,7 +319,7 @@ pub(crate) fn capture_session(
         },
         transcript_artifact_id: transcript_artifact_id.clone(),
         bytes,
-        estimated_tokens: review_runner::estimate_tokens(captured.transcript.len()),
+        estimated_tokens: review_runner::estimate_tokens(transcript.len()),
     };
     snapshot.validate()?;
     let producer = Producer::Attempt {
@@ -507,14 +588,16 @@ mod tests {
     fn an_unsupported_host_and_an_unsupported_provider_are_distinct_drops() {
         let (_root, cas) = cas();
         let source = "a".repeat(26);
-        let (carried, dropped) = select_session(&cas, &[], None, 3_600, Some(&source), 0).unwrap();
+        let (carried, dropped) =
+            select_session(&cas, &[], None, 3_600, Some(&source), 0, 0).unwrap();
         assert!(carried.is_none());
         assert_eq!(dropped, Some(SessionDropReasonV1::HostUnsupported));
         let unsupported = Some(SessionCapability {
             supported: false,
             reservation_tokens: None,
         });
-        let (_, dropped) = select_session(&cas, &[], unsupported, 3_600, Some(&source), 0).unwrap();
+        let (_, dropped) =
+            select_session(&cas, &[], unsupported, 3_600, Some(&source), 0, 0).unwrap();
         assert_eq!(
             dropped,
             Some(SessionDropReasonV1::ProviderUnsupported),
@@ -528,17 +611,25 @@ mod tests {
         let source = "a".repeat(26);
         let session_id = session_id_for_attempt(&source).unwrap();
         let (carried, dropped) =
-            select_session(&cas, &[], capability(None), 3_600, None, 0).unwrap();
+            select_session(&cas, &[], capability(None), 3_600, None, 0, 0).unwrap();
         assert!(carried.is_none());
         assert_eq!(dropped, Some(SessionDropReasonV1::NoSource));
 
         let (_, dropped) =
-            select_session(&cas, &[], capability(None), 3_600, Some(&source), 0).unwrap();
+            select_session(&cas, &[], capability(None), 3_600, Some(&source), 0, 0).unwrap();
         assert_eq!(dropped, Some(SessionDropReasonV1::NotCaptured));
 
         let prepared = vec![prepared_event(&session_id, 1_000, 0)];
-        let (_, dropped) =
-            select_session(&cas, &prepared, capability(None), 3_600, Some(&source), 0).unwrap();
+        let (_, dropped) = select_session(
+            &cas,
+            &prepared,
+            capability(None),
+            3_600,
+            Some(&source),
+            0,
+            0,
+        )
+        .unwrap();
         assert_eq!(
             dropped,
             Some(SessionDropReasonV1::CleanupIncomplete),
@@ -550,7 +641,7 @@ mod tests {
             cleaned_event(&session_id, SessionCleanupOutcomeV1::Refused),
         ];
         let (_, dropped) =
-            select_session(&cas, &refused, capability(None), 3_600, Some(&source), 0).unwrap();
+            select_session(&cas, &refused, capability(None), 3_600, Some(&source), 0, 0).unwrap();
         assert_eq!(dropped, Some(SessionDropReasonV1::CleanupIncomplete));
 
         let clean = vec![
@@ -564,6 +655,7 @@ mod tests {
             3_600,
             Some(&source),
             3_600_001,
+            0,
         )
         .unwrap();
         assert_eq!(dropped, Some(SessionDropReasonV1::TooOld));
@@ -571,9 +663,10 @@ mod tests {
         let (_, dropped) = select_session(
             &cas,
             &clean,
-            capability(Some(SESSION_DELTA_RESERVE_TOKENS + 999)),
+            capability(Some(SESSION_ANSWER_ALLOWANCE_TOKENS + 999)),
             3_600,
             Some(&source),
+            0,
             0,
         )
         .unwrap();
@@ -586,9 +679,10 @@ mod tests {
         let (_, dropped) = select_session(
             &cas,
             &clean,
-            capability(Some(SESSION_DELTA_RESERVE_TOKENS + 1_000)),
+            capability(Some(SESSION_ANSWER_ALLOWANCE_TOKENS + 1_000)),
             3_600,
             Some(&source),
+            0,
             0,
         )
         .unwrap();
@@ -596,6 +690,46 @@ mod tests {
             dropped,
             Some(SessionDropReasonV1::MaterializationFailed),
             "a transcript the CAS cannot verify is dropped at selection, where it is recorded"
+        );
+
+        // The measured delta counts: the same transcript no longer fits once the delta this
+        // Attempt would send is added, and fits again when the reservation covers all three.
+        let (_, dropped) = select_session(
+            &cas,
+            &clean,
+            capability(Some(SESSION_ANSWER_ALLOWANCE_TOKENS + 1_499)),
+            3_600,
+            Some(&source),
+            0,
+            500,
+        )
+        .unwrap();
+        assert_eq!(dropped, Some(SessionDropReasonV1::OverReservation));
+        let (_, dropped) = select_session(
+            &cas,
+            &clean,
+            capability(Some(SESSION_ANSWER_ALLOWANCE_TOKENS + 1_500)),
+            3_600,
+            Some(&source),
+            0,
+            500,
+        )
+        .unwrap();
+        assert_eq!(dropped, Some(SessionDropReasonV1::MaterializationFailed));
+        let (_, dropped) = select_session(
+            &cas,
+            &clean,
+            capability(Some(u64::MAX)),
+            3_600,
+            Some(&source),
+            0,
+            u64::MAX,
+        )
+        .unwrap();
+        assert_eq!(
+            dropped,
+            Some(SessionDropReasonV1::OverReservation),
+            "a sum that overflows drops rather than admits"
         );
     }
 

@@ -58,14 +58,17 @@ struct RequestedLayers<'a> {
     workspace: Option<&'a WarmWorkspace>,
     /// Package P4: the session layer, with the age bound its policy pinned and what the
     /// frontend hosting the node can do with it. `None` for a node that hosts no session.
-    session: Option<SessionRequest>,
+    session: Option<SessionRequest<'a>>,
 }
 
-/// What deciding the session layer needs beyond the log: the pinned age bound and the host's
-/// capability, both resolved before selection so the decision is one function of durable state.
-struct SessionRequest {
+/// What deciding the session layer needs beyond the log: the pinned age bound, the host's
+/// capability, and the inputs this Round's Attempt will receive, so the delta prompt a resume
+/// would send is measured rather than assumed. All resolved before selection, so the decision
+/// is one function of durable state.
+struct SessionRequest<'a> {
     max_age_secs: u64,
     capability: Option<crate::session::SessionCapability>,
+    prospective: Option<&'a ReviewerInputs>,
 }
 
 impl ReviewDomainState<'_> {
@@ -179,7 +182,11 @@ impl ReviewDomainState<'_> {
     /// declares a build cache kind or a Warm Workspace selects one in every Round, because
     /// those layers travel from this Round's Gate and from the node's own stable root rather
     /// than from the previous Round's Attempt.
-    pub(crate) fn select_warm_set(&self, node_id: &str) -> Result<Option<WarmSetRecord>, String> {
+    pub(crate) fn select_warm_set(
+        &self,
+        node_id: &str,
+        prospective: Option<&ReviewerInputs>,
+    ) -> Result<Option<WarmSetRecord>, String> {
         let notes = self.notes_max_bytes(node_id).is_some() && self.authority.round > 1;
         let build_cache = match self.node_build_cache_kind(node_id) {
             Some(kind) => {
@@ -194,11 +201,19 @@ impl ReviewDomainState<'_> {
         // The session layer, like Notes, can only come from the previous closed Round; a node
         // that hosts sessions still records its drop reason in Round one's Warm Set only when
         // some other layer already makes one, which is why it follows the same Round gate.
+        // The prospective inputs carry the Notes request the Attempt will render, so the
+        // measured delta is the one the Attempt sends.
+        let prospective = prospective.map(|inputs| {
+            let mut inputs = inputs.clone();
+            request_notes(&mut inputs, self.notes_max_bytes(node_id));
+            inputs
+        });
         let session =
             (self.session_policy(node_id).is_some() && self.authority.round > 1).then(|| {
                 SessionRequest {
                     max_age_secs: self.session_max_age_secs(node_id),
                     capability: self.session_capability(node_id),
+                    prospective: prospective.as_ref(),
                 }
             });
         if !notes && build_cache.is_none() && !keeps_workspace && session.is_none() {
@@ -533,10 +548,23 @@ fn select(
         set.build_cache_artifact_id = artifact_id;
         set.build_cache_dropped = dropped;
     }
-    let session = |set: &mut WarmSetV1, source: Option<&str>| -> Result<(), String> {
+    // The session gate measures the delta prompt a resume would send, which includes the
+    // Head Delta; so the session is decided after the delta is, never before.
+    let session = |set: &mut WarmSetV1,
+                   source: Option<&str>,
+                   head_delta: Option<&serde_json::Value>|
+     -> Result<(), String> {
         let Some(request) = &layers.session else {
             return Ok(());
         };
+        if set.head_delta_dropped.is_some() {
+            // A fork cannot be told what moved since the transcript it would continue; the
+            // Attempt runs cold with the current Change Set and the drop is recorded.
+            set.session_artifact_id = None;
+            set.session_dropped = Some(review_core::SessionDropReasonV1::HeadDeltaDropped);
+            return Ok(());
+        }
+        let delta_estimate = prospective_delta_tokens(request.prospective, head_delta)?;
         let (artifact_id, dropped) = crate::session::select_session(
             cas,
             events,
@@ -544,25 +572,25 @@ fn select(
             request.max_age_secs,
             source,
             crate::session::now_unix_ms(),
+            delta_estimate,
         )?;
         set.session_artifact_id = artifact_id;
         set.session_dropped = dropped;
         Ok(())
     };
     if !layers.notes {
-        session(&mut set, None)?;
+        session(&mut set, None, None)?;
         return Ok(set);
     }
     let Some(previous) = previous_closed_round(events, authority)? else {
-        session(&mut set, None)?;
+        session(&mut set, None, None)?;
         return Ok(set);
     };
     let source = admitted_attempt(events, &previous.event_id, node_id)?;
     if let Some(attempt_id) = &source {
         set.notes_artifact_id = recorded_notes(events, &previous.event_id, attempt_id)?;
     }
-    session(&mut set, source.as_deref())?;
-    set.source_attempt_id = source;
+    set.source_attempt_id = source.clone();
     let mut extra_paths = match &set.notes_artifact_id {
         Some(id) => read_notes(cas, id)?.referenced_paths(),
         None => BTreeSet::new(),
@@ -584,6 +612,7 @@ fn select(
         // Selection is the only place a layer may be refused: an Attempt runs on Notes alone
         // and the Warm Set records why, instead of a renderer stranding the Round later.
         set.head_delta_dropped = Some(review_core::HeadDeltaDropReasonV1::OverBound);
+        session(&mut set, source.as_deref(), None)?;
         return Ok(set);
     }
     let producer = Producer::KernelOperation {
@@ -605,7 +634,32 @@ fn select(
         )
         .map_err(|error| error.to_string())?;
     set.head_delta_artifact_id = Some(artifact_id);
+    session(&mut set, source.as_deref(), Some(&encode(&delta)?))?;
     Ok(set)
+}
+
+/// The tokens the delta prompt of a resumed Attempt would cost, measured by rendering the
+/// prospective inputs exactly as the resumed Attempt would render them: the same contract,
+/// the same Head Delta, no Notes section, and no package instructions. Zero without
+/// prospective inputs, which only a host that never selects the layer supplies.
+fn prospective_delta_tokens(
+    prospective: Option<&ReviewerInputs>,
+    head_delta: Option<&serde_json::Value>,
+) -> Result<u64, String> {
+    let Some(base) = prospective else {
+        return Ok(0);
+    };
+    let mut inputs = base.clone();
+    inputs.head_delta = head_delta.cloned();
+    inputs.notes = None;
+    inputs.session_resume = Some(review_runner::SessionResume {
+        session_id: String::new(),
+        artifact_id: String::new(),
+        transcript_bytes: 0,
+        estimated_tokens: 0,
+    });
+    let (prompt, _) = review_runner::compose_model_prompt("", &inputs)?;
+    Ok(review_runner::estimate_tokens(prompt.len()))
 }
 
 /// Marks over the union of the Notes paths, both diff Subjects' Change Set paths and the

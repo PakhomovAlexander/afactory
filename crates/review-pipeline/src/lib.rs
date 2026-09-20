@@ -1252,6 +1252,10 @@ pub struct Kernel<'a> {
     /// Confirmation reservations taken before each closeout node's warm Attempt ran and held
     /// until the Round is known to need them or not. `None` for an uncapped pipeline.
     closeout_reservations: Mutex<BTreeMap<String, Option<Reservation>>>,
+    /// The exact Worker Input of each closeout node, held from its warm Attempt until the
+    /// Ledger decides whether the Round owes a confirmation. A confirmation runs on exactly
+    /// what its warm Attempt ran on, minus every warm layer.
+    closeout_subjects: Mutex<BTreeMap<String, (Node, ArtifactMap)>>,
     replayed_invocations: BTreeMap<String, NodeInvocationPayloadV1>,
     replayed_outputs: BTreeMap<String, DurableReceipt>,
     replayed_refusal_histories: BTreeMap<String, Vec<String>>,
@@ -1481,6 +1485,7 @@ impl<'a> Kernel<'a> {
             cold_closeout_nodes: BTreeSet::new(),
             convergence_gate: review_core::Severity::Major,
             closeout_reservations: Mutex::new(BTreeMap::new()),
+            closeout_subjects: Mutex::new(BTreeMap::new()),
             replayed_invocations: replayed.invocations,
             replayed_outputs: replayed.outputs,
             replayed_refusal_histories: replayed.refusal_histories,
@@ -2069,7 +2074,7 @@ impl<'a> Kernel<'a> {
             }
             return Err(error);
         }
-        let warm_set = match self.domain.select_warm_set(node_id) {
+        let warm_set = match self.domain.select_warm_set(node_id, Some(&inputs)) {
             Ok(record) => record,
             Err(error) => {
                 if let Some(prepared) = prepared.take() {
@@ -2169,6 +2174,10 @@ impl<'a> Kernel<'a> {
                 self.domain.session_capability(node_id),
                 &attempt.to_string(),
             );
+            // Whatever this Attempt becomes, its transcript leaves the harness directory with
+            // it: the guard deletes on every exit but the one where the capture claimed it.
+            let mut assigned_session =
+                session::AssignedSession::new(session_layer, inputs.session_id.clone(), node_id);
 
             let boundary = KernelBrokerBoundary { kernel: self };
             let brokered = (|| -> Result<Option<Broker<'_>>, String> {
@@ -2249,6 +2258,9 @@ impl<'a> Kernel<'a> {
                     return Err(error);
                 }
             };
+            // The path a captured transcript is sanitized against; the sandbox itself is
+            // consumed by the seal before the capture runs.
+            let sandbox_root = sandbox.root().to_path_buf();
             // The Warm Set's Build Cache, if any, is cloned into this exact sandbox and its
             // location handed to the adapter as sandbox-local environment. A retry clones the
             // same artifact into its own fresh sandbox.
@@ -2555,28 +2567,20 @@ impl<'a> Kernel<'a> {
                     // A capture that cannot complete never costs the Round its admitted result:
                     // the layer is optional, every partial outcome is one the next Round's sweep
                     // finishes, and the operator sees why on stderr.
+                    assigned_session.keep();
                     if let Err(error) = session::capture_session(
                         &self.domain,
                         session_layer,
                         node_id,
                         &attempt.to_string(),
                         inputs.session_id.as_deref(),
+                        sandbox_root.as_path(),
                     ) {
                         eprintln!("session capture diagnostic for `{node_id}`: {error}");
                     }
-                    // Cold Closeout: compiled into this node from the pinned convergence policy,
-                    // dispatched only when this warm result would otherwise close the Round
-                    // clean, and paid for by the reservation protected before the warm Attempt
-                    // ran. Both results fold into the Ledger before the convergence decision.
-                    self.run_cold_closeout(
-                        node,
-                        node_inputs,
-                        adapter.as_ref(),
-                        &attempt.to_string(),
-                        &result_artifact,
-                        &returned.output,
-                        result_contract,
-                    )?;
+                    // Cold Closeout is not decided here: one reviewer cannot see whether the
+                    // Round would close clean. The Ledger decides it, once every warm result
+                    // is in, and folds both results before the convergence decision.
                     return Ok(vec![result_artifact]);
                 }
                 Err(RunnerError::MalformedOutput { raw_artifact, why }) => {
@@ -3238,6 +3242,16 @@ impl Dispatch for Kernel<'_> {
                 .lock()
                 .expect("reviewer inputs")
                 .insert(node.id.clone(), artifact_ids(inputs));
+            if self.has_cold_closeout(&node.id) {
+                // The confirmation is decided at the Ledger, once every warm result of the
+                // Round is in, and runs on this node's exact Worker Input. It is held here and
+                // not in the Attempt loop, so a Round resumed past an admitted warm Attempt
+                // still owes — and can still run — the confirmation its policy compiled.
+                self.closeout_subjects
+                    .lock()
+                    .expect("closeout subjects")
+                    .insert(node.id.clone(), (node.clone(), inputs.clone()));
+            }
         }
         if node.kind == NodeKind::Reviewer && !self.replayed_outputs.contains_key(&node.id) {
             let binding_node = self.domain.reviewer_binding_node(&node.id);
@@ -3260,7 +3274,16 @@ impl Dispatch for Kernel<'_> {
             // Session capability and the recovery sweep come first, so selection reads a log in
             // which every owed cleanup is finished and no ambient transcript survives.
             self.prepare_sessions(&node.id)?;
-            self.domain.select_warm_set(&node.id)?;
+            // The inputs this Attempt will receive size the delta a resume would send, so the
+            // session gate compares the transcript with the real prompt, not an allowance.
+            let prospective = reviewer_inputs::prepare(
+                self.domain.cas,
+                &self.domain.authority,
+                self.domain.pipeline_version,
+                node,
+                inputs,
+            )?;
+            self.domain.select_warm_set(&node.id, Some(&prospective))?;
             let prepared =
                 self.prepare_reviewer_attempt(&node.id, prior_findings, &replayed_failures)?;
             self.prepared_attempts
@@ -3349,7 +3372,12 @@ impl Dispatch for Kernel<'_> {
             // Gather and ledger reduce whatever artifacts their edges delivered; the port
             // labels are the reviewer's concern, not theirs.
             NodeKind::Gather => self.domain.run_gather(node, inputs),
-            NodeKind::Ledger => return self.domain.run_ledger(node, inputs),
+            NodeKind::Ledger => {
+                // Every compiled cold confirmation the Round owes is dispatched here, where
+                // all of its warm results are known, and folds into the reduction below.
+                self.run_round_closeouts()?;
+                return self.domain.run_ledger(node, inputs);
+            }
             NodeKind::Reviewer => {
                 let result = self.run_reviewer(node, inputs);
                 if result.is_err() {

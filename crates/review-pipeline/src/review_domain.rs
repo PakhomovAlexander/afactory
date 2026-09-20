@@ -124,7 +124,12 @@ pub(super) struct ReviewDomainState<'a> {
 /// node both Attempts belong to, the confirmation's own result artifact and Attempt, and the
 /// result value itself.
 struct FoldedColdCloseout {
+    /// The warm reviewer node both Attempts belong to. It is where the confirmation's exact
+    /// Worker Input and its Demand requirement come from.
     node: String,
+    /// The Ledger source the confirmation reduces under: the node's closeout slot, so warm and
+    /// cold are two distinct stages of one reviewer rather than one source delivered twice.
+    source: String,
     result_artifact_id: String,
     cold_attempt_id: String,
     result: serde_json::Value,
@@ -969,13 +974,24 @@ impl<'a> ReviewDomainState<'a> {
                 continue;
             }
             let Some(result_id) = payload.cold_result_artifact_id else {
-                continue;
+                // A required confirmation that produced no admissible result leaves the Round
+                // without the cold opinion its policy compiled. The Ledger refuses to reduce
+                // rather than let the warm result close the Round alone.
+                return Err(format!(
+                    "node `{}` owes a cold confirmation that produced no admissible result: {}",
+                    payload.node,
+                    payload
+                        .failed
+                        .as_deref()
+                        .unwrap_or("the Cold Closeout Attempt recorded no reason")
+                ));
             };
             let result = self
                 .cas
                 .get_json(&result_id)
                 .map_err(|error| error.to_string())?;
             folded.push(FoldedColdCloseout {
+                source: crate::closeout::closeout_slot(&payload.node),
                 node: payload.node,
                 result_artifact_id: result_id,
                 cold_attempt_id: payload.cold_attempt_id,
@@ -1223,15 +1239,23 @@ impl<'a> ReviewDomainState<'a> {
         // delivered rather than a global scan of whatever happened to run. It is folded after
         // the selection binding above, which pairs delivered artifacts with selected Attempts:
         // a confirmation is not the node's selected result and never competes for that slot.
-        let mut closeout_attempts: BTreeMap<String, String> = BTreeMap::new();
+        // Keyed by the closeout's own Ledger source, never by its result digest: a
+        // confirmation that answers exactly as the warm Attempt did is the same content and
+        // would otherwise be mistaken for it.
+        let mut closeout_attempts: BTreeMap<String, (String, String)> = BTreeMap::new();
         for closeout in self.cold_closeout_results(&results)? {
             let (contract, output) = reviewer_stage_output(closeout.result)
                 .map_err(|error| format!("artifact {}: {error}", closeout.result_artifact_id))?;
             closeout_attempts.insert(
-                closeout.result_artifact_id.clone(),
-                closeout.cold_attempt_id,
+                closeout.source.clone(),
+                (closeout.cold_attempt_id, closeout.node),
             );
-            results.push((closeout.node, closeout.result_artifact_id, contract, output));
+            results.push((
+                closeout.source,
+                closeout.result_artifact_id,
+                contract,
+                output,
+            ));
         }
         // Canonical gather order: reviewer node id — not completion order, input-port label, or
         // artifact digest order. Legacy campaigns retain their frozen port-labelled projection.
@@ -1250,17 +1274,21 @@ impl<'a> ReviewDomainState<'a> {
                 results
                     .iter()
                     .map(|(node, result_id, _, _)| {
-                        // A Cold Closeout result belongs to its own Attempt of the same node,
-                        // under the same exact invocation inputs. It is not the node's
-                        // selection, so it is bound from its own durable record instead.
-                        if let Some(attempt_id) = closeout_attempts.get(result_id) {
+                        // A Cold Closeout result belongs to its own Attempt under its own
+                        // slot, run on the warm node's exact invocation inputs. It is not the
+                        // node's selection, so it is bound from its own durable record instead.
+                        if let Some((attempt_id, warm_node)) = closeout_attempts.get(node) {
                             return Ok((
                                 attempt_id.clone(),
-                                reviewer_inputs.get(node).cloned().ok_or_else(|| {
-                                    format!(
-                                        "Cold Closeout of `{node}` has no exact invocation inputs"
-                                    )
-                                })?,
+                                reviewer_inputs
+                                    .get(node)
+                                    .or_else(|| reviewer_inputs.get(warm_node))
+                                    .cloned()
+                                    .ok_or_else(|| {
+                                        format!(
+                                            "Cold Closeout of `{warm_node}` has no exact invocation inputs"
+                                        )
+                                    })?,
                             ));
                         }
                         let selection = selections.get(node).ok_or_else(|| {
@@ -1316,7 +1344,12 @@ impl<'a> ReviewDomainState<'a> {
                                 (node, result_id, result_contract, stage),
                                 (attempt_id, input_artifacts),
                             )| {
-                                let binding_node = self.reviewer_binding_node(node);
+                                // A confirmation answers for the reviewer it confirms, so its
+                                // Demand requirement is that reviewer's, not its slot's.
+                                let subject = closeout_attempts
+                                    .get(node)
+                                    .map_or(node.as_str(), |(_, warm)| warm.as_str());
+                                let binding_node = self.reviewer_binding_node(subject);
                                 review_store::CanonicalStage {
                                     source: node,
                                     demand_requirement: self

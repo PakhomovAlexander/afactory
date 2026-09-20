@@ -49,18 +49,26 @@ release pages only.
   Cold Closeout beside it. A node with `warm = { session = "if_recent" }` runs each Attempt under
   a `--session-id` the kernel derives from the Attempt ID; at seal the bounded transcript enters
   the CAS as `review.kernel/SessionSnapshot@1`, `SessionSnapshotPrepared@1` records it with the
-  bytes, the estimated tokens and a path-free source identity, the harness copy is deleted without
-  following a symlink, and `SessionSnapshotCleaned@1` closes the protocol. A sweep before the
+  bytes, the estimated tokens and a path-free source identity, the harness copy is deleted, and
+  `SessionSnapshotCleaned@1` closes the protocol. What is stored carries no host path and no
+  credential: the sandbox and harness paths become reversible placeholders a materialization puts
+  back, and a transcript carrying a credential shape is refused whole. Every component below the
+  granted harness root is opened `O_NOFOLLOW`, and the directory a transcript was validated in
+  stays open through its unlink. An Attempt that ends any way but an admitted capture deletes its
+  own transcript before its retry. A sweep before the
   Round's first Attempt finishes any cleanup a crash interrupted and removes every transcript the
   node's Attempts could have left, without a provider call. The next Round re-materializes the
   transcript and resumes it with `--resume --fork-session`, sending only the delta prompt — no
   package instructions, no Change Set patch — with both the transcript and the delta listed in the
   Attempt's context manifest. Provider support, `warm.session.max_age` and fitting the reservation
   beside the delta are gates whose every failure is a recorded `WarmSet@1` drop back to Notes
-  alone; Codex implements nothing and keeps `--ephemeral`. `[convergence] cold_closeout` compiles
-  a conditional cold Attempt of a warm reviewer, reserved before its warm Attempt so a retry
-  cannot consume it, dispatched only when the warm result would otherwise close the Round clean,
-  and folded into the Ledger through `ColdCloseoutDispatched@1` before the convergence decision.
+  alone, including a Head Delta dropped over its bound; Codex implements nothing and keeps
+  `--ephemeral`. `[convergence] cold_closeout` compiles a conditional cold Attempt of a warm
+  reviewer, reserved before its warm Attempt so a retry cannot consume it, dispatched at the
+  Ledger only when every warm result of the Round would otherwise close it clean, run through the
+  ordinary Attempt lifecycle under its own closeout slot, and folded through
+  `ColdCloseoutDispatched@1` as a stage of its own before the convergence decision. A confirmation
+  that produced no admissible result leaves the Round incomplete.
   Both policies default to off, so a pipeline written before this package is unchanged
   ([ADR-0110](docs/adr/0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md)).
 

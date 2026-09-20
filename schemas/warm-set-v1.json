@@ -75,7 +75,8 @@
         "cleanup_incomplete",
         "too_old",
         "over_reservation",
-        "materialization_failed"
+        "materialization_failed",
+        "head_delta_dropped"
       ],
       "description": "Recorded when the node's policy asked for the session layer and none was carried; never present beside session_artifact_id."
     }

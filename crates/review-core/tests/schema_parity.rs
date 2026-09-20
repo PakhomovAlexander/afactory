@@ -3479,6 +3479,7 @@ fn session_snapshot_and_cold_closeout_contracts_roundtrip_and_stay_closed() {
         SessionDropReasonV1::TooOld,
         SessionDropReasonV1::OverReservation,
         SessionDropReasonV1::MaterializationFailed,
+        SessionDropReasonV1::HeadDeltaDropped,
     ] {
         let dropped = WarmSetV1 {
             session_artifact_id: None,

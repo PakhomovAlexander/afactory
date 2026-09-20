@@ -20,15 +20,30 @@
 //! delivered. The Ledger therefore still reduces what its edges delivered, plus the closure of
 //! that delivery, never a global scan of whatever happened to run.
 
+use std::time::{Duration, SystemTime};
+
 use review_core::{
     ColdCloseoutDispatchedPayloadV1, EventType, LegacyStageOutput, ReviewerResultContract, Severity,
 };
 use review_graph::{ArtifactMap, Node};
-use review_runner::ReviewerAdapter;
+use review_runner::TokenUsage;
 use review_sandbox::Mode;
 use review_store::NewEvent;
 
 use super::{Kernel, reviewer_inputs, reviewer_output, reviewer_work};
+
+/// What one cold confirmation produced, in the shape its Attempt lifecycle records.
+struct ColdConfirmation {
+    result_artifact: String,
+    provenance_artifact: String,
+    raw_artifact: String,
+    /// The exact inputs the confirmation ran on: the same ones its warm Attempt received.
+    input_artifacts: Vec<String>,
+    cost_tokens: u64,
+    usage: TokenUsage,
+    started: SystemTime,
+    elapsed: Duration,
+}
 
 /// Whether this result, on its own, leaves the Round clean at the pinned severity gate.
 ///
@@ -108,36 +123,84 @@ impl Kernel<'_> {
         }
     }
 
-    /// Dispatch the compiled cold confirmation for one would-be-clean warm result, or release
-    /// its protected reservation when the Round already has a reason not to be clean.
+    /// Every compiled cold confirmation this Round owes, decided once every warm result is in.
     ///
-    /// The whole outcome is published as one `ColdCloseoutDispatched@1`, so a crash never leaves
-    /// a dispatch without a result. A resumed Round that already holds the record dispatches
-    /// nothing again.
-    // One exact Attempt boundary; grouping the arguments would obscure what the confirmation is
-    // allowed to see, which is the whole point of a cold Attempt.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn run_cold_closeout(
+    /// The condition is the Round's, not one reviewer's: a confirmation is skipped exactly when
+    /// some warm result of this Round already carries a claim at or above the convergence gate,
+    /// because the Round then blocks whatever a second opinion says. It stays deliberately
+    /// one-sided. A prior-Round claim that this Round's reduction may or may not close is not
+    /// read here, so a confirmation is dispatched when in doubt and never skipped on a guess:
+    /// skipping it wrongly is what would let convergence close on warm results alone.
+    pub(crate) fn run_round_closeouts(&self) -> Result<(), String> {
+        if self.cold_closeout_nodes.is_empty() {
+            return Ok(());
+        }
+        let selections: Vec<(String, super::SelectedReviewer)> = self
+            .domain
+            .reviewer_selections
+            .lock()
+            .expect("reviewer selections")
+            .iter()
+            .map(|(node, selection)| (node.clone(), selection.clone()))
+            .collect();
+        let mut warm = Vec::with_capacity(selections.len());
+        for (node, selection) in selections {
+            let value = self
+                .domain
+                .cas
+                .get_json(&selection.result_artifact)
+                .map_err(|error| error.to_string())?;
+            let (contract, output) = super::reviewer_stage_output(value)
+                .map_err(|error| format!("artifact {}: {error}", selection.result_artifact))?;
+            warm.push((node, selection, contract, output));
+        }
+        let round_closes_clean = warm
+            .iter()
+            .all(|(_, _, _, output)| would_close_clean(output, self.convergence_gate));
+        for (node, selection, contract, _) in warm {
+            if !self.has_cold_closeout(&node) {
+                continue;
+            }
+            if !round_closes_clean {
+                self.release_cold_closeout(&node);
+                continue;
+            }
+            self.run_cold_closeout(&node, &selection, contract)?;
+        }
+        Ok(())
+    }
+
+    /// One compiled cold confirmation: a second Attempt of the same node, carrying no warm
+    /// layer of any kind, run through the same durable Attempt lifecycle as the warm Attempt it
+    /// confirms. Its dispatch is durable before the provider is called, so a crash between them
+    /// leaves an Attempt the next kernel run fences and charges rather than an invisible spend,
+    /// and `ColdCloseoutDispatched@1` records the whole outcome with the exact warm Attempt and
+    /// result it closes over. A Round that already holds that record for this warm Attempt
+    /// dispatches nothing again.
+    fn run_cold_closeout(
         &self,
-        node: &Node,
-        node_inputs: &ArtifactMap,
-        adapter: &dyn ReviewerAdapter,
-        warm_attempt_id: &str,
-        warm_result_artifact: &str,
-        warm_output: &LegacyStageOutput,
+        node_id: &str,
+        warm: &super::SelectedReviewer,
         result_contract: ReviewerResultContract,
     ) -> Result<(), String> {
-        let node_id = node.id.as_str();
-        if !self.has_cold_closeout(node_id) {
+        if self
+            .recorded_closeout(node_id)?
+            .is_some_and(|recorded| recorded.warm_attempt_id == warm.attempt_id)
+        {
             return Ok(());
         }
-        if self.recorded_closeout(node_id)?.is_some() {
-            return Ok(());
-        }
-        if !would_close_clean(warm_output, self.convergence_gate) {
-            self.release_cold_closeout(node_id);
-            return Ok(());
-        }
+        let Some((node, node_inputs)) = self
+            .closeout_subjects
+            .lock()
+            .expect("closeout subjects")
+            .get(node_id)
+            .cloned()
+        else {
+            return Err(format!(
+                "node `{node_id}` owes a cold confirmation but this kernel run holds no exact Worker Input for it"
+            ));
+        };
+        let slot = closeout_slot(node_id);
         let reservation = self
             .closeout_reservations
             .lock()
@@ -149,45 +212,121 @@ impl Kernel<'_> {
             .attempts
             .lock()
             .expect("attempt ledger")
-            .dispatch(&closeout_slot(node_id));
-        let charge = |charged: u64| {
-            if let (Some(budgets), Some(reservation)) = (&self.budgets, &reservation) {
-                budgets
-                    .ledger
-                    .lock()
-                    .expect("budget ledger")
-                    .charge(reservation, charged);
-            }
-            self.attempts
-                .lock()
-                .expect("attempt ledger")
-                .charge(&cold_attempt, charged);
-        };
-        let outcome = self.invoke_cold_closeout(
-            node,
-            node_inputs,
-            adapter,
+            .dispatch(&slot);
+        self.domain.append(
+            NewEvent::new(
+                EventType::AttemptDispatchedV1,
+                serde_json::to_value(review_core::event::AttemptDispatchedPayloadV1 {
+                    reserved: reserved_tokens,
+                    prior_findings: None,
+                })
+                .map_err(|error| error.to_string())?,
+            )
+            .node(&slot)
+            .attempt(cold_attempt.to_string()),
+        )?;
+
+        let confirmation = self.invoke_cold_closeout(
+            &node,
+            &node_inputs,
             &cold_attempt.to_string(),
             reserved_tokens,
             result_contract,
         );
-        let (cold_result_artifact_id, failed, charged_tokens) = match outcome {
-            Ok((artifact, charged)) => (Some(artifact), None, charged),
-            // A confirmation that could not answer is recorded as a failure, not forgotten: the
-            // Round has no cold confirmation, and the report says so. The reservation is
-            // charged in full, exactly as a failed warm Attempt is.
-            Err(error) => (
-                None,
-                Some(bounded_reason(&error)),
-                reserved_tokens.unwrap_or(0),
-            ),
-        };
-        charge(charged_tokens);
+        let (cold_result_artifact_id, failed, charged_tokens) =
+            match confirmation {
+                Ok(confirmation) => {
+                    self.record_attempt_wall(
+                        &slot,
+                        &cold_attempt,
+                        confirmation.started,
+                        confirmation.elapsed,
+                        Some(&confirmation.usage),
+                    );
+                    let selection = self.attempts.lock().expect("attempt ledger").admit(
+                        &review_attempt::Receipt {
+                            attempt: cold_attempt.clone(),
+                            output: confirmation.raw_artifact.clone(),
+                            cost: confirmation.cost_tokens,
+                        },
+                    );
+                    if let (Some(budgets), Some(reservation)) = (&self.budgets, &reservation) {
+                        budgets
+                            .ledger
+                            .lock()
+                            .expect("budget ledger")
+                            .charge(reservation, confirmation.cost_tokens);
+                    }
+                    self.domain.append(
+                        NewEvent::new(
+                            EventType::AttemptAdmittedV1,
+                            serde_json::to_value(review_core::event::AttemptAdmittedPayloadV1 {
+                                selection: match selection {
+                                    review_attempt::Selection::Selected => "selected",
+                                    review_attempt::Selection::Quarantined => "quarantined",
+                                }
+                                .to_string(),
+                                cost_tokens: confirmation.cost_tokens,
+                                result_artifact: Some(confirmation.result_artifact.clone()),
+                                provenance_artifact: Some(confirmation.provenance_artifact.clone()),
+                            })
+                            .map_err(|error| error.to_string())?,
+                        )
+                        .node(&slot)
+                        .attempt(cold_attempt.to_string())
+                        .referencing(vec![
+                            confirmation.result_artifact.clone(),
+                            confirmation.provenance_artifact.clone(),
+                            confirmation.raw_artifact.clone(),
+                        ]),
+                    )?;
+                    // The confirmation is an Attempt of its own slot, never the reviewer's
+                    // selection: the Ledger folds it as its own stage, and the record below says
+                    // which warm result it closes over.
+                    self.domain
+                        .reviewer_selections
+                        .lock()
+                        .expect("reviewer selections")
+                        .insert(
+                            slot.clone(),
+                            super::SelectedReviewer {
+                                attempt_id: cold_attempt.to_string(),
+                                result_artifact: confirmation.result_artifact.clone(),
+                                proposal_candidate: None,
+                            },
+                        );
+                    self.domain
+                        .reviewer_input_artifacts
+                        .lock()
+                        .expect("reviewer inputs")
+                        .insert(slot.clone(), confirmation.input_artifacts.clone());
+                    (
+                        Some(confirmation.result_artifact),
+                        None,
+                        confirmation.cost_tokens,
+                    )
+                }
+                // A confirmation that could not answer is recorded as a failure, not forgotten: the
+                // Round has no cold confirmation, the Ledger refuses to reduce without it, and the
+                // reservation is charged in full exactly as a failed warm Attempt is.
+                Err(error) => {
+                    let charged = reserved_tokens.unwrap_or(0);
+                    self.fail_started_attempt(
+                        &slot,
+                        &cold_attempt,
+                        reservation.as_ref(),
+                        &error,
+                        charged,
+                        super::AttemptFailureEvidence::default(),
+                    )?;
+                    (None, Some(bounded_reason(&error)), charged)
+                }
+            };
         let payload = ColdCloseoutDispatchedPayloadV1 {
             node: node_id.to_string(),
             round: self.domain.authority.round,
-            warm_attempt_id: warm_attempt_id.to_string(),
-            warm_result_artifact_id: warm_result_artifact.to_string(),
+            warm_attempt_id: warm.attempt_id.clone(),
+            warm_result_artifact_id: warm.result_artifact.clone(),
             cold_attempt_id: cold_attempt.to_string(),
             reserved_tokens,
             charged_tokens,
@@ -195,7 +334,7 @@ impl Kernel<'_> {
             failed,
         };
         payload.validate()?;
-        let mut refs = vec![warm_result_artifact.to_string()];
+        let mut refs = vec![warm.result_artifact.clone()];
         refs.extend(cold_result_artifact_id);
         self.domain.append(
             NewEvent::new(
@@ -216,13 +355,16 @@ impl Kernel<'_> {
         &self,
         node: &Node,
         node_inputs: &ArtifactMap,
-        adapter: &dyn ReviewerAdapter,
         cold_attempt_id: &str,
         reserved_tokens: Option<u64>,
         result_contract: ReviewerResultContract,
-    ) -> Result<(String, u64), String> {
+    ) -> Result<ColdConfirmation, String> {
         let node_id = node.id.as_str();
         let binding_node = self.domain.reviewer_binding_node(node_id);
+        let adapter = self
+            .reviewers
+            .get(&binding_node)
+            .ok_or_else(|| format!("no reviewer bound to node {node_id}"))?;
         let mut inputs = reviewer_inputs::prepare(
             self.domain.cas,
             &self.domain.authority,
@@ -238,8 +380,13 @@ impl Kernel<'_> {
             reserved_tokens,
         );
         let sandbox = self.domain.sandbox_for(node_id, Mode::EphemeralWrite)?;
-        let invocation =
-            reviewer_work::invoke(self.domain.cas, adapter, sandbox.root(), &inputs, None);
+        let invocation = reviewer_work::invoke(
+            self.domain.cas,
+            adapter.as_ref(),
+            sandbox.root(),
+            &inputs,
+            None,
+        );
         let receipted = match invocation.result {
             Ok(receipted) => receipted,
             Err(reviewer_work::InvocationFailure::Adapter(error)) => {
@@ -288,13 +435,21 @@ impl Kernel<'_> {
                 raw_artifact: &returned.raw_artifact,
             },
         )?;
-        Ok((
-            captured.metadata.result_artifact_id,
-            returned.cost_tokens.max(receipted.usage.chargeable_tokens),
-        ))
+        Ok(ColdConfirmation {
+            result_artifact: captured.metadata.result_artifact_id,
+            provenance_artifact: captured.metadata.provenance_artifact_id,
+            raw_artifact: returned.raw_artifact,
+            input_artifacts: super::artifact_ids(node_inputs),
+            cost_tokens: returned.cost_tokens.max(receipted.usage.chargeable_tokens),
+            usage: receipted.usage,
+            started: invocation.started,
+            elapsed: invocation.elapsed,
+        })
     }
 
-    /// The closeout this Round already recorded for the node, if any.
+    /// The closeout this Round already recorded for the node, if any. The caller compares its
+    /// warm Attempt with the one in hand, so a record left by a superseded warm Attempt never
+    /// suppresses the confirmation its replacement owes.
     fn recorded_closeout(
         &self,
         node_id: &str,
