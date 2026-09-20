@@ -373,6 +373,13 @@ package and belong to their own follow-up:
   kernel rather than to any package: a provider deadline in a test should scale with observed host
   load or be generous, and a test that depends on a spawned process should assert the spawn's
   outcome instead of unwrapping what it produced.
+- **The kernel's own sandboxes feed the load that starves it.** Every Task Gate builds the whole
+  workspace inside a fresh temporary directory, and on this machine the desktop search indexer
+  walks each one as it appears: during P4's verification it held two cores on its own. That is
+  the same load that starves the writer lease above. The fix is an operator one and belongs in
+  the onboarding notes rather than in code: exclude the sandbox temporary root and the shared
+  build cache from the indexer, once, and the kernel stops competing with an index of trees that
+  exist for minutes.
 
 Until the lease is load-tolerant, run one kernel execution at a time on this machine and keep
 Spotlight away from the state and cache directories.
