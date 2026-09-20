@@ -24,6 +24,19 @@ fn stdout(output: &Output) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
+/// A repository directory whose name is not UTF-8, or `None` where the filesystem refuses to
+/// hold one. `#[cfg(unix)]` is not the real condition: the constraint is the filesystem's own
+/// encoding rule, and APFS rejects with `EILSEQ` the byte that ext4 stores without complaint.
+/// Skipping there keeps a Mac from failing these tests against a limitation of its disk rather
+/// than anything in `af`; Linux CI still exercises them.
+#[cfg(unix)]
+fn non_utf8_repository(root: &Path) -> Option<PathBuf> {
+    use std::os::unix::ffi::OsStringExt;
+
+    let path = root.join(std::ffi::OsString::from_vec(b"repo-\xff".to_vec()));
+    std::fs::create_dir(&path).ok().map(|()| path)
+}
+
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
@@ -137,12 +150,10 @@ fn preview_preserves_the_explicit_af_release_in_the_printed_apply_command() {
 #[cfg(unix)]
 #[test]
 fn preview_rejects_a_repository_path_that_cannot_be_copied_as_utf8() {
-    use std::os::unix::ffi::OsStringExt;
-
     let root = tempfile::tempdir().unwrap();
-    let repo = root
-        .path()
-        .join(std::ffi::OsString::from_vec(b"repo-\xff".to_vec()));
+    let Some(repo) = non_utf8_repository(root.path()) else {
+        return;
+    };
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_af"))
         .arg("onboard")
@@ -164,16 +175,15 @@ fn preview_rejects_a_repository_path_that_cannot_be_copied_as_utf8() {
 #[cfg(unix)]
 #[test]
 fn existing_authority_can_be_validated_under_a_non_utf8_repository_path() {
-    use std::os::unix::ffi::OsStringExt;
-
     let root = tempfile::tempdir().unwrap();
     let source = repo(root.path());
     std::fs::write(source.join("Makefile"), "check:\n\t@true\n").unwrap();
     let created = af(&source, &["--apply", "--json"]);
     assert!(created.status.success(), "{}", stderr(&created));
-    let target = root
-        .path()
-        .join(std::ffi::OsString::from_vec(b"repo-\xff".to_vec()));
+    let Some(target) = non_utf8_repository(root.path()) else {
+        return;
+    };
+    std::fs::remove_dir(&target).unwrap();
     std::fs::rename(&source, &target).unwrap();
 
     let output = Command::new(env!("CARGO_BIN_EXE_af"))
@@ -191,12 +201,10 @@ fn existing_authority_can_be_validated_under_a_non_utf8_repository_path() {
 #[cfg(unix)]
 #[test]
 fn preview_rejects_a_non_utf8_canonical_repository_reached_as_dot() {
-    use std::os::unix::ffi::OsStringExt;
-
     let root = tempfile::tempdir().unwrap();
-    let repo = root
-        .path()
-        .join(std::ffi::OsString::from_vec(b"repo-\xff".to_vec()));
+    let Some(repo) = non_utf8_repository(root.path()) else {
+        return;
+    };
     std::fs::create_dir_all(repo.join(".git")).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_af"))
         .args(["onboard", "--repo", ".", "--gate", "check=true", "--json"])
