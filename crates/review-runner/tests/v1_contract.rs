@@ -25,11 +25,16 @@ fn validator(name: &str) -> jsonschema::Validator {
         &std::fs::read_to_string(schema_root.join("finding-report-v1.json")).unwrap(),
     )
     .unwrap();
-    jsonschema::options()
-        .with_resource(
+    let registry = jsonschema::Registry::new()
+        .add(
             "urn:review-kernel:schema:finding-report:1",
-            jsonschema::Resource::from_contents(finding_report).unwrap(),
+            jsonschema::Resource::from_contents(finding_report),
         )
+        .unwrap()
+        .prepare()
+        .unwrap();
+    jsonschema::options()
+        .with_registry(&registry)
         .build(&schema)
         .unwrap()
 }
@@ -39,7 +44,7 @@ fn assert_valid(name: &str, instance: &Value) {
     if !v.is_valid(instance) {
         let errors: Vec<String> = v
             .iter_errors(instance)
-            .map(|e| format!("{} at {}", e, e.instance_path))
+            .map(|e| format!("{} at {}", e, e.instance_path()))
             .collect();
         panic!("{name} rejected the bridged value: {}", errors.join("; "));
     }

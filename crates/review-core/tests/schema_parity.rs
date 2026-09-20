@@ -652,21 +652,21 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     .collect()
             });
             let root = schema(name);
-            let mut options = jsonschema::options();
-            options.with_resource(
-                "urn:af:schema:task-transition:1".to_owned(),
-                jsonschema::Resource::from_contents(schema("task-transition-v1.json")).unwrap(),
-            );
+            let mut builder = jsonschema::Registry::new()
+                .add(
+                    "urn:af:schema:task-transition:1",
+                    jsonschema::Resource::from_contents(schema("task-transition-v1.json")),
+                )
+                .unwrap_or_else(|e| panic!("{name}: {e}"));
             for resource in resources {
                 let id = resource["$id"].as_str().unwrap();
-                {
-                    options.with_resource(
-                        id.to_owned(),
-                        jsonschema::Resource::from_contents(resource.clone()).unwrap(),
-                    );
-                }
+                builder = builder
+                    .add(id, jsonschema::Resource::from_contents(resource.clone()))
+                    .unwrap_or_else(|e| panic!("{name}: {e}"));
             }
-            options
+            let registry = builder.prepare().unwrap_or_else(|e| panic!("{name}: {e}"));
+            jsonschema::options()
+                .with_registry(&registry)
                 .build(&root)
                 .unwrap_or_else(|e| panic!("{name}: {e}"))
         })
@@ -677,7 +677,7 @@ fn assert_valid(name: &str, instance: &Value) {
     if !v.is_valid(instance) {
         let errors: Vec<String> = v
             .iter_errors(instance)
-            .map(|e| format!("{} at {}", e, e.instance_path))
+            .map(|e| format!("{} at {}", e, e.instance_path()))
             .collect();
         panic!(
             "{name} rejected a value it must accept: {}",

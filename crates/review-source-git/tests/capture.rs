@@ -345,7 +345,7 @@ fn the_snapshot_payload_matches_source_snapshot_v1() {
     if !validator.is_valid(&payload) {
         let errors: Vec<String> = validator
             .iter_errors(&payload)
-            .map(|e| format!("{} at {}", e, e.instance_path))
+            .map(|e| format!("{} at {}", e, e.instance_path()))
             .collect();
         panic!("payload rejected: {}", errors.join("; "));
     }

@@ -15,7 +15,7 @@ review-source-git = { path = "../review-source-git" }
 review-store = { path = "../review-store" }
 serde = { version = "1.0.228", features = ["derive", "rc"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
-jsonschema = { version = "0.26.1", default-features = false }
+jsonschema = { version = "0.56.0", default-features = false }
 
 [dev-dependencies]
 tempfile = "3.27.0"

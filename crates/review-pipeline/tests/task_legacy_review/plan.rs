@@ -442,11 +442,11 @@ fn assert_plan_schemas(cas: &Cas, compiler: &LegacyReviewPlanCompiler, plan: &Ex
             let schema: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(root.join("schemas").join(file)).unwrap())
                     .unwrap();
-            let mut options = jsonschema::options();
-            options.with_resource(
-                common["$id"].as_str().unwrap().to_owned(),
-                jsonschema::Resource::from_contents(common.clone()).unwrap(),
-            );
+            let mut registry = jsonschema::Registry::new();
+            let id = common["$id"].as_str().unwrap().to_owned();
+            registry = registry
+                .add(id, jsonschema::Resource::from_contents(common.clone()))
+                .unwrap();
             for file in [
                 "legacy-review-task-policy-v1.json",
                 "task-broker-binding-v1.json",
@@ -455,12 +455,18 @@ fn assert_plan_schemas(cas: &Cas, compiler: &LegacyReviewPlanCompiler, plan: &Ex
                     &std::fs::read(root.join("schemas").join(file)).unwrap(),
                 )
                 .unwrap();
-                options.with_resource(
-                    value["$id"].as_str().unwrap().to_owned(),
-                    jsonschema::Resource::from_contents(value).unwrap(),
-                );
+                let id = value["$id"].as_str().unwrap().to_owned();
+                registry = registry
+                    .add(id, jsonschema::Resource::from_contents(value))
+                    .unwrap();
             }
-            (ty, options.build(&schema).unwrap())
+            (ty, {
+                let registry = registry.prepare().unwrap();
+                jsonschema::options()
+                    .with_registry(&registry)
+                    .build(&schema)
+                    .unwrap()
+            })
         })
         .collect()
     });
