@@ -9,17 +9,33 @@ release pages only.
 
 ## [Unreleased]
 
+## [0.9.0-rc.5] - 2026-09-20
+
+### Authority compatibility
+
+Prerelease: committed .af authority keeps working as is and needs no migration. The sha2 0.11, rusqlite 0.40 and jsonschema 0.56 updates change no stored spelling: Attempt IDs, sha256: artifact addresses, receipt prefixes and local state directory names are byte-for-byte what earlier releases wrote, and review_core::hex::encode pins that encoding under test. The machine-local Provider registry stays version 1 — af provider setup and af provider recover run in the invoking release instead of dispatching through a repository pin, and a replacement is published by one atomic exchange, so a supported pinned reader sees either the complete old registry or the committed new one (ADR-0111). The one change that can stop a working machine: Provider admission now revalidates auth directories, so an existing symlinked, foreign-owned, or group/world-writable auth directory or registry is refused until its ownership and permissions are tightened. Refresh a consumer pin explicitly with af onboard --refresh-lock after verifying the release and its archive digests, and keep the previous release for rollback.
+
 ### Changes
 
-- Make fresh Provider bootstrap one command with `af provider setup`, keep `af provider add` for
-  already-authenticated contexts, isolate login environment and auth-directory ownership, make
-  setup serialize by canonical auth context, distinguish ambient discovery labels from selectable
-  registry IDs, preserve every Gate and executing release in onboarding's copyable apply command,
-  make registry publication serialized, conditional, durable and atomic across pinned releases,
-  secure its directories and files independently of `umask`, reject unpublishable auth paths before
-  login, bind security-sensitive operations to stable directory handles, provide hash-validating
-  fail-closed recovery with `af provider recover`, and make the README's Codex-only quickstart
-  complete.
+- release: v0.9.0-rc.4 (#98)
+- build(deps): bump actions/checkout from 4.2.2 to 7.0.1 (#82)
+- build(deps): bump actions/upload-artifact from 4.6.2 to 7.0.1 (#81)
+- build(deps): bump actions/download-artifact from 4.3.0 to 8.0.1 (#80)
+- Take the pending dependency updates, adapting digest and SQLite identities (#99)
+- build(deps): bump clap_mangen from 0.2.33 to 0.3.3 (#87)
+- build(deps): bump rusqlite from 0.37.0 to 0.40.2 (#86)
+- build(deps): bump sha2 from 0.10.9 to 0.11.0 (#85)
+- Bump nix from 0.30.1 to 0.31.3 (#84)
+- build(deps): bump jsonschema from 0.26.2 to 0.56.0 (#83)
+- Make fresh Provider onboarding copyable (#90): make fresh Provider bootstrap one command with
+  `af provider setup`, keep `af provider add` for already-authenticated contexts, isolate login
+  environment and auth-directory ownership, make setup serialize by canonical auth context,
+  distinguish ambient discovery labels from selectable registry IDs, preserve every Gate and
+  executing release in onboarding's copyable apply command, make registry publication serialized,
+  conditional, durable and atomic across pinned releases, secure its directories and files
+  independently of `umask`, reject unpublishable auth paths before login, bind security-sensitive
+  operations to stable directory handles, provide hash-validating fail-closed recovery with
+  `af provider recover`, and make the README's Codex-only quickstart complete.
 
 ## [0.9.0-rc.4] - 2026-09-20
 
