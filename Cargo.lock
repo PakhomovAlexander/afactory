@@ -1486,7 +1486,7 @@ checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
 name = "review-attempt"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "review-core",
  "serde",
@@ -1495,7 +1495,7 @@ dependencies = [
 
 [[package]]
 name = "review-broker"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "base64",
  "review-core",
@@ -1505,7 +1505,7 @@ dependencies = [
 
 [[package]]
 name = "review-check"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "jsonschema 0.56.0",
  "review-core",
@@ -1518,7 +1518,7 @@ dependencies = [
 
 [[package]]
 name = "review-config"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "jsonschema 0.56.0",
  "review-attempt",
@@ -1538,7 +1538,7 @@ dependencies = [
 
 [[package]]
 name = "review-core"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "base64",
  "jsonschema 0.56.0",
@@ -1548,7 +1548,7 @@ dependencies = [
 
 [[package]]
 name = "review-graph"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "review-attempt",
  "review-core",
@@ -1558,14 +1558,14 @@ dependencies = [
 
 [[package]]
 name = "review-parallel"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "rayon",
 ]
 
 [[package]]
 name = "review-pipeline"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "jsonschema 0.56.0",
  "review-attempt",
@@ -1589,14 +1589,14 @@ dependencies = [
 
 [[package]]
 name = "review-process"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "nix 0.31.3",
 ]
 
 [[package]]
 name = "review-runner"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "jsonschema 0.56.0",
  "review-broker",
@@ -1611,7 +1611,7 @@ dependencies = [
 
 [[package]]
 name = "review-runner-claude"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "jsonschema 0.26.2",
  "nix 0.31.3",
@@ -1625,7 +1625,7 @@ dependencies = [
 
 [[package]]
 name = "review-runner-codex"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "review-config",
  "review-core",
@@ -1640,7 +1640,7 @@ dependencies = [
 
 [[package]]
 name = "review-sandbox"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "exacl",
  "nix 0.31.3",
@@ -1659,7 +1659,7 @@ dependencies = [
 
 [[package]]
 name = "review-source-git"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "jsonschema 0.56.0",
  "nix 0.31.3",
@@ -1677,7 +1677,7 @@ dependencies = [
 
 [[package]]
 name = "review-source-task"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "review-core",
  "review-process",
@@ -1690,7 +1690,7 @@ dependencies = [
 
 [[package]]
 name = "review-store"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "nix 0.31.3",
  "reflink-copy",
@@ -1707,7 +1707,7 @@ dependencies = [
 
 [[package]]
 name = "reviewctl"
-version = "0.9.0-rc.4"
+version = "0.9.0-rc.5"
 dependencies = [
  "clap",
  "clap_complete",
