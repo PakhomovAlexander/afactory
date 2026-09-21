@@ -6,7 +6,7 @@ use review_core::task::optimization_experiment::{
     ExperimentPreparedV1, ExperimentSpecificationV1, ExperimentTrialV1, OPTIMIZATION_EVALUATION_V1,
     OPTIMIZATION_HARNESS_V1, OPTIMIZATION_PACKAGE_REPIN_V1, OPTIMIZATION_VERIFICATION_V1,
     OptimizationEvaluationV1, OptimizationHarnessV1, OptimizationPackageRepinV1,
-    OptimizationProfileV1, OptimizationVerificationV1, compare_experiment,
+    OptimizationVerificationV1, compare_experiment,
 };
 use review_core::task::optimization_light::{
     OPTIMIZATION_PROPOSAL_V1, OPTIMIZATION_RESULT_V1, OptimizationResultConclusionV1,
@@ -112,8 +112,7 @@ fn validate_optimization_delivery_payload(
             verification.evaluation_id.clone(),
             verification.package_repin_id.clone(),
         ]);
-        if verification.profile != OptimizationProfileV1::Candidate
-            || verification.conclusion != ComparisonConclusionV1::Accepted
+        if verification.conclusion != ComparisonConclusionV1::Accepted
             || !verification.deliverable
             || !verification.protected_checks_passed
             || verification.source_snapshot_id != source

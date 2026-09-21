@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 190] = [
+const SCHEMAS: [&str; 188] = [
     "session-snapshot-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -48,7 +48,6 @@ const SCHEMAS: [&str; 190] = [
     "optimization-adoption-receipt-v1.json",
     "optimization-adoption-observation-v1.json",
     "optimization-adoption-task-evidence-v1.json",
-    "experiment-trial-result-v1.json",
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
     "task-inspection-v10.json",
@@ -62,7 +61,6 @@ const SCHEMAS: [&str; 190] = [
     "optimization-economics-v1.json",
     "optimization-report-v1.json",
     "optimization-policy-v1.json",
-    "experimental-slot-v1.json",
     "optimization-harness-v1.json",
     "experiment-specification-v1.json",
     "experiment-prepared-v1.json",

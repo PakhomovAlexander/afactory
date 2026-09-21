@@ -360,7 +360,6 @@ fn report(economics_id: &str, economics: &OptimizationEconomicsV1) -> Optimizati
         ),
         highlights,
         missing_measurements: economics.missing_fields.iter().cloned().collect(),
-        live_demonstrations: "pending".into(),
     }
 }
 
@@ -655,140 +654,6 @@ impl OptimizationTaskDomain {
 }
 
 impl TaskOperatorHost for OptimizationTaskDomain {
-    fn complete_experiment(
-        &self,
-        cas: &Cas,
-        parent: &TaskInvocationV1,
-        experiment: &review_store::store::task::execution::experiment::RegisteredTaskExperiment,
-        facts: &[review_store::store::task::execution::experiment::ExperimentChildEvidence],
-    ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
-        use review_core::task::optimization_experiment::*;
-        if !self.graph.nodes.get(&parent.node).is_some_and(|node| {
-            node.contract
-                .outputs
-                .get("comparison")
-                .is_some_and(|port| port.artifact_type == EXPERIMENT_COMPARISON_V1)
-        }) {
-            return Err("Optimization experiment parent has no typed comparison output".into());
-        }
-        let specification: ExperimentSpecificationV1 = read(
-            cas,
-            &experiment.prepared.specification_id,
-            EXPERIMENT_SPECIFICATION_V1,
-        )?;
-        let mut trials = Vec::with_capacity(facts.len());
-        for fact in facts {
-            let planned = experiment
-                .child_plan
-                .children
-                .get(&fact.closure.node)
-                .ok_or("Measured trial has no registered executable node")?;
-            if !matches!(
-                planned.definition.operator,
-                CompiledOperator::Primitive {
-                    operator: TaskOperatorV1::Verify { .. } | TaskOperatorV1::FixVerify { .. },
-                    ..
-                }
-            ) || planned.allowance.verification_attempts == 0
-            {
-                return Err(
-                    "Measured trial result requires a protected registered verifier slot".into(),
-                );
-            }
-            let charged = fact.attempts.iter().try_fold(0u128, |total, attempt| {
-                total
-                    .checked_add(attempt.charged_tokens)
-                    .ok_or("Experiment trial charge overflow")
-            })?;
-            let charged = u64::try_from(charged)
-                .map_err(|_| "Experiment trial charge exceeds its wire domain")?;
-            let billing_complete = !fact.attempts.is_empty()
-                && fact
-                    .attempts
-                    .iter()
-                    .map(|attempt| {
-                        attempt
-                            .billing_complete(cas, fact.closure.effort != "command")
-                            .map_err(|e| e.to_string())
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into_iter()
-                    .all(|complete| complete);
-            let mut candidates = Vec::new();
-            if let Some(output_id) = &fact.published_output_id {
-                let output: TaskOutputV1 =
-                    read(cas, output_id, review_core::task::execution::TASK_OUTPUT_V1)?;
-                candidates.extend(output.outputs.values().flat_map(|port| {
-                    (port.artifact_type == EXPERIMENT_TRIAL_RESULT_V1)
-                        .then_some(port.artifact_ids.iter().cloned())
-                        .into_iter()
-                        .flatten()
-                }));
-            }
-            if candidates.is_empty() {
-                candidates.extend(
-                    fact.attempts
-                        .iter()
-                        .flat_map(|attempt| attempt.raw_artifact_ids.iter().cloned())
-                        .filter(|id| {
-                            envelope(cas, id).is_ok_and(|artifact| {
-                                artifact.artifact_type == EXPERIMENT_TRIAL_RESULT_V1
-                            })
-                        }),
-                );
-            }
-            candidates.sort();
-            candidates.dedup();
-            if candidates.len() != 1 {
-                return Err(
-                    "Experiment arm must retain one protected measured trial result".into(),
-                );
-            }
-            let trial_result: ExperimentTrialResultV1 =
-                read(cas, &candidates[0], EXPERIMENT_TRIAL_RESULT_V1)?;
-            if trial_result.invocation_id != fact.closure.invocation_id
-                || trial_result.case_id != fact.closure.case_id
-                || trial_result.arm != fact.closure.arm
-                || trial_result.repetition != fact.closure.repetition
-            {
-                return Err("Measured trial result differs from its registered closure".into());
-            }
-            trials.push(trial_result.into_trial(charged, billing_complete)?);
-        }
-        let comparison = compare_experiment(
-            &experiment.prepared.specification_id,
-            &experiment.prepared_id,
-            &specification,
-            trials,
-        )?;
-        let mut producer = invocation_producer(cas, parent, None)?;
-        if let Producer::KernelOperation { operation_id, .. } = &mut producer {
-            *operation_id = "optimization-comparison-v1".into();
-        }
-        let comparison_id = cas
-            .put_artifact(
-                EXPERIMENT_COMPARISON_V1,
-                producer,
-                vec![
-                    experiment.prepared.specification_id.clone(),
-                    experiment.prepared_id.clone(),
-                ],
-                None,
-                serde_json::to_value(comparison).map_err(|error| error.to_string())?,
-            )
-            .map_err(|error| error.to_string())?
-            .0;
-        Ok(BTreeMap::from([(
-            "comparison".into(),
-            ArtifactInputV1 {
-                artifact_ids: vec![comparison_id],
-                artifact_type: EXPERIMENT_COMPARISON_V1.into(),
-                cardinality: PortCardinality::One,
-                snapshot_id: None,
-            },
-        )]))
-    }
-
     fn prepare_context(
         &self,
         cas: &Cas,
@@ -856,33 +721,6 @@ impl TaskOperatorHost for OptimizationTaskDomain {
 }
 
 impl TaskDomain for OptimizationTaskDomain {
-    fn validate_experiment_preparation(
-        &self,
-        cas: &Cas,
-        _task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
-    ) -> Result<(), String> {
-        prepared.validate()?;
-        let closure: review_graph::task::ExperimentExecutionPlanV1 = read(
-            cas,
-            &prepared.compiled_child_plan_id,
-            review_graph::task::EXPERIMENT_EXECUTION_PLAN_V1,
-        )?;
-        if prepared.task_revision_id != plan.task_revision_id
-            || self
-                .graph
-                .experimental_slots
-                .get(&closure.parent_node)
-                .map(|slot| &slot.slot_id)
-                != Some(&prepared.slot_id)
-        {
-            return Err(
-                "Optimization experiment differs from its captured Task, plan or slot".into(),
-            );
-        }
-        Ok(())
-    }
     fn assemble_result(
         &self,
         cas: &Cas,
@@ -1176,7 +1014,6 @@ impl OptimizationCandidateTaskDomain {
             expected_comparable_workload: expected_comparable_workload.into(),
             objective_exception,
             adoption_offered,
-            live_demonstrations: "pending".into(),
         };
         exact.validate()?;
         let id = cas
@@ -1394,19 +1231,7 @@ impl OptimizationCandidateTaskDomain {
                     .repeated_context_tokens
                     .is_some_and(|value| value.get() > 0);
                 let has_cache = !economics.cache_economics.is_empty();
-                let has_retry = history.iter().any(|(_, capture)| {
-                    capture.observations.iter().any(|observation| {
-                        observation
-                            .outcome
-                            .as_ref()
-                            .is_some_and(|outcome| outcome.retries > 0)
-                    })
-                });
-                let has_verified = economics.verified > 0;
-                let mut available_observations = BTreeSet::from([
-                    "artifact_identity".to_owned(),
-                    "authority_identity".to_owned(),
-                ]);
+                let mut available_observations = BTreeSet::new();
                 if economics.context_tokens.is_some() {
                     available_observations.insert("context_tokens".into());
                 }
@@ -1419,8 +1244,6 @@ impl OptimizationCandidateTaskDomain {
                 let candidate_recipe_ids = [
                     has_repeated_context.then_some("context_retrieval_dedup"),
                     has_cache.then_some("sandbox_dependency_cache"),
-                    has_verified.then_some("deterministic_artifact_reuse"),
-                    has_retry.then_some("targeted_retry_feedback"),
                 ]
                 .into_iter()
                 .flatten()
@@ -1568,13 +1391,7 @@ impl OptimizationCandidateTaskDomain {
                 ];
                 refs.extend(value.materialization_id.iter().cloned());
                 refs.extend(value.case_inputs.values().cloned());
-                refs.extend(
-                    value
-                        .baseline_execution_configuration_id
-                        .iter()
-                        .chain(value.candidate_execution_configuration_id.iter())
-                        .cloned(),
-                );
+                refs.extend(value.candidate_execution_configuration_id.iter().cloned());
                 refs.extend(retained.clone());
                 let config = artifact_port(cas, input, configuration::CONFIGURATION, &value, refs)?;
                 let candidate = configuration::source_port(
@@ -1857,7 +1674,6 @@ impl OptimizationCandidateTaskDomain {
                     objective_exception: light_policy
                         .and_then(|policy| policy.objective_exception.clone()),
                     adoption_offered,
-                    live_demonstrations: "pending".into(),
                 };
                 optimization_result.validate()?;
                 let result = artifact_port(
@@ -2307,7 +2123,6 @@ impl TaskOperatorHost for OptimizationCandidateTaskDomain {
                         .contract
                         .inputs
                         .keys()
-                        .filter(|name| name.as_str() != "execution_configuration")
                         .map(|name| {
                             if name == "case" {
                                 let config = configuration

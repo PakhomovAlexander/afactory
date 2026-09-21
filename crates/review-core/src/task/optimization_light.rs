@@ -549,9 +549,7 @@ impl OptimizationRealizedEconomicsV1 {
 pub enum OptimizationResultConclusionV1 {
     Validated,
     Rejected,
-    Inconclusive,
     RecommendationOnly,
-    NoChange,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -576,7 +574,6 @@ pub struct OptimizationResultV1 {
     )]
     pub objective_exception: Option<String>,
     pub adoption_offered: bool,
-    pub live_demonstrations: String,
 }
 
 impl OptimizationResultV1 {
@@ -596,7 +593,6 @@ impl OptimizationResultV1 {
                 .into_iter()
                 .all(|id| is_digest(id))
                 && self.source_snapshot_id != self.candidate_snapshot_id
-                && self.live_demonstrations == "pending"
                 && self.economics.normalization_units.get() > 0
                 && self.economics.one_off_time_basis == "attempt_interval_union"
                 && self

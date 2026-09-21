@@ -114,6 +114,21 @@ or needs a documented hand edit.
   `dependency_preparation` only. `task-runtime-evidence-v1.json`, and the `af/task-inspection`
   schemas that embed it, are narrowed to match, so runtime evidence an earlier release recorded no
   longer decodes.
+- Self-optimizer contracts are narrowed in place. `af/OptimizationEconomics@1` drops
+  `cache_results`, a per-kind `hit`/`miss`/`unknown` map that duplicated `cache_economics`: read
+  `cache_economics.<kind>.hits`, `misses` and `unknown_results` instead.
+  `af/OptimizationResult@1` and `af/OptimizationReport@1` drop the constant
+  `live_demonstrations: "pending"` field, and optimize Task requirements no longer carry it; the
+  Markdown report replaces its "Milestone gates" section with one plain sentence saying live paid
+  demonstrations and adoption observations are still pending. A result `conclusion` is
+  `validated`, `rejected` or `recommendation_only` (never `inconclusive` or `no_change`), and an
+  `af/OptimizationVerification@1` `profile` is always `candidate`. The `af/ExperimentalSlot@1` and
+  `af/ExperimentTrialResult@1` contracts and their `experimental-slot-v1.json` and
+  `experiment-trial-result-v1.json` schemas are gone. An experiment arm Worker that declares an
+  `execution_configuration` input is now refused like any other unavailable input instead of
+  having it silently dropped. Optimizer artifacts an earlier release stored may no longer decode,
+  and native observations that older captures stored under source-dependent IDs are no longer
+  merged, so replaying such a history can count them twice.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

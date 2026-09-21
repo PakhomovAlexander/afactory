@@ -127,7 +127,8 @@ preset. If that preset is not admitted, change and review the package before cat
 rather than substituting it at dispatch.
 
 Live paid token/time demonstrations, savings claims based on those demonstrations and
-longitudinal adoption observations remain pending milestone release gates.
+longitudinal adoption observations remain pending milestone release gates. Every rendered
+optimization report states this in plain text; it is not a field of any optimization contract.
 
 ## M3 implementation evidence map
 
@@ -232,16 +233,16 @@ identity. Missing retained artifacts and branched capture heads are refused rath
 than silently rewinding the analysis.
 
 Native execution observations are deduplicated across exported source names while
-all source receipts remain retained. Historical native observation IDs remain
-readable and do not cause duplicate failure counts on recapture. Normalized fixture
-records retain their occurrence/range identity. A complete zero-based capture clears
-a partial-history warning only for the source/execution ranges it actually covers;
-another incomplete source using the same adapter remains visible.
+all source receipts remain retained. Normalized fixture records retain their
+occurrence/range identity. A complete zero-based capture clears a partial-history
+warning only for the source/execution ranges it actually covers; another incomplete
+source using the same adapter remains visible.
 
 Delivery requires protected verifier evidence from registered children and an independent
 non-child evaluator, selected and published by the common runtime. A command arm's successful
-exit alone is not that evidence. `af/ExperimentTrialResult@1` retains protected measurements;
-charge and billing completeness are derived from the common Attempt ledger. Signed rejections
+exit alone is not that evidence. A trial is verified only when its protected verifier slot
+succeeded and the runtime published the selected output. Its measured intervals, charge and
+billing completeness are derived from the common Attempt ledger. Signed rejections
 remain factual decisions and grant no registration or dispatch authority.
 
 ### Controlled configuration candidates

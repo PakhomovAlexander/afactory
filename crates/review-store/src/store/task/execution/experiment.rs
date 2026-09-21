@@ -3,10 +3,9 @@
 use super::*;
 use review_core::task::optimization_experiment::{
     EXPERIMENT_PLAN_DECISION_V1, EXPERIMENT_PREPARED_V1, EXPERIMENT_SPECIFICATION_V1,
-    EXPERIMENTAL_SLOT_V1, EXPERIMENTAL_SLOT_V2, ExperimentAllowanceV1, ExperimentIntervalKindV1,
+    EXPERIMENTAL_SLOT_V2, ExperimentAllowanceV1, ExperimentIntervalKindV1,
     ExperimentMeasurementIntervalV1, ExperimentPlanDecisionV1, ExperimentPreparedV1,
-    ExperimentSpecificationV1, ExperimentalSlotV1, ExperimentalSlotV2,
-    validate_experiment_registration, validate_experiment_registration_v2,
+    ExperimentSpecificationV1, ExperimentalSlotV2, validate_experiment_registration,
 };
 use review_core::task::optimization_light::{
     OPTIMIZATION_EXECUTION_CONFIGURATION_V1, OptimizationExecutionConfigurationV1,
@@ -539,27 +538,10 @@ impl TaskExecutionProjection {
                     wall_ms: task.limits.deadline_unix_ms.saturating_sub(now),
                 };
                 let max_children = match slot_envelope.artifact_type.as_str() {
-                    EXPERIMENTAL_SLOT_V1 => {
-                        let slot: ExperimentalSlotV1 =
-                            serde_json::from_value(slot_envelope.payload)?;
-                        validate_experiment_registration(
-                            &recorded.prepared.slot_id,
-                            &slot,
-                            &recorded.prepared.specification_id,
-                            &specification,
-                            prepared_id,
-                            &recorded.prepared,
-                            decision,
-                            now,
-                            &remaining,
-                        )
-                        .map_err(conflict)?;
-                        slot.max_children
-                    }
                     EXPERIMENTAL_SLOT_V2 => {
                         let slot: ExperimentalSlotV2 =
                             serde_json::from_value(slot_envelope.payload)?;
-                        validate_experiment_registration_v2(
+                        validate_experiment_registration(
                             &recorded.prepared.slot_id,
                             &slot,
                             &recorded.prepared.specification_id,

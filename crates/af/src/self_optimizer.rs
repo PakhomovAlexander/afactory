@@ -732,7 +732,7 @@ pub(crate) fn run(mut options: Options) -> Result<i32, String> {
     let mut file = serde_json::json!({
         "schema":"af.task-file/1", "task_id":task_id, "kind":"optimize",
         "goal":goal,
-        "requirements":{"mode":mode,"live_demonstrations":"pending","capture_payload_digest":capture_digest},
+        "requirements":{"mode":mode,"capture_payload_digest":capture_digest},
         "strategy":options.strategy, "facts":facts,
         "limits":{"tokens":10000000,"max_attempts":max_attempts,"wall_ms":28800000,
             "verification":{"tokens":9000000,"attempts":81,"wall_ms":25200000}}
@@ -1029,7 +1029,7 @@ mod tests {
         // message remains 15, not 30. Outer sessions stay separate from AF charges.
         assert_eq!(economics.af_usage.chargeable_tokens.get(), 0);
         assert_eq!(economics.outer_session_usage.chargeable_tokens.get(), 115);
-        assert_eq!(economics.cache_results["provider_prompt"]["hit"], 1);
+        assert_eq!(economics.cache_economics["provider_prompt"].hits, 1);
         assert_eq!(
             economics
                 .rows

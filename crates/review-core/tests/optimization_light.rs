@@ -259,7 +259,6 @@ fn adoption_observation_marks_edits_and_cannot_claim_causality() {
         expected_comparable_workload: 1.into(),
         objective_exception: None,
         adoption_offered: true,
-        live_demonstrations: "pending".into(),
     };
     result.validate().unwrap();
 }

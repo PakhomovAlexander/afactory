@@ -115,10 +115,6 @@ pub struct Configuration {
     pub engine_id: String,
     pub experiment: ConfigurationExperimentPolicy,
     pub case_inputs: BTreeMap<String, String>,
-    /// Read-only compatibility for configurations produced by the rejected data-input design.
-    /// New configurations never attach instructions as an arm business input.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub baseline_execution_configuration_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_execution_configuration_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -202,10 +198,9 @@ pub fn read_configuration(cas: &Cas, id: &str) -> Result<Configuration, String> 
             .is_some_and(|id| !review_core::is_digest(id))
         || value.light_recipe_id.is_some() != value.light_invalidation_id.is_some()
         || value
-            .baseline_execution_configuration_id
-            .iter()
-            .chain(value.candidate_execution_configuration_id.iter())
-            .any(|id| !review_core::is_digest(id))
+            .candidate_execution_configuration_id
+            .as_ref()
+            .is_some_and(|id| !review_core::is_digest(id))
     {
         return Err("Optimization configuration has invalid captured case inputs".into());
     }
@@ -664,7 +659,6 @@ pub fn prepare_configuration_with_proposal(
         engine_id: engine.into(),
         experiment: policy.experiment,
         case_inputs,
-        baseline_execution_configuration_id: None,
         candidate_execution_configuration_id: None,
         sandbox_cache_kind: None,
         light_recipe_id: None,
@@ -713,15 +707,6 @@ pub fn prepare_light_configuration_with_proposal(
             ]),
             BTreeSet::from(["source_policy_worker_package".into()]),
         ),
-        OptimizationRecipeCapabilityV1::ArtifactReuse => (
-            BTreeSet::from(["artifact_identity".into(), "authority_identity".into()]),
-            BTreeSet::from(["project_configuration".into()]),
-            BTreeSet::from([
-                "fresh_integrity_check".into(),
-                "required_verification".into(),
-            ]),
-            BTreeSet::from(["source_authority_toolchain_policy".into()]),
-        ),
         OptimizationRecipeCapabilityV1::SandboxCache => (
             BTreeSet::from(["cache_measurements".into()]),
             BTreeSet::from(["sandbox_local_cache".into()]),
@@ -744,56 +729,13 @@ pub fn prepare_light_configuration_with_proposal(
         OptimizationRecipeCapabilityV1::Context => {
             path.starts_with(".af/") && path.ends_with("/instructions.md")
         }
-        OptimizationRecipeCapabilityV1::ArtifactReuse => path.starts_with(".af/artifact-reuse/"),
         OptimizationRecipeCapabilityV1::SandboxCache => path.starts_with(".af/cache/"),
         _ => false,
     };
     if !proposal.edits.keys().all(|path| allowed(path)) {
         return Err("Light proposal edit lies outside the selected recipe effect roots".into());
     }
-    let mut edits = proposal.edits.clone();
-    if recipe.capability == OptimizationRecipeCapabilityV1::ArtifactReuse {
-        let path = ".af/artifact-reuse/receipt.json";
-        if edits.len() != 1 {
-            return Err("Artifact reuse requires one exact receipt request".into());
-        }
-        let request = edits
-            .get(path)
-            .ok_or("Artifact reuse requires its exact receipt path")?;
-        if request.executable {
-            return Err("Artifact reuse requires its non-executable receipt path".into());
-        }
-        let request_value: serde_json::Value =
-            serde_json::from_str(&request.text).map_err(|_| "Invalid artifact reuse request")?;
-        if request_value
-            != serde_json::json!({"schema":"af.artifact-reuse-request/1","reuse":"source_snapshot"})
-        {
-            return Err(
-                "Artifact reuse request may select only the current captured source".into(),
-            );
-        }
-        cas.verify(source).map_err(|error| error.to_string())?;
-        let reuse_identity = review_store::content_id(&serde_json::json!([
-            "af/artifact-reuse-receipt/1",
-            source,
-            engine,
-            environment,
-            recipe.recipe_id,
-            recipe.invalidation,
-        ]))
-        .map_err(|error| error.to_string())?;
-        let receipt = serde_json::json!({
-            "schema":"af.artifact-reuse-receipt/1",
-            "artifact_id":source,
-            "engine_id":engine,
-            "authority_policy_id":environment,
-            "reuse_identity":reuse_identity,
-            "integrity":"verified_from_cas",
-            "verification":"required"
-        });
-        edits.get_mut(path).expect("exact request").text =
-            serde_json::to_string(&receipt).map_err(|error| error.to_string())? + "\n";
-    }
+    let edits = &proposal.edits;
     let sandbox_cache_kind = if recipe.capability == OptimizationRecipeCapabilityV1::SandboxCache {
         let path = ".af/cache/cargo.json";
         if edits.len() != 1 {

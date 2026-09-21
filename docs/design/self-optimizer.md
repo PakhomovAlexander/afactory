@@ -100,11 +100,10 @@ Changes: scripts/gate.sh and its captured check definition
 Adoption: verified candidate available for local delivery; current project unchanged
 ```
 
-The report separates `validated`, `rejected`, `inconclusive`, `recommendation_only`
-and `no_change` conclusions. Those are domain conclusions, not replacements for
-Task execution/acceptance states. An interrupted evaluator produces incomplete
-acceptance even if a candidate was built. A complete `no_change` report is useful;
-an unavailable required history source is incomplete, not “nothing to improve.”
+The report separates `validated`, `rejected` and `recommendation_only` conclusions.
+Those are domain conclusions, not replacements for Task execution/acceptance states.
+An interrupted evaluator produces incomplete acceptance even if a candidate was built.
+An unavailable required history source is incomplete, not “nothing to improve.”
 
 Delivery is supported only for a verified configuration Snapshot, through the
 existing explicit Task-ID delivery boundary into a new local worktree. No commits,
@@ -238,7 +237,7 @@ There are two acceptance profiles selected at capture, not after seeing results:
 
 | Profile | Required obligations and public evidence | Terminal behavior |
 |---|---|---|
-| Analysis | `analysis` on `result`, covered by an installed `OptimizationAnalysisReceipt@1` binding complete source checks and the selected independent `OptimizationEvaluation@1` | Evidence-grounded recommendations or no-change may be Satisfied; no Snapshot and no delivery. |
+| Analysis | `analysis` on `result`, covered by an installed `OptimizationAnalysisReceipt@1` binding complete source checks and the selected independent `OptimizationEvaluation@1` | Evidence-grounded recommendations may be Satisfied; no Snapshot and no delivery. |
 | Candidate (`correct` or `measure`) | `analysis` on `result` plus `verified` and `goal` on `snapshot`, covered by an installed `OptimizationVerification@1` binding the source/candidate, protected checks, comparison and independent evaluation | Positive verification emits the exact Snapshot and the `verified` domain conclusion; rejection or no eligible change is Unsatisfied and retains its report without a deliverable Snapshot. Missing required execution/evidence is Incomplete. |
 
 The proposed `--mode analyze|correct|measure` selector makes this visible. The
@@ -248,10 +247,7 @@ A negative candidate result can still explain why no change should be adopted;
 it cannot rewrite its fixed obligations into successful analysis. The terminal
 result may omit a required Snapshot on failure, never on candidate acceptance.
 
-The only zero-inference analysis shortcut is a deterministic receipt proving no
-eligible observations under the captured rules and complete coverage. Its domain
-conclusion is `no_change` with reason `no_eligible_evidence`, not a claim of global
-optimality. All substantive analysis requires the independent evaluator.
+All substantive analysis requires the independent evaluator.
 
 Delivery needs an explicit optimize-profile adapter to the existing verified Task
 delivery path; it checks `OptimizationVerification@1`, both code obligations and
@@ -496,7 +492,7 @@ environment versions, not proof of causality across changed workloads.
 The report includes optimization cost and estimated break-even only when savings
 and anticipated comparable task volume are available. A zero or negative saving,
 unknown usage, changed acceptance regime or unsupported estimate is stated as
-such. Early deterministic profiling can return no-change without model calls.
+such.
 
 ### Token and time economics
 
@@ -698,7 +694,7 @@ AF binary edits. Initial shipped limits, captured in every plan, are:
 
 Hitting a capture limit produces a coverage gap and continuation cursor; it never
 silently truncates “all history.” A run with incomplete required coverage may
-produce an explicitly partial report, but cannot return accepted no-change.
+produce only an explicitly partial report.
 Parsing is streaming and record-bounded; a giant or malformed record cannot force
 an unbounded allocation. Raw and normalized byte limits are separate from model
 context limits. Provider admissions and failed Attempts spend the outer allowance.

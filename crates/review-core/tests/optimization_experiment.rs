@@ -16,7 +16,7 @@ fn allowance(tokens: u64, attempts: u32, wall_ms: u64) -> ExperimentAllowanceV1 
 
 fn fixture() -> (
     String,
-    ExperimentalSlotV1,
+    ExperimentalSlotV2,
     String,
     ExperimentSpecificationV1,
     String,
@@ -35,10 +35,12 @@ fn fixture() -> (
     let outer_plan = id('a');
     let policy = id('b');
     let oracle = id('c');
-    let slot = ExperimentalSlotV1 {
-        schema: "af.experimental-slot/1".into(),
+    let slot = ExperimentalSlotV2 {
+        schema: "af.experimental-slot/2".into(),
         slot: "comparison".into(),
-        outer_plan_id: outer_plan.clone(),
+        // A compiler binding digest, not the outer plan artifact ID: registration binds the
+        // outer plan through ExperimentPrepared and the Store's graph-membership proof.
+        outer_plan_binding_id: id('0'),
         policy_id: policy.clone(),
         protected_oracle_id: oracle.clone(),
         allowed_task_kinds: BTreeSet::from(["trial".into()]),
@@ -233,6 +235,39 @@ fn exact_experimental_authority_admits_only_the_complete_bounded_closure() {
         .is_err(),
         "remaining parent reserve must be sufficient"
     );
+    for (name, changed) in [
+        ("slot generation", {
+            let mut changed = slot.clone();
+            changed.schema = "af.experimental-slot/1".into();
+            changed
+        }),
+        ("slot binding", {
+            let mut changed = slot.clone();
+            changed.outer_plan_binding_id = "outer-plan".into();
+            changed
+        }),
+        ("slot concurrency", {
+            let mut changed = slot.clone();
+            changed.max_concurrency = changed.max_children + 1;
+            changed
+        }),
+    ] {
+        assert!(
+            validate_experiment_registration(
+                &slot_id,
+                &changed,
+                &specification_id,
+                &specification,
+                &prepared_id,
+                &prepared,
+                &decision,
+                10_000,
+                &allowance(200, 2, 2_000),
+            )
+            .is_err(),
+            "{name} must fail before dispatch"
+        );
+    }
     for (name, changed) in [
         ("wrong slot", {
             let mut changed = decision.clone();

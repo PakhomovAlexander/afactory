@@ -329,10 +329,6 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         first_configuration.payload["candidate_execution_configuration_id"]
             .as_str()
             .unwrap();
-    assert!(
-        first_configuration.payload["baseline_execution_configuration_id"].is_null(),
-        "instructions are no longer transported as baseline arm data"
-    );
     let candidate_execution = cas.get_artifact(candidate_execution_id).unwrap();
     assert_ne!(
         candidate_execution.payload["original_package_digest"],
@@ -2110,7 +2106,6 @@ fn self_optimize_compiles_executes_and_replays_without_model_calls() {
     let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
     let report = cas.get_json(report_id).unwrap();
     assert_eq!(report["type"], "af/OptimizationReport@1");
-    assert_eq!(report["payload"]["live_demonstrations"], "pending");
     let output = Command::new(env!("CARGO_BIN_EXE_af"))
         .current_dir(&repo)
         .args([
@@ -2223,5 +2218,4 @@ fn actual_code_task_runtime_evidence_round_trips_through_native_af_capture() {
             .is_some_and(|fields| fields.iter().any(|field| field == "elapsed_time")),
         "measured Attempt/check time was downgraded to missing"
     );
-    assert_eq!(report["payload"]["live_demonstrations"], "pending");
 }
