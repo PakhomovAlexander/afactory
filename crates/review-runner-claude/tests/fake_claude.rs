@@ -97,7 +97,7 @@ fn package(dir: &Path, stub_path: &Path) -> review_config::lock::ResolvedReviewe
     std::fs::write(
         package.join("reviewer.toml"),
         format!(
-            "name = \"tester\"\nversion = \"1.0.0\"\n\n[runner]\nprogram = \"{}\"\n\
+            "name = \"tester\"\nversion = \"1.0.0\"\nsubjects = [\"whole-tree\"]\n\n[runner]\nprogram = \"{}\"\n\
              args = [{{ value = \"--model\" }}, {{ value = \"opus\" }}]\n",
             stub_path.display()
         ),
@@ -106,7 +106,7 @@ fn package(dir: &Path, stub_path: &Path) -> review_config::lock::ResolvedReviewe
     std::fs::write(package.join("reviewer.md"), "You are a test reviewer.\n").unwrap();
     let registry = Registry::new([registry_root]);
     let mut lockfile = Lockfile::empty();
-    lockfile.reviewers.insert(
+    lockfile.workers.insert(
         "tester".to_string(),
         Lockfile::pin("tester", &registry).unwrap(),
     );

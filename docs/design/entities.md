@@ -284,8 +284,7 @@ counts, builds an `AttemptSpec` from Worker + Env + Tools + Input, and drives th
 
 **Recorded.** The package digest inside every Input. A Worker has no state of its own.
 
-**Substitution.** One key (`provider`, `model`); another package by name, pinned by digest; a
-profile overlay (`[profile.cheap.worker.architecture] provider = "local"`).
+**Substitution.** One key (`provider`, `model`); another package by name, pinned by digest.
 
 **Relationships.** Pipeline `workers` state lists names · Task strategy binds roles to workers ·
 a Task's evaluator must be a different Worker than its implementer, and by default a

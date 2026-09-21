@@ -1227,7 +1227,7 @@ fn a_package_that_rejects_the_pipeline_subject_is_refused() {
     std::fs::write(package.join("reviewer.md"), "Review.\n").unwrap();
     let registry = Registry::new([dir.path()]);
     let mut lockfile = Lockfile::empty();
-    lockfile.reviewers.insert(
+    lockfile.workers.insert(
         "architecture".to_string(),
         Lockfile::pin("architecture", &registry).unwrap(),
     );
@@ -1296,7 +1296,7 @@ fn a_tampered_package_refuses_the_whole_pipeline() {
     std::fs::write(package.join("reviewer.md"), "Review.\n").unwrap();
     let registry = Registry::new([dir.path()]);
     let mut lockfile = Lockfile::empty();
-    lockfile.reviewers.insert(
+    lockfile.workers.insert(
         "architecture".to_string(),
         Lockfile::pin("architecture", &registry).unwrap(),
     );

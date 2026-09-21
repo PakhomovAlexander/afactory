@@ -49,7 +49,7 @@ fn write_package(root: &Path, name: &str, version: &str) {
 fn locked(name: &str, registry: &Registry) -> Lockfile {
     let mut lockfile = Lockfile::empty();
     lockfile
-        .reviewers
+        .workers
         .insert(name.to_string(), Lockfile::pin(name, registry).unwrap());
     lockfile
 }
@@ -74,23 +74,35 @@ fn a_locked_reviewer_resolves_and_carries_its_runner() {
 }
 
 #[test]
-fn a_legacy_manifest_accepts_only_whole_tree() {
+fn a_manifest_must_declare_its_subjects_and_resolves_only_those() {
     let dir = tempfile::tempdir().unwrap();
     let package = dir.path().join("architecture");
     std::fs::create_dir_all(&package).unwrap();
+    let manifest = |subjects: &str| {
+        format!(
+            "name = \"architecture\"\nversion = \"1.2.0\"\n{subjects}\n\
+             [runner]\nprogram = \"codex\"\nargs = []\n"
+        )
+    };
+    std::fs::write(package.join("reviewer.toml"), manifest("")).unwrap();
+    let registry = Registry::new([dir.path()]);
+    let error = Lockfile::pin("architecture", &registry).unwrap_err();
+    assert!(
+        error.to_string().contains("missing field `subjects`"),
+        "{error}"
+    );
+
     std::fs::write(
         package.join("reviewer.toml"),
-        "name = \"architecture\"\nversion = \"1.2.0\"\n\n\
-         [runner]\nprogram = \"codex\"\nargs = []\n",
+        manifest("subjects = [\"whole-tree\"]\n"),
     )
     .unwrap();
-    let registry = Registry::new([dir.path()]);
     let lockfile = locked("architecture", &registry);
 
     assert!(lockfile.resolve("architecture", &registry).is_ok());
     assert!(matches!(
         lockfile
-            .resolve_for_subject("architecture", &registry, review_core::SubjectKind::Diff,)
+            .resolve_for_subject("architecture", &registry, review_core::SubjectKind::Diff)
             .unwrap_err(),
         LockError::UnsupportedSubject { .. }
     ));
@@ -102,7 +114,7 @@ fn a_programmatically_inserted_floating_pin_is_refused_at_resolution() {
     write_package(dir.path(), "architecture", "1.2.0");
     let registry = Registry::new([dir.path()]);
     let mut lockfile = locked("architecture", &registry);
-    lockfile.reviewers.get_mut("architecture").unwrap().version = "latest".to_string();
+    lockfile.workers.get_mut("architecture").unwrap().version = "latest".to_string();
 
     assert!(matches!(
         lockfile.resolve("architecture", &registry).unwrap_err(),
@@ -227,7 +239,7 @@ fn a_name_absent_from_earlier_roots_resolves_from_a_later_one() {
 fn a_floating_version_cannot_be_written_into_a_lockfile() {
     for version in ["latest", "*", "1.2", "^1.2.0", "1.2.x", ""] {
         let text = format!(
-            "version = 1\n\n[reviewers.architecture]\nversion = \"{version}\"\n\
+            "version = 1\n\n[workers.architecture]\nversion = \"{version}\"\n\
              digest = \"sha256:{}\"\n",
             "0".repeat(64)
         );
@@ -242,7 +254,7 @@ fn a_floating_version_cannot_be_written_into_a_lockfile() {
 
 #[test]
 fn a_truncated_digest_pins_nothing() {
-    let text = "version = 1\n\n[reviewers.architecture]\nversion = \"1.0.0\"\n\
+    let text = "version = 1\n\n[workers.architecture]\nversion = \"1.0.0\"\n\
                 digest = \"sha256:abc123\"\n";
     assert!(matches!(
         Lockfile::from_toml(text).unwrap_err(),
@@ -323,7 +335,7 @@ fn a_manifest_disagreeing_with_the_lock_is_refused() {
 
     let mut lockfile = locked("architecture", &registry);
     // The pin drifts — say, hand-edited to an older release than the package on disk.
-    let pin = lockfile.reviewers.get_mut("architecture").unwrap();
+    let pin = lockfile.workers.get_mut("architecture").unwrap();
     *pin = Pin {
         version: "1.1.0".to_string(),
         digest: pin.digest.clone(),

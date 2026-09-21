@@ -188,9 +188,6 @@ impl std::error::Error for LockError {}
 pub struct PackageManifest {
     pub name: String,
     pub version: String,
-    /// Packages predating Subject capabilities reviewed whole trees. Preserving that exact
-    /// capability keeps them readable without letting them silently claim diff support.
-    #[serde(default = "legacy_subjects")]
     pub subjects: Vec<review_core::SubjectKind>,
     pub runner: CommandSpec,
 }
@@ -292,10 +289,6 @@ fn unique_codex_effort(args: &[crate::ArgSpec]) -> Result<usize, LockError> {
     Ok(*index)
 }
 
-fn legacy_subjects() -> Vec<review_core::SubjectKind> {
-    vec![review_core::SubjectKind::WholeTree]
-}
-
 /// One pinned reviewer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -337,20 +330,14 @@ impl AfPin {
 #[serde(deny_unknown_fields)]
 pub struct Lockfile {
     pub version: u32,
-    /// The pin as release 0.7.1 wrote it: the version only. Read for compatibility, normalised
-    /// into `af` on parse, never written again.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    af_version: Option<String>,
     /// The `af` release that wrote this lock (`af onboard --apply` or `--refresh-lock`) and its
     /// per-target archive digests. A newer `af` proceeds and notes the
     /// difference; an older `af` refuses, because it cannot know what the newer release meant by
     /// these pins; inside the project, any `af` on `PATH` dispatches to the pinned release.
-    /// Absent on locks written before the pin existed, and on locks written by a build that has
-    /// no install receipt (a source build pins nothing).
+    /// Absent on locks written by a build that has no install receipt (a source build pins
+    /// nothing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub af: Option<AfPin>,
-    #[serde(default)]
-    pub reviewers: BTreeMap<String, Pin>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub workers: BTreeMap<String, Pin>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -548,29 +535,23 @@ pub fn package_digest(name: &str, root: &Path) -> Result<String, LockError> {
 /// wrote, so it ignores every field it does not know instead of refusing the whole file.
 pub fn pinned_af(text: &str) -> Option<AfPin> {
     let value: toml::Value = toml::from_str(text).ok()?;
-    let table = value.as_table()?;
-    if let Some(af) = table.get("af").and_then(toml::Value::as_table) {
-        let version = af.get("version")?.as_str()?.to_string();
-        let digests = af
-            .get("digests")
-            .and_then(toml::Value::as_table)
-            .map(|digests| {
-                digests
-                    .iter()
-                    .filter_map(|(target, digest)| {
-                        digest
-                            .as_str()
-                            .map(|digest| (target.clone(), digest.to_string()))
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-        return Some(AfPin { version, digests });
-    }
-    table
-        .get("af_version")
-        .and_then(toml::Value::as_str)
-        .map(AfPin::version_only)
+    let af = value.get("af")?.as_table()?;
+    let version = af.get("version")?.as_str()?.to_string();
+    let digests = af
+        .get("digests")
+        .and_then(toml::Value::as_table)
+        .map(|digests| {
+            digests
+                .iter()
+                .filter_map(|(target, digest)| {
+                    digest
+                        .as_str()
+                        .map(|digest| (target.clone(), digest.to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(AfPin { version, digests })
 }
 
 fn validate_af_pin(pin: &AfPin) -> Result<(), LockError> {
@@ -604,15 +585,13 @@ impl Lockfile {
     pub fn empty() -> Lockfile {
         Lockfile {
             version: 1,
-            af_version: None,
             af: None,
-            reviewers: BTreeMap::new(),
             workers: BTreeMap::new(),
             pipelines: BTreeMap::new(),
         }
     }
 
-    /// The pinned `af` version, whichever shape wrote it.
+    /// The pinned `af` version, from the lock's `[af]` table.
     pub fn af_version(&self) -> Option<&str> {
         self.af.as_ref().map(|pin| pin.version.as_str())
     }
@@ -620,7 +599,7 @@ impl Lockfile {
     /// Parse and validate. A floating version or malformed digest is refused *here*, so a bad
     /// pin cannot sit latent in a file that parses.
     pub fn from_toml(text: &str) -> Result<Lockfile, LockError> {
-        let mut lockfile: Lockfile =
+        let lockfile: Lockfile =
             toml::from_str(text).map_err(|e| LockError::Parse(e.to_string()))?;
         if lockfile.version != 1 {
             return Err(LockError::Parse(format!(
@@ -628,19 +607,10 @@ impl Lockfile {
                 lockfile.version
             )));
         }
-        match (lockfile.af_version.take(), &lockfile.af) {
-            (Some(_), Some(_)) => {
-                return Err(LockError::Parse(
-                    "lock carries both `af_version` and `[af]`; a pin has one home".into(),
-                ));
-            }
-            (Some(version), None) => lockfile.af = Some(AfPin::version_only(&version)),
-            (None, _) => {}
-        }
         if let Some(pin) = &lockfile.af {
             validate_af_pin(pin)?;
         }
-        for pins in [&lockfile.reviewers, &lockfile.workers, &lockfile.pipelines] {
+        for pins in [&lockfile.workers, &lockfile.pipelines] {
             for (name, pin) in pins {
                 validate_pin(name, pin)?;
             }
@@ -659,13 +629,9 @@ impl Lockfile {
         name: &str,
         registry: &Registry,
     ) -> Result<(ResolvedReviewer, Vec<review_core::SubjectKind>), LockError> {
-        let pin = self
-            .reviewers
-            .get(name)
-            .or_else(|| self.workers.get(name))
-            .ok_or_else(|| LockError::NotLocked {
-                name: name.to_string(),
-            })?;
+        let pin = self.workers.get(name).ok_or_else(|| LockError::NotLocked {
+            name: name.to_string(),
+        })?;
         validate_pin(name, pin)?;
         let (root, files) = registry.read(name)?;
 

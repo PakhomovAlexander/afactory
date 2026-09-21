@@ -125,7 +125,7 @@ fn open_round_inner(
             digest: digest.clone(),
             package_artifact_id: id.clone(),
         });
-        lock.reviewers.insert(
+        lock.workers.insert(
             "fixture".into(),
             review_config::lock::Pin {
                 version: "1.0.0".into(),

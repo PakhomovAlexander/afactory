@@ -1001,7 +1001,6 @@ fn project_file(project_name: &str) -> String {
         version: u32,
         project: Project<'a>,
         defaults: Defaults<'a>,
-        worker: BTreeMap<&'a str, Worker<'a>>,
     }
 
     #[derive(Serialize)]
@@ -1015,24 +1014,6 @@ fn project_file(project_name: &str) -> String {
         pipeline: &'a str,
     }
 
-    #[derive(Serialize)]
-    struct Worker<'a> {
-        package: &'a str,
-    }
-
-    let mut workers = BTreeMap::new();
-    workers.insert(
-        "architecture",
-        Worker {
-            package: "architecture",
-        },
-    );
-    workers.insert(
-        "correctness",
-        Worker {
-            package: "correctness",
-        },
-    );
     toml::to_string_pretty(&ProjectFile {
         version: 1,
         project: Project {
@@ -1042,7 +1023,6 @@ fn project_file(project_name: &str) -> String {
         defaults: Defaults {
             pipeline: PIPELINE_NAME,
         },
-        worker: workers,
     })
     .expect("the built-in project file serializes")
 }
@@ -1524,15 +1504,11 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
         .workers
         .retain(|name, _| repo.join(".af/workers").join(name).is_dir());
     refreshed
-        .reviewers
-        .retain(|name, _| repo.join(".af/workers").join(name).is_dir());
-    refreshed
         .pipelines
         .retain(|name, _| repo.join(format!(".af/pipelines/{name}.toml")).is_file());
     for name in referenced {
         let pin = Lockfile::pin(&name, &registry).map_err(|error| error.to_string())?;
-        refreshed.workers.insert(name.clone(), pin);
-        refreshed.reviewers.remove(&name);
+        refreshed.workers.insert(name, pin);
     }
     for (name, text) in &candidates {
         let version = refreshed
@@ -1561,7 +1537,7 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
 }
 
 fn validate_no_stale_pins(repo: &Path, lock: &Lockfile) -> Result<(), String> {
-    for name in lock.workers.keys().chain(lock.reviewers.keys()) {
+    for name in lock.workers.keys() {
         if !repo.join(".af/workers").join(name).is_dir() {
             return Err(format!(
                 "stale Worker pin `{name}` has no `.af/workers/{name}` package; run `af onboard --refresh-lock`"

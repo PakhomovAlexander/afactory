@@ -204,7 +204,6 @@ impl Sandbox {
         if let Some(digest) = digest {
             text.push_str(&format!("\n[af.digests]\n{TARGET} = \"sha256:{digest}\"\n"));
         }
-        text.push_str("\n[reviewers]\n");
         text
     }
 

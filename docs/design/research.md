@@ -174,7 +174,7 @@ Sources: OpenHands SDK ([overview](https://docs.openhands.dev/sdk/arch/overview)
     ([Codex config basics](https://learn.chatgpt.com/docs/config-file/config-basic), [mise](https://mise.jdx.dev/configuration.html))
 - **29.** *Named tables, not arrays; explicit off-values, because TOML has no null.* Helix must
     special-case `[[language]]` merging by name; Figment replaces arrays; `toml-lang/toml#30` is
-    closed and "not revisiting". → `[worker.x]`, `enabled = false`, arrays replace + `extend_*`.
+    closed and "not revisiting". → `[tool.x]`, `enabled = false`, arrays replace + `extend_*`.
     ([toml#30](https://github.com/toml-lang/toml/issues/30), [Helix](https://docs.helix-editor.com/languages.html), [Figment](https://docs.rs/figment/latest/figment/))
 - **30.** *JSONL + CAS in git, SQLite as cache.* Beads v1 (JSONL committed, SQLite ignored, hash IDs
     because sequential IDs produced "two different #7s"); git-appraise's one-JSON-line notes

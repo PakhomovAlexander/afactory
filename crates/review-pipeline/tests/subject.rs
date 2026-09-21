@@ -81,7 +81,7 @@ fn a_diff_subject_executes_only_with_its_exact_change_set_authority() {
     let registry = Registry::new([&reviewers]);
     let mut lockfile = Lockfile::empty();
     lockfile
-        .reviewers
+        .workers
         .insert("tester".into(), Lockfile::pin("tester", &registry).unwrap());
     let loaded = Definition::from_toml(DIFF_PIPELINE)
         .unwrap()

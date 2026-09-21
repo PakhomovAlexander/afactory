@@ -29,6 +29,11 @@ pages only.
   path gets the generic "must live under `.af/pipelines/`" error, and Campaigns whose manifests
   pinned `.review/` paths (af 0.7 and earlier) can no longer be resumed, reported or compiled into
   a Task.
+- `.af/af.lock` no longer has a `[reviewers]` table or the 0.7.1 top-level `af_version` key, and
+  `.af/af.toml` no longer has `[worker.*]` tables: this release refuses a file that still carries
+  them, so delete those lines by hand (`af onboard` writes neither any more). Worker pins live
+  under `[workers]` and the release pin under `[af]`, as before. A Worker package's
+  `reviewer.toml` must now declare `subjects`; an omitted list no longer means whole-tree only.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

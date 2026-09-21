@@ -47,7 +47,7 @@ fn one_real_review_parses_and_reports_its_cost() {
     std::fs::create_dir_all(&package_dir).unwrap();
     std::fs::write(
         package_dir.join("reviewer.toml"),
-        "name = \"smoke\"\nversion = \"1.0.0\"\n\n[runner]\nprogram = \"codex\"\nargs = []\n",
+        "name = \"smoke\"\nversion = \"1.0.0\"\nsubjects = [\"whole-tree\"]\n\n[runner]\nprogram = \"codex\"\nargs = []\n",
     )
     .unwrap();
     std::fs::write(
@@ -58,7 +58,7 @@ fn one_real_review_parses_and_reports_its_cost() {
     .unwrap();
     let registry = Registry::new([&registry_root]);
     let mut lockfile = Lockfile::empty();
-    lockfile.reviewers.insert(
+    lockfile.workers.insert(
         "smoke".to_string(),
         Lockfile::pin("smoke", &registry).unwrap(),
     );

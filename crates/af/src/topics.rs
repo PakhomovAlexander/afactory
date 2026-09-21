@@ -30,14 +30,13 @@ const CONFIG: &str = "\
 Everything a human writes is TOML; everything af writes goes to the Store, except `.af/af.lock`
 (machine-written TOML, committed, like Cargo.lock).
 
-The project file is `.af/af.toml` at the git toplevel. Every table is optional; an empty file
-works with defaults. Named tables for entities (`[worker.x]`, never `[[worker]]`), at most three
-levels deep, a `kind` on every entity, references by name.
+The project file is `.af/af.toml` at the git toplevel. It names the project, the minimum `af`
+release it needs and its default pipelines; optional `[[routes]]` pick a pipeline by the changed
+paths. Worker packages live under `.af/workers/`, pinned in `.af/af.lock`; pipelines name them.
 
   version = 1
   [project]   name = \"myrepo\"      min_af = \"0.7\"
   [defaults]  pipeline = \"review\"  task_pipeline = \"implement\"
-  [worker.correctness]  package = \"correctness\"
 
 The user file is `~/.config/af/config.toml` (XDG on macOS too). It holds what belongs to the
 person and the machine, never to the project: the `[self]` update policy, personal defaults,

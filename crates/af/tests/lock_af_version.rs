@@ -298,23 +298,3 @@ fn an_unpinned_lock_stays_silent() {
         stderr(&planned)
     );
 }
-
-#[test]
-fn the_0_7_1_lock_shape_is_read_and_rewritten_as_a_table() {
-    let root = tempfile::tempdir().unwrap();
-    let repo = onboarded_repo(root.path());
-    let text = std::fs::read_to_string(lock_path(&repo)).unwrap();
-    std::fs::write(
-        lock_path(&repo),
-        text.replacen(
-            "version = 1\n",
-            &format!("version = 1\naf_version = \"{VERSION}\"\n"),
-            1,
-        ),
-    )
-    .unwrap();
-    let validated = report(&onboard(&repo, &["--json"]));
-    assert_eq!(validated["lock_af_version"], VERSION);
-    assert_eq!(validated["warnings"].as_array().unwrap().len(), 0);
-    assert_eq!(read_lock(&repo).af_version(), Some(VERSION));
-}

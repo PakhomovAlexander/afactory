@@ -12,7 +12,7 @@ fn captured_registry_never_returns_to_mutated_package_paths() {
     std::fs::write(package.join("reviewer.toml"), original).unwrap();
     let disk = Registry::new([directory.path().join("reviewers")]);
     let mut lockfile = Lockfile::empty();
-    lockfile.reviewers.insert(
+    lockfile.workers.insert(
         "architecture".into(),
         Lockfile::pin("architecture", &disk).unwrap(),
     );

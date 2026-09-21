@@ -1,7 +1,5 @@
 //! Typed `.af/af.toml` policy shared by onboarding, review, and Task bootstrap.
 
-use std::collections::BTreeMap;
-
 use review_config::Loaded;
 use review_config::lock::Lockfile;
 use semver::Version;
@@ -13,8 +11,6 @@ pub struct ProjectFile {
     version: u32,
     project: Project,
     defaults: Defaults,
-    #[serde(default)]
-    worker: BTreeMap<String, Worker>,
     /// How changed paths select a pipeline, and what happens when no route or too many match.
     #[serde(default)]
     routing: Option<Routing>,
@@ -113,12 +109,6 @@ struct Defaults {
     task_pipeline: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Worker {
-    package: String,
-}
-
 impl ProjectFile {
     pub fn parse(text: &str) -> Result<Self, String> {
         let project: Self = toml::from_str(text)
@@ -137,10 +127,6 @@ impl ProjectFile {
         validate_safe_name(&self.defaults.pipeline, "default review pipeline")?;
         if let Some(task_pipeline) = &self.defaults.task_pipeline {
             validate_safe_name(task_pipeline, "default Task pipeline")?;
-        }
-        for (name, worker) in &self.worker {
-            validate_safe_name(name, "Worker name")?;
-            validate_safe_name(&worker.package, "Worker package")?;
         }
         let mut names = std::collections::BTreeSet::new();
         for route in &self.routes {
@@ -434,8 +420,7 @@ mod tests {
     fn project(extra: &str, min_af: &str) -> String {
         format!(
             "version = 1\n[project]\nname = \"demo\"\nmin_af = \"{min_af}\"\n\
-             [defaults]\npipeline = \"review\"\ntask_pipeline = \"implement\"\n\
-             [worker.correctness]\npackage = \"correctness\"\n{extra}"
+             [defaults]\npipeline = \"review\"\ntask_pipeline = \"implement\"\n{extra}"
         )
     }
 
@@ -448,12 +433,13 @@ mod tests {
 
     #[test]
     fn rejects_unknown_policy_that_would_be_ignored() {
-        let error = ProjectFile::parse(&project(
+        for extra in [
             "[env.default]\nisolation = \"host\"\nnetwork = \"ambient\"\n",
-            "0.6",
-        ))
-        .unwrap_err();
-        assert!(error.contains("unknown field"), "{error}");
+            "[worker.correctness]\npackage = \"correctness\"\n",
+        ] {
+            let error = ProjectFile::parse(&project(extra, "0.6")).unwrap_err();
+            assert!(error.contains("unknown field"), "{error}");
+        }
     }
 
     #[test]

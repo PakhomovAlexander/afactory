@@ -125,7 +125,7 @@ af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directori
 
 ```text
 .af/
-  af.toml        project policy: defaults, Worker bindings, routing
+  af.toml        project policy: minimum af release, default pipelines, routing
   af.lock        the release pin (bytes per target) and every Worker package digest
   pipelines/     pipeline definitions (this repository: review.toml, implement.toml, …)
   workers/       Worker packages: <name>/reviewer.md (prompt) + reviewer.toml (manifest)

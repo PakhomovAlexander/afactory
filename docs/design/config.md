@@ -17,7 +17,7 @@ entity off, because TOML has no null.
 | system | `/etc/af/config.toml` | fleet ceilings (optional) |
 | user | `$XDG_CONFIG_HOME/af/config.toml` + `conf.d/*.toml` (XDG on macOS too, like jj and mise) | providers with auth references, the Store connection, personal defaults, trust, ui, `[self]` |
 | directory | `.af/af.toml` in every ancestor **above** the git toplevel (or above cwd outside a repository), nearer wins; may carry `workers/` shared by the tree | a team's or a workspace's defaults: providers, shared packages, envs — trust-gated like a project |
-| project | `.af/af.toml` at the git toplevel (found by walking up; no in-repo cascade — a monorepo uses `extend`) | envs, tools, worker references, defaults |
+| project | `.af/af.toml` at the git toplevel (found by walking up; no in-repo cascade — a monorepo uses `extend`) | envs, tools, defaults |
 | project-local | `.af/af.local.toml`, gitignored (`af init` adds it to the excludes) | personal overrides for this checkout |
 | profile | `--profile <name>` / `AF_PROFILE` selects `[profile.<name>.*]` overlays from any layer | cheap / ci / offline variants |
 | environment | `AF_<TABLE>__<KEY>` (`AF_DEFAULTS__ENV=ci`) | CI knobs |
@@ -28,11 +28,11 @@ the directory file that supplied it. The directory layer is recorded in
 [ADR-0044](../adr/0044-af-manages-itself-and-dispatches-to-the-pinned-release.md); branch-specific
 configuration is git-managed — the project layer on a branch is what that branch commits.
 
-**Trust gate.** Keys that can execute code or move money — `[env.*]`, `[tool.*]`,
-`[worker.*].command`, `[hooks]` — apply from the project layers only after `af trust` recorded
-the path and content hash in `$XDG_STATE_HOME/af/trust.toml` (mise, direnv, and Codex do the
-same). The project layers **may never** carry `auth`, a Store connection, or any provider
-secret reference; such keys are rejected with the file and line, not ignored.
+**Trust gate.** Keys that can execute code or move money — `[env.*]`, `[tool.*]`, `[hooks]` —
+apply from the project layers only after `af trust` recorded the path and content hash in
+`$XDG_STATE_HOME/af/trust.toml` (mise, direnv, and Codex do the same). The project layers **may
+never** carry `auth`, a Store connection, or any provider secret reference; such keys are rejected
+with the file and line, not ignored.
 
 ## 2. `.af/af.toml` — the project
 
@@ -91,22 +91,12 @@ kind = "command"
 program = "bash"
 args = [{ value = "scripts/verify.sh" }]
 
-[worker.architecture]                               # a reference to .af/workers/architecture (pinned in af.lock)
-package = "architecture"
-[worker.performance]
-package = "performance"
-provider = "codex"                                  # override the package's provider: cross-provider review
-
-[profile.cheap.worker.architecture]                 # overlay: deep-merged when --profile cheap
-provider = "local"
-model = "qwen3-coder"
-
-[profile.ci.env.default]
+[profile.ci.env.default]                            # overlay: deep-merged when --profile ci
 isolation = "container"
 image = "ghcr.io/org/dev@sha256:…"
 ```
 
-Rules of the file: named tables for entities (`[worker.x]`, never `[[worker]]` — arrays do not
+Rules of the file: named tables for entities (`[tool.x]`, never `[[tool]]` — arrays do not
 merge by key); at most three levels deep; a `kind` on every entity; references by name; a
 comment on every non-obvious key. `af config set env.default.network none` edits through
 `toml_edit`, preserving comments and order — prefer it to hand edits in scripts.
@@ -187,8 +177,8 @@ run (`af lock`).
 
 ## 5. Substituting an entity — the four ways
 
-1. **Partially redefine it in a higher layer** — `.af/af.local.toml`: `[worker.architecture]
-   provider = "local"`.
+1. **Partially redefine it in a higher layer** — `.af/af.local.toml`: `[env.default]
+   network = "ambient"`.
 2. **Switch it off** — `[tool.github] enabled = false` (the no-null answer).
 3. **Re-point a reference** — `[defaults] env = "ci"`, or a Task's `strategy.workers`.
 4. **Patch locally, never commit** — `[patch.provider.claude] home = "/tmp/claude-test"`; the

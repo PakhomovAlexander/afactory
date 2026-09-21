@@ -218,7 +218,7 @@ fn load_diff_pipeline(directory: &Path) -> review_config::Loaded {
     let registry = Registry::new([&reviewers]);
     let mut lockfile = Lockfile::empty();
     lockfile
-        .reviewers
+        .workers
         .insert("tester".into(), Lockfile::pin("tester", &registry).unwrap());
     Definition::from_toml(WARM_DIFF_PIPELINE)
         .unwrap()

@@ -1,5 +1,5 @@
-//! The lock records the `af` release that wrote it and the bytes that release has; older locks
-//! stay readable, and the 0.7.1 shape (`af_version` alone) is read as a pin without digests.
+//! The lock records the `af` release that wrote it and the bytes that release has; a lock without
+//! the pin stays readable and unpinned.
 
 use review_config::lock::{AfPin, Lockfile, pinned_af};
 
@@ -8,7 +8,7 @@ const ZERO_DIGEST: &str = "00000000000000000000000000000000000000000000000000000
 #[test]
 fn a_lock_without_an_af_pin_parses_and_stays_unpinned() {
     let text = format!(
-        "version = 1\n\n[reviewers.x]\nversion = \"1.0.0\"\ndigest = \"sha256:{ZERO_DIGEST}\"\n"
+        "version = 1\n\n[workers.x]\nversion = \"1.0.0\"\ndigest = \"sha256:{ZERO_DIGEST}\"\n"
     );
     let lock = Lockfile::from_toml(&text).unwrap();
     assert_eq!(lock.af, None);
@@ -33,24 +33,8 @@ fn the_af_pin_round_trips_as_a_table_right_after_the_format_version() {
         )),
         "{text}"
     );
-    assert!(!text.contains("af_version"), "{text}");
     assert_eq!(Lockfile::from_toml(&text).unwrap(), lock);
     assert_eq!(pinned_af(&text), Some(pin));
-}
-
-#[test]
-fn the_0_7_1_shape_is_read_as_a_pin_without_digests_and_rewritten_as_a_table() {
-    let text = "version = 1\naf_version = \"0.7.1\"\n\n[reviewers]\n";
-    let lock = Lockfile::from_toml(text).unwrap();
-    assert_eq!(lock.af, Some(AfPin::version_only("0.7.1")));
-    assert_eq!(lock.af_version(), Some("0.7.1"));
-    assert!(
-        lock.to_toml()
-            .starts_with("version = 1\n\n[af]\nversion = \"0.7.1\"\n")
-    );
-    assert_eq!(pinned_af(text), Some(AfPin::version_only("0.7.1")));
-    let both = "version = 1\naf_version = \"0.7.1\"\n\n[af]\nversion = \"0.8.0\"\n";
-    assert!(Lockfile::from_toml(both).is_err());
 }
 
 #[test]

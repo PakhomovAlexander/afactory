@@ -8,8 +8,6 @@ aarch64-apple-darwin = "sha256:e571c111d21cb142b90eec7c9e4e30a2f16f46683c5531027
 aarch64-unknown-linux-musl = "sha256:b945104899e18deaa0840be724441d313d42a176efb023ef3a3657def73a4ed0"
 x86_64-unknown-linux-musl = "sha256:fded2f07f810fb141e08c92a99f92fddaf8166cbeb80a7c3467865f558ec020a"
 
-[reviewers]
-
 [workers.bugs]
 version = "1.0.0"
 digest = "sha256:6dfae1e54d9381547512a5124c4d6d4cb0e5e8cab02d4560a2c49c7552abb311"
