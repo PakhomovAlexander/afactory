@@ -3,6 +3,47 @@
 version = 4
 
 [[package]]
+name = "af"
+version = "0.9.0-rc.6"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "clap_mangen",
+ "crossterm",
+ "fs2",
+ "jsonschema 0.56.0",
+ "minisign",
+ "minisign-verify",
+ "nix 0.31.3",
+ "portable-pty",
+ "review-attempt",
+ "review-check",
+ "review-config",
+ "review-core",
+ "review-graph",
+ "review-parallel",
+ "review-pipeline",
+ "review-process",
+ "review-runner",
+ "review-runner-claude",
+ "review-runner-codex",
+ "review-sandbox",
+ "review-source-git",
+ "review-source-task",
+ "review-store",
+ "rusqlite",
+ "rustix",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "shell-words",
+ "tempfile",
+ "toml",
+ "toml_edit",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1703,47 +1744,6 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "toml",
-]
-
-[[package]]
-name = "reviewctl"
-version = "0.9.0-rc.6"
-dependencies = [
- "clap",
- "clap_complete",
- "clap_mangen",
- "crossterm",
- "fs2",
- "jsonschema 0.56.0",
- "minisign",
- "minisign-verify",
- "nix 0.31.3",
- "portable-pty",
- "review-attempt",
- "review-check",
- "review-config",
- "review-core",
- "review-graph",
- "review-parallel",
- "review-pipeline",
- "review-process",
- "review-runner",
- "review-runner-claude",
- "review-runner-codex",
- "review-sandbox",
- "review-source-git",
- "review-source-task",
- "review-store",
- "rusqlite",
- "rustix",
- "semver",
- "serde",
- "serde_json",
- "sha2 0.11.0",
- "shell-words",
- "tempfile",
- "toml",
- "toml_edit",
 ]
 
 [[package]]

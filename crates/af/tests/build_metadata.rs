@@ -25,7 +25,7 @@ fn build_metadata_watches_existing_git_paths_and_current_branch() {
     let output = Command::new("rustc")
         .current_dir(&workspace)
         .arg("--edition=2024")
-        .arg(workspace.join("crates/reviewctl/build.rs"))
+        .arg(workspace.join("crates/af/build.rs"))
         .arg("-o")
         .arg(&script)
         .output()

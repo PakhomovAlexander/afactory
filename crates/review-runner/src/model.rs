@@ -1487,7 +1487,7 @@ impl ReviewerAdapter for CommandAdapter {
     }
 }
 
-/// Programmatic callers retain the bounded default; reviewctl binds [`CommandAdapter`] with the
+/// Programmatic callers retain the bounded default; the `af` CLI binds [`CommandAdapter`] with the
 /// exact timeout captured in the Campaign Manifest.
 impl ReviewerAdapter for Command {
     fn render_input(&self, inputs: &ReviewerInputs) -> Result<Option<RenderedInput>, RunnerError> {

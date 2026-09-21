@@ -33,7 +33,7 @@ fn a_contract_complete_finding_is_ingested() {
 #[test]
 fn a_finding_without_a_fix_is_refused_at_ingest() {
     // The exact leak the finding named: a null fix used to reach the ledger and
-    // `reviewctl ledger`. FindingReport@1 requires a remedy, so it is now skipped.
+    // `af review ledger`. FindingReport@1 requires a remedy, so it is now skipped.
     let n = ingest_one(
         r#"{"severity":"major","file":"src/a.rs","line":7,"title":"T","body":"b","fix":null,"confidence":0.9}"#,
     );
@@ -141,7 +141,7 @@ fn a_noncanonical_report_path_is_refused_instead_of_projecting_out() {
 }
 
 /// A reviewer's dispute is folded into the ledger: a `refute` on a prior claim contests it,
-/// which the campaign loop and `reviewctl ledger`/`resolve` then see. Before, disputes sat in
+/// which the campaign loop and `af review ledger`/`resolve` then see. Before, disputes sat in
 /// raw CAS output and affected nothing.
 #[test]
 fn a_refute_dispute_contests_the_prior_claim() {

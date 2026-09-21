@@ -5461,7 +5461,7 @@ mod option_tests {
         ] {
             assert!(validate_campaign_name(invalid).is_err());
         }
-        for valid in ["heavy", "reviewctl-tui", "round_4", "v2.1-audit"] {
+        for valid in ["heavy", "af-tui", "round_4", "v2.1-audit"] {
             assert!(validate_campaign_name(valid).is_ok());
         }
     }

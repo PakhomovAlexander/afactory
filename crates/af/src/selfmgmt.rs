@@ -32,7 +32,7 @@ pub(crate) const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub(crate) const TARGET: &str = env!("AF_TARGET");
 pub(crate) const COMMIT: &str = env!("AF_GIT_COMMIT");
 /// The minisign public key the release job signs `SHA256SUMS` with, embedded at build time from
-/// `crates/reviewctl/keys/release.pub`. Empty in a build without the file (a source build).
+/// `crates/af/keys/release.pub`. Empty in a build without the file (a source build).
 const RELEASE_KEY: &str = env!("AF_RELEASE_KEY");
 /// The first release whose `SHA256SUMS` is signed. Older releases carry checksums only.
 const FIRST_SIGNED: &str = "0.8.0";

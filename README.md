@@ -27,7 +27,7 @@ af self update --check          # exit 10 when a newer release exists; `af self 
 The installer places the newest release in the self-managed layout (`$XDG_DATA_HOME/af/versions/<v>/`,
 default symlink at `~/.local/bin/af`) and `af` takes over from there. Every release ships
 per-target tarballs, a `SHA256SUMS` file, and `SHA256SUMS.minisig` signed with the release key in
-[`crates/reviewctl/keys/release.pub`](crates/reviewctl/keys/release.pub); the binary embeds that
+[`crates/af/keys/release.pub`](crates/af/keys/release.pub); the binary embeds that
 key and refuses an unsigned or badly signed release. `install.sh` verifies the archive digest and,
 when `minisign` is on `PATH`, the signature too.
 
@@ -36,7 +36,7 @@ Supported targets: `aarch64-apple-darwin`, `x86_64-unknown-linux-musl`, and
 source:
 
 ```sh
-cargo install --path crates/reviewctl --locked
+cargo install --path crates/af --locked
 ```
 
 ## Quickstart
@@ -156,7 +156,7 @@ make check                              # fmt + clippy + tests + fixture reprodu
 fixtures/synthetic/generate.sh --check  # the synthetic corpus still reproduces byte-for-byte
 make pilot-check                        # deterministic Task start/deliver/recovery smoke
 make review-kernel-container-probes     # live container probes; needs a usable runtime
-cargo run -p reviewctl --bin af -- review tui
+cargo run -p af --bin af -- review tui
 ```
 
 The toolchain is pinned, the lockfile is committed, and `unsafe_code = "forbid"` is set

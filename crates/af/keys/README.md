@@ -11,7 +11,7 @@ Create the pair once, on the maintainer's machine:
 ```sh
 minisign -G -W -p release.pub -s release.key         # -W: no password, the secret store guards it
 gh secret set MINISIGN_SECRET_KEY --repo PakhomovAlexander/afactory < release.key
-git add crates/reviewctl/keys/release.pub             # commit the public key only
+git add crates/af/keys/release.pub                    # commit the public key only
 shred -u release.key 2>/dev/null || rm -P release.key  # or keep it offline for rotation
 ```
 

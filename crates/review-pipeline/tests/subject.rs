@@ -1,4 +1,4 @@
-//! Subject support is enforced at the composition boundary, not only by reviewctl.
+//! Subject support is enforced at the composition boundary, not only by the `af` CLI.
 
 use std::path::Path;
 use std::sync::{Arc, Mutex};

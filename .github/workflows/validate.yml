@@ -37,7 +37,7 @@ jobs:
           AF_CI_METRICS: ${{ runner.temp }}/check-metrics.jsonl
         run: make check
       - name: CLI smoke
-        run: python3 scripts/ci-step.py cli-smoke cargo run --locked -p reviewctl --bin af -- --version
+        run: python3 scripts/ci-step.py cli-smoke cargo run --locked -p af --bin af -- --version
         env:
           AF_CI_METRICS: ${{ runner.temp }}/check-metrics.jsonl
       - name: Save Cargo cache

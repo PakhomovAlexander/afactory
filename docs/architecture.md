@@ -41,7 +41,7 @@ crates/
   review-runner-claude/, review-runner-codex/  the model adapters: digest-pinned
                  Worker packages driving `claude -p` and `codex exec`
   review-source-task/ read-only capture of external issue sources into typed data
-  reviewctl/     the `af` binary: onboarding, review, task, provider and self-management
+  af/            the `af` binary: onboarding, review, task, provider and self-management
 fixtures/
   legacy/        frozen real reviewer-output bundles — per-project data; this
                  repository ships none, so the tests that read them are #[ignore]d

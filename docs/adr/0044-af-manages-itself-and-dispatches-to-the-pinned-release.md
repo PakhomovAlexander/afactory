@@ -13,7 +13,7 @@ Consumers ran `af` through per-repository launcher scripts that carried a versio
 while `af.lock` (ADR for #47) already recorded the release that wrote it and could only warn or
 refuse on drift. The CLI parsed argv by hand with one usage string for every command, had no
 completions, no man page, and no way to install, update, or remove itself. Configuration had one
-project layer and a handful of `AFACTORY_*` / `REVIEWCTL_*` knobs.
+project layer and a handful of `AFACTORY_*` knobs.
 
 The decision, in five parts that ship together:
 
@@ -42,7 +42,7 @@ The decision, in five parts that ship together:
    `conf.d`) · directory (`.af/af.toml` in every ancestor above the git toplevel, nearer wins) ·
    project · local (`.af/af.local.toml`) · environment (`AF_<TABLE>__<KEY>`). Tables deep-merge,
    scalars last-wins, arrays replace; `af config show --origin` names the file and line of every
-   value. No branch layer: git already versions `.af/` per branch. `AFACTORY_*` / `REVIEWCTL_*`
+   value. No branch layer: git already versions `.af/` per branch. `AFACTORY_*`
    knobs are renamed `AF_*` and the old names are refused with the new one; the config directory
    moves from `afactory/` to `af/` with a read-through of the legacy path.
 

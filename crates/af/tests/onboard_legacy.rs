@@ -9,7 +9,7 @@ const DEMAND_SET: &str = "review.kernel/DemandSet@1";
 
 /// The hub's `.review/` policy as it was pinned before `.af/` — kept as a test fixture only.
 fn legacy_fixture() -> PathBuf {
-    fixtures::workspace_root().join("crates/reviewctl/tests/fixtures/legacy-hub")
+    fixtures::workspace_root().join("crates/af/tests/fixtures/legacy-hub")
 }
 
 #[path = "support/fixtures.rs"]
