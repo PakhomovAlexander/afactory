@@ -39,7 +39,8 @@ GA reads only what GA writes. Compatibility obligations start at the GA release.
    read at all, and `af onboard --migrate` is gone. The fixed implementation v1 format
    (`.af/pipelines/implement.toml` with its `.af/workers/` implementer and evaluator) is not read
    either: `af task start` takes only a Task file, and its `--kind`, `--goal` and `--pipeline`
-   flags are gone.
+   flags are gone. A Task catalog Worker declares a `command` or `model` runner; the
+   `legacy_task_command` runner, which spoke the fixed format's Worker protocol, is refused.
 3. **One contract per name, at its highest pre-GA version.** Each pre-GA version ladder of a
    persisted or emitted contract (event and artifact types, execution and usage records, CLI JSON
    outputs and their JSON Schemas, and catalog and review-policy generations) collapses at GA to a
@@ -145,8 +146,10 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   run-authority generation beside V2.
 - [ADR-0094](0094-bind-task-review-assignments-and-readable-inputs.md): Review catalog and policy
   generation one as compatibility formats.
-- [ADR-0095](0095-bind-legacy-task-context-and-retry-output-admission.md): `af/TaskContext@1` and
-  the original context rendering for previously captured packages.
+- [ADR-0095](0095-bind-legacy-task-context-and-retry-output-admission.md): the *Explicit legacy
+  context* section: the `legacy_task_command` runner and its `legacy_budget_tokens` wire budget,
+  `af/TaskContext@2` with its compatibility contracts and 8 MiB metadata limit, and the original
+  context rendering for previously captured packages. Its output-admission retry decision stays.
 - [ADR-0099](0099-select-task-review-generation-independently-of-provider-costs.md): the semantics
   of captured policy-one plans.
 - [ADR-0101](0101-reuse-review-structure-with-fresh-task-boundaries.md): readability of historical

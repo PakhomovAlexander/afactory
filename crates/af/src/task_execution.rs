@@ -691,10 +691,7 @@ fn restore_compiler(
     }
     for name in authority.packages.keys() {
         if let Some(worker) = compiler.worker(name) {
-            if !matches!(
-                worker.runner,
-                TaskWorkerRunner::Command { .. } | TaskWorkerRunner::LegacyTaskCommand { .. }
-            ) {
+            if !matches!(worker.runner, TaskWorkerRunner::Command { .. }) {
                 continue;
             }
             compiler.bind_worker(

@@ -74,6 +74,12 @@ or needs a documented hand edit.
   `.af/af.lock` are then unused and can go too. Run implementation Tasks from a Task file against
   a Task catalog instead; `af catalog init --profile software` writes a runnable starter. The
   `make pilot-check` target is gone; `make check` runs the same delivery and recovery tests.
+- A Task catalog Worker's `worker.toml` can no longer declare
+  `runner.kind = "legacy_task_command"` with its `protocol` and `legacy_budget_tokens` keys: the
+  catalog refuses such a package. That runner spoke the fixed implementation v1 Markdown and
+  verdict protocol. Declare a `command` or `model` runner instead, which reads
+  `af.worker-request/1` and replies with `af.worker-reply/1`. Worker context is always
+  `af/TaskContext@1`; `af/TaskContext@2` is neither written nor read.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

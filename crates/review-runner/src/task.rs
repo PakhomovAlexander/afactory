@@ -14,13 +14,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{ContextManifest, ModelRunner, RunnerError};
-pub mod legacy;
 pub mod provider;
 pub mod usage;
-use legacy::LegacyTaskProtocol;
 
 pub const TASK_CONTEXT_V1: &str = "af/TaskContext@1";
-pub const TASK_CONTEXT_V2: &str = "af/TaskContext@2";
 pub const MAX_WORKER_BYTES: usize = 1024 * 1024;
 pub const WORKER_REPLY_FORMAT: &str = "Return exactly one JSON object: {\"schema\":\"af.worker-reply/1\",\"outputs\":{\"PORT\":[PAYLOAD]}}. Use declared output ports; each PAYLOAD must match output_schemas[PORT].";
 
@@ -66,12 +63,6 @@ pub struct TaskContext {
     pub rendered_id: String,
     pub contract_id: String,
     pub manifest: ContextManifest,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "review_core::task::present_option"
-    )]
-    pub legacy: Option<legacy::LegacyTaskContext>,
 }
 
 impl TaskContext {
@@ -106,10 +97,10 @@ impl TaskContext {
                         .artifact_id
                         .as_deref()
                         .is_some_and(|id| !review_core::is_digest(id))
-                    || entry.artifact_type.as_deref().is_some_and(|ty| {
-                        !review_core::is_artifact_type(ty)
-                            && !matches!(ty, "af/implement-input@1" | "af/evaluate-input@1")
-                    })
+                    || entry
+                        .artifact_type
+                        .as_deref()
+                        .is_some_and(|ty| !review_core::is_artifact_type(ty))
                     || entry.rendered_bytes > safe
                     || entry.estimated_tokens > safe
                     || entry.estimated_tokens != entry.rendered_bytes.div_ceil(4)
@@ -130,8 +121,6 @@ pub struct WorkerContract {
     output_schemas: BTreeMap<String, Value>,
     input: jsonschema::Validator,
     outputs: BTreeMap<String, jsonschema::Validator>,
-    legacy: Option<LegacyTaskProtocol>,
-    legacy_budget_tokens: Option<u64>,
 }
 
 /// Contracts are local captured data. External schema resolution would add undeclared
@@ -191,40 +180,7 @@ impl WorkerContract {
             output_schemas: outputs,
             input: input_validator,
             outputs: output_validators,
-            legacy: None,
-            legacy_budget_tokens: None,
         })
-    }
-
-    /// The transport version is part of the captured contract identity. Legacy reply
-    /// translation still undergoes exactly the same output schema and port admission.
-    pub fn with_legacy_protocol(
-        mut self,
-        cas: &Cas,
-        protocol: LegacyTaskProtocol,
-    ) -> Result<Self, String> {
-        self.id = cas.put_json(&serde_json::json!({"schema":"af.worker-compatibility/1","contract_id":self.id,"protocol":protocol})).map_err(|e|e.to_string())?;
-        self.legacy = Some(protocol);
-        Ok(self)
-    }
-
-    /// New compatibility contracts bind explicit wire data independently of model costs.
-    pub fn with_legacy_protocol_and_budget(
-        self,
-        cas: &Cas,
-        protocol: LegacyTaskProtocol,
-        budget_tokens: u64,
-    ) -> Result<Self, String> {
-        if budget_tokens > 9_007_199_254_740_991 {
-            return Err("Legacy wire budget exceeds the safe integer range".into());
-        }
-        let mut captured = self.with_legacy_protocol(cas, protocol)?;
-        captured.id = cas
-            .put_json(&serde_json::json!({"schema":"af.worker-compatibility/2",
-            "contract_id":captured.id,"legacy_budget_tokens":budget_tokens}))
-            .map_err(|e| e.to_string())?;
-        captured.legacy_budget_tokens = Some(budget_tokens);
-        Ok(captured)
     }
 
     pub fn id(&self) -> &str {
@@ -232,20 +188,6 @@ impl WorkerContract {
     }
 
     pub fn validate_reply(&self, bytes: &[u8]) -> Result<WorkerReply, String> {
-        if bytes.len() > MAX_WORKER_BYTES {
-            return Err("Worker reply exceeds byte bound".into());
-        }
-        match self.legacy {
-            Some(protocol) => self.validate_typed_reply(
-                &serde_json::to_vec(&protocol.reply(bytes)?).map_err(|e| e.to_string())?,
-            ),
-            None => self.validate_typed_reply(bytes),
-        }
-    }
-
-    /// Durable artifacts are already normalized. Never translate an admitted reply a second
-    /// time when checking the Store publication boundary or replaying its evidence.
-    pub fn validate_typed_reply(&self, bytes: &[u8]) -> Result<WorkerReply, String> {
         if bytes.len() > MAX_WORKER_BYTES {
             return Err("Worker reply exceeds byte bound".into());
         }
@@ -278,35 +220,6 @@ impl WorkerContract {
         feedback: &[String],
         instructions: &str,
     ) -> Result<String, String> {
-        self.prepare_context(cas, invocation, feedback, instructions, None)
-    }
-
-    pub fn prepare_legacy(
-        &self,
-        cas: &Cas,
-        invocation: &TaskInvocationV1,
-        feedback: &[String],
-        instructions: &str,
-        context: legacy::LegacyTaskContext,
-    ) -> Result<String, String> {
-        if self.legacy.is_none() || self.legacy_budget_tokens != Some(context.budget_tokens) {
-            return Err("Legacy context requires an explicit compatibility contract".into());
-        }
-        context.validate(cas, invocation)?;
-        self.prepare_context(cas, invocation, feedback, instructions, Some(context))
-    }
-
-    fn prepare_context(
-        &self,
-        cas: &Cas,
-        invocation: &TaskInvocationV1,
-        feedback: &[String],
-        instructions: &str,
-        legacy: Option<legacy::LegacyTaskContext>,
-    ) -> Result<String, String> {
-        if legacy.is_none() && self.legacy_budget_tokens.is_some() {
-            return Err("New legacy contracts require Task-bound context".into());
-        }
         invocation.validate()?;
         if instructions.len() > MAX_WORKER_BYTES / 4 || feedback.len() > 16 {
             return Err("Worker instructions or feedback exceed context bounds".into());
@@ -380,12 +293,7 @@ impl WorkerContract {
             None,
             WORKER_REPLY_FORMAT.len(),
         );
-        let bytes = match self.legacy {
-            Some(protocol) => {
-                protocol.render(cas, invocation, &request, &mut manifest, legacy.as_ref())?
-            }
-            None => serde_json::to_vec(&request).map_err(|e| e.to_string())?,
-        };
+        let bytes = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
         if bytes.len() > MAX_WORKER_BYTES {
             return Err("Worker context exceeds byte bound; narrow the declared input".into());
         }
@@ -397,7 +305,6 @@ impl WorkerContract {
             rendered_id: rendered_id.clone(),
             contract_id: self.id.clone(),
             manifest,
-            legacy: legacy.clone(),
         };
         context.validate()?;
         let refs = invocation
@@ -406,16 +313,11 @@ impl WorkerContract {
             .flat_map(|v| v.artifact_ids.iter().cloned())
             .chain(feedback.iter().cloned())
             .chain([invocation.plan_id.clone(), rendered_id, self.id.clone()])
-            .chain(legacy.iter().map(|value| value.task_revision_id.clone()))
             .collect::<std::collections::BTreeSet<_>>()
             .into_iter()
             .collect();
         cas.put_artifact(
-            if legacy.is_some() {
-                TASK_CONTEXT_V2
-            } else {
-                TASK_CONTEXT_V1
-            },
+            TASK_CONTEXT_V1,
             Producer::KernelOperation {
                 run_id: "task-context-v1".into(),
                 node_id: Some(invocation.node.clone()),
@@ -434,35 +336,14 @@ impl WorkerContract {
             serde_json::from_value(cas.get_json(id).map_err(|e| e.to_string())?)
                 .map_err(|e| e.to_string())?;
         validate_envelope(&envelope)?;
-        if envelope.artifact_id != id
-            || !matches!(
-                envelope.artifact_type.as_str(),
-                TASK_CONTEXT_V1 | TASK_CONTEXT_V2
-            )
-        {
+        if envelope.artifact_id != id || envelope.artifact_type != TASK_CONTEXT_V1 {
             return Err("Worker context identity or type differs".into());
         }
-        let explicit_legacy = envelope.artifact_type == TASK_CONTEXT_V2;
         let context: TaskContext =
             serde_json::from_value(envelope.payload).map_err(|e| e.to_string())?;
         context.validate()?;
         if context.contract_id != self.id {
             return Err("Worker context uses another contract".into());
-        }
-        if explicit_legacy != context.legacy.is_some()
-            || explicit_legacy != self.legacy_budget_tokens.is_some()
-            || context.legacy.is_some() && self.legacy.is_none()
-        {
-            return Err("Worker context generation differs from legacy authority".into());
-        }
-        if let Some(legacy) = &context.legacy {
-            if self.legacy_budget_tokens != Some(legacy.budget_tokens) {
-                return Err("Legacy context changed its captured wire budget".into());
-            }
-            legacy.validate(cas, &context.invocation)?;
-            if !envelope.input_artifacts.contains(&legacy.task_revision_id) {
-                return Err("Legacy context lost captured Task authority".into());
-            }
         }
         let bytes = cas
             .get_bounded(&context.rendered_id, MAX_WORKER_BYTES as u64)

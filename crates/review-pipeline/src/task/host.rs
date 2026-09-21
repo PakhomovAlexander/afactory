@@ -623,13 +623,10 @@ struct CapturedWorker<'a> {
     instructions: String,
     signature: OperatorSignature,
     contract: std::sync::Arc<WorkerContract>,
-    legacy_budget_tokens: Option<u64>,
 }
 
 pub struct CapturedTaskHost<'a> {
     run_id: String,
-    task_id: String,
-    task_revision_id: String,
     graph: CompiledTask,
     workers: BTreeMap<String, std::sync::Arc<CapturedWorker<'a>>>,
     slot_workers: BTreeMap<String, std::sync::Arc<CapturedWorker<'a>>>,
@@ -775,7 +772,6 @@ impl<'a> CapturedTaskHost<'a> {
             instructions,
             signature: original.signature.clone(),
             contract: original.contract.clone(),
-            legacy_budget_tokens: original.legacy_budget_tokens,
         });
         self.derived_workers
             .lock()
@@ -825,7 +821,7 @@ impl<'a> CapturedTaskHost<'a> {
             }
             values.insert(port.clone(), payloads);
         }
-        worker.contract.validate_typed_reply(
+        worker.contract.validate_reply(
             &serde_json::to_vec(&review_runner::task::WorkerReply {
                 schema: "af.worker-reply/1".into(),
                 outputs: values,
@@ -879,10 +875,7 @@ impl<'a> CapturedTaskHost<'a> {
             let name = &graph.slots[slot].worker;
             let manifest = compiler.worker(name).ok_or("Missing captured Worker")?;
             let transport = match &manifest.runner {
-                TaskWorkerRunner::Command { command }
-                | TaskWorkerRunner::LegacyTaskCommand { command, .. } => {
-                    WorkerTransport::Command(command.build())
-                }
+                TaskWorkerRunner::Command { command } => WorkerTransport::Command(command.build()),
                 TaskWorkerRunner::Model { provider_kind, .. } => {
                     let model = models
                         .get(slot)
@@ -915,13 +908,6 @@ impl<'a> CapturedTaskHost<'a> {
                 instructions,
                 signature: manifest.signature.clone(),
                 contract: std::sync::Arc::new(contract),
-                legacy_budget_tokens: match &manifest.runner {
-                    TaskWorkerRunner::LegacyTaskCommand {
-                        legacy_budget_tokens,
-                        ..
-                    } => *legacy_budget_tokens,
-                    _ => None,
-                },
             }))
         };
         for (id, node) in &graph.nodes {
@@ -959,8 +945,6 @@ impl<'a> CapturedTaskHost<'a> {
         }
         Ok(Self {
             run_id: task_run_id(&task.task_id).map_err(|e| e.to_string())?,
-            task_id: task.task_id.clone(),
-            task_revision_id: plan.task_revision_id.clone(),
             graph,
             workers,
             slot_workers,
@@ -969,32 +953,6 @@ impl<'a> CapturedTaskHost<'a> {
             environment,
             domain,
         })
-    }
-
-    fn prepare_worker_context(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        feedback: &[String],
-        worker: &CapturedWorker<'_>,
-    ) -> Result<String, String> {
-        match worker.legacy_budget_tokens {
-            Some(budget_tokens) => worker.contract.prepare_legacy(
-                cas,
-                input,
-                feedback,
-                &worker.instructions,
-                review_runner::task::legacy::LegacyTaskContext {
-                    task_id: self.task_id.clone(),
-                    task_revision_id: self.task_revision_id.clone(),
-                    plan_id: input.plan_id.clone(),
-                    budget_tokens,
-                },
-            ),
-            None => worker
-                .contract
-                .prepare(cas, input, feedback, &worker.instructions),
-        }
     }
 
     fn worker_feedback(
@@ -1286,7 +1244,9 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
     ) -> Result<String, String> {
         let context_id = match self.resolved_worker(cas, definition)? {
             Some(worker) => {
-                self.prepare_worker_context(cas, input, attempt.feedback_ids(), &worker)
+                worker
+                    .contract
+                    .prepare(cas, input, attempt.feedback_ids(), &worker.instructions)
             }
             None => self.domain.prepare_context_for_attempt(cas, input, attempt),
         }?;
@@ -1432,7 +1392,9 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         feedback: &[String],
     ) -> Result<String, String> {
         match self.workers.get(&input.node) {
-            Some(worker) => self.prepare_worker_context(cas, input, feedback, worker),
+            Some(worker) => worker
+                .contract
+                .prepare(cas, input, feedback, &worker.instructions),
             None => self.domain.prepare_context(cas, input, feedback),
         }
     }
@@ -1637,7 +1599,11 @@ impl TaskDomain for CapturedTaskHost<'_> {
                     "Rendered model context exceeds its admitted Attempt token reservation".into(),
                 );
             }
-            if self.prepare_worker_context(cas, input, feedback, worker)? != context_id {
+            if worker
+                .contract
+                .prepare(cas, input, feedback, &worker.instructions)?
+                != context_id
+            {
                 return Err(
                     "Task context changed captured inputs, instructions, contracts or feedback"
                         .into(),
