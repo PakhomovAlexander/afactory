@@ -174,8 +174,8 @@ pub struct NodeSpec {
     /// meaningless on any other kind of node.
     #[serde(default)]
     pub runner: Option<CommandSpec>,
-    /// A reviewer package from the registries, pinned in `.af/af.lock`. The runner command
-    /// then comes from the package's digest-verified manifest.
+    /// A reviewer package from the Worker registry (`.af/workers`), pinned in `.af/af.lock`.
+    /// The runner command then comes from the package's digest-verified manifest.
     #[serde(default)]
     pub package: Option<String>,
     /// Required for every reviewer in pipeline v4. Earlier formats permanently retain their
@@ -1551,8 +1551,8 @@ impl Definition {
     }
 
     /// [`load`](Self::load), with package resolution: every `package = "name"` reviewer is
-    /// located in the registries, digest-verified against the lockfile, and bound to the
-    /// runner its verified manifest declares.
+    /// located in the registry (or the captured packages), digest-verified against the
+    /// lockfile, and bound to the runner its verified manifest declares.
     pub fn load_with(
         self,
         lockfile: &lock::Lockfile,

@@ -1066,11 +1066,10 @@ outputs = ["decision"]
 /// re-verifies every package digest on every test run: editing a package without re-locking
 /// fails here, exactly as it would fail a real run.
 ///
-/// The assertions are deliberately structural. This test ships into every hub and runs against
-/// **that hub's** `.af/`, which the docs invite it to change — add a reviewer, add a check,
-/// retune the budgets. Pinning the shipped pipeline's node list or its counts would mean a hub
-/// that configured itself as documented failed its own CI. What must hold for any pipeline of
-/// this shape is asserted instead, and each assertion below would fail on a real mistake.
+/// The assertions are deliberately structural: the docs invite users to reconfigure `.af/` —
+/// add a reviewer, add a check, retune the budgets — and pinning the node list or counts would
+/// break on any documented reconfiguration. What must hold for any pipeline of this shape is
+/// asserted instead, and each assertion below would fail on a real mistake.
 #[test]
 fn the_checked_in_pipeline_loads() {
     let review_dir = workspace_root().join(".af");
