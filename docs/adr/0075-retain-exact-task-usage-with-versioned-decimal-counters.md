@@ -1,6 +1,8 @@
 # 0075 — Retain exact Task usage with versioned decimal counters
 
-Status: accepted. Date: 2026-09-12.
+Status: accepted. Date: 2026-09-12. Superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): readers for unversioned and numeric-only usage,
+migration on write, and the execution-record and usage version ladders.
 
 ## Context
 

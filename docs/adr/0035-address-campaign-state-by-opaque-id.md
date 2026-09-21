@@ -1,6 +1,8 @@
 # Address Campaign state by opaque ID
 
-**Status:** accepted (2026-08-28)
+**Status:** accepted (2026-08-28); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the permanent compatibility path for label-named
+Campaign directories.
 
 The Campaign label supplied by `--campaign` has historically been interpolated directly into the
 default state path. Rejecting non-normal path components prevents basic traversal, but it leaves a

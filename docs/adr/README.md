@@ -7,8 +7,10 @@ its own log, and the kernel's are all here.
 One decision per file, numbered in order of acceptance as `NNNN-kebab-case-title.md`, **immutable
 once accepted**. Each opens with a status line carrying the status and date, states the context,
 lists the considered options with the reasons each was rejected, records the decision, and ends
-with its consequences. A changed decision is a new ADR marked *supersedes* the old one, with links
-both ways — the old file stays as it was.
+with its consequences. A changed decision is a new ADR that names what it supersedes. A partially
+superseded ADR keeps its body as it was and gains a note on its status line linking the new ADR; a
+fully superseded ADR is deleted with its index entry, and git history keeps it
+([ADR-0113](0113-ga-reads-only-what-ga-writes.md)).
 
 To propose one, take the next free number, write it in that shape, add it to the index below, and
 open a pull request; it becomes binding when the pull request merges with the status `accepted`.
@@ -202,3 +204,4 @@ Record the options you rejected and why — that is the part future readers need
 - [0107 — Share release validation and overlap builds](0107-share-release-validation-and-overlap-builds.md)
 - [0111 — Keep Provider bootstrap machine-local and cross-release
   safe](0111-keep-provider-bootstrap-machine-local-and-cross-release-safe.md)
+- [0113 — GA reads only what GA writes](0113-ga-reads-only-what-ga-writes.md)

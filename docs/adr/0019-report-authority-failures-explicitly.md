@@ -1,6 +1,7 @@
 # Report authority failures explicitly
 
-**Status:** proposed
+**Status:** proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
+permanent `RunReport@1` and `@2` readers.
 
 Report Scope depends on durable Subject and Report artifacts. If either authority is unreadable,
 the affected claim remains active with unknown Scope and convergence fails closed. `RunReport@2`

@@ -1,6 +1,7 @@
 # Persist retry feedback as an Attempt input
 
-**Status:** accepted (2026-08-25)
+**Status:** accepted (2026-08-25); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): `AttemptInput@1` as a permanent event type.
 
 When a syntactically valid reviewer answer failed contract admission, the pipeline retried the
 same node. Feeding the refusal reason back to the reviewer made the retry useful, but the first

@@ -1,7 +1,8 @@
 # ADR-0083: Run post-Round Integration within the original Task
 
 Date: 2026-09-12
-Status: Proposed
+Status: Proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): earlier
+inspection generations.
 
 ## Context
 

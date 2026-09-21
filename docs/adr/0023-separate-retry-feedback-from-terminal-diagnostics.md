@@ -1,6 +1,7 @@
 # Separate retry feedback from terminal diagnostics
 
-**Status:** accepted (2026-08-25)
+**Status:** accepted (2026-08-25); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): `AttemptFeedback@1` as a permanent event type.
 
 ADR-0022 made the exact refusal history consumed by a retry durable as `AttemptInput@1`. Its first
 implementation still reconstructed that input after process restart from every preceding

@@ -1,7 +1,8 @@
 # ADR-0101: Reuse Review structure with fresh Task boundaries
 
 Date: 2026-09-14
-Status: Proposed
+Status: Proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md):
+readability of historical duplicate or non-approved revocations.
 
 ## Context
 

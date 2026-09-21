@@ -138,9 +138,9 @@ Whether a Report's location falls inside the Change Set it was made under — `i
 Attached deterministically to each Report claim from its exact Round Subject, never supplied by
 the reviewer and never stamped on the Finding, because a file this branch has not touched yet may
 be touched by a later Round. A Report with no derivable exact Round Subject is presented as
-`unknown`; that is fail-closed compatibility metadata, not a third Report Scope.
+`unknown`; that is fail-closed metadata, not a third Report Scope.
 An unavailable Subject or Report authority is counted in the active clean window and is persisted
-as `authority_unavailable` in new `RunReport@3` conclusions only when no real Finding or failed
+as `authority_unavailable` in `RunReport@6` conclusions only when no real Finding or failed
 Gate is already the cause; terminal output alone is never the only explanation for a failed
 convergence decision.
 _Avoid_: unqualified "scope" or "out of scope" as a dismissal; an out-of-set Finding is real,

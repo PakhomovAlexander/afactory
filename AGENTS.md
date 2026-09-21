@@ -20,6 +20,9 @@ review corpora belong in consuming repositories, not here.
   --apply` moves a consumer to `.af/`), which renames nothing persisted. Releases are cut only
   through `make release` and the release workflow; a lock pins the release's bytes, not just its
   version (ADR-0045).
+- Compatibility obligations start at GA: never add a reader, migration, fallback, or replay path
+  for state, configuration, flags, or releases that only a pre-GA (0.x) release wrote; such state
+  fails closed ([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)).
 
 ## Invariants
 

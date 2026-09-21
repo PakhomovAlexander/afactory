@@ -1,6 +1,6 @@
 # Drop legacy `.review/` authority in v0.8.0
 
-**Status:** accepted (2026-09-02)
+**Status:** accepted (2026-09-02); superseded by [ADR-0113](0113-ga-reads-only-what-ga-writes.md).
 
 From release `v0.8.0`, `af review plan`, `af review run`, and `af onboard` accept review
 authority only under `.af/`. The legacy layout — `.review/pipelines/`, `.review/reviewers/`,

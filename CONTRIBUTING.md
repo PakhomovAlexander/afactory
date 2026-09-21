@@ -52,9 +52,11 @@ name the file `NNNN-kebab-case-title.md` with a short imperative slug, open with
 carrying the status and date (`**Status:** accepted (YYYY-MM-DD)` in most records), state the
 context, list the considered options with the reason each was rejected, record the decision,
 and end with `## Consequences`. Add the record to the index in `docs/adr/README.md`. An
-accepted ADR is immutable: a changed decision is a new ADR marked *supersedes* the old one,
-linked both ways. Look at `docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md`
-for the shape. Reference the ADR from the PR and from the CHANGELOG line.
+accepted ADR is immutable: a changed decision is a new ADR that names what it supersedes. A
+partially superseded ADR gains a status-line note linking the new one; a fully superseded ADR
+is deleted with its index entry, and git history keeps it. Look at
+`docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md` for the shape. Reference the
+ADR from the PR and from the CHANGELOG line.
 
 ## Commit messages
 

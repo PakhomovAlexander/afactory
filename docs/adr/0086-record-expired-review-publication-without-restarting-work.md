@@ -1,7 +1,8 @@
 # ADR-0086: Record expired Review publication without restarting work
 
 Date: 2026-09-12
-Status: Proposed
+Status: Proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): earlier
+transition and inspection generations.
 
 ## Context
 

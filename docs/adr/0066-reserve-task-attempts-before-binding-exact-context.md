@@ -1,6 +1,7 @@
 # ADR-0066: Reserve Task Attempts before binding exact context
 
-Status: accepted for the Task increment implementation; unreleased.
+Status: accepted for the Task increment implementation; unreleased. Superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the historical combined `Prepared` record.
 
 ## Context
 

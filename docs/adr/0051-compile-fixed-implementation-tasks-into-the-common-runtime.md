@@ -1,6 +1,8 @@
 # ADR-0051 — Compile fixed implementation Tasks into the common runtime
 
-**Status:** accepted for the unreleased Task increment, 2026-09-11.
+**Status:** accepted for the unreleased Task increment, 2026-09-11. Superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): readers for the original implementation history
+and delivery schemas, and the v0.8.0 compatibility fixture.
 
 ## Decision
 

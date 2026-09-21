@@ -1,7 +1,8 @@
 # ADR-0091: Capture explicit Task Provider admission costs
 
 Date: 2026-09-13
-Status: Proposed
+Status: Proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the V1
+catalog and run-authority generation beside V2.
 
 ## Context
 

@@ -2,7 +2,8 @@
 
 Date: 2026-09-12
 Status: Accepted, 2026-09-17, as the shared-runtime foundation for the authorized
-self-optimizer M1–M3 implementation.
+self-optimizer M1–M3 implementation. Superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): earlier execution and inspection generations.
 
 ## Context
 

@@ -1,6 +1,7 @@
 # ADR-0071 — Share captured Review authority and Task token scopes
 
-**Status:** accepted, 2026-09-12; unreleased execution compatibility checkpoint.
+**Status:** accepted, 2026-09-12; unreleased execution compatibility checkpoint. Superseded in part
+by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): readability of historical `.review/` captures.
 
 ## Context
 

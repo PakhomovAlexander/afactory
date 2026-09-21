@@ -9,6 +9,17 @@ release pages only.
 
 ## [Unreleased]
 
+### Changes
+
+- GA reads only what GA writes
+  ([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)). Review Campaigns and Tasks that a
+  0.x release wrote are not read, replayed or migrated: that covers everything under
+  `$XDG_STATE_HOME/af/review/` and `$XDG_STATE_HOME/af/task/`, and any directory passed with
+  `--state` or `--state-root`. Before upgrading, finish or abandon in-flight Campaigns and Tasks
+  with the release that started them, then delete that state. Committed `.af/` files are read only
+  in the shapes this release writes. A key or shorthand that only an earlier release wrote is
+  refused, so edit it out or regenerate the file.
+
 ## [0.9.0-rc.6] - 2026-09-21
 
 ### Authority compatibility

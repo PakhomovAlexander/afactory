@@ -30,9 +30,10 @@ and `--help` on every namespace and command.
 An ADR is numbered (`NNNN-kebab-case-title.md`, the next free number), opens with a status line
 that names the status and date, states the context, lists the considered options with the reasons
 each was rejected, records the decision, and ends with its consequences. Accepted ADRs are
-immutable; a change is a new ADR that says it supersedes the old one, linked both ways. Propose one
-by copying the shape of a recent ADR, adding it to the index in [`adr/README.md`](adr/README.md),
-and opening a pull request.
+immutable; a change is a new ADR that says what it supersedes. A partially superseded ADR gains a
+status-line note linking the new one; a fully superseded ADR is deleted, and git history keeps it.
+Propose one by copying the shape of a recent ADR, adding it to the index in
+[`adr/README.md`](adr/README.md), and opening a pull request.
 
 ## Conventions
 

@@ -1,6 +1,8 @@
 # Keep the ReviewerResult wire shape flat
 
-**Status:** accepted (2026-08-25)
+**Status:** accepted (2026-08-25); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the permanence of `ReviewerResult@1`, and the
+new-version rule for pre-GA reviewer-result shapes.
 
 Every live reviewer adapter emits one flat `ReviewerResult@1` value whose `reports` entries carry
 `severity`, `file`, `line`, `title`, `body`, `fix`, and `confidence`. The kernel admits that value,

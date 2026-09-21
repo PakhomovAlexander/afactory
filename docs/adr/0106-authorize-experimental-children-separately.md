@@ -1,7 +1,8 @@
 # ADR-0106: Authorize experimental children separately inside one Task
 
 Date: 2026-09-17
-Status: Accepted
+Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): earlier
+inspection and execution generations.
 
 Extends [ADR-0046](0046-add-versioned-task-contracts-with-exact-plan-approval.md),
 [ADR-0056](0056-share-planning-accounting-and-authenticate-generated-plan-decisions.md), and

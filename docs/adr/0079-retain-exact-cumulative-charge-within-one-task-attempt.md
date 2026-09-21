@@ -1,7 +1,8 @@
 # ADR-0079: Retain exact cumulative charge within one Task Attempt
 
 Date: 2026-09-12
-Status: Accepted
+Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): readers
+for frozen execution `@1` and `@2`, usage `@1`, and `af/review-report@1` and `@2`.
 
 ## Context
 
