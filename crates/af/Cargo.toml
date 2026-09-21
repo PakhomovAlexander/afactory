@@ -41,7 +41,7 @@ toml = "0.8.23"
 clap = { version = "4.5.60", features = ["derive", "wrap_help", "env", "string"] }
 clap_complete = { version = "4.5.60", features = ["unstable-dynamic"] }
 clap_mangen = "0.3.3"
-toml_edit = "0.22"
+toml_edit = "0.25"
 minisign-verify = "0.2.5"
 
 [target.'cfg(unix)'.dependencies]
