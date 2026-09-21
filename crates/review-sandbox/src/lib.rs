@@ -5,9 +5,11 @@
 //! The provider implemented here is `trusted_local`: a materialized copy of a snapshot in a
 //! temporary directory, with an optional read-only mode. **It is not security isolation.** A
 //! process running as the same user can `chmod` its way out of read-only mode, read anything the
-//! user can read, and open any socket. It buys three real things — the canonical checkout is not
-//! reachable, the environment is rebuilt from an allowlist, and every mutation is captured — and
-//! it buys nothing else.
+//! user can read, and open any socket. It buys two real things — the canonical checkout is not
+//! reachable, and every mutation is captured — and it buys nothing else. The environment a check
+//! runs with is not the sandbox's doing: `review_check::CheckRunner` clears it and rebuilds it
+//! from an allowlist, and a container run starts from `--env-file /dev/null` plus the declared
+//! variables.
 //!
 //! That distinction is enforced rather than documented. A [`Sandbox`] declares the
 //! [`Isolation`] it actually provides, a pipeline declares the isolation it requires, and
@@ -21,10 +23,11 @@
 //! declared containment and delivered none.
 //!
 //! So `fixtures/adversarial/malicious-check.md` is only **partly** discharged here. Its probes
-//! for the canonical checkout, inherited credentials and argument injection are covered. Its
-//! probes for a host marker outside the sandbox and for undeclared network are *not*, and cannot
-//! be by a provider of this kind. They close only when the container provider runs against a
-//! live daemon, and the case says so rather than being quietly narrowed to what passes.
+//! for the canonical checkout, inherited credentials (by the check runner's cleared environment)
+//! and argument injection are covered. Its probes for a host marker outside the sandbox and for
+//! undeclared network are *not*, and cannot be by a provider of this kind. They close only when
+//! the container provider runs against a live daemon, and the case says so rather than being
+//! quietly narrowed to what passes.
 
 pub mod build_cache;
 pub mod cache;
@@ -32,20 +35,18 @@ pub mod container;
 pub mod seal;
 pub mod workspace;
 
-pub use self::SandboxTemplate as Template;
 pub use build_cache::{
     CapturedBuildCache, MaterializedBuildCache, build_cache_environment, capture_build_cache,
     materialize_build_cache, prepare_build_cache_root,
 };
 pub use cache::{
     CacheEnvironment, CacheError, CacheErrorKind, CacheKind, CacheLimits, CacheMaterialization,
-    CacheSnapshot, CacheSource, MAX_CACHE_BYTES, MAX_CACHE_COPY_BYTES, MAX_CACHE_FILES,
-    materialize_cache, remove_materialized_caches,
+    CacheSnapshot, CacheSource, materialize_cache, remove_materialized_caches,
 };
 pub use container::{Availability, ContainerProvider};
 pub use seal::{MutationSet, SealedSandbox};
 pub use workspace::{
-    RecordedPreparation, WorkspaceError, WorkspaceErrorKind, WorkspacePreparation, WorkspaceRoot,
+    RecordedPreparation, WorkspaceError, WorkspacePreparation, WorkspaceRoot,
     default_workspace_cache_root, prepare_workspace, workspace_id,
 };
 
@@ -138,7 +139,6 @@ pub fn admit(policy: Policy, sandbox: &Sandbox) -> Result<(), PolicyError> {
 /// forgery [`admit`] exists to refuse. Only a provider in this crate can set it.
 pub struct Sandbox {
     root: PathBuf,
-    mode: Mode,
     isolation: Isolation,
     /// The manifest as materialized. Sealing diffs against this, so "what did the reviewer
     /// change" is computed rather than reported by the reviewer.
@@ -439,14 +439,6 @@ impl SandboxTemplate {
             _dir: None,
         }
     }
-
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
-    pub fn manifest(&self) -> &Manifest {
-        self.manifest.as_ref()
-    }
 }
 
 impl Sandbox {
@@ -466,7 +458,6 @@ impl Sandbox {
 
         let sandbox = Sandbox {
             root,
-            mode,
             isolation: Isolation::None,
             baseline: Arc::new(manifest.clone()),
             _dir: Some(dir),
@@ -499,7 +490,6 @@ impl Sandbox {
 
         let sandbox = Sandbox {
             root,
-            mode,
             isolation,
             baseline: Arc::clone(&template.manifest),
             _dir: Some(dir),
@@ -514,10 +504,6 @@ impl Sandbox {
         &self.root
     }
 
-    pub fn mode(&self) -> Mode {
-        self.mode
-    }
-
     /// What this sandbox genuinely enforces — readable by anyone, settable by no one.
     pub fn isolation(&self) -> Isolation {
         self.isolation
@@ -525,20 +511,6 @@ impl Sandbox {
 
     pub fn baseline(&self) -> &Manifest {
         self.baseline.as_ref()
-    }
-
-    /// The environment a node runs with: rebuilt from an allowlist, never inherited.
-    ///
-    /// This is the credential probe from the malicious-check case. It holds because the
-    /// environment is *cleared* — a token in the kernel's own environment cannot leak into a
-    /// check by being forgotten in a denylist.
-    pub fn environment(&self) -> Vec<(&'static str, String)> {
-        vec![
-            ("PATH", std::env::var("PATH").unwrap_or_default()),
-            ("HOME", self.root.to_string_lossy().into_owned()),
-            ("LC_ALL", "C".to_string()),
-            ("TZ", "UTC".to_string()),
-        ]
     }
 
     #[cfg(unix)]
@@ -581,13 +553,13 @@ impl Sandbox {
         seal::seal(self)
     }
 
-    pub(crate) fn into_parts(mut self) -> (PathBuf, Arc<Manifest>, Mode, tempfile::TempDir) {
+    pub(crate) fn into_parts(mut self) -> (PathBuf, Arc<Manifest>, tempfile::TempDir) {
         // Seal restores traversal permissions as it scans. The residual `self` (emptied below)
         // then drops as a no-op.
         let dir = self._dir.take().expect("sandbox owns its dir until sealed");
         let root = std::mem::take(&mut self.root);
         let baseline = std::mem::take(&mut self.baseline);
-        (root, baseline, self.mode, dir)
+        (root, baseline, dir)
     }
 }
 

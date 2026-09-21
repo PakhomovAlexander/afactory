@@ -7,8 +7,8 @@ use std::path::Path;
 
 use review_core::{WorkspaceBasisV1, WorkspaceFallbackReasonV1, is_workspace_id};
 use review_sandbox::{
-    Mode, RecordedPreparation, Sandbox, WorkspaceErrorKind, WorkspacePreparation, WorkspaceRoot,
-    prepare_workspace, workspace_id,
+    Mode, RecordedPreparation, Sandbox, WorkspacePreparation, WorkspaceRoot, prepare_workspace,
+    workspace_id,
 };
 use review_source_git::{Entry, EntryKind, Manifest, PathEncoding, materialize, scan_tree};
 use review_store::Cas;
@@ -117,8 +117,17 @@ fn a_stable_root_is_materialized_once_rebased_per_head_and_reused_unchanged() {
     );
     assert_eq!(first.verified_digest, head_one.content_digest());
     assert_eq!(first.entries_touched, 3);
-    assert_eq!(first.template.root(), root.tree());
-    assert_eq!(first.template.manifest(), &head_one);
+    let clone = Sandbox::from_template(&first.template, Mode::EphemeralWrite).unwrap();
+    assert_eq!(
+        clone.baseline(),
+        &head_one,
+        "clones start from the verified head"
+    );
+    assert_eq!(
+        scan_tree(clone.root(), PathEncoding::LegacyV1).unwrap(),
+        head_one
+    );
+    drop(clone);
     assert_eq!(
         scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
         head_one
@@ -477,8 +486,8 @@ fn a_preparation_failure_names_no_host_path() {
         Err(error) => error,
         Ok(_) => panic!("a symlinked root must be refused"),
     };
-    assert_eq!(error.kind(), WorkspaceErrorKind::RootUnavailable);
     let durable = error.to_string();
+    assert_eq!(durable, "the warm workspace root is unavailable");
     assert!(
         !durable.contains("distinctive-cache-root") && !durable.contains(&id),
         "the durable message carries no path: {durable}"
@@ -496,7 +505,6 @@ fn workspace_identities_are_opaque_stable_and_node_private() {
     assert_ne!(one, workspace_id("other", &snapshot('c'), "correctness"));
     assert_ne!(one, workspace_id("run", &snapshot('d'), "correctness"));
     let root = WorkspaceRoot::new(dir.path(), &one).unwrap();
-    assert_eq!(root.id(), one);
     assert_eq!(root.path(), dir.path().join(&one));
     assert_eq!(root.tree(), dir.path().join(&one).join("tree"));
     assert!(

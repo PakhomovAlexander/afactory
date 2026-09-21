@@ -295,35 +295,13 @@ impl ContainerProvider {
         argv
     }
 
-    /// Run a command in the sandbox under the caller's policy deadline. Refuses when the runtime
-    /// is not usable — never falls back to running it on the host, which would be containment
-    /// silently becoming none.
-    pub fn exec(
-        &self,
-        sandbox_root: &Path,
-        program: &str,
-        args: &[String],
-        timeout: Duration,
-    ) -> Result<std::process::Output, String> {
-        self.exec_evidenced(sandbox_root, program, args, &[], timeout)
-            .map(|execution| execution.output)
-            .map_err(|error| error.to_string())
-    }
-
-    /// Execute while preserving process-supervision evidence needed by CheckResult. In
-    /// particular, a descendant that keeps stderr open must remain `not_run`, not turn into a
-    /// passing check merely because the container runtime's leader exited.
-    pub fn exec_evidenced(
-        &self,
-        sandbox_root: &Path,
-        program: &str,
-        args: &[String],
-        environment: &[(String, String)],
-        timeout: Duration,
-    ) -> Result<ContainerExecution, ContainerExecutionError> {
-        self.exec_evidenced_controlled(sandbox_root, program, args, environment, timeout, None)
-    }
-
+    /// Run a command in the sandbox under the caller's policy deadline, stopping early when
+    /// `cancellation` is raised. Refuses when the runtime is not usable — never falls back to
+    /// running it on the host, which would be containment silently becoming none.
+    ///
+    /// Preserves the process-supervision evidence CheckResult needs. In particular, a
+    /// descendant that keeps stderr open must remain `not_run`, not turn into a passing check
+    /// merely because the container runtime's leader exited.
     #[allow(clippy::too_many_arguments)]
     pub fn exec_evidenced_controlled(
         &self,
@@ -585,13 +563,16 @@ mod tests {
 
         // And it refuses to run rather than falling back to the host.
         let err = provider
-            .exec(
+            .exec_evidenced_controlled(
                 dir.path(),
                 "/bin/sh",
                 &["-c".into(), "echo pwned".into()],
+                &[],
                 Duration::from_secs(1),
+                None,
             )
-            .unwrap_err();
+            .unwrap_err()
+            .to_string();
         assert!(
             err.starts_with("refusing to run outside a container"),
             "{err}"
@@ -657,8 +638,16 @@ mod tests {
 
         let started = Instant::now();
         let error = provider
-            .exec(dir.path(), "/bin/true", &[], Duration::from_millis(100))
-            .unwrap_err();
+            .exec_evidenced_controlled(
+                dir.path(),
+                "/bin/true",
+                &[],
+                &[],
+                Duration::from_millis(100),
+                None,
+            )
+            .unwrap_err()
+            .to_string();
         assert!(started.elapsed() < Duration::from_secs(2));
         assert!(
             error.contains("container command did not finish"),
@@ -681,12 +670,13 @@ mod tests {
         let provider = ContainerProvider::with_runtime(&fake);
 
         let error = provider
-            .exec_evidenced(
+            .exec_evidenced_controlled(
                 dir.path(),
                 "/bin/true",
                 &[],
                 &[],
                 Duration::from_millis(100),
+                None,
             )
             .unwrap_err();
         assert!(!error.cleanup_confirmed(), "{error}");

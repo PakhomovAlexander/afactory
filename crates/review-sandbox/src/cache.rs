@@ -13,10 +13,11 @@ use review_store::Cas;
 
 use crate::Sandbox;
 
-pub use review_core::{
+use review_core::{
     MAX_CACHE_BYTES_V1 as MAX_CACHE_BYTES, MAX_CACHE_COPY_BYTES_V1 as MAX_CACHE_COPY_BYTES,
     MAX_CACHE_ENTRIES_V1 as MAX_CACHE_FILES,
 };
+
 /// The one reserved sandbox path every cache kind lives below: administrator-approved Cache
 /// Snapshots and explicitly unsafe Build Caches alike, so one removal before seal covers both.
 pub(crate) const CACHE_ROOT: &str = ".af-cache";

@@ -12,8 +12,6 @@ use review_core::{
     exec::{Arg, ArgError, Command},
 };
 
-pub const EVENT_CHECK_COMPLETED: EventType = EventType::CheckCompletedV1;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CheckStatus {
@@ -80,11 +78,6 @@ pub struct CheckExecution {
 impl CheckResult {
     pub fn passed(&self) -> bool {
         self.status == CheckStatus::Passed
-    }
-
-    /// Whether this result blocks a gate: a required check that did not pass, for either reason.
-    pub fn blocks(&self) -> bool {
-        self.required && !self.passed()
     }
 }
 
@@ -420,7 +413,7 @@ pub fn check_event(result: &CheckResult, node_id: &str) -> NewEvent {
         .into_iter()
         .flatten()
         .collect();
-    NewEvent::new(EVENT_CHECK_COMPLETED, payload)
+    NewEvent::new(EventType::CheckCompletedV1, payload)
         .node(node_id)
         .correlating(result.name.clone())
         .referencing(refs)

@@ -25,29 +25,25 @@ use crate::materialize::{
 /// The entries that differ between two manifests. Paths are compared by their decoded bytes,
 /// so two manifests with different path spellings describe the same tree the same way.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ManifestChanges {
+struct ManifestChanges {
     /// Entries of `from` that `to` no longer has, as indexes into `from.entries`.
-    pub deleted: Vec<usize>,
+    deleted: Vec<usize>,
     /// Entries present in both with a different kind, content or size, as indexes into
     /// `to.entries`.
-    pub modified: Vec<usize>,
+    modified: Vec<usize>,
     /// Entries `from` did not have, as indexes into `to.entries`.
-    pub added: Vec<usize>,
+    added: Vec<usize>,
 }
 
 impl ManifestChanges {
-    pub fn is_empty(&self) -> bool {
-        self.deleted.is_empty() && self.modified.is_empty() && self.added.is_empty()
-    }
-
     /// Distinct paths written or removed when the changes are applied.
-    pub fn touched(&self) -> u64 {
+    fn touched(&self) -> u64 {
         (self.deleted.len() + self.modified.len() + self.added.len()) as u64
     }
 }
 
 /// The difference between two manifests, by decoded path bytes.
-pub fn manifest_changes(from: &Manifest, to: &Manifest) -> ManifestChanges {
+fn manifest_changes(from: &Manifest, to: &Manifest) -> ManifestChanges {
     let mut previous: BTreeMap<Vec<u8>, usize> = from
         .entries
         .iter()
@@ -446,7 +442,7 @@ mod tests {
         let root = dir.path().join("tree");
         materialize(&from, &cas, &root).unwrap();
         let before = tree_bytes(&root);
-        assert!(manifest_changes(&from, &from).is_empty());
+        assert_eq!(manifest_changes(&from, &from), ManifestChanges::default());
         assert_eq!(apply_tree_diff(&from, &from, &cas, &root).unwrap(), 0);
         assert_eq!(tree_bytes(&root), before);
     }

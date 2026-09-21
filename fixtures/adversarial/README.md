@@ -28,8 +28,9 @@ silent: the run still produces a verdict, and the verdict is wrong.
 hashes worktree files, which executes the candidate's own `clean` filter — and the fix was an
 allowlist of git subcommands that cannot transform content. That is what these cases are for.
 
-`malicious-check` is partly implemented: three of its five probes are discharged by the
-`trusted_local` sandbox, and the two that need real isolation stay open — with a tested refusal
+`malicious-check` is partly implemented: three of its five probes are discharged on the
+`trusted_local` provider (credentials by the check runner's cleared environment), and the two
+that need real isolation stay open — with a tested refusal
 in place of a weakened test, so a pipeline needing them cannot run on a directory instead.
 
 `late-receipt` is implemented, minus its broker half — there is no broker yet, and the file says

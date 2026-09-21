@@ -63,7 +63,7 @@ daemon is a hard failure, never a skip — an unrun probe must not look like a p
 |---|---|---|
 | review input immutability | **discharged** | a node runs against a materialized copy and capture already happened, so the snapshot being reviewed cannot be altered by anything the node does |
 | canonical checkout on disk | **discharged (container)** | the same hostile command as the `trusted_local` test, and this time the assertion is real: the absolute-path write does not reach the checkout — `worktree_state` identical before and after |
-| credentials | **discharged** | the environment is cleared and rebuilt from an allowlist, so a token in the kernel's own environment cannot leak by being forgotten in a denylist |
+| credentials | **discharged** | the check runner (`review_check::CheckRunner`), not the sandbox, clears the environment and rebuilds it from an allowlist, so a token in the kernel's own environment cannot leak by being forgotten in a denylist — asserted on what a real check process receives, and for a container run by `an_external_provider_gets_only_portable_and_explicit_environment` in `crates/review-check/src/runner.rs` plus the runtime's `--env-file /dev/null` |
 | argument injection | **discharged** | typed slots refuse an untrusted value in an option position, asserted end-to-end through the check runner |
 | host marker | **discharged (container)** | a marker planted outside the sandbox is unreadable and unmodified — the absolute path names nothing inside the container |
 | undeclared network | **discharged (container)** | `--network=none` leaves no route out and no resolver, so the refusal is immediate rather than a timeout |

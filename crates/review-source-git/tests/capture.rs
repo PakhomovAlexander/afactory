@@ -523,7 +523,7 @@ fn dirty_capture_large_tree_measurement() {
     let synthetic_tree = repo.synthetic_tree(&snapshot.manifest, &cas).unwrap();
     let synthetic_tree_elapsed = start.elapsed();
 
-    assert_eq!(snapshot.manifest.len(), count as usize + 1);
+    assert_eq!(snapshot.manifest.entries.len(), count as usize + 1);
     assert_eq!(warm_snapshot.manifest, snapshot.manifest);
     assert!(!synthetic_tree.as_str().is_empty());
     eprintln!(

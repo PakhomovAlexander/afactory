@@ -210,15 +210,18 @@ impl Snapshot {
 
 /// A seam for proving the read boundary works.
 ///
-/// Real captures use [`NoObserver`]. A test implements this to mutate the worktree *between*
-/// the two passes, which is the only way to demonstrate that the revalidation catches what it
-/// claims to catch.
+/// Real captures ([`Capture::dirty`]) observe nothing. A test implements this to mutate the
+/// worktree *between* the two passes, which is the only way to demonstrate that the
+/// revalidation catches what it claims to catch.
 pub trait CaptureObserver {
     fn between_passes(&self, _attempt: u32) {}
 }
 
-pub struct NoObserver;
+struct NoObserver;
 impl CaptureObserver for NoObserver {}
+
+/// How many times a changing worktree may be retried before the capture fails closed.
+const MAX_ATTEMPTS: u32 = 3;
 
 /// Where a streamed object lands. Capture hands each blob here exactly once, as it arrives.
 type ObjectSink<'a> = dyn FnMut(&str, &[u8]) -> Result<(), CaptureError> + Send + 'a;
@@ -226,17 +229,11 @@ type ObjectSink<'a> = dyn FnMut(&str, &[u8]) -> Result<(), CaptureError> + Send 
 pub struct Capture<'a> {
     repo: &'a Repo,
     cas: &'a Cas,
-    /// How many times a changing worktree may be retried before the capture fails closed.
-    pub max_attempts: u32,
 }
 
 impl<'a> Capture<'a> {
     pub fn new(repo: &'a Repo, cas: &'a Cas) -> Self {
-        Self {
-            repo,
-            cas,
-            max_attempts: 3,
-        }
+        Self { repo, cas }
     }
 
     /// Capture a committed tree. Objects are immutable, so this needs no read boundary.
@@ -372,7 +369,7 @@ impl<'a> Capture<'a> {
         if !gitlinks.is_empty() {
             return Err(CaptureError::UnsupportedSubmodules { paths: gitlinks });
         }
-        for attempt in 1..=self.max_attempts {
+        for attempt in 1..=MAX_ATTEMPTS {
             let monitor = WorktreeMonitor::start(self.repo.workdir())?;
             let index_before = self.index_fingerprint()?;
             let first = self.scan_worktree(false, None)?;
@@ -407,7 +404,7 @@ impl<'a> Capture<'a> {
             }
         }
         Err(CaptureError::Unstable {
-            attempts: self.max_attempts,
+            attempts: MAX_ATTEMPTS,
         })
     }
 

@@ -118,10 +118,7 @@ fn an_unreadable_directory_does_not_prevent_sealing() {
 
     let sealed = sandbox.seal().unwrap();
     assert!(sealed.unchanged(), "directory modes are not file mutations");
-    let restored = std::fs::metadata(sealed.root().join("src"))
-        .unwrap()
-        .permissions()
-        .mode();
+    let restored = std::fs::metadata(&source).unwrap().permissions().mode();
     assert_eq!(
         restored & 0o700,
         0o500,

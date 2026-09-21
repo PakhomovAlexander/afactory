@@ -17,7 +17,7 @@ use review_source_git::{
 };
 use review_store::Cas;
 
-use crate::{Mode, Sandbox, ensure_directory_mode, restore_writable_dirs};
+use crate::{Sandbox, ensure_directory_mode, restore_writable_dirs};
 
 /// What a node changed in its sandbox, relative to the snapshot it was given.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -50,7 +50,6 @@ impl MutationSet {
 /// A sandbox after it has been frozen. There is no way back to a writable handle.
 pub struct SealedSandbox {
     root: PathBuf,
-    pub mode: Mode,
     pub baseline: Arc<Manifest>,
     /// The tree as it stood at seal time.
     pub final_manifest: Manifest,
@@ -59,10 +58,6 @@ pub struct SealedSandbox {
 }
 
 impl SealedSandbox {
-    pub fn root(&self) -> &Path {
-        &self.root
-    }
-
     /// Whether the node left the sandbox as it found it. A read-only node that mutated anything
     /// is a contract violation by the node, and worth surfacing rather than tolerating.
     pub fn unchanged(&self) -> bool {
@@ -126,13 +121,13 @@ impl Drop for CleanupDir {
         let temp_root = dir.keep();
         remove_tree_parallel(&temp_root);
         // The drop-time walk is an optimization. This fallback handles a caller that writes
-        // through `root()` concurrently and any per-path removal failure without losing cleanup.
+        // into the tree concurrently and any per-path removal failure without losing cleanup.
         let _ = std::fs::remove_dir_all(&temp_root);
     }
 }
 
 pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
-    let (root, baseline, mode, dir) = sandbox.into_parts();
+    let (root, baseline, dir) = sandbox.into_parts();
     let (final_manifest, mutations) = match scan_and_diff(&root, baseline.as_ref()) {
         Ok(result) => result,
         Err(error) => {
@@ -144,7 +139,6 @@ pub(crate) fn seal(sandbox: Sandbox) -> Result<SealedSandbox, std::io::Error> {
     };
     Ok(SealedSandbox {
         root,
-        mode,
         baseline,
         final_manifest,
         mutations,

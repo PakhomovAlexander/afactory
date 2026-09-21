@@ -205,7 +205,6 @@ enum DiffHead<'a> {
 /// A repository we may only read.
 pub struct Repo {
     workdir: PathBuf,
-    program: std::ffi::OsString,
     /// A private, empty HOME so a global config cannot be discovered even by accident.
     home: PathBuf,
     /// The root-commit walk is O(history) and its answer never changes for an open `Repo`,
@@ -221,7 +220,6 @@ impl Repo {
     pub fn open(workdir: impl AsRef<Path>, home: impl AsRef<Path>) -> Self {
         Self {
             workdir: workdir.as_ref().to_path_buf(),
-            program: "git".into(),
             home: home.as_ref().to_path_buf(),
             repository_id: std::sync::OnceLock::new(),
             timeout: DEFAULT_GIT_TIMEOUT,
@@ -234,35 +232,12 @@ impl Repo {
         self
     }
 
-    /// Select the trusted Git executable. Primarily useful for hermetic embedders and deadline
-    /// tests; repository content and configuration never influence this value.
-    pub fn with_git_program(mut self, program: impl Into<std::ffi::OsString>) -> Self {
-        self.program = program.into();
-        self
-    }
-
     pub fn workdir(&self) -> &Path {
         &self.workdir
     }
 
-    /// Every inherited environment variable git is given. The list is exhaustive by
-    /// construction: the environment is cleared first, so a variable absent here cannot reach
-    /// git no matter what launched the kernel. The typed tree-diff path additionally supplies a
-    /// kernel-resolved `GIT_OBJECT_DIRECTORY`; it is authority, not inherited environment.
-    pub const ENV_ALLOWLIST: &'static [&'static str] = &[
-        "PATH",
-        "HOME",
-        "GIT_CONFIG_NOSYSTEM",
-        "GIT_CONFIG_GLOBAL",
-        "GIT_ATTR_NOSYSTEM",
-        "GIT_TERMINAL_PROMPT",
-        "GIT_OPTIONAL_LOCKS",
-        "LC_ALL",
-        "TZ",
-    ];
-
     fn command(&self) -> Command {
-        let mut cmd = Command::new(&self.program);
+        let mut cmd = Command::new("git");
         let rename_limit_config = format!("diff.renameLimit={RENAME_LIMIT}");
         // Nothing inherited. Not "most things filtered" — nothing.
         cmd.env_clear();
@@ -305,7 +280,10 @@ impl Repo {
         cmd
     }
 
-    /// The exact environment [`Self::ENV_ALLOWLIST`] resolves to for this repository.
+    /// Every inherited environment variable git is given. The list is exhaustive by
+    /// construction: the environment is cleared first, so a variable absent here cannot reach
+    /// git no matter what launched the kernel. The typed tree-diff path additionally supplies a
+    /// kernel-resolved `GIT_OBJECT_DIRECTORY`; it is authority, not inherited environment.
     pub fn environment(&self) -> Vec<(&'static str, std::ffi::OsString)> {
         vec![
             ("PATH", std::env::var_os("PATH").unwrap_or_default()),

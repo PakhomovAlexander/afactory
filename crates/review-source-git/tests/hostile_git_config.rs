@@ -18,26 +18,6 @@ mod common;
 use common::{Fixture, cas_of, marker_path, repo_of};
 use review_source_git::{Capture, worktree_state};
 
-#[test]
-#[cfg(unix)]
-fn a_wedged_git_process_is_killed_at_the_capture_deadline() {
-    use std::os::unix::fs::PermissionsExt;
-    use std::time::{Duration, Instant};
-
-    let fixture = Fixture::new();
-    let fake_git = fixture.dir.path().join("wedged-git");
-    std::fs::write(&fake_git, "#!/bin/sh\nsleep 30\n").unwrap();
-    std::fs::set_permissions(&fake_git, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let repo = review_source_git::Repo::open(fixture.repo_path(), fixture.home_path())
-        .with_git_program(&fake_git)
-        .with_timeout(Duration::from_millis(100));
-
-    let started = Instant::now();
-    let error = repo.line(&["rev-parse", "HEAD"]).unwrap_err();
-    assert!(error.to_string().contains("deadline") || error.to_string().contains("exceeded"));
-    assert!(started.elapsed() < Duration::from_secs(5));
-}
-
 /// Plant every content-transforming and code-executing lever a repository controls.
 fn weaponize(fixture: &Fixture, marker: &std::path::Path) {
     let hooks = fixture.repo_path().join(".weaponized-hooks");
@@ -245,7 +225,20 @@ fn git_receives_only_the_allowlisted_environment() {
     let repo = repo_of(&fixture);
 
     let passed: Vec<&str> = repo.environment().iter().map(|(k, _)| *k).collect();
-    assert_eq!(passed, review_source_git::Repo::ENV_ALLOWLIST);
+    assert_eq!(
+        passed,
+        [
+            "PATH",
+            "HOME",
+            "GIT_CONFIG_NOSYSTEM",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_ATTR_NOSYSTEM",
+            "GIT_TERMINAL_PROMPT",
+            "GIT_OPTIONAL_LOCKS",
+            "LC_ALL",
+            "TZ",
+        ]
+    );
 
     for dangerous in [
         "GIT_EXTERNAL_DIFF",

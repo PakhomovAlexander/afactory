@@ -37,7 +37,7 @@ pub struct WorkspaceError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WorkspaceErrorKind {
+enum WorkspaceErrorKind {
     /// The head manifest, its Snapshot ID or the recorded preparation is not usable.
     InvalidHead,
     /// The cache root cannot be located or is not an absolute directory.
@@ -56,10 +56,6 @@ impl WorkspaceError {
             kind,
             detail: detail.into(),
         }
-    }
-
-    pub fn kind(&self) -> WorkspaceErrorKind {
-        self.kind
     }
 
     /// The detail with whatever path or system message it carries: for stderr, never for an
@@ -154,7 +150,6 @@ pub fn workspace_id(run_id: &str, campaign_manifest_id: &str, node: &str) -> Str
 /// One node's stable root below the cache root: `<cache_root>/<workspace_id>/`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkspaceRoot {
-    id: String,
     path: PathBuf,
 }
 
@@ -173,13 +168,8 @@ impl WorkspaceRoot {
             ));
         }
         Ok(Self {
-            id: workspace_id.to_string(),
             path: cache_root.join(workspace_id),
         })
-    }
-
-    pub fn id(&self) -> &str {
-        &self.id
     }
 
     pub fn path(&self) -> &Path {

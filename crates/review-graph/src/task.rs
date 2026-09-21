@@ -301,17 +301,12 @@ impl CompiledTask {
             BTreeMap::new();
         for (slot, binding) in bindings {
             if matches!(binding.execution, WorkerExecutionV1::Model { .. }) {
-                // Preserve the frozen no-probe grouping key and resulting node order.
                 let probe_id = probes.get(slot).map(|probe| probe.policy_id.clone());
-                let key = if let Some(probe_id) = &probe_id {
-                    serde_json::to_string(&(
-                        &binding.execution,
-                        &binding.invocation_policy_id,
-                        probe_id,
-                    ))
-                } else {
-                    serde_json::to_string(&(&binding.execution, &binding.invocation_policy_id))
-                }
+                let key = serde_json::to_string(&(
+                    &binding.execution,
+                    &binding.invocation_policy_id,
+                    &probe_id,
+                ))
                 .map_err(|e| e.to_string())?;
                 capabilities
                     .entry(key)

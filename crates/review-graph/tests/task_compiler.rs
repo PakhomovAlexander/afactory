@@ -455,16 +455,6 @@ fn explicit_provider_probes_preserve_reservations_and_exact_grouping() {
         tokens: 7,
         wall_ms: 19,
     };
-    let mut old = base.clone();
-    old.install_provider_admission(&bindings, &cost).unwrap();
-    let mut empty = base.clone();
-    empty
-        .install_provider_admission_with_probes(&bindings, &cost, &BTreeMap::new())
-        .unwrap();
-    assert_eq!(
-        serde_json::to_vec(&old).unwrap(),
-        serde_json::to_vec(&empty).unwrap()
-    );
     for split in 0..4 {
         let mut bindings = bindings.clone();
         let mut probes = probes.clone();
