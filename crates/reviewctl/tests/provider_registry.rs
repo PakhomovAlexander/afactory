@@ -10,6 +10,17 @@ use std::os::unix::ffi::OsStringExt;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
+/// A directory whose name is not UTF-8, or `None` where the filesystem refuses to hold one.
+/// `#[cfg(unix)]` is not the real condition: the constraint is the filesystem's own encoding
+/// rule, and APFS rejects with `EILSEQ` the byte that ext4 stores without complaint. Skipping
+/// there keeps a Mac from failing this against a limitation of its disk; Linux CI, which the
+/// release also runs, still exercises every assertion.
+#[cfg(unix)]
+fn non_utf8_dir(root: &Path, name: &[u8]) -> Option<std::path::PathBuf> {
+    let path = root.join(std::ffi::OsString::from_vec(name.to_vec()));
+    std::fs::create_dir(&path).ok().map(|()| path)
+}
+
 fn af(home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_af"))
         .args(args)
@@ -405,12 +416,11 @@ fn setup_rejects_a_utf8_alias_to_a_non_utf8_parent_before_creating_the_leaf() {
     use std::os::unix::fs::symlink;
 
     let root = tempfile::tempdir().unwrap();
-    let target = root
-        .path()
-        .join(std::ffi::OsString::from_vec(b"auth-parent-\xff".to_vec()));
+    let Some(target) = non_utf8_dir(root.path(), b"auth-parent-\xff") else {
+        return;
+    };
     let alias = root.path().join("printable-auth-parent");
     let auth = alias.join("codex-auth");
-    std::fs::create_dir(&target).unwrap();
     symlink(&target, &alias).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_af"))
         .args(["provider", "setup", "codex-main", "--kind", "codex"])
