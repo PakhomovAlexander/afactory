@@ -484,11 +484,10 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         cas: &Cas,
         task: &review_core::task::TaskRevisionV1,
         plan: &review_core::task::plan::ExecutionPlanV1,
-        prepared_id: &str,
         prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         self.inner
-            .validate_experiment_preparation(cas, task, plan, prepared_id, prepared)
+            .validate_experiment_preparation(cas, task, plan, prepared)
     }
     fn validate_review_integration_selection(
         &self,

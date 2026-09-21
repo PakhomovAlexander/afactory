@@ -108,7 +108,6 @@ pub trait TaskAuthority: Sync {
         _cas: &Cas,
         _task: &TaskRevisionV1,
         _plan: &ExecutionPlanV1,
-        _prepared_id: &str,
         _prepared: &task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         Err("Experimental preparation is not configured".into())

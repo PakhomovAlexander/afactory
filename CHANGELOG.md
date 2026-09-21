@@ -97,8 +97,9 @@ or needs a documented hand edit.
   `af/TaskExecutionRecord@3`, with decimal-string charges, and binds an Attempt's context through
   separate `reserved` and `context_bound` records. The `af/task-inspection` schemas no longer list
   `af/TaskExecutionRecord@2`, so `af/task-inspection@10` and `@11` output, which could match two
-  record schemas at once, now validates. `task-transition-v1.json` drops `revision_recorded` and
-  requires `revocation_id` on `approval_revoked`, as this release always wrote both.
+  record schemas at once, now validates. `task-transition-v1.json` drops `revision_recorded`, which
+  no release wrote, and requires `revocation_id` on `approval_revoked`, which this release always
+  writes.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

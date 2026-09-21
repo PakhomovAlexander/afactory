@@ -147,13 +147,22 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
     impl TaskDomain for ExperimentDomain {
         fn validate_experiment_preparation(
             &self,
-            _: &Cas,
+            cas: &Cas,
             _: &TaskRevisionV1,
             _: &ExecutionPlanV1,
-            prepared_id: &str,
-            _: &ExperimentPreparedV1,
+            prepared: &ExperimentPreparedV1,
         ) -> Result<(), String> {
-            if self.prepared.lock().unwrap().as_deref() == Some(prepared_id) {
+            let prepared_id = self
+                .prepared
+                .lock()
+                .unwrap()
+                .clone()
+                .ok_or("fixture is not prepared")?;
+            let expected = cas
+                .get_artifact(&prepared_id)
+                .map_err(|error| error.to_string())?
+                .payload;
+            if serde_json::to_value(prepared).map_err(|error| error.to_string())? == expected {
                 Ok(())
             } else {
                 Err("wrong prepared closure".into())

@@ -78,7 +78,7 @@
   ],
   "$id": "urn:af:schema:task-inspection:5",
   "title": "Task inspection af/task-inspection@5",
-  "$comment": "Owned-child Task inspection. Registration, child publication and parent completion remain in the common Task history. Historical V1/V2/V3/V4 execution records retain their exact types and payloads; optional Broker records retain their frozen V4 contract. These read-only facts grant no dispatch authority.",
+  "$comment": "Owned-child Task inspection. Registration, child publication and parent completion remain in the common Task history. Historical V1/V3/V4 execution records retain their exact types and payloads; optional Broker records retain their frozen V4 contract. These read-only facts grant no dispatch authority.",
   "properties": {
     "schema": {
       "const": "af/task-inspection@5"

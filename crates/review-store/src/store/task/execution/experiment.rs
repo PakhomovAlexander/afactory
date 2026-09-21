@@ -732,7 +732,7 @@ impl EventStore {
             ));
         }
         authority
-            .validate_experiment_preparation(cas, &state.revision, &plan, prepared_id, &prepared)
+            .validate_experiment_preparation(cas, &state.revision, &plan, &prepared)
             .map_err(conflict)?;
         let fresh = self.checked_task_recording(cas, lease, authority)?.0;
         if fresh.next_sequence != state.next_sequence {
@@ -1189,7 +1189,7 @@ mod derived_package_tests {
         };
         *signature = format!("worker-derived/{}", fixture.original_id);
         assert!(
-            validate_child_plan(&fixture.cas, &fixture.outer_plan_id, &prepared, &normal,).is_err()
+            validate_child_plan(&fixture.cas, &fixture.outer_plan_id, &prepared, &normal).is_err()
         );
     }
 

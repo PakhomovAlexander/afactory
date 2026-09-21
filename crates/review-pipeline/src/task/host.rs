@@ -161,7 +161,6 @@ pub trait TaskDomain: TaskOperatorHost {
         _cas: &Cas,
         _task: &TaskRevisionV1,
         _plan: &ExecutionPlanV1,
-        _prepared_id: &str,
         _prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         Err("Task domain has no installed experimental compiler".into())
@@ -382,12 +381,11 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         cas: &Cas,
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
-        prepared_id: &str,
         prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         self.validate_plan(cas, task, plan)?;
         self.domain
-            .validate_experiment_preparation(cas, task, plan, prepared_id, prepared)
+            .validate_experiment_preparation(cas, task, plan, prepared)
     }
 
     fn experiment_authorization_current(
@@ -1420,11 +1418,10 @@ impl TaskDomain for CapturedTaskHost<'_> {
         cas: &Cas,
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
-        prepared_id: &str,
         prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         self.domain
-            .validate_experiment_preparation(cas, task, plan, prepared_id, prepared)
+            .validate_experiment_preparation(cas, task, plan, prepared)
     }
     fn validate_review_integration_selection(
         &self,

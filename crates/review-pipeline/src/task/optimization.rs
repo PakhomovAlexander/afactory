@@ -861,7 +861,6 @@ impl TaskDomain for OptimizationTaskDomain {
         cas: &Cas,
         _task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
-        _prepared_id: &str,
         prepared: &review_core::task::optimization_experiment::ExperimentPreparedV1,
     ) -> Result<(), String> {
         prepared.validate()?;
@@ -2659,7 +2658,6 @@ impl TaskDomain for OptimizationCandidateTaskDomain {
         cas: &Cas,
         _: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
-        _: &str,
         prepared: &ExperimentPreparedV1,
     ) -> Result<(), String> {
         prepared.validate()?;

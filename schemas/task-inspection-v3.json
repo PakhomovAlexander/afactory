@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-inspection:3",
   "title": "Task inspection af/task-inspection@3",
-  "$comment": "Read-only projection of common Task history. Execution entries retain original V1/V2/V3 payload bytes and match their exact artifact type. Store validates cross-artifact identities, histories, selected results and cumulative accounting; a JSON schema cannot authenticate CAS or recompute a history. Failed-record diagnostic is an explicitly opaque historical CAS JSON leaf; run-report diagnostics are typed. Explain adds graph and plan together.",
+  "$comment": "Read-only projection of common Task history. Execution entries retain original V1/V3 payload bytes and match their exact artifact type. Store validates cross-artifact identities, histories, selected results and cumulative accounting; a JSON schema cannot authenticate CAS or recompute a history. Failed-record diagnostic is an explicitly opaque CAS JSON leaf; run-report diagnostics are typed. Explain adds graph and plan together.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -446,9 +446,6 @@
               },
               "record": {
                 "$ref": "urn:af:schema:task-execution-record:1"
-              },
-              "diagnostic": {
-                "$comment": "Exact referenced CAS JSON, intentionally opaque: historical Failed records may point at any JSON value."
               }
             }
           },
@@ -471,7 +468,7 @@
                 "$ref": "urn:af:schema:task-execution-record:3"
               },
               "diagnostic": {
-                "$comment": "Exact referenced CAS JSON, intentionally opaque: historical Failed records may point at any JSON value."
+                "$comment": "Exact referenced CAS JSON, intentionally opaque: a Failed record may point at any JSON value."
               }
             }
           }
