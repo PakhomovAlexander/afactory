@@ -137,4 +137,4 @@ fi
 git push -q -u origin "$branch"
 gh pr create --repo "$repo" --base main --head "$branch" --title "release: $tag" --body "$section
 
-Merging this PR tags \`$tag\`; the release workflow checks the tagged commit on Linux and macOS, builds every target, plans the consumer fixtures with each binary, signs \`SHA256SUMS\`, and publishes the release."
+Merging this PR tags \`$tag\`; the release workflow checks the tagged commit on Linux and macOS, builds every target, onboards and plans a fresh repository with each binary, signs \`SHA256SUMS\`, and publishes the release."

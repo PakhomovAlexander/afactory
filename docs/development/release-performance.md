@@ -16,7 +16,7 @@ PR ------------------------------------> shared validation (Linux + containers)
 main/tag -> resolve -> shared validation ----------------------+
                  |    Linux + containers; macOS for release    |
                  |                                            v
-                 +--> three release builds + consumer checks -> sign + publish
+                 +--> three release builds + smoke checks ----> sign + publish
                       (only when resolve selected a release)
 ```
 
@@ -24,7 +24,7 @@ main/tag -> resolve -> shared validation ----------------------+
 main pushes where no release is selected. Both call `validate.yml`; the same release
 commit no longer receives a duplicate main CI gate. Build jobs overlap validation,
 but publication requires successful validation **and** all three builds. No check,
-container probe, consumer fixture or signature check is removed. The workflow runs
+container probe, per-archive smoke or signature check is removed. The workflow runs
 are grouped by commit so an earlier main check does not queue a later release.
 Only a main commit whose workspace version changes against its first parent may
 create the tag. Later commits cannot steal that release even if scheduled first.

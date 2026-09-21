@@ -1,4 +1,4 @@
-.PHONY: release-check check fmt lint test fixtures build pilot-check consumer-check release review-kernel-container-probes review-kernel-test-corpus
+.PHONY: release-check check fmt lint test fixtures pilot-check release review-kernel-container-probes review-kernel-test-corpus
 
 # Cargo remains the gate; nextest is an explicit cross-binary benchmark until validated in CI.
 TEST_RUNNER ?= cargo
@@ -28,16 +28,8 @@ endif
 fixtures:
 	$(CI_STEP) fixtures fixtures/synthetic/generate.sh --check
 
-build:
-	cargo build --release --locked --bin af
-
 pilot-check:
 	cargo test --locked -p af --test task_implement
-
-# Plan every consumer fixture with the release binary — what the release workflow runs before a
-# release leaves draft. The same check runs inside `make check` through the af crate's tests.
-consumer-check: build
-	fixtures/consumers/check.sh target/release/af
 
 # Open the release PR for VERSION (bump + CHANGELOG section). Merging it is the release: the
 # workflow tags, checks, builds, signs, and publishes. COMPAT states authority compatibility.

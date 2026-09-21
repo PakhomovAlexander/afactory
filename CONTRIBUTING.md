@@ -39,8 +39,7 @@ fail loudly there, never skip.
   helpers under `tests/support/` or `tests/common/`.
 - Synthetic fixtures under `fixtures/synthetic/` are generated: change the generator, run
   `fixtures/synthetic/generate.sh`, and commit the output; `--check` in `make check` refuses
-  drift. Consumer fixtures under `fixtures/consumers/` are planned with the built binary by
-  `fixtures/consumers/check.sh` and by the release workflow.
+  drift.
 - A test that reproduces a bug goes in first and fails; the fix follows in the same PR.
 
 ## Design changes and ADRs

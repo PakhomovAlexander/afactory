@@ -4,7 +4,8 @@
 audit of the same date and hub ADR-0007; revises ADR-0044 §2 (dispatch verified "against the
 release checksums") and executes ADR-0043 (`.review/` is no longer read for new Campaigns).
 Superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the 0.7.1 `af_version` lock
-shape, unsigned pre-0.8.0 releases, the 0.7.1 floor, and replay of `.review/` Campaigns.
+shape, unsigned pre-0.8.0 releases, the 0.7.1 floor, replay of `.review/` Campaigns, and §1's
+consumer fixtures (each built binary now onboards and plans a fresh repository instead).
 
 Release `v0.7.1` shipped `af self` and dispatch, but three things stayed manual or unbound: a
 release was a hand-edited version bump and a hand-pushed tag with no changelog, no signature, and
