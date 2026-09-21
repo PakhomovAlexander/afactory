@@ -2171,11 +2171,6 @@ fn authority_layout(pipeline: &str, recorded: bool) -> Result<AuthorityLayout, S
     }
 }
 
-/// The layout for a pipeline path given on the command line.
-pub(crate) fn authority_paths(pipeline: &str) -> Result<AuthorityLayout, String> {
-    authority_layout(pipeline, false)
-}
-
 fn validate_af_project(bytes: &[u8], pipeline_path: &str) -> Result<(), String> {
     let text = std::str::from_utf8(bytes)
         .map_err(|error| format!("authority project `.af/af.toml` is not UTF-8: {error}"))?;

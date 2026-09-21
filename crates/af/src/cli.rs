@@ -223,7 +223,7 @@ pub(crate) struct ReviewNamespace {
     pub(crate) command: Option<ReviewCommand>,
 }
 
-/// Selector, mode, budget, and output options shared by `plan`, `run`, `tui`, and `provider
+/// Selector, mode, budget, and output options shared by `plan`, `run`, `render`, and `provider
 /// doctor`.
 #[derive(Debug, Args, Clone)]
 #[command(group = ArgGroup::new("mode").args(["light", "heavy"]))]
@@ -386,12 +386,6 @@ or Campaign state. This is how a human audits what a Worker sees.",
         after_long_help = "Examples:\n  af review render --node correctness\n  af review render --node correctness --uncommitted --json"
     )]
     Render(RunArgs),
-    /// Drive a Campaign interactively
-    #[command(
-        override_usage = "af review tui [--light|--heavy] [OPTIONS]",
-        after_long_help = "Examples:\n  af review tui --campaign pr-42"
-    )]
-    Tui(RunArgs),
     /// List the ledger: findings, dispositions, and open demands
     #[command(after_long_help = "Examples:\n  af review ledger --campaign pr-42 --long")]
     Ledger {

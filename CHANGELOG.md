@@ -19,6 +19,9 @@ release pages only.
   with the release that started them, then delete that state. Committed `.af/` files are read only
   in the shapes this release writes. A key or shorthand that only an earlier release wrote is
   refused, so edit it out or regenerate the file.
+- Removed `af review tui`. It read Worker pins only from the lock's legacy `[reviewers]` table,
+  so it failed on every lock this release writes. The subcommand is now a usage error, and the
+  release no longer ships its `af-review-tui.1` man page.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

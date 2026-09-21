@@ -644,6 +644,17 @@ fn check_timeout_is_validated_and_resolved_from_pipeline_authority() {
     ));
 }
 
+#[test]
+fn a_convergence_policy_that_can_never_be_met_is_refused() {
+    let infeasible =
+        format!("{MINIMAL}\n[convergence]\nclean_rounds = 4\nmax_rounds = 3\ngate = \"major\"\n");
+    assert!(matches!(
+        Definition::from_toml(&infeasible).unwrap().load(),
+        Err(ConfigError::Binding(message))
+            if message.contains("requires 4 clean rounds but permits only 3 rounds")
+    ));
+}
+
 /// Provenance defaults to `literal`, because the project writing its own command is trusted.
 /// The unsafe classification is the one that must be typed out.
 #[test]

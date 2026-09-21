@@ -156,7 +156,6 @@ make check                              # fmt + clippy + tests + fixture reprodu
 fixtures/synthetic/generate.sh --check  # the synthetic corpus still reproduces byte-for-byte
 make pilot-check                        # deterministic Task start/deliver/recovery smoke
 make review-kernel-container-probes     # live container probes; needs a usable runtime
-cargo run -p af --bin af -- review tui
 ```
 
 The toolchain is pinned, the lockfile is committed, and `unsafe_code = "forbid"` is set

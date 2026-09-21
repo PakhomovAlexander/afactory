@@ -1,4 +1,4 @@
-//! Machine-local provider inventory for the TUI.
+//! Machine-local provider inventory.
 //!
 //! The registry names auth directories, never credentials, arbitrary commands, arguments, or
 //! environment variables. Explicit review bindings are admitted through durable, fenced provider
@@ -83,14 +83,12 @@ impl ProviderAdmission {
 
 pub struct ProviderInventory {
     pub providers: Vec<ProviderStatus>,
-    pub registry: Option<PathBuf>,
     pub warning: Option<String>,
 }
 
 pub struct ProviderStatus {
     pub id: String,
     pub kind: String,
-    pub command: String,
     pub auth_context: String,
     pub source: String,
     pub status: String,
@@ -145,31 +143,16 @@ struct ProviderSpec {
 }
 
 pub fn discover() -> ProviderInventory {
-    let (specs, registry, warning) = load_specs();
-    ProviderInventory {
-        providers: specs.iter().map(unprobed_status).collect(),
-        registry,
-        warning,
-    }
-}
-
-pub fn discover_with_cancel(cancelled: &AtomicBool) -> ProviderInventory {
-    let (specs, registry, warning) = load_specs();
+    let (specs, warning) = load_specs();
     let mut providers = Vec::with_capacity(specs.len());
     for chunk in specs.chunks(MAX_CONCURRENT_PROBES) {
-        if cancelled.load(Ordering::Acquire) {
-            break;
-        }
         thread::scope(|scope| {
             let handles: Vec<_> = chunk
                 .iter()
                 .cloned()
                 .map(|spec| {
                     let fallback = spec.clone();
-                    (
-                        fallback,
-                        scope.spawn(move || probe_provider(spec, cancelled)),
-                    )
+                    (fallback, scope.spawn(move || probe_provider(spec)))
                 })
                 .collect();
             providers.extend(handles.into_iter().map(|(spec, handle)| {
@@ -179,15 +162,8 @@ pub fn discover_with_cancel(cancelled: &AtomicBool) -> ProviderInventory {
             }));
         });
     }
-    if cancelled.load(Ordering::Acquire) {
-        providers.extend(specs[providers.len()..].iter().map(unprobed_status));
-    }
     cross_reference_logged_in_siblings(&mut providers);
-    ProviderInventory {
-        providers,
-        registry,
-        warning,
-    }
+    ProviderInventory { providers, warning }
 }
 
 /// Point each logged-out context at the same-kind contexts on this machine that are logged in.
@@ -229,8 +205,7 @@ fn cross_reference_logged_in_siblings(providers: &mut [ProviderStatus]) {
 }
 
 pub fn print_status() {
-    let cancelled = AtomicBool::new(false);
-    let inventory = discover_with_cancel(&cancelled);
+    let inventory = discover();
     if let Some(warning) = inventory.warning {
         eprintln!("warning: {warning}");
     }
@@ -2627,7 +2602,7 @@ fn format_reset(resets_at: u64) -> String {
     }
 }
 
-fn load_specs() -> (Vec<ProviderSpec>, Option<PathBuf>, Option<String>) {
+fn load_specs() -> (Vec<ProviderSpec>, Option<String>) {
     let (registry, path_warning) = match registry_path() {
         Ok(path) => (path, None),
         Err(error) => (None, Some(error)),
@@ -2659,7 +2634,7 @@ fn load_specs() -> (Vec<ProviderSpec>, Option<PathBuf>, Option<String>) {
     }
     specs.sort_by(|left, right| (left.kind, &left.id).cmp(&(right.kind, &right.id)));
 
-    (specs, registry, warning)
+    (specs, warning)
 }
 
 fn registry_path() -> Result<Option<PathBuf>, String> {
@@ -3085,7 +3060,9 @@ fn safe_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool) -> ProviderStatus {
+fn probe_provider(spec: ProviderSpec) -> ProviderStatus {
+    // Status probes run to completion; only Task identity checks cancel these shared probes.
+    let cancelled = &AtomicBool::new(false);
     if spec
         .auth_dir
         .as_ref()
@@ -3161,7 +3138,6 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool) -> ProviderStatus 
     ProviderStatus {
         id: spec.id,
         kind: spec.kind.name().to_string(),
-        command: program.display().to_string(),
         auth_context: spec
             .auth_dir
             .as_deref()
@@ -3176,33 +3152,10 @@ fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool) -> ProviderStatus 
     }
 }
 
-fn unprobed_status(spec: &ProviderSpec) -> ProviderStatus {
-    ProviderStatus {
-        id: spec.id.clone(),
-        kind: spec.kind.name().to_string(),
-        command: resolve_program(spec.kind.command())
-            .unwrap_or_else(|| PathBuf::from(spec.kind.command()))
-            .display()
-            .to_string(),
-        auth_context: spec
-            .auth_dir
-            .as_deref()
-            .map(|path| path.display().to_string())
-            .unwrap_or_else(|| "CLI default".to_string()),
-        source: spec.source.clone(),
-        status: "not probed".to_string(),
-        auth_type: "-".to_string(),
-        subscription: "-".to_string(),
-        limits: Vec::new(),
-        detail: "Open PROVIDERS or press R to refresh status".to_string(),
-    }
-}
-
 fn unavailable_status(spec: &ProviderSpec, detail: &str) -> ProviderStatus {
     ProviderStatus {
         id: spec.id.clone(),
         kind: spec.kind.name().to_string(),
-        command: spec.kind.command().to_string(),
         auth_context: spec
             .auth_dir
             .as_deref()
@@ -3460,7 +3413,7 @@ fn probe_claude_weekly_limits(
     drop(receiver);
     drop(recycle_sender);
     // A descendant that escaped the process group may retain the PTY slave. Never let that turn
-    // cancellation or TUI shutdown into an unbounded join.
+    // cancellation or shutdown into an unbounded join.
     match reader_done_receiver.recv_timeout(Duration::from_millis(250)) {
         Ok(()) => {
             let _ = reader_thread.join();
@@ -3907,7 +3860,7 @@ pub fn operation_id_for(
 }
 
 fn configured_spec(provider_id: &str) -> Result<ProviderSpec, String> {
-    let (specs, _, warning) = load_specs();
+    let (specs, warning) = load_specs();
     let spec = specs
         .into_iter()
         .find(|spec| spec.id == provider_id && spec.registry_declared)
@@ -6592,7 +6545,6 @@ auth_dir = "{}"
             ProviderStatus {
                 id: id.to_string(),
                 kind: kind.to_string(),
-                command: kind.to_string(),
                 auth_context: context.to_string(),
                 source: String::new(),
                 status: status.to_string(),

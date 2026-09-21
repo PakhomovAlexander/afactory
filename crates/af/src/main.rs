@@ -1,6 +1,6 @@
 //! `af review` - reviews from a definition file to a verdict, and the campaign loop.
 //!
-//! The review namespace has six subcommands:
+//! The review namespace's core subcommands:
 //!
 //! - `run` captures the repository HEAD as an immutable snapshot, loads the pipeline through
 //!   its lockfile, binds each packaged reviewer to the adapter its runner names, executes
@@ -13,8 +13,6 @@
 //!   campaign's ledger — the step between fixing and the round that verifies the fix.
 //! - `group` and `ungroup` append reversible adjudication between duplicate Findings without
 //!   erasing either identity, Report history, or verification obligation.
-//! - `tui` drafts an explicit configuration patch for the pipeline's existing reviewer packages
-//!   and launches the same pinned-authority `run` path from an alternate-screen interface.
 //!
 //! Nothing here mutates any repository. A run reads a repo and writes its own state
 //! directory; `resolve` writes only that state; publishing results anywhere is a human's
@@ -53,7 +51,6 @@ mod selfmgmt;
 mod task;
 mod task_execution;
 mod topics;
-mod tui;
 
 use review_config::captured_review::ReviewMode as CampaignMode;
 
@@ -851,15 +848,6 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
                 );
             }
             print_render(&run_options(args, "review render")).map(|()| 0)
-        }
-        R::Tui(args) => {
-            if args.task_file.is_some() {
-                return Err(
-                    "Task-file execution is available through review run and review plan".into(),
-                );
-            }
-            init_review_workers();
-            tui::launch(run_options(args, "review tui")).map(|()| 0)
         }
         R::Ledger { selector, long } => print_ledger(&LedgerOptions {
             state: selector.state,
