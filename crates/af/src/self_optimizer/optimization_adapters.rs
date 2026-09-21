@@ -1199,6 +1199,34 @@ mod tests {
     }
 
     #[test]
+    fn only_the_external_adapter_reads_normalized_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut external = state("external", dir.path());
+        let line = serde_json::to_vec(&NormalizedRecord {
+            observed_unix_ms: 1.into(),
+            attribution: external.attribution("fixture", None),
+            tokens: None,
+            spans: Vec::new(),
+            caches: Vec::new(),
+            outcome: None,
+            missing_fields: BTreeSet::new(),
+        })
+        .unwrap();
+        assert_eq!(parse_adapter_record(&mut external, &line).unwrap().len(), 1);
+
+        let mut af = state("af", dir.path());
+        let error = parse_adapter_record(&mut af, &line).unwrap_err();
+        assert!(error.contains("af/task-inspection"), "{error}");
+
+        let mut codex = state("codex", dir.path());
+        assert!(parse_adapter_record(&mut codex, &line).unwrap().is_empty());
+        assert!(codex.gaps.contains("project_identity_unknown"));
+
+        let mut claude = state("claude", dir.path());
+        assert!(parse_adapter_record(&mut claude, &line).unwrap().is_empty());
+    }
+
+    #[test]
     fn non_usage_claude_metadata_does_not_create_a_missing_project_gap() {
         let dir = tempfile::tempdir().unwrap();
         let mut adapter = state("claude", dir.path());
