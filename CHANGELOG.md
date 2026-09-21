@@ -9,16 +9,17 @@ release pages only.
 
 ## [Unreleased]
 
-### Changes
+### Upgrading from 0.x
 
 - GA reads only what GA writes
   ([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)). Review Campaigns and Tasks that a
-  0.x release wrote are not read, replayed or migrated: that covers everything under
-  `$XDG_STATE_HOME/af/review/` and `$XDG_STATE_HOME/af/task/`, and any directory passed with
+  0.x release wrote are not supported (they may be refused or misread): that covers everything
+  under `$XDG_STATE_HOME/af/review/` and `$XDG_STATE_HOME/af/task/`, and any directory passed with
   `--state` or `--state-root`. Before upgrading, finish or abandon in-flight Campaigns and Tasks
   with the release that started them, then delete that state. Committed `.af/` files are read only
-  in the shapes this release writes. A key or shorthand that only an earlier release wrote is
-  refused, so edit it out or regenerate the file.
+  in the shapes this release accepts. A key or shorthand that only an earlier release wrote is
+  refused: delete the refused key by hand, because `af onboard --refresh-lock` cannot repair a
+  file it cannot parse.
 - Removed `af review tui`. It read Worker pins only from the lock's legacy `[reviewers]` table,
   so it failed on every lock this release writes. The subcommand is now a usage error, and the
   release no longer ships its `af-review-tui.1` man page.

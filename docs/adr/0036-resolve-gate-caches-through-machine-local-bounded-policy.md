@@ -1,7 +1,7 @@
 # Resolve Gate caches through machine-local bounded policy
 
 **Status:** accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
-permanent `RunReport@1`–`@4` readers and older pipeline formats.
+permanent `RunReport@1`–`@4` readers and the permanence of pipeline format 1.
 
 ADR-0008 requires safe Gate caches to be sandbox-local snapshots, but it does not define how a
 project's symbolic cache request reaches an administrator-owned host subtree without making that

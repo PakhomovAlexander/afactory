@@ -32,8 +32,9 @@ that names the status and date, states the context, lists the considered options
 each was rejected, records the decision, and ends with its consequences. Accepted ADRs are
 immutable; a change is a new ADR that says what it supersedes. A partially superseded ADR gains a
 status-line note linking the new one; a fully superseded ADR is deleted, and git history keeps it.
-Propose one by copying the shape of a recent ADR, adding it to the index in
-[`adr/README.md`](adr/README.md), and opening a pull request.
+Links to a deleted ADR are rewritten to point at the superseding ADR, or to plain text; this is the
+only edit allowed in another accepted ADR's body. Propose one by copying the shape of a recent ADR,
+adding it to the index in [`adr/README.md`](adr/README.md), and opening a pull request.
 
 ## Conventions
 

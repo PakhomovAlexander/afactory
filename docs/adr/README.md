@@ -9,8 +9,9 @@ once accepted**. Each opens with a status line carrying the status and date, sta
 lists the considered options with the reasons each was rejected, records the decision, and ends
 with its consequences. A changed decision is a new ADR that names what it supersedes. A partially
 superseded ADR keeps its body as it was and gains a note on its status line linking the new ADR; a
-fully superseded ADR is deleted with its index entry, and git history keeps it
-([ADR-0113](0113-ga-reads-only-what-ga-writes.md)).
+fully superseded ADR is deleted with its index entry, and git history keeps it. Links to a deleted
+ADR are rewritten to point at the superseding ADR, or to plain text; this is the only edit allowed
+in another accepted ADR's body ([ADR-0113](0113-ga-reads-only-what-ga-writes.md)).
 
 To propose one, take the next free number, write it in that shape, add it to the index below, and
 open a pull request; it becomes binding when the pull request merges with the status `accepted`.

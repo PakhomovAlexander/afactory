@@ -10,8 +10,8 @@ reports, Campaign directories, Task execution records, usage encodings, inspecti
 captured Task context, the `.review/` authority layout, lock shapes and pre-0.8.0 releases. Each
 promise kept alive a reader, fallback, migration or second executor that the current release never
 uses on data it writes, along with the tests and fixtures that replay those bytes. By 0.9.0-rc.6
-`af/task-inspection` alone had nine versions, and a second Review executor remained only for
-Campaigns started before the common Task runtime.
+`af/task-inspection` alone had eleven versions, `@1` through `@11`, and a second Review executor
+remained only for Campaigns started before the common Task runtime.
 
 Pre-GA users are few, and they can finish or discard their in-flight work before upgrading. The
 GA release sets the baseline users will hold Afactory to, so it should carry only what it needs to
@@ -21,28 +21,33 @@ read its own output.
 
 GA reads only what GA writes. Compatibility obligations start at the GA release.
 
-1. **Pre-GA state is not read.** Review Campaigns and Tasks written by a 0.x release, with their
-   event logs, CAS objects, sidecars, leases and captured authority, under
+1. **Pre-GA state is unsupported.** Review Campaigns and Tasks written by a 0.x release, with
+   their event logs, CAS objects, sidecars, leases and captured authority, under
    `$XDG_STATE_HOME/af/review/`, `$XDG_STATE_HOME/af/task/` or a directory passed with `--state`
-   or `--state-root`, are not replayed, migrated or reinterpreted. Where GA recognizes such state
-   cheaply, such as a Campaign that predates the common Task runtime, it refuses with a message that
-   names the upgrade step. Otherwise the state fails closed as an unknown type or shape; it is never
-   partially replayed. Machine-local configuration and `af self`'s installed versions and
+   or `--state-root`, are unsupported. GA makes no promise to read, migrate or refuse such state.
+   Where GA recognizes it cheaply, such as a Campaign that predates the common Task runtime, it
+   refuses with a message that names the upgrade step; such a check matches only records GA never
+   writes, so it never refuses GA's own state. Otherwise pre-GA state may fail on an unknown type
+   or shape, or be read as though GA wrote it. Users finish or abandon it under the release that
+   started it, then delete it. Machine-local configuration and `af self`'s installed versions and
    activation history keep their current formats and are unaffected.
-2. **Committed authority uses the shapes GA writes.** `.af/` project files, locks, pipelines,
-   catalogs and Worker packages are read only in the shapes GA's `af onboard` and starters
-   produce. Keys and shorthands that only earlier releases wrote or accepted, such as the lock's
-   `[reviewers]` table and 0.7.1 `af_version` key, `af.toml`'s `[worker.*]` tables and untyped
-   pipeline ports, are refused rather than upgraded on read. The retired `.review/` layout is not
-   read at all, and `af onboard --migrate` is gone.
-3. **One contract per name, at its highest pre-GA version.** Each pre-GA version ladder (event and
-   artifact types, CLI JSON outputs, JSON Schemas, configuration and catalog formats) collapses at
-   GA to a single contract that keeps its highest version number. Lower versions are neither
-   written nor read. Until GA ships, such a contract may also change in place under that number
-   instead of taking a new version: it may drop a field nothing reads, require one every writer
-   sets, or change what an omitted value means. This replaces ADR-0002's bump rule, and
-   ADR-0021's new-version rule for reviewer results, for pre-GA contracts only. From GA on, both
-   rules apply unchanged to every contract GA ships.
+2. **Committed authority uses the shapes GA accepts.** `.af/` project files, locks, pipelines,
+   catalogs and Worker packages are read only in the shapes GA accepts. Keys and shorthands that
+   only earlier releases wrote or accepted, such as the lock's `[reviewers]` table and 0.7.1
+   `af_version` key, `af.toml`'s `[worker.*]` tables and untyped pipeline ports, are refused rather
+   than upgraded on read. The retired `.review/` layout is not read at all, and
+   `af onboard --migrate` is gone.
+3. **One contract per name, at its highest pre-GA version.** Each pre-GA version ladder of a
+   persisted or emitted contract (event and artifact types, execution and usage records, CLI JSON
+   outputs and their JSON Schemas, and catalog and review-policy generations) collapses at GA to a
+   single contract that keeps its highest version number. Lower versions are neither written nor
+   read. Authored configuration formats keep every version GA still accepts: review pipeline
+   formats 2 to 5 stay at GA, and only format 1 and the untyped port shorthand go. Until GA ships,
+   a collapsed contract may also change in place under its number instead of taking a new
+   version: it may drop a field nothing reads, require one every writer sets, or change what an
+   omitted value means. This replaces ADR-0002's bump rule, and ADR-0021's new-version rule for
+   reviewer results, for pre-GA contracts only. From GA on, both rules apply unchanged to every
+   contract GA ships.
 4. **Persisted names keep their spelling.** This decision retires readers, not names.
    `review.kernel/*` and `af/*` type strings, schema IDs and established Review Kernel terms stay
    as they are, and the AGENTS.md rule against renaming them stands: a rename would change content
@@ -56,7 +61,9 @@ GA reads only what GA writes. Compatibility obligations start at the GA release.
    directory is not read, and `AFACTORY_*` variables have no meaning.
 6. **Superseded ADRs.** An accepted ADR's body stays immutable. A partially superseded ADR keeps its
    body and gains a status-line note that links the ADR superseding it. A fully superseded ADR is
-   deleted together with its index entry, and git history keeps it.
+   deleted together with its index entry, and git history keeps it. Links to a deleted ADR are
+   rewritten to point at the superseding ADR, or to plain text; this is the only edit allowed in
+   another accepted ADR's body.
 
 ## Superseded clauses
 
@@ -84,7 +91,7 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0035](0035-address-campaign-state-by-opaque-id.md): the permanent compatibility path for
   label-named Campaign directories.
 - [ADR-0036](0036-resolve-gate-caches-through-machine-local-bounded-policy.md): the permanent
-  `RunReport@1`–`@4` readers and older pipeline formats.
+  `RunReport@1`–`@4` readers and the permanence of pipeline format 1.
 - [ADR-0044](0044-af-manages-itself-and-dispatches-to-the-pinned-release.md): the `afactory/`
   configuration read-through and the `AFACTORY_*` rename refusals.
 - [ADR-0045](0045-one-release-train-and-a-pin-that-binds-bytes.md): the 0.7.1 `af_version` lock
@@ -153,11 +160,13 @@ record is deleted together with `af onboard --migrate`.
 
 - Upgrading to GA means finishing or abandoning in-flight Campaigns and Tasks under the release
   that started them, then deleting `$XDG_STATE_HOME/af/review/`, `$XDG_STATE_HOME/af/task/` and
-  any explicit state directory. A committed `.af/` file that GA refuses is edited or regenerated.
-  The GA release notes say both.
-- Code whose only purpose is to read, replay, migrate or render pre-GA state, formats, flags or
-  releases is deleted, together with the tests and fixtures that replay pre-GA bytes. A test that
-  covers behavior the live path shares is ported to the live path before the old one goes.
+  any explicit state directory. A key in a committed `.af/` file that GA refuses is deleted by
+  hand, because `af onboard --refresh-lock` cannot repair a file it cannot parse. The GA release
+  notes say both.
+- Code whose only purpose is to read, replay, migrate or render pre-GA state, formats or flags, or
+  releases before 0.8.0, is deleted, together with the tests and fixtures that replay pre-GA
+  bytes. A test that covers behavior the live path shares is ported to the live path before the
+  old one goes.
 - No command falls back to a reader, default or executor that it would not use for GA-written data.
 - After GA, the state, configuration and contracts GA writes are the baseline, and ADR-0002 and
   ADR-0021 govern every later change to them.

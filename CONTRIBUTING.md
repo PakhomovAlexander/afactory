@@ -54,9 +54,10 @@ context, list the considered options with the reason each was rejected, record t
 and end with `## Consequences`. Add the record to the index in `docs/adr/README.md`. An
 accepted ADR is immutable: a changed decision is a new ADR that names what it supersedes. A
 partially superseded ADR gains a status-line note linking the new one; a fully superseded ADR
-is deleted with its index entry, and git history keeps it. Look at
-`docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md` for the shape. Reference the
-ADR from the PR and from the CHANGELOG line.
+is deleted with its index entry, and git history keeps it. Links to a deleted ADR are rewritten
+to point at the superseding ADR, or to plain text; this is the only edit allowed in another
+accepted ADR's body. Look at `docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md`
+for the shape. Reference the ADR from the PR and from the CHANGELOG line.
 
 ## Commit messages
 
