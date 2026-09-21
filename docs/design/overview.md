@@ -157,7 +157,7 @@ output makes the round `incomplete`, never passed.
 
 ```
 <repo>/.af/                     # git: the declarations colleagues share — and nothing else
-  af.toml                       # project declaration (envs, tools, worker refs, defaults)
+  af.toml                       # project declaration (envs, tools, defaults)
   af.lock                       # af version + worker/pipeline/extension digests (machine-written TOML)
   workers/<name>/worker.toml + worker.md
   pipelines/<name>.toml         # state machines

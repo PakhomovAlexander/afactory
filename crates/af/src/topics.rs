@@ -151,10 +151,10 @@ Commands
   remove and prune keep the default and every version a project seen on this machine pins.";
 
 const TRUST: &str = "\
-Keys that can execute code or move money — environments, tools, worker commands, hooks — apply
-from the directory and project layers only after `af trust` has recorded the path and content
-hash of the file (the same gate mise, direnv, and Codex use). Until then such keys are reported
-and ignored, never silently applied.
+Keys that can execute code or move money — environments, tools, hooks — apply from the directory
+and project layers only after `af trust` has recorded the path and content hash of the file (the
+same gate mise, direnv, and Codex use). Until then such keys are reported and ignored, never
+silently applied.
 
 Directory and project layers may never carry an `auth` reference, a Store connection, or any
 provider secret reference; such keys are rejected with the file and line.

@@ -18,6 +18,18 @@ fn a_lock_without_an_af_pin_parses_and_stays_unpinned() {
 }
 
 #[test]
+fn a_lock_with_the_retired_reviewers_table_or_top_level_af_version_is_refused() {
+    for text in [
+        "version = 1\n\n[reviewers]\n",
+        "version = 1\naf_version = \"0.8.0\"\n",
+    ] {
+        let error = Lockfile::from_toml(text).unwrap_err().to_string();
+        assert!(error.contains("unknown field"), "{text}: {error}");
+    }
+    assert_eq!(pinned_af("version = 1\naf_version = \"0.8.0\"\n"), None);
+}
+
+#[test]
 fn the_af_pin_round_trips_as_a_table_right_after_the_format_version() {
     let mut lock = Lockfile::empty();
     let mut pin = AfPin::version_only("0.8.0");

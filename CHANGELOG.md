@@ -31,9 +31,10 @@ pages only.
   a Task.
 - `.af/af.lock` no longer has a `[reviewers]` table or the 0.7.1 top-level `af_version` key, and
   `.af/af.toml` no longer has `[worker.*]` tables: this release refuses a file that still carries
-  them, so delete those lines by hand (`af onboard` writes neither any more). Worker pins live
-  under `[workers]` and the release pin under `[af]`, as before. A Worker package's
-  `reviewer.toml` must now declare `subjects`; an omitted list no longer means whole-tree only.
+  them, so delete those lines by hand; `af onboard` no longer writes `[reviewers]` or
+  `[worker.*]`. Worker pins live under `[workers]` and the release pin under `[af]`, as before.
+  A Worker package's `reviewer.toml` must now declare `subjects`; an omitted list no longer means
+  whole-tree only.
 
 ## [0.9.0-rc.6] - 2026-09-21
 
