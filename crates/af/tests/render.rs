@@ -57,7 +57,7 @@ fn repin(repo: &Path, name: &str) {
 /// A repository onboarded by this binary with Codex reviewers, plus one committed change, so
 /// the Diff Subject has a real patch.
 fn onboarded_repo_with_a_change(root: &Path) -> PathBuf {
-    let repo = root.join("consumer");
+    let repo = root.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
     git(&repo, &["init", "-q"]);
     let created = af(
