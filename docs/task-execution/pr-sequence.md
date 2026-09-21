@@ -20,8 +20,5 @@ the frozen fixture corpus or treating a generic Task completion as review approv
 
 ## Compatibility obligations
 
-Legacy review result parsing and ledger replay, Campaign authority, incomplete and resumable
-review, existing Task completion, failure and delivery, consumer policy versions and CLI exit
-statuses all remain. Historical Campaigns keep their captured execution path; missing common Task
-state refuses instead of falling back. The frozen synthetic corpus and its manifest identify the
-anchors that later packages must reproduce byte for byte.
+Compatibility obligations start at the GA release; state written by a 0.x release is unsupported.
+See [ADR-0113](../adr/0113-ga-reads-only-what-ga-writes.md).
