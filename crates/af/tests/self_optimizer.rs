@@ -572,7 +572,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     policy["light_economics"]["objective_exception"] = Value::Null;
     std::fs::write(&policy_path, serde_json::to_vec(&policy).unwrap()).unwrap();
     let catalog_path = repo.join(".af/task-catalog.toml");
-    let mut catalog: toml::Value = std::fs::read_to_string(&catalog_path)
+    let mut catalog: toml::Table = std::fs::read_to_string(&catalog_path)
         .unwrap()
         .parse()
         .unwrap();
@@ -670,7 +670,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     );
     assert_ne!(binding_worker, original_worker);
     std::fs::write(&propose_worker, binding_worker).unwrap();
-    let mut catalog: toml::Value = std::fs::read_to_string(&catalog_path)
+    let mut catalog: toml::Table = std::fs::read_to_string(&catalog_path)
         .unwrap()
         .parse()
         .unwrap();
@@ -800,7 +800,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         ),
     )
     .unwrap();
-    let mut catalog: toml::Value = std::fs::read_to_string(&catalog_path)
+    let mut catalog: toml::Table = std::fs::read_to_string(&catalog_path)
         .unwrap()
         .parse()
         .unwrap();
@@ -1079,7 +1079,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
     // This second experiment verifies missing toolchain evidence, not latency. Do not
     // spend another set of real sleeps to obtain a verdict that must remain inconclusive.
     std::fs::write(&baseline_worker, &baseline_source).unwrap();
-    let mut catalog: toml::Value = std::fs::read_to_string(&catalog_path)
+    let mut catalog: toml::Table = std::fs::read_to_string(&catalog_path)
         .unwrap()
         .parse()
         .unwrap();
@@ -1267,7 +1267,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         "'recipe_id': 'deterministic_artifact_reuse'",
     );
     std::fs::write(&propose_worker, worker).unwrap();
-    let mut catalog: toml::Value = std::fs::read_to_string(&catalog_path)
+    let mut catalog: toml::Table = std::fs::read_to_string(&catalog_path)
         .unwrap()
         .parse()
         .unwrap();

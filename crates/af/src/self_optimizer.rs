@@ -661,7 +661,7 @@ pub(crate) fn run(mut options: Options) -> Result<i32, String> {
     let (repo, state) = task_execution::state_path(&options.repo, options.state.as_deref())?;
     let candidate_kind_installed = std::fs::read_to_string(repo.join(".af/task-catalog.toml"))
         .ok()
-        .and_then(|text| text.parse::<toml::Value>().ok())
+        .and_then(|text| text.parse::<toml::Table>().ok())
         .and_then(|catalog| {
             catalog
                 .get("kinds")?
