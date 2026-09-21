@@ -153,7 +153,9 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0095](0095-bind-legacy-task-context-and-retry-output-admission.md): the *Explicit legacy
   context* section: the `legacy_task_command` runner and its `legacy_budget_tokens` wire budget,
   `af/TaskContext@2` with its compatibility contracts and 8 MiB metadata limit, and the original
-  context rendering for previously captured packages. Its output-admission retry decision stays.
+  context rendering for previously captured packages, together with the first two paragraphs of
+  *Alternatives and consequences* that argue for that design. Its output-admission retry decision
+  and the rationale for it stay.
 - [ADR-0099](0099-select-task-review-generation-independently-of-provider-costs.md): the semantics
   of captured policy-one plans, and omission selecting policy one. An omitted `review.generation`
   now selects generation two, the only generation.

@@ -1282,3 +1282,38 @@ fn installed_planner_bootstrap_is_exact_fixed_and_cannot_be_reclassified_by_wire
         );
     }
 }
+
+#[test]
+fn worker_manifest_refuses_the_removed_legacy_task_command_runner() {
+    let f = Fixture::new();
+    let worker = f.compiler.workers["builtin/document-author"].clone();
+    let package = |manifest: toml::Table| {
+        let files = BTreeMap::from([(
+            "worker.toml".into(),
+            toml::to_string(&manifest).unwrap().into_bytes(),
+        )]);
+        PackageBytes {
+            schema: "af.task-package/1".into(),
+            name: worker.name.clone(),
+            version: worker.version.clone(),
+            digest: package_digest_from_files(&files),
+            files,
+        }
+    };
+    let current = toml::Table::try_from(&worker).unwrap();
+    assert!(TaskPlanCompiler::parse_package(&package(current.clone())).is_ok());
+    let legacy = json!({
+        "kind": "legacy_task_command",
+        "command": {"program": "/usr/bin/true", "args": []},
+        "protocol": "implement_v1",
+        "legacy_budget_tokens": 0,
+    });
+    let mut manifest = current;
+    manifest.insert(
+        "runner".into(),
+        toml::Value::try_from(legacy.clone()).unwrap(),
+    );
+    let error = TaskPlanCompiler::parse_package(&package(manifest)).unwrap_err();
+    assert!(error.contains("legacy_task_command"), "{error}");
+    assert!(serde_json::from_value::<TaskWorkerRunner>(legacy).is_err());
+}

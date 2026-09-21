@@ -1,9 +1,10 @@
 # ADR-0095 — Bind legacy Task context and retry output admission
 
 **Status:** accepted for the unreleased Task increment, 2026-09-13. Superseded in part by
-[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the whole *Explicit legacy context* section,
-since the `legacy_task_command` runner, `af/TaskContext@2` and the compatibility contracts are
-gone; the output-admission retry decision stands.
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the whole *Explicit legacy context* section
+and the first two paragraphs of *Alternatives and consequences*, since the `legacy_task_command`
+runner, `af/TaskContext@2`, the compatibility contracts and the separate metadata reader are
+gone; the output-admission retry decision and its rationale stand.
 
 ## Decision
 
