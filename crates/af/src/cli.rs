@@ -13,7 +13,6 @@ use clap_complete::engine::ArgValueCompleter;
 use crate::selfmgmt::{complete_campaign, complete_version};
 
 pub(crate) const REVIEW_PIPELINE: &str = ".af/pipelines/review.toml";
-pub(crate) const IMPLEMENT_PIPELINE: &str = ".af/pipelines/implement.toml";
 
 const AF_ABOUT: &str = "Afactory — deterministic multi-agent review and implementation";
 const AF_LONG_ABOUT: &str = "\
@@ -130,11 +129,13 @@ explicitly requests convergence review, and repeat that explicit mode when resum
         subcommand_required = true,
         arg_required_else_help = true,
         long_about = "Start, inspect, and deliver an implement Task.\n\n\
-A Task runs one sequential implement pipeline — implementer, read-only Gates, independent \
-evaluator — over a captured source Snapshot and ends at a verified or unverified derived \
-Snapshot. Nothing is written back to the repository unless you `deliver` it, to a new local \
-branch and worktree, after confirming the Task ID.",
-        after_long_help = "Examples:\n  af task start --kind implement --goal \"describe the change\" --json\n  af task list --json\n  af task show TASK_ID\n  af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID"
+A Task file (`--file`) names the Task's ID, kind, goal and limits. The Pipeline and Worker \
+packages it runs are pinned in the committed `.af/task-catalog.toml`; `af catalog init` creates \
+a working starter catalog with runnable Task files. The Task runs over a captured source \
+Snapshot and ends at a verified or unverified derived Snapshot. Nothing is written back to the \
+repository unless you `deliver` it, to a new local branch and worktree, after confirming the \
+Task ID.",
+        after_long_help = "Examples:\n  af task start --file ticket.json\n  af task run TASK_ID --confirm-plan PLAN_ID\n  af task list --json\n  af task show TASK_ID\n  af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID"
     )]
     Task {
         #[command(subcommand)]
@@ -871,28 +872,17 @@ pub(crate) enum TaskCommand {
         after_long_help = "Examples:\n  af task start --file ticket.json\n  af task explain TASK_ID --tree\n  af task run TASK_ID --confirm-plan sha256:...\n  af task start --file ticket.json --execute --json"
     )]
     Start {
-        /// Task kind (v2 supports exactly `implement`)
-        #[arg(long, value_parser = ["implement"], value_name = "KIND", required_unless_present = "file", conflicts_with = "file")]
-        kind: Option<String>,
-        /// What the implementer must achieve
-        #[arg(
-            long,
-            value_name = "TEXT",
-            required_unless_present = "file",
-            conflicts_with = "file"
-        )]
-        goal: Option<String>,
         /// Versioned Task JSON/TOML file, processed by the common Task runtime
         #[arg(long, value_name = "FILE")]
-        file: Option<PathBuf>,
+        file: PathBuf,
         /// Explicitly execute immediately instead of stopping at the captured plan preview
         #[arg(long)]
         execute: bool,
         /// Capture local Worker tuning for this Task
-        #[arg(long, value_name = "FILE", requires = "file")]
+        #[arg(long, value_name = "FILE")]
         bindings: Option<PathBuf>,
         /// Explicit machine-local read-only issue source accounts
-        #[arg(long, value_name = "FILE", requires = "file")]
+        #[arg(long, value_name = "FILE")]
         source_bindings: Option<PathBuf>,
         /// Repository to work in
         #[arg(
@@ -902,9 +892,6 @@ pub(crate) enum TaskCommand {
             help_heading = "Selector"
         )]
         repo: PathBuf,
-        /// Pipeline definition, relative to the repository
-        #[arg(long, value_name = "FILE", default_value = IMPLEMENT_PIPELINE, help_heading = "Selector", conflicts_with = "file")]
-        pipeline: PathBuf,
         /// Explicit state directory (outside the repository)
         #[arg(long, value_name = "DIR", help_heading = "Selector")]
         state: Option<PathBuf>,

@@ -1,7 +1,7 @@
 # ADR-0113: GA reads only what GA writes
 
 **Status:** accepted (2026-09-21). Supersedes in part the ADRs listed under *Superseded clauses*
-and ADR-0043 in full.
+and ADR-0043 and ADR-0051 in full.
 
 Before GA, Afactory treated everything it had ever written as a permanent obligation.
 [ADR-0002](0002-event-payload-changes-bump-the-type-version.md) made every superseded event reader
@@ -34,9 +34,12 @@ GA reads only what GA writes. Compatibility obligations start at the GA release.
 2. **Committed authority uses the shapes GA accepts.** `.af/` project files, locks, pipelines,
    catalogs and Worker packages are read only in the shapes GA accepts. Keys and shorthands that
    only earlier releases wrote or accepted, such as the lock's `[reviewers]` table and 0.7.1
-   `af_version` key, `af.toml`'s `[worker.*]` tables and untyped pipeline ports, are refused rather
-   than upgraded on read. The retired `.review/` layout is not read at all, and
-   `af onboard --migrate` is gone.
+   `af_version` key, `af.toml`'s `[worker.*]` tables and `defaults.task_pipeline` key, and untyped
+   pipeline ports, are refused rather than upgraded on read. The retired `.review/` layout is not
+   read at all, and `af onboard --migrate` is gone. The fixed implementation v1 format
+   (`.af/pipelines/implement.toml` with its `.af/workers/` implementer and evaluator) is not read
+   either: `af task start` takes only a Task file, and its `--kind`, `--goal` and `--pipeline`
+   flags are gone.
 3. **One contract per name, at its highest pre-GA version.** Each pre-GA version ladder of a
    persisted or emitted contract (event and artifact types, execution and usage records, CLI JSON
    outputs and their JSON Schemas, and catalog and review-policy generations) collapses at GA to a
@@ -107,10 +110,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0048](0048-compile-task-ports-and-fence-developer-plan-decisions.md): the legacy-link
   obligation.
 - [ADR-0049](0049-run-task-workers-through-shared-durable-attempts.md): retained legacy
-  implementation Stores, the common Store's read-only links to legacy histories, and the
-  historical delivery fixture.
-- [ADR-0051](0051-compile-fixed-implementation-tasks-into-the-common-runtime.md): readers for the
-  original implementation history and delivery schemas, and the v0.8.0 compatibility fixture.
+  implementation Stores, the common Store's read-only links to legacy histories, the historical
+  delivery fixture, and the fixed command implementation entry point with its ADR-0051 migration.
 - [ADR-0057](0057-export-portable-task-definitions-without-execution-authority.md): readability of
   previously captured locks.
 - [ADR-0062](0062-refresh-issue-revisions-without-resetting-execution-authority.md): the original
@@ -155,6 +156,19 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 
 ADR-0043 is superseded in full. `.review/` authority is neither migrated nor replayed, so that
 record is deleted together with `af onboard --migrate`.
+
+ADR-0051 is superseded in full. It compiled `af task start --goal` and the fixed implementation
+v1 format into the common Task runtime; GA runs only Task files, so that record is deleted
+together with the adapter. Three of its decisions describe every Task and stay in force here:
+
+- Delivery recovery closes a rolled-back prepared operation with a failed receipt before it
+  prepares the retry. Recovery thereby passes the common journal's transition checks and keeps
+  the local rollback and operator-content protections.
+- A code-task policy's `check_process_wall_ms` bounds each Check process within the aggregate
+  Check Attempt, so one slow Check cannot borrow another's allowance.
+- A native Task transport timeout or CAS failure refuses the business result but keeps the
+  reported usage, and arithmetic overflow saturates the reported counter rather than discarding
+  the overrun or panicking. Raw stdout and stderr stay available when CAS storage succeeds.
 
 ## Considered options
 

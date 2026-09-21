@@ -8,11 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use review_check::CheckDefinition;
-use review_config::lock::{Lockfile, Registry};
-use review_core::{Arg, Command, SubjectKind};
 use review_process::{ExitPolicy, SupervisedOutput, run_supervised_with_policy};
-use review_runner::ResolvedReviewer;
 use review_source_git::{
     Capture, Entry, EntryKind, Manifest, PathEncoding, Repo, decode_path, digest_bytes,
 };
@@ -23,18 +19,6 @@ use sha2::{Digest, Sha256};
 
 use super::{normalize_absolute, resolve_filesystem_path, xdg_state_root};
 mod delivery_common;
-
-#[derive(Debug, Clone)]
-pub(crate) struct TaskOptions {
-    pub(crate) repo: PathBuf,
-    pub(crate) pipeline: PathBuf,
-    pub(crate) state: Option<PathBuf>,
-    pub(crate) goal: String,
-    pub(crate) authority: String,
-    pub(crate) uncommitted: bool,
-    pub(crate) timeout: Option<Duration>,
-    pub(crate) json: bool,
-}
 
 #[derive(Debug, Clone)]
 pub(super) struct DeliveryOptions {
@@ -52,35 +36,6 @@ pub(super) struct InspectOptions {
     state: Option<PathBuf>,
     task_id: Option<String>,
     json: bool,
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn options_from_cli(
-    goal: String,
-    repo: PathBuf,
-    pipeline: PathBuf,
-    state: Option<PathBuf>,
-    authority: String,
-    uncommitted: bool,
-    timeout_secs: Option<u64>,
-    json: bool,
-) -> Result<TaskOptions, String> {
-    if goal.trim().is_empty() {
-        return Err("an implement Task requires a non-empty --goal".into());
-    }
-    if uncommitted && authority != "HEAD" {
-        return Err("--uncommitted and an explicit --authority cannot be combined".into());
-    }
-    Ok(TaskOptions {
-        repo,
-        pipeline,
-        state,
-        goal,
-        authority,
-        uncommitted,
-        timeout: timeout_secs.map(Duration::from_secs),
-        json,
-    })
 }
 
 pub(super) fn delivery_from_cli(
@@ -128,112 +83,9 @@ pub(super) fn inspect_from_cli(
 
 fn validate_task_id(task_id: &str) -> Result<(), String> {
     if review_core::task::is_name(task_id) {
-        return Ok(());
-    }
-    let digest = task_id
-        .strip_prefix("task-")
-        .ok_or("Task ID must start with `task-`")?;
-    if digest.len() != 20
-        || !digest
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-    {
-        return Err("Task ID must contain exactly 20 lowercase hexadecimal digits".into());
-    }
-    Ok(())
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct TaskPipeline {
-    pub(crate) version: u32,
-    pub(crate) kind: String,
-    pub(crate) implementer: String,
-    pub(crate) evaluator: String,
-    #[serde(default = "default_timeout_seconds")]
-    pub(crate) timeout_seconds: u64,
-    #[serde(default = "default_check_timeout_seconds")]
-    pub(crate) check_timeout_seconds: u64,
-    pub(crate) attempt_tokens: u64,
-    pub(crate) run_tokens: u64,
-    checks: Vec<TaskCheck>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TaskCheck {
-    name: String,
-    program: String,
-    #[serde(default)]
-    args: Vec<TaskArg>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TaskArg {
-    value: String,
-}
-
-fn default_timeout_seconds() -> u64 {
-    1800
-}
-
-fn default_check_timeout_seconds() -> u64 {
-    3600
-}
-
-impl TaskPipeline {
-    fn validate(&self) -> Result<(), String> {
-        if self.version != 1 || self.kind != "implement" {
-            return Err(
-                "implement pipeline must declare version = 1 and kind = \"implement\"".into(),
-            );
-        }
-        if self.implementer.trim().is_empty()
-            || self.evaluator.trim().is_empty()
-            || self.implementer == self.evaluator
-        {
-            return Err(
-                "implement pipeline needs distinct implementer and evaluator Workers".into(),
-            );
-        }
-        if self.timeout_seconds == 0 || self.check_timeout_seconds == 0 {
-            return Err("Task timeouts must be positive".into());
-        }
-        if self.attempt_tokens == 0 || self.run_tokens == 0 || self.attempt_tokens > self.run_tokens
-        {
-            return Err(
-                "Task token budgets must be positive and attempt_tokens <= run_tokens".into(),
-            );
-        }
-        if self.checks.is_empty()
-            || self
-                .checks
-                .iter()
-                .any(|check| check.name.trim().is_empty() || check.program.trim().is_empty())
-        {
-            return Err("implement pipeline needs at least one named acceptance gate".into());
-        }
         Ok(())
-    }
-
-    pub(crate) fn check_definitions(&self) -> Vec<CheckDefinition> {
-        self.checks
-            .iter()
-            .map(|check| {
-                CheckDefinition::new(
-                    &check.name,
-                    Command::new(
-                        &check.program,
-                        check
-                            .args
-                            .iter()
-                            .map(|argument| Arg::literal(&argument.value))
-                            .collect(),
-                    ),
-                )
-            })
-            .collect()
+    } else {
+        Err("Task ID must be 1 to 128 ASCII letters, digits, `-` or `_`, starting with a letter or digit".into())
     }
 }
 
@@ -245,16 +97,6 @@ struct SnapshotReceipt {
     repository_id: String,
     /// The committed source revision; delivery accepts only Tasks captured from a commit.
     source_revision: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct WorkerAuthority {
-    pub(crate) role: String,
-    pub(crate) name: String,
-    pub(crate) version: String,
-    pub(crate) digest: String,
-    pub(crate) package_artifact_id: String,
 }
 
 /// One delivery transition of a Task result, in journal order.
@@ -1920,17 +1762,6 @@ fn is_executable(_metadata: &std::fs::Metadata) -> bool {
     false
 }
 
-pub(crate) struct LoadedAuthority {
-    pub(crate) pipeline: TaskPipeline,
-    pub(crate) pipeline_artifact_id: String,
-    pub(crate) lock_artifact_id: String,
-    pub(crate) project_artifact_id: String,
-    pub(crate) implementer: ResolvedReviewer,
-    pub(crate) evaluator: ResolvedReviewer,
-    pub(crate) implementer_authority: WorkerAuthority,
-    pub(crate) evaluator_authority: WorkerAuthority,
-}
-
 fn resolve_task_state(state: &Option<PathBuf>, repository: &Path) -> Result<PathBuf, String> {
     match state {
         Some(state) => resolve_filesystem_path(state),
@@ -1943,192 +1774,6 @@ fn resolve_task_state(state: &Option<PathBuf>, repository: &Path) -> Result<Path
             )
         }
     }
-}
-
-pub(crate) fn task_id(repository: &Path, source: &str, goal: &str) -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    let mut digest = Sha256::new();
-    digest.update(repository.as_os_str().as_encoded_bytes());
-    digest.update(source.as_bytes());
-    digest.update(goal.as_bytes());
-    digest.update(now.to_be_bytes());
-    digest.update(std::process::id().to_be_bytes());
-    format!(
-        "task-{}",
-        &review_core::hex::encode(&digest.finalize())[..20]
-    )
-}
-
-pub(crate) fn load_authority(
-    options: &TaskOptions,
-    manifest: &Manifest,
-    cas: &Cas,
-) -> Result<LoadedAuthority, String> {
-    let pipeline_path = canonical_authority_path(&options.pipeline)?;
-    let pipeline_bytes = manifest_bytes(manifest, cas, &pipeline_path)?;
-    let project_bytes = manifest_bytes(manifest, cas, ".af/af.toml")?;
-    let lock_bytes = manifest_bytes(manifest, cas, ".af/af.lock")?;
-    validate_project(&project_bytes, &pipeline_path)?;
-    let lockfile = Lockfile::from_toml(
-        std::str::from_utf8(&lock_bytes)
-            .map_err(|error| format!(".af/af.lock is not UTF-8: {error}"))?,
-    )
-    .map_err(|error| error.to_string())?;
-    if let Some(note) = crate::project::check_lock_af_version(&lockfile, ".af/af.lock")? {
-        eprintln!("af task: note: {note}");
-    }
-    validate_pipeline_pin(&lockfile, &pipeline_path, &pipeline_bytes)?;
-    let pipeline: TaskPipeline = toml::from_str(
-        std::str::from_utf8(&pipeline_bytes)
-            .map_err(|error| format!("implement pipeline is not UTF-8: {error}"))?,
-    )
-    .map_err(|error| format!("implement pipeline: {error}"))?;
-    pipeline.validate()?;
-    let registry = Registry::captured(captured_registry(manifest, cas)?);
-    let implementer = lockfile
-        .resolve_for_subject(&pipeline.implementer, &registry, SubjectKind::WholeTree)
-        .map_err(|error| error.to_string())?;
-    let evaluator = lockfile
-        .resolve_for_subject(&pipeline.evaluator, &registry, SubjectKind::WholeTree)
-        .map_err(|error| error.to_string())?;
-    let pipeline_artifact_id = cas
-        .put(&pipeline_bytes)
-        .map_err(|error| error.to_string())?;
-    let lock_artifact_id = cas.put(&lock_bytes).map_err(|error| error.to_string())?;
-    let project_artifact_id = cas.put(&project_bytes).map_err(|error| error.to_string())?;
-    let implementer_authority = publish_worker("implementer", &implementer, cas)?;
-    let evaluator_authority = publish_worker("evaluator", &evaluator, cas)?;
-    Ok(LoadedAuthority {
-        pipeline,
-        pipeline_artifact_id,
-        lock_artifact_id,
-        project_artifact_id,
-        implementer,
-        evaluator,
-        implementer_authority,
-        evaluator_authority,
-    })
-}
-
-fn canonical_authority_path(path: &Path) -> Result<String, String> {
-    if path.is_absolute() {
-        return Err("Task pipeline must be a repository-relative `.af/pipelines/*` path".into());
-    }
-    let path = path
-        .to_str()
-        .ok_or("Task pipeline path must be UTF-8")?
-        .trim_start_matches("./")
-        .to_string();
-    if !path.starts_with(".af/pipelines/") || path.contains("..") {
-        return Err("Task pipeline must live under `.af/pipelines/`".into());
-    }
-    Ok(path)
-}
-
-fn manifest_bytes(manifest: &Manifest, cas: &Cas, path: &str) -> Result<Vec<u8>, String> {
-    let entry = manifest
-        .get(path)
-        .ok_or_else(|| format!("Authority Snapshot has no `{path}`"))?;
-    if entry.kind == EntryKind::Symlink {
-        return Err(format!("Authority file `{path}` cannot be a symlink"));
-    }
-    cas.get(&entry.content).map_err(|error| error.to_string())
-}
-
-fn validate_project(bytes: &[u8], pipeline_path: &str) -> Result<(), String> {
-    let text = std::str::from_utf8(bytes).map_err(|error| format!(".af/af.toml: {error}"))?;
-    let project = crate::project::ProjectFile::parse(text)?;
-    let configured = project.task_pipeline()?;
-    let requested = Path::new(pipeline_path)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .ok_or("Task pipeline path has no file stem")?;
-    if configured != requested {
-        return Err(format!(
-            ".af/af.toml selects Task pipeline `{configured}`, not `{requested}`"
-        ));
-    }
-    Ok(())
-}
-
-fn validate_pipeline_pin(
-    lockfile: &Lockfile,
-    pipeline_path: &str,
-    bytes: &[u8],
-) -> Result<(), String> {
-    let name = Path::new(pipeline_path)
-        .file_stem()
-        .and_then(|value| value.to_str())
-        .ok_or("Task pipeline path has no file stem")?;
-    let pin = lockfile
-        .pipelines
-        .get(name)
-        .ok_or_else(|| format!("Task pipeline `{name}` is not pinned in .af/af.lock"))?;
-    let actual = review_store::canonical::blob_content_id(bytes);
-    if pin.digest != actual {
-        return Err(format!(
-            "Task pipeline `{name}` does not match its pin: locked {}, found {actual}",
-            pin.digest
-        ));
-    }
-    Ok(())
-}
-
-fn captured_registry(
-    manifest: &Manifest,
-    cas: &Cas,
-) -> Result<BTreeMap<String, BTreeMap<String, Vec<u8>>>, String> {
-    let prefix = ".af/workers/";
-    let mut packages: BTreeMap<String, BTreeMap<String, Vec<u8>>> = BTreeMap::new();
-    for entry in &manifest.entries {
-        let Some(relative) = entry.path.strip_prefix(prefix) else {
-            continue;
-        };
-        let Some((name, path)) = relative.split_once('/') else {
-            continue;
-        };
-        if name.is_empty() || path.is_empty() {
-            continue;
-        }
-        if entry.kind == EntryKind::Symlink {
-            return Err(format!("Worker package `{name}` contains a symlink"));
-        }
-        packages.entry(name.into()).or_default().insert(
-            path.into(),
-            cas.get(&entry.content).map_err(|error| error.to_string())?,
-        );
-    }
-    Ok(packages)
-}
-
-fn publish_worker(
-    role: &str,
-    package: &ResolvedReviewer,
-    cas: &Cas,
-) -> Result<WorkerAuthority, String> {
-    let mut files = BTreeMap::new();
-    for (path, bytes) in package.files() {
-        files.insert(path, cas.put(bytes).map_err(|error| error.to_string())?);
-    }
-    let package_artifact_id = cas
-        .put_json(&serde_json::json!({
-            "schema": "af/worker-package@1",
-            "name": package.name,
-            "version": package.version,
-            "digest": package.digest,
-            "files": files,
-        }))
-        .map_err(|error| error.to_string())?;
-    Ok(WorkerAuthority {
-        role: role.into(),
-        name: package.name.clone(),
-        version: package.version.clone(),
-        digest: package.digest.clone(),
-        package_artifact_id,
-    })
 }
 
 fn put_manifest(cas: &Cas, manifest: &Manifest) -> Result<String, String> {

@@ -16,7 +16,6 @@ dependencies = [
  "nix 0.31.3",
  "portable-pty",
  "review-attempt",
- "review-check",
  "review-config",
  "review-core",
  "review-graph",

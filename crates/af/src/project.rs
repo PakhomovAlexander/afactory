@@ -105,8 +105,6 @@ struct Project {
 #[serde(deny_unknown_fields)]
 struct Defaults {
     pipeline: String,
-    #[serde(default)]
-    task_pipeline: Option<String>,
 }
 
 impl ProjectFile {
@@ -125,9 +123,6 @@ impl ProjectFile {
             return Err("authority project name must not be empty".into());
         }
         validate_safe_name(&self.defaults.pipeline, "default review pipeline")?;
-        if let Some(task_pipeline) = &self.defaults.task_pipeline {
-            validate_safe_name(task_pipeline, "default Task pipeline")?;
-        }
         let mut names = std::collections::BTreeSet::new();
         for route in &self.routes {
             validate_safe_name(&route.name, "route name")?;
@@ -236,13 +231,6 @@ impl ProjectFile {
 
     pub fn review_pipeline(&self) -> &str {
         &self.defaults.pipeline
-    }
-
-    pub fn task_pipeline(&self) -> Result<&str, String> {
-        self.defaults
-            .task_pipeline
-            .as_deref()
-            .ok_or_else(|| ".af/af.toml must declare defaults.task_pipeline".into())
     }
 }
 
@@ -420,7 +408,7 @@ mod tests {
     fn project(extra: &str, min_af: &str) -> String {
         format!(
             "version = 1\n[project]\nname = \"demo\"\nmin_af = \"{min_af}\"\n\
-             [defaults]\npipeline = \"review\"\ntask_pipeline = \"implement\"\n{extra}"
+             [defaults]\npipeline = \"review\"\n{extra}"
         )
     }
 
@@ -428,7 +416,6 @@ mod tests {
     fn accepts_short_compatible_minimum_version() {
         let parsed = ProjectFile::parse(&project("", "0.6")).unwrap();
         assert_eq!(parsed.review_pipeline(), "review");
-        assert_eq!(parsed.task_pipeline().unwrap(), "implement");
     }
 
     #[test]
@@ -436,6 +423,7 @@ mod tests {
         for extra in [
             "[env.default]\nisolation = \"host\"\nnetwork = \"ambient\"\n",
             "[worker.correctness]\npackage = \"correctness\"\n",
+            "task_pipeline = \"implement\"\n",
         ] {
             let error = ProjectFile::parse(&project(extra, "0.6")).unwrap_err();
             assert!(error.contains("unknown field"), "{error}");

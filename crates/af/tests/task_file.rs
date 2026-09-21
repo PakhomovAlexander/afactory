@@ -875,9 +875,26 @@ fn plan_then_run_uses_captured_inputs_and_does_not_repeat_finished_attempts() {
 }
 
 #[test]
-fn task_start_accepts_a_file_without_legacy_goal_or_kind_flags() {
+fn task_start_runs_a_task_file_and_requires_one() {
     let temp = tempfile::tempdir().unwrap();
     let (repo, state) = fixture(temp.path());
+    // `--file` is the only way to describe a Task; the fixed-format flags are gone.
+    for args in [
+        "start --execute",
+        "start --kind implement --goal pagination",
+        "start --file ticket.json --pipeline .af/pipelines/implement.toml",
+    ] {
+        let output = Command::new(env!("CARGO_BIN_EXE_af"))
+            .current_dir(&repo)
+            .arg("task")
+            .args(args.split(' '))
+            .arg("--state")
+            .arg(&state)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "af task {args}");
+    }
+    assert!(!state.exists());
     let run = af(
         &repo,
         &state,

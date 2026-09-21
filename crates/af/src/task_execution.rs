@@ -42,14 +42,12 @@ pub(super) mod export;
 mod input_file;
 mod inspection;
 mod issue;
-mod legacy;
 mod planning;
 mod preview;
 mod provider_admission;
 pub(super) mod refresh;
 mod selection;
 pub(crate) mod starter;
-pub(super) use legacy::start_legacy;
 
 pub(super) struct StartOptions {
     pub file: PathBuf,
@@ -872,9 +870,7 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
     } else {
         policy_source
     };
-    start_captured(
-        options, file, bytes, started, cas, store, source, authority, None,
-    )
+    start_captured(options, file, bytes, started, cas, store, source, authority)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -887,7 +883,6 @@ fn start_captured(
     mut store: EventStore,
     source: review_source_git::Snapshot,
     (authority_id, authority, mut compiler): (String, RunAuthority, TaskPlanCompiler),
-    legacy_budget: Option<u64>,
 ) -> Result<i32, String> {
     let profile = selected_profile(&compiler, &authority, &file.kind, file.verification)?;
     let origin=cas.put_json(&json!({"schema":"af.task-source-origin/1","repository_id":source.repository_id,"source_revision":source.source_revision,"content_digest":source.content_digest})).map_err(|e|e.to_string())?;
@@ -915,9 +910,6 @@ fn start_captured(
         .issue
         .as_ref()
         .map(|selected| {
-            if legacy_budget.is_some() {
-                return Err("Issue requirements need an explicit Task file".into());
-            }
             issue::capture(
                 &cas,
                 &source.manifest,
@@ -928,8 +920,6 @@ fn start_captured(
             )
         })
         .transpose()?;
-    // Runner/context authority owns legacy identity and wire budgets; business data
-    // retains the explicit Task-file specification and Issue capture below.
     let mut requirements_payload = json!({"text":file.goal});
     if let Some(specification) = &file.requirements {
         requirements_payload["specification"] = json!(specification);

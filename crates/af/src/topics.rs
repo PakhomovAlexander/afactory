@@ -33,7 +33,7 @@ name them.
 
   version = 1
   [project]   name = \"myrepo\"      min_af = \"0.7\"
-  [defaults]  pipeline = \"review\"  task_pipeline = \"implement\"
+  [defaults]  pipeline = \"review\"
 
 The user file is `~/.config/af/config.toml` (XDG on macOS too). It holds what belongs to the
 person and the machine, never to the project: the `[self]` update policy. Provider logins and

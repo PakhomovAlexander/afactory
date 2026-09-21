@@ -6,4 +6,3 @@ min_af = "0.2"
 
 [defaults]
 pipeline = "p1-review"
-task_pipeline = "implement"

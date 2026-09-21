@@ -15,7 +15,6 @@ path = "src/main.rs"
 fs2 = "0.4.3"
 review-config = { path = "../review-config" }
 review-attempt = { path = "../review-attempt" }
-review-check = { path = "../review-check" }
 review-core = { path = "../review-core" }
 review-graph = { path = "../review-graph" }
 review-pipeline = { path = "../review-pipeline" }

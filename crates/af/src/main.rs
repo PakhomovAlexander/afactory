@@ -1197,48 +1197,29 @@ fn main() {
             "af task",
             match command {
                 cli::TaskCommand::Start {
-                    kind: _,
-                    goal,
                     file,
                     execute,
                     bindings,
                     source_bindings,
                     repo,
-                    pipeline,
                     state,
                     authority,
                     uncommitted,
                     timeout_secs,
                     json,
-                } => {
-                    if let Some(file) = file {
-                        task_execution::start(task_execution::StartOptions {
-                            file,
-                            bindings,
-                            source_bindings,
-                            repo,
-                            state,
-                            authority,
-                            uncommitted,
-                            json,
-                            plan_only: !execute,
-                            timeout_secs,
-                            optimization_history: None,
-                        })
-                    } else {
-                        task::options_from_cli(
-                            goal.unwrap_or_default(),
-                            repo,
-                            pipeline,
-                            state,
-                            authority,
-                            uncommitted,
-                            timeout_secs,
-                            json,
-                        )
-                        .and_then(|options| task_execution::start_legacy(options, !execute))
-                    }
-                }
+                } => task_execution::start(task_execution::StartOptions {
+                    file,
+                    bindings,
+                    source_bindings,
+                    repo,
+                    state,
+                    authority,
+                    uncommitted,
+                    json,
+                    plan_only: !execute,
+                    timeout_secs,
+                    optimization_history: None,
+                }),
                 cli::TaskCommand::Plan {
                     file,
                     bindings,

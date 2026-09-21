@@ -1,5 +1,6 @@
-//! v2 implement Task: source checkout remains untouched and the only successful output is a
-//! materializable, independently evaluated internal Snapshot.
+//! A verified file Task ends at a materializable internal Snapshot that only explicit delivery
+//! places in a new local branch and worktree. Delivery is exact and idempotent, recovers a
+//! crash without deleting operator work, and refuses unverified, dirty or busy sources.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -7,6 +8,9 @@ use std::process::Command;
 use review_config::lock::package_digest;
 use review_source_git::Manifest;
 use review_store::Cas;
+
+#[path = "support/task_cli.rs"]
+mod task_cli;
 
 fn verification(outcome: &serde_json::Value, state: &Path) -> serde_json::Value {
     let cas = Cas::open_existing(state.join("cas")).unwrap();
@@ -89,12 +93,6 @@ fn forget_terminal_delivery(state: &Path, task_id: &str) {
     assert_eq!(terminal_delivery(state, task_id), "TaskDeliveryPrepared@1");
 }
 
-fn workspace_root() -> PathBuf {
-    std::env::var_os("AF_WORKSPACE_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
-}
-
 fn git(repo: &Path, home: &Path, args: &[&str]) {
     let output = Command::new("git")
         .current_dir(repo)
@@ -113,102 +111,56 @@ fn git(repo: &Path, home: &Path, args: &[&str]) {
     );
 }
 
-fn write_package(root: &Path, name: &str, script: &str, prompt: &str) {
-    let package = root.join(name);
-    std::fs::create_dir_all(&package).unwrap();
-    std::fs::write(
-        package.join("reviewer.toml"),
-        format!(
-            "name = \"{name}\"\nversion = \"1.0.0\"\nsubjects = [\"whole-tree\"]\n\n\
-             [runner]\nprogram = \"/bin/sh\"\nargs = [{{ value = \"-c\" }}, {{ value = '''{script}''' }}]\n"
-        ),
-    )
-    .unwrap();
-    std::fs::write(package.join("reviewer.md"), prompt).unwrap();
-}
-
+/// The checked-in pagination Task, with an implementer that also derives `implemented.txt` and two
+/// files the repository ignores. Without `passing_gate` it leaves the unfinished pagination
+/// source, so the required check fails.
 fn fixture(root: &Path, passing_gate: bool) -> (PathBuf, PathBuf, PathBuf) {
-    let repo = root.join("repo");
+    let (repo, state) = task_cli::fixture_named(root, "pagination");
     let home = root.join("home");
-    let state = root.join("state");
-    std::fs::create_dir_all(repo.join(".af/pipelines")).unwrap();
-    std::fs::create_dir_all(repo.join(".af/workers")).unwrap();
     std::fs::create_dir_all(&home).unwrap();
-    std::fs::write(repo.join("seed.txt"), "source\n").unwrap();
     std::fs::write(repo.join(".gitignore"), "*.generated\n").unwrap();
-    std::fs::write(
-        repo.join(".af/af.toml"),
-        "version = 1\n[project]\nname = \"fixture\"\nmin_af = \"0.6\"\n[defaults]\npipeline = \"review\"\ntask_pipeline = \"implement\"\n",
-    )
-    .unwrap();
-    write_package(
-        &repo.join(".af/workers"),
-        "implementer",
-        "printf 'derived\\n' > implemented.txt; printf 'ignored but delivered\\n' > proof.generated; printf 'encoded ignored\\n' > '50%-off.generated'; printf 'done'",
-        "Implement the exact goal in the sandbox.",
-    );
-    write_package(
-        &repo.join(".af/workers"),
-        "evaluator",
-        r#"printf '{"verdict":"approve","summary":"independent pass"}'"#,
-        "Evaluate the goal against the provided Snapshot. Return only the requested JSON.",
-    );
-    let gate_script = if passing_gate {
-        "test \"$(cat implemented.txt)\" = derived"
+    let pagination = if passing_gate {
+        "open('pagination.py','w').write('def paginate(items, offset=0, limit=2):\\n    return items[offset:offset+limit]\\n')\n"
     } else {
-        "exit 7"
+        ""
     };
-    let pipeline = format!(
-        "version = 1\nkind = \"implement\"\nimplementer = \"implementer\"\n\
-         evaluator = \"evaluator\"\ntimeout_seconds = 10\ncheck_timeout_seconds = 10\n\n\
-         attempt_tokens = 1000\nrun_tokens = 2000\n\n[[checks]]\nname = \"acceptance\"\nprogram = \"/bin/sh\"\n\
-         args = [{{ value = \"-c\" }}, {{ value = '''{gate_script}''' }}]\n"
-    );
-    std::fs::write(repo.join(".af/pipelines/implement.toml"), &pipeline).unwrap();
-    let implementer = package_digest("implementer", &repo.join(".af/workers/implementer")).unwrap();
-    let evaluator = package_digest("evaluator", &repo.join(".af/workers/evaluator")).unwrap();
-    let pipeline_digest = review_store::canonical::blob_content_id(pipeline.as_bytes());
+    let implementer = repo.join(".af/task-packages/fixture/implementer");
     std::fs::write(
-        repo.join(".af/af.lock"),
+        implementer.join("worker.py"),
         format!(
-            "version = 1\n\n[workers.implementer]\nversion = \"1.0.0\"\ndigest = \"{implementer}\"\n\n\
-             [workers.evaluator]\nversion = \"1.0.0\"\ndigest = \"{evaluator}\"\n\n\
-             [pipelines.implement]\nversion = \"1.0.0\"\ndigest = \"{pipeline_digest}\"\n"
+            "import json,sys\njson.load(sys.stdin)\n{pagination}\
+             open('implemented.txt','w').write('derived\\n')\n\
+             open('proof.generated','w').write('ignored but delivered\\n')\n\
+             open('50%-off.generated','w').write('encoded ignored\\n')\n\
+             print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'report':[{{'summary':'Implemented pagination'}}]}}}}))\n"
         ),
     )
     .unwrap();
-    git(&repo, &home, &["init", "-q", "-b", "main"]);
-    git(&repo, &home, &["config", "user.email", "t@t.invalid"]);
-    git(&repo, &home, &["config", "user.name", "T"]);
+    let catalog_path = repo.join(".af/task-catalog.toml");
+    let mut catalog: toml::Value =
+        toml::from_str(&std::fs::read_to_string(&catalog_path).unwrap()).unwrap();
+    catalog["packages"]["fixture/implementer"]["digest"] =
+        toml::Value::String(package_digest("fixture/implementer", &implementer).unwrap());
+    std::fs::write(&catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
     git(&repo, &home, &["add", "-A"]);
-    git(&repo, &home, &["commit", "-q", "-m", "initial"]);
+    git(&repo, &home, &["commit", "-q", "-m", "delivery fixture"]);
     (repo, home, state)
 }
 
 fn run_task(repo: &Path, home: &Path, state: &Path) -> (i32, String, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
-        .current_dir(repo)
-        .env("HOME", home)
-        .args([
+    run_af(
+        repo,
+        home,
+        &[
             "task",
             "start",
             "--execute",
-            "--kind",
-            "implement",
-            "--goal",
-            "create implemented.txt",
-            "--authority",
-            "HEAD",
+            "--file",
+            "ticket.json",
             "--state",
             state.to_str().unwrap(),
             "--json",
-        ])
-        .output()
-        .unwrap();
-    (
-        output.status.code().unwrap_or(-1),
-        String::from_utf8_lossy(&output.stdout).into_owned(),
-        String::from_utf8_lossy(&output.stderr).into_owned(),
+        ],
     )
 }
 
@@ -263,26 +215,24 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
         "derived\n"
     );
 
+    // The evaluator receives exactly its declared ports, never the implementer's report or
+    // transcript, and command Workers reserve no model tokens.
     let evaluator = worker_context(&outcome, &cas, "root.nodes.evaluate");
-    let task_input = evaluator["manifest"]["entries"]
-        .as_array()
+    let inputs: Vec<&str> = evaluator["invocation"]["inputs"]
+        .as_object()
         .unwrap()
-        .iter()
-        .find(|entry| entry["name"] == "task_input")
-        .unwrap();
-    let evaluator_input: serde_json::Value = serde_json::from_slice(
-        &cas.get(task_input["artifact_id"].as_str().unwrap())
-            .unwrap(),
-    )
-    .unwrap();
-    assert!(evaluator_input.get("goal").is_some());
-    assert_eq!(
-        evaluator_input["budget"],
-        serde_json::json!({"reserved_tokens":1000})
+        .keys()
+        .map(String::as_str)
+        .collect();
+    assert_eq!(inputs, ["checks", "requirements", "source"]);
+    assert!(
+        evaluator["manifest"]["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|entry| entry["artifact_type"] != "af/ImplementationReport@1"),
+        "{evaluator}"
     );
-    assert_eq!(evaluator_input["task_id"], outcome["task_id"]);
-    assert_eq!(evaluator["legacy"]["budget_tokens"], 1000);
-    assert_eq!(evaluator["legacy"]["plan_id"], outcome["plan_id"]);
     for entry in outcome["execution_records"].as_array().unwrap() {
         if matches!(
             entry["record"]["kind"].as_str(),
@@ -291,9 +241,6 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
             assert_eq!(entry["record"]["reserved_tokens"], 0);
         }
     }
-    assert!(evaluator_input.get("gates").is_some());
-    assert!(evaluator_input.get("implementer_output").is_none());
-    assert!(evaluator_input.get("implementer_transcript").is_none());
 }
 
 #[test]
@@ -880,74 +827,4 @@ fn failed_local_creation_rolls_back_only_its_owned_refs() {
     );
     let terminal = terminal_delivery(&state, task_id);
     assert_eq!(terminal, "TaskDeliveryFailed@1");
-}
-
-#[test]
-fn checked_in_task_authority_is_fully_pinned() {
-    let root = workspace_root();
-    let implementer = package_digest("implementer", &root.join(".af/workers/implementer")).unwrap();
-    let evaluator = package_digest("evaluator", &root.join(".af/workers/evaluator")).unwrap();
-    let pipeline = review_store::canonical::blob_content_id(
-        &std::fs::read(root.join(".af/pipelines/implement.toml")).unwrap(),
-    );
-    let lock: toml::Value =
-        toml::from_str(&std::fs::read_to_string(root.join(".af/af.lock")).unwrap()).unwrap();
-    println!("implementer={implementer}\nevaluator={evaluator}\npipeline={pipeline}");
-    assert_eq!(
-        lock["workers"]["implementer"]["digest"].as_str(),
-        Some(implementer.as_str())
-    );
-    assert_eq!(
-        lock["workers"]["evaluator"]["digest"].as_str(),
-        Some(evaluator.as_str())
-    );
-    assert_eq!(
-        lock["pipelines"]["implement"]["digest"].as_str(),
-        Some(pipeline.as_str())
-    );
-}
-
-#[test]
-fn goal_entry_point_previews_before_any_worker_attempt() {
-    let directory = tempfile::tempdir().unwrap();
-    let (repo, home, state) = fixture(directory.path(), true);
-    let (code, stdout, stderr) = run_af(
-        &repo,
-        &home,
-        &[
-            "task",
-            "start",
-            "--kind",
-            "implement",
-            "--goal",
-            "create implemented.txt",
-            "--authority",
-            "HEAD",
-            "--state",
-            state.to_str().unwrap(),
-            "--json",
-        ],
-    );
-    assert_eq!(code, 0, "{stderr}\n{stdout}");
-    let preview: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(preview["attempts"], 0);
-    assert_eq!(preview["chargeable_tokens"], "0");
-    assert!(preview.get("result").is_none());
-    let (code, stdout, stderr) = run_af(
-        &repo,
-        &home,
-        &[
-            "task",
-            "run",
-            preview["task_id"].as_str().unwrap(),
-            "--confirm-plan",
-            preview["plan_id"].as_str().unwrap(),
-            "--state",
-            state.to_str().unwrap(),
-            "--json",
-        ],
-    );
-    assert_eq!(code, 0, "{stderr}\n{stdout}");
-    let result: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(result["result"]["acceptance"], "satisfied");
 }

@@ -1,4 +1,4 @@
-.PHONY: release-check check fmt lint test fixtures pilot-check release review-kernel-container-probes review-kernel-test-corpus
+.PHONY: release-check check fmt lint test fixtures release review-kernel-container-probes review-kernel-test-corpus
 
 # Cargo remains the gate; nextest is an explicit cross-binary benchmark until validated in CI.
 TEST_RUNNER ?= cargo
@@ -27,9 +27,6 @@ endif
 
 fixtures:
 	$(CI_STEP) fixtures fixtures/synthetic/generate.sh --check
-
-pilot-check:
-	cargo test --locked -p af --test task_implement
 
 # Open the release PR for VERSION (bump + CHANGELOG section). Merging it is the release: the
 # workflow tags, checks, builds, signs, and publishes. COMPAT states authority compatibility.

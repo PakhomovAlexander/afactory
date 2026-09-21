@@ -1,8 +1,8 @@
 # Preview and confirm a Task plan
 
-`af task start` now captures the Task and stops before dispatching any Worker. This applies
-both to a Task file and the goal-based entry point, including `--json`. Planning may check local
-Provider identity, but performs no paid capability admission or Worker inference.
+`af task start --file` captures the Task and stops before dispatching any Worker, including with
+`--json`. Planning may check local Provider identity, but performs no paid capability admission
+or Worker inference.
 
 ```sh
 af task start --file ticket.json

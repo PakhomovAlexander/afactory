@@ -36,8 +36,8 @@ pub struct CodeTaskPolicy {
     pub schema: String,
     pub checks: BTreeMap<String, CheckDefinition>,
     pub check_wall_ms: u64,
-    /// Optional per-process cap within the aggregate check Attempt. Fixed-format migration
-    /// preserves each old Check deadline even when one Attempt owns several named checks.
+    /// Optional per-process cap within the aggregate check Attempt, so one slow check cannot
+    /// borrow another's allowance when one Attempt owns several named checks.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",

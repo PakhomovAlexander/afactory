@@ -7,7 +7,7 @@ rendering for previously captured packages.
 ## Decision
 
 This extends [ADR-0049](0049-run-task-workers-through-shared-durable-attempts.md) and
-[ADR-0051](0051-compile-fixed-implementation-tasks-into-the-common-runtime.md) for new captures.
+ADR-0051 for new captures.
 Their accepted text and previously persisted artifacts remain unchanged.
 
 Schema-valid Worker payloads can still fail domain admission. The Store records that outcome

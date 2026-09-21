@@ -66,6 +66,14 @@ or needs a documented hand edit.
   output, every delivery preparation and receipt now carries `result_id` and every receipt carries
   `ignored_paths`, as this release always wrote them; the published schema requires both, and a
   Task whose stored receipt lacks one is refused.
+- `af task start` now requires `--file`: `--kind implement --goal …` and `--pipeline` are usage
+  errors. The fixed implementation v1 format they read, `.af/pipelines/implement.toml` with its
+  `.af/workers/` implementer and evaluator packages, is no longer read, and `.af/af.toml` no longer
+  accepts `defaults.task_pipeline`: every `af` command refuses a project file that still sets it,
+  so delete that line by hand. The `implement` pipeline, its two Worker packages and their pins in
+  `.af/af.lock` are then unused and can go too. Run implementation Tasks from a Task file against
+  a Task catalog instead; `af catalog init --profile software` writes a runnable starter. The
+  `make pilot-check` target is gone; `make check` runs the same delivery and recovery tests.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

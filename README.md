@@ -91,11 +91,12 @@ af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directori
 - **Review campaigns with light-by-default convergence.** One Campaign owns one event log and one
   Ledger across as many Rounds as policy allows; Findings keep their identity across reviewers and
   Rounds, and a Round closes only on a real verdict.
-- **Implementation Tasks delivered to new local worktrees.** `af task start --kind implement`
-  lets one implementer edit a sandbox, read-only acceptance gates inspect the sealed result, an
-  independent evaluator approves a content-addressed Snapshot, and `af task deliver` — only after
-  explicit Task-ID confirmation — creates a new branch and linked worktree. It never commits, pushes,
-  opens a PR, or touches the source checkout.
+- **Implementation Tasks delivered to new local worktrees.** `af task start --file` runs a Task
+  file through a Pipeline pinned in the committed Task catalog: an implementer edits a sandbox,
+  read-only acceptance checks inspect the sealed result, an independent evaluator approves a
+  content-addressed Snapshot, and `af task deliver` — only after explicit Task-ID confirmation —
+  creates a new branch and linked worktree. It never commits, pushes, opens a PR, or touches the
+  source checkout. `af catalog init` writes a runnable starter catalog.
 - **Deterministic gates that reuse CI checks.** A Gate is whatever the pipeline declares — usually
   the project's own `make check` — executed through an admitted provider in a disposable clone. A
   check that could not run is not a pass, and neither is a Gate with no required checks.
@@ -127,7 +128,7 @@ af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directori
 .af/
   af.toml        project policy: minimum af release, default pipelines, routing
   af.lock        the release pin (bytes per target) and every Worker package digest
-  pipelines/     pipeline definitions (this repository: review.toml, implement.toml, …)
+  pipelines/     pipeline definitions (this repository: review.toml, p1-review.toml, …)
   workers/       Worker packages: <name>/reviewer.md (prompt) + reviewer.toml (manifest)
 ```
 
@@ -153,7 +154,6 @@ and budgets are described in [`docs/architecture.md`](docs/architecture.md).
 ```sh
 make check                              # fmt + clippy + tests + fixture reproduction
 fixtures/synthetic/generate.sh --check  # the synthetic corpus still reproduces byte-for-byte
-make pilot-check                        # deterministic Task start/deliver/recovery smoke
 make review-kernel-container-probes     # live container probes; needs a usable runtime
 ```
 

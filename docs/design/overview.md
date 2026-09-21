@@ -169,9 +169,8 @@ $XDG_RUNTIME_DIR/af/            # locks, sockets
 ```
 
 `.af/af.local.toml` is the one personal file (gitignored by `af init`). Tasks are not files in
-the repo: `af task start --goal …` or `af task start path/to/contract.toml` records the contract
-in the Store; `af task show <id> --toml` prints it back. Nothing under `.af/` is machine-written
-except the lock.
+the repo: `af task start --file ticket.json` records the contract in the Store;
+`af task show <id> --toml` prints it back. Nothing under `.af/` is machine-written except the lock.
 
 ## 7. Kernel layout — crate map
 

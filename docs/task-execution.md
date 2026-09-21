@@ -82,6 +82,6 @@ Start with the Task-file walkthrough, then follow the composition pages in order
 - [Review compatibility](task-execution/review-compatibility.md) — the operations extracted from the legacy Review executor and the versioned CLI boundaries.
 - [Increment structure](task-execution/pr-sequence.md) — how the packages map to walkthroughs and decisions, and the compatibility obligations every package keeps.
 
-The operator-facing guide for the goal-driven `implement` Task and local delivery is
+The operator-facing guide for the `implement` Task and local delivery is
 [Implementation Tasks with `af task`](tasks.md). Capabilities deliberately left out are listed in
 [Non-goals](non-goals.md).

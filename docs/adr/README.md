@@ -116,8 +116,6 @@ Record the options you rejected and why — that is the part future readers need
   Attempts](0049-run-task-workers-through-shared-durable-attempts.md)
 - [0050 — Reduce Review Tasks with the canonical domain
   Ledger](0050-reduce-review-tasks-with-the-canonical-domain-ledger.md)
-- [0051 — Compile fixed implementation Tasks into the common
-  runtime](0051-compile-fixed-implementation-tasks-into-the-common-runtime.md)
 - [0052 — Capture local bindings and compose Review
   acceptance](0052-capture-local-bindings-and-compose-review-acceptance.md)
 - [0053 — Resolve shared catalogs only during explicit
