@@ -9,7 +9,7 @@ release pages only.
 
 ## [Unreleased]
 
-## [0.9.0-rc.5] - 2026-09-20
+## [0.9.0-rc.6] - 2026-09-21
 
 ### Authority compatibility
 
@@ -36,6 +36,14 @@ Prerelease: committed .af authority keeps working as is and needs no migration. 
   independently of `umask`, reject unpublishable auth paths before login, bind security-sensitive
   operations to stable directory handles, provide hash-validating fail-closed recovery with
   `af provider recover`, and make the README's Codex-only quickstart complete.
+- Skip the last non-UTF-8 path test where the filesystem refuses such a name (#106)
+- release: v0.9.0-rc.5 (#100) — tagged but never published: its macOS check leg failed, so
+  everything it carried ships here instead.
+
+## [0.9.0-rc.5] - 2026-09-20
+
+Tagged but never published — the release workflow's macOS check leg failed before the
+publish step. Everything this version carried ships in 0.9.0-rc.6.
 
 ## [0.9.0-rc.4] - 2026-09-20
 
