@@ -78,7 +78,7 @@ fn a_diff_subject_executes_only_with_its_exact_change_set_authority() {
          [runner]\nprogram = \"codex\"\nargs = []\n",
     )
     .unwrap();
-    let registry = Registry::new([&reviewers]);
+    let registry = Registry::new(&reviewers);
     let mut lockfile = Lockfile::empty();
     lockfile
         .workers

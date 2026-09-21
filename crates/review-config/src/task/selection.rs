@@ -117,23 +117,6 @@ pub fn semantic_fit(task: &TaskRevisionV1, pipeline: &PipelineDefinitionV1) -> C
 
 /// Admission is supplied by the trusted host: exact structural compilation, captured
 /// capability checks and resource feasibility. It cannot turn a semantic no-fit into a fit.
-pub fn select(
-    task: &TaskRevisionV1,
-    requested: &PipelineChoiceV1,
-    pipelines: &BTreeMap<String, PipelineDefinitionV1>,
-    priorities: &BTreeMap<String, u32>,
-    admit: impl FnMut(&str) -> CandidateState,
-) -> Result<PipelineSelection, String> {
-    select_with_policy(
-        task,
-        Some(requested),
-        pipelines,
-        priorities,
-        NoMatchPolicy::Refuse,
-        admit,
-    )
-}
-
 pub fn select_with_policy(
     task: &TaskRevisionV1,
     requested: Option<&PipelineChoiceV1>,
@@ -292,6 +275,23 @@ pub fn select_with_policy(
 #[cfg(test)]
 mod tests {
     use super::*;
+    /// A requested Pipeline under the refuse-on-no-match policy.
+    fn select(
+        task: &TaskRevisionV1,
+        requested: &PipelineChoiceV1,
+        pipelines: &BTreeMap<String, PipelineDefinitionV1>,
+        priorities: &BTreeMap<String, u32>,
+        admit: impl FnMut(&str) -> CandidateState,
+    ) -> Result<PipelineSelection, String> {
+        select_with_policy(
+            task,
+            Some(requested),
+            pipelines,
+            priorities,
+            NoMatchPolicy::Refuse,
+            admit,
+        )
+    }
     fn fixtures() -> (TaskRevisionV1, BTreeMap<String, PipelineDefinitionV1>) {
         let root = std::env::var_os("AF_WORKSPACE_ROOT")
             .map(std::path::PathBuf::from)

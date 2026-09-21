@@ -56,7 +56,7 @@ fn one_real_review_parses_and_reports_its_cost() {
          any tools. Approve with an empty findings list.\n",
     )
     .unwrap();
-    let registry = Registry::new([&registry_root]);
+    let registry = Registry::new(&registry_root);
     let mut lockfile = Lockfile::empty();
     lockfile.workers.insert(
         "smoke".to_string(),

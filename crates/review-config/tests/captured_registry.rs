@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use review_config::lock::{Lockfile, Registry};
+use review_config::lock::{LockError, Lockfile, Registry};
 use review_core::SubjectKind;
 
 #[test]
@@ -10,7 +10,7 @@ fn captured_registry_never_returns_to_mutated_package_paths() {
     std::fs::create_dir_all(&package).unwrap();
     let original = b"name = \"architecture\"\nversion = \"1.0.0\"\nsubjects = [\"whole-tree\"]\n\n[runner]\nprogram = \"original\"\nargs = []\n";
     std::fs::write(package.join("reviewer.toml"), original).unwrap();
-    let disk = Registry::new([directory.path().join("reviewers")]);
+    let disk = Registry::new(directory.path().join("reviewers"));
     let mut lockfile = Lockfile::empty();
     lockfile.workers.insert(
         "architecture".into(),
@@ -34,4 +34,35 @@ fn captured_registry_never_returns_to_mutated_package_paths() {
         .unwrap();
     assert_eq!(resolved.runner.program, "original");
     assert_eq!(resolved.file("reviewer.toml"), Some(original.as_slice()));
+}
+
+#[test]
+fn a_name_the_captured_registry_lacks_is_not_found_without_a_path() {
+    let directory = tempfile::tempdir().unwrap();
+    let package = directory.path().join("reviewers/architecture");
+    std::fs::create_dir_all(&package).unwrap();
+    std::fs::write(
+        package.join("reviewer.toml"),
+        "name = \"architecture\"\nversion = \"1.0.0\"\nsubjects = [\"whole-tree\"]\n\n\
+         [runner]\nprogram = \"original\"\nargs = []\n",
+    )
+    .unwrap();
+    let disk = Registry::new(directory.path().join("reviewers"));
+    let mut lockfile = Lockfile::empty();
+    lockfile.workers.insert(
+        "architecture".into(),
+        Lockfile::pin("architecture", &disk).unwrap(),
+    );
+
+    let error = lockfile
+        .resolve_for_subject(
+            "architecture",
+            &Registry::captured(BTreeMap::new()),
+            SubjectKind::WholeTree,
+        )
+        .unwrap_err();
+    assert!(
+        matches!(&error, LockError::NotFound { path: None, .. }),
+        "expected NotFound without a path, got {error}"
+    );
 }

@@ -215,7 +215,7 @@ fn load_diff_pipeline(directory: &Path) -> review_config::Loaded {
          [runner]\nprogram = \"codex\"\nargs = []\n",
     )
     .unwrap();
-    let registry = Registry::new([&reviewers]);
+    let registry = Registry::new(&reviewers);
     let mut lockfile = Lockfile::empty();
     lockfile
         .workers

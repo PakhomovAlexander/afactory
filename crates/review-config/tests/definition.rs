@@ -1077,7 +1077,7 @@ fn the_checked_in_pipeline_loads() {
     let text = std::fs::read_to_string(review_dir.join("pipelines/review.toml")).unwrap();
     let lock_text = std::fs::read_to_string(review_dir.join("af.lock")).unwrap();
     let lockfile = review_config::lock::Lockfile::from_toml(&lock_text).unwrap();
-    let registry = review_config::lock::Registry::new([review_dir.join("workers")]);
+    let registry = review_config::lock::Registry::new(review_dir.join("workers"));
     let loaded = Definition::from_toml(&text)
         .unwrap()
         .load_with(&lockfile, &registry)
@@ -1106,13 +1106,17 @@ fn the_checked_in_pipeline_loads() {
             "reviewer `{node}` has no runner program"
         );
         assert!(
-            loaded.node_is_gated(node),
+            !loaded.planned().gates_for(node).is_empty(),
             "reviewer `{node}` is ungated — it would run against a tree that failed its checks"
         );
         // Prior findings must arrive through a wired port. A reviewer wired to nothing would
         // review an empty input with full confidence.
         assert!(
-            loaded.node_receives_port(node, "prior_findings"),
+            loaded
+                .planned()
+                .dependencies_of(node)
+                .iter()
+                .any(|edge| edge.to.name == "prior_findings"),
             "reviewer `{node}` receives no prior findings"
         );
     }
@@ -1120,27 +1124,6 @@ fn the_checked_in_pipeline_loads() {
     // Every node the plan orders is a node the definition declares, and the order is a
     // function of the pipeline alone.
     assert!(!loaded.plan_order().is_empty());
-}
-
-/// A hub generated from the Project Hub template embeds this workspace and carries its own
-/// `.af/` policy; when that is where this test runs, that policy must load too.
-#[test]
-fn the_template_repository_self_review_pipeline_loads_when_present() {
-    let repo = workspace_root().join("../../..");
-    if !repo.join("template/.af").is_dir() {
-        return;
-    }
-    let review_dir = repo.join(".af");
-    let text = std::fs::read_to_string(review_dir.join("pipelines/review.toml")).unwrap();
-    let lock_text = std::fs::read_to_string(review_dir.join("af.lock")).unwrap();
-    let lockfile = review_config::lock::Lockfile::from_toml(&lock_text).unwrap();
-    let registry = review_config::lock::Registry::new([review_dir.join("workers")]);
-    let loaded = Definition::from_toml(&text)
-        .unwrap()
-        .load_with(&lockfile, &registry)
-        .map_err(|error| error.to_string())
-        .unwrap();
-    assert!(!loaded.packages().is_empty());
 }
 
 /// Budgets validate at load: caps that could never admit a dispatch are refused as config
@@ -1225,7 +1208,7 @@ fn a_package_that_rejects_the_pipeline_subject_is_refused() {
     )
     .unwrap();
     std::fs::write(package.join("reviewer.md"), "Review.\n").unwrap();
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
     let mut lockfile = Lockfile::empty();
     lockfile.workers.insert(
         "architecture".to_string(),
@@ -1294,7 +1277,7 @@ fn a_tampered_package_refuses_the_whole_pipeline() {
     )
     .unwrap();
     std::fs::write(package.join("reviewer.md"), "Review.\n").unwrap();
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
     let mut lockfile = Lockfile::empty();
     lockfile.workers.insert(
         "architecture".to_string(),

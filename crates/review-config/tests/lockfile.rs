@@ -1,7 +1,7 @@
 //! Reviewer package resolution: pinned by content digest, never `latest`.
 //!
 //! Every test builds real package directories and drives the lockfile against them, because
-//! the failures this module exists for — a tampered file, a shadowed copy, a floating pin —
+//! the failures this module exists for — a tampered file, a missing package, a floating pin —
 //! are filesystem facts, not type-system facts.
 
 use std::path::Path;
@@ -58,7 +58,7 @@ fn locked(name: &str, registry: &Registry) -> Lockfile {
 fn a_locked_reviewer_resolves_and_carries_its_runner() {
     let dir = tempfile::tempdir().unwrap();
     write_package(dir.path(), "architecture", "1.2.0");
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
 
     let lockfile = locked("architecture", &registry);
     let resolved = lockfile.resolve("architecture", &registry).unwrap();
@@ -85,7 +85,7 @@ fn a_manifest_must_declare_its_subjects_and_resolves_only_those() {
         )
     };
     std::fs::write(package.join("reviewer.toml"), manifest("")).unwrap();
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
     let error = Lockfile::pin("architecture", &registry).unwrap_err();
     assert!(
         error.to_string().contains("missing field `subjects`"),
@@ -112,7 +112,7 @@ fn a_manifest_must_declare_its_subjects_and_resolves_only_those() {
 fn a_programmatically_inserted_floating_pin_is_refused_at_resolution() {
     let dir = tempfile::tempdir().unwrap();
     write_package(dir.path(), "architecture", "1.2.0");
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
     let mut lockfile = locked("architecture", &registry);
     lockfile.workers.get_mut("architecture").unwrap().version = "latest".to_string();
 
@@ -126,19 +126,19 @@ fn a_programmatically_inserted_floating_pin_is_refused_at_resolution() {
 fn pin_then_resolve_round_trips_through_the_file_format() {
     let dir = tempfile::tempdir().unwrap();
     write_package(dir.path(), "architecture", "1.2.0");
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
 
     let written = locked("architecture", &registry).to_toml();
     let reread = Lockfile::from_toml(&written).unwrap();
     assert!(reread.resolve("architecture", &registry).is_ok());
 }
 
-/// Rule 1: not locked, not run — whatever the registries contain.
+/// Rule 1: not locked, not run — whatever the registry contains.
 #[test]
 fn an_unlocked_reviewer_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     write_package(dir.path(), "architecture", "1.2.0");
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
 
     let error = Lockfile::empty()
         .resolve("architecture", &registry)
@@ -147,13 +147,13 @@ fn an_unlocked_reviewer_is_refused() {
     assert!(error.to_string().contains("does not run"));
 }
 
-/// Tampering after the lock was written: refused, with both digests named so the operator can
-/// see *that* it changed, not merely that something failed.
+/// Rule 2: tampering after the lock was written is refused, with both digests named so the
+/// operator can see *that* it changed, not merely that something failed.
 #[test]
 fn a_tampered_package_is_refused_with_both_digests_named() {
     let dir = tempfile::tempdir().unwrap();
     write_package(dir.path(), "architecture", "1.2.0");
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
     let lockfile = locked("architecture", &registry);
 
     // The prompt gains a quiet instruction. The manifest — and so the runner — is untouched.
@@ -177,7 +177,7 @@ fn a_tampered_package_is_refused_with_both_digests_named() {
 fn changing_the_runner_command_breaks_the_pin() {
     let dir = tempfile::tempdir().unwrap();
     write_package(dir.path(), "architecture", "1.2.0");
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
     let lockfile = locked("architecture", &registry);
 
     std::fs::write(
@@ -191,47 +191,6 @@ fn changing_the_runner_command_breaks_the_pin() {
         lockfile.resolve("architecture", &registry).unwrap_err(),
         LockError::DigestMismatch { .. }
     ));
-}
-
-/// Rule 2: search stops at the first root that has the name. A tampered project copy must not
-/// be quietly shadowed by a clean user-registry copy.
-#[test]
-fn a_tampered_copy_is_not_fallen_through() {
-    let project = tempfile::tempdir().unwrap();
-    let user = tempfile::tempdir().unwrap();
-    write_package(project.path(), "architecture", "1.2.0");
-    write_package(user.path(), "architecture", "1.2.0");
-    let registry = Registry::new([project.path(), user.path()]);
-    let lockfile = locked("architecture", &registry);
-
-    std::fs::write(
-        project.path().join("architecture/reviewer.md"),
-        "tampered\n",
-    )
-    .unwrap();
-
-    let error = lockfile.resolve("architecture", &registry).unwrap_err();
-    let LockError::DigestMismatch { root, .. } = &error else {
-        panic!("expected DigestMismatch, got {error}");
-    };
-    assert!(
-        root.starts_with(project.path()),
-        "the refusal must name the project copy, not fall through to the user copy"
-    );
-}
-
-/// ...but a name only the later root has is found there. Layering works; fall-through past a
-/// present name is what does not.
-#[test]
-fn a_name_absent_from_earlier_roots_resolves_from_a_later_one() {
-    let project = tempfile::tempdir().unwrap();
-    let user = tempfile::tempdir().unwrap();
-    write_package(user.path(), "performance", "2.0.1");
-    let registry = Registry::new([project.path(), user.path()]);
-
-    let lockfile = locked("performance", &registry);
-    let resolved = lockfile.resolve("performance", &registry).unwrap();
-    assert!(resolved.root.starts_with(user.path()));
 }
 
 /// Rule 3's precondition, refused at parse time: a floating pin cannot even be written.
@@ -268,7 +227,7 @@ fn a_truncated_digest_pins_nothing() {
 fn a_manifest_with_a_floating_version_cannot_be_pinned() {
     let dir = tempfile::tempdir().unwrap();
     write_package(dir.path(), "architecture", "latest");
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
 
     assert!(matches!(
         Lockfile::pin("architecture", &registry).unwrap_err(),
@@ -281,7 +240,7 @@ fn a_manifest_with_a_floating_version_cannot_be_pinned() {
 fn the_digest_covers_paths_not_just_bytes() {
     let dir = tempfile::tempdir().unwrap();
     write_package(dir.path(), "architecture", "1.2.0");
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
     let lockfile = locked("architecture", &registry);
 
     let package = dir.path().join("architecture");
@@ -319,7 +278,7 @@ fn a_symlink_in_a_package_is_refused() {
     let outside = dir.path().join("outside.md");
     std::fs::write(&outside, "content the pin never saw\n").unwrap();
     std::os::unix::fs::symlink(&outside, dir.path().join("architecture/extra.md")).unwrap();
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
 
     assert!(matches!(
         Lockfile::pin("architecture", &registry).unwrap_err(),
@@ -331,7 +290,7 @@ fn a_symlink_in_a_package_is_refused() {
 fn a_manifest_disagreeing_with_the_lock_is_refused() {
     let dir = tempfile::tempdir().unwrap();
     write_package(dir.path(), "architecture", "1.2.0");
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
 
     let mut lockfile = locked("architecture", &registry);
     // The pin drifts — say, hand-edited to an older release than the package on disk.
@@ -360,7 +319,7 @@ fn a_package_declaring_another_name_is_refused() {
          [runner]\nprogram = \"codex\"\nargs = [{ value = \"review\" }]\n",
     )
     .unwrap();
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
 
     assert!(matches!(
         Lockfile::pin("architecture", &registry).unwrap_err(),
@@ -369,21 +328,21 @@ fn a_package_declaring_another_name_is_refused() {
 }
 
 #[test]
-fn a_locked_reviewer_missing_from_every_registry_names_what_it_searched() {
+fn a_locked_reviewer_missing_from_the_registry_names_where_it_looked() {
     let dir = tempfile::tempdir().unwrap();
     write_package(dir.path(), "architecture", "1.2.0");
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
     let lockfile = locked("architecture", &registry);
 
     std::fs::remove_dir_all(dir.path().join("architecture")).unwrap();
 
     let error = lockfile.resolve("architecture", &registry).unwrap_err();
-    assert!(matches!(error, LockError::NotFound { .. }));
-    assert!(
-        error
-            .to_string()
-            .contains(&dir.path().display().to_string())
-    );
+    let LockError::NotFound { path, .. } = &error else {
+        panic!("expected NotFound, got {error}");
+    };
+    let expected = dir.path().join("architecture");
+    assert_eq!(path.as_deref(), Some(expected.as_path()));
+    assert!(error.to_string().contains(&expected.display().to_string()));
 }
 
 #[test]
@@ -396,7 +355,7 @@ fn a_manifest_accepting_no_subject_cannot_be_pinned() {
          [runner]\nprogram = \"codex\"\n",
     )
     .unwrap();
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
 
     let error = Lockfile::pin("architecture", &registry).unwrap_err();
     assert!(
@@ -416,7 +375,7 @@ fn a_non_regular_package_entry_is_refused_before_reading() {
         .status()
         .unwrap();
     assert!(status.success());
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
 
     assert!(matches!(
         Lockfile::pin("architecture", &registry).unwrap_err(),
@@ -427,7 +386,7 @@ fn a_non_regular_package_entry_is_refused_before_reading() {
 #[test]
 fn a_package_name_cannot_escape_its_registry() {
     let dir = tempfile::tempdir().unwrap();
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
     assert!(matches!(
         Lockfile::pin("../outside", &registry).unwrap_err(),
         LockError::InvalidName { .. }
@@ -445,7 +404,7 @@ fn a_symlink_cannot_be_a_package_root() {
         registry_dir.path().join("architecture"),
     )
     .unwrap();
-    let registry = Registry::new([registry_dir.path()]);
+    let registry = Registry::new(registry_dir.path());
 
     assert!(matches!(
         Lockfile::pin("architecture", &registry).unwrap_err(),
@@ -462,7 +421,7 @@ fn a_non_utf8_package_path_is_refused_not_lossily_hashed() {
     write_package(dir.path(), "architecture", "1.2.0");
     let name = std::ffi::OsString::from_vec(vec![b'x', 0xff]);
     std::fs::write(dir.path().join("architecture").join(name), b"content").unwrap();
-    let registry = Registry::new([dir.path()]);
+    let registry = Registry::new(dir.path());
 
     assert!(matches!(
         Lockfile::pin("architecture", &registry).unwrap_err(),

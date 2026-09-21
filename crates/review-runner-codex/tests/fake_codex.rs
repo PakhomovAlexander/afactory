@@ -76,7 +76,7 @@ fn package(dir: &Path, stub_path: &Path) -> review_config::lock::ResolvedReviewe
     )
     .unwrap();
     std::fs::write(package.join("reviewer.md"), "You are a test reviewer.\n").unwrap();
-    let registry = Registry::new([registry_root]);
+    let registry = Registry::new(registry_root);
     let mut lockfile = Lockfile::empty();
     lockfile.workers.insert(
         "tester".to_string(),
@@ -228,7 +228,7 @@ fn a_package_naming_another_runner_is_refused() {
     )
     .unwrap();
     std::fs::write(package_dir.join("reviewer.md"), "prompt\n").unwrap();
-    let registry = Registry::new([registry_root]);
+    let registry = Registry::new(registry_root);
     let mut lockfile = Lockfile::empty();
     lockfile.workers.insert(
         "tester".to_string(),

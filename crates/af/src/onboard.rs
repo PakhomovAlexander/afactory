@@ -1335,7 +1335,7 @@ fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
         &authority.selected,
         authority.pipeline_text.as_bytes(),
     )?;
-    let registry = Registry::new([repo.join(".af/workers")]);
+    let registry = Registry::new(repo.join(".af/workers"));
     let loaded = authority
         .definition
         .clone()
@@ -1488,7 +1488,7 @@ fn refresh_lock(repo: &Path) -> Result<Report, String> {
     if referenced.is_empty() {
         return Err("selected pipeline references no Worker package".into());
     }
-    let registry = Registry::new([repo.join(".af/workers")]);
+    let registry = Registry::new(repo.join(".af/workers"));
     let mut refreshed = authority.lock.clone();
     // Only a released, receipted binary re-pins; a source build keeps whatever pin is there.
     let (af_pin, mut pin_warnings) = running_af_pin()?;

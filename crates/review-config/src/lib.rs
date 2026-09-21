@@ -1404,17 +1404,6 @@ impl Loaded {
         &self.plan
     }
 
-    pub fn node_is_gated(&self, node: &str) -> bool {
-        !self.plan.gates_for(node).is_empty()
-    }
-
-    pub fn node_receives_port(&self, node: &str, port: &str) -> bool {
-        self.plan
-            .dependencies_of(node)
-            .iter()
-            .any(|edge| edge.to.name == port)
-    }
-
     pub fn node_kind_has_output_type(&self, kind: NodeKind, artifact_type: &str) -> bool {
         self.plan.nodes.values().any(|node| {
             node.kind == kind
@@ -1423,25 +1412,6 @@ impl Loaded {
                     .iter()
                     .any(|output| output.artifact_type == artifact_type)
         })
-    }
-
-    /// Exact upstream node ids for every input port, captured from the validated graph.
-    pub fn input_sources(&self) -> BTreeMap<String, BTreeMap<String, Vec<String>>> {
-        let mut sources: BTreeMap<String, BTreeMap<String, Vec<String>>> = BTreeMap::new();
-        for edge in &self.plan.edges {
-            sources
-                .entry(edge.to.node.clone())
-                .or_default()
-                .entry(edge.to.name.clone())
-                .or_default()
-                .push(edge.from.node.clone());
-        }
-        for ports in sources.values_mut() {
-            for nodes in ports.values_mut() {
-                nodes.sort();
-            }
-        }
-        sources
     }
 
     /// Exact upstream node, output port, and kind for every input port. Canonical reducers use

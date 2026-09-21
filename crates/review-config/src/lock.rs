@@ -2,20 +2,18 @@
 //! `af` release that wrote the lock, pinned by its archive digests.
 //!
 //! A reviewer is a package — a directory holding `reviewer.toml` (name, version, the runner
-//! command) and whatever prompt or support files it needs. Packages live in registries searched
-//! in order (project, then user, then system), and the lockfile pins each reviewer the pipeline
-//! may use to an exact version *and* a content digest over every byte in the package.
+//! command) and whatever prompt or support files it needs. Packages live in the project's
+//! registry directory (`.af/workers`), and the lockfile pins each reviewer the pipeline may use
+//! to an exact version *and* a content digest over every byte in the package.
 //!
 //! Three rules, each the refusal of a specific failure:
 //!
 //! 1. **Not locked, not run.** A reviewer absent from the lockfile does not resolve, whatever
-//!    the registries contain. There is no "use whatever is installed" path, because that path
+//!    the registry contains. There is no "use whatever is installed" path, because that path
 //!    is `latest` wearing a different name.
-//! 2. **The digest decides, and there is no fall-through.** Registry search stops at the first
-//!    root that *has* the name; if that copy's digest does not match the pin, resolution fails
-//!    loudly. Falling through to a later root that happens to match would let a tampered copy
-//!    earlier in the chain hide behind a clean one — the operator must learn the project's copy
-//!    changed, not silently review with a different one.
+//! 2. **The digest decides.** If the registry copy's digest does not match the pin, resolution
+//!    fails loudly: the operator must learn the project's copy changed, not silently review
+//!    with a different one.
 //! 3. **Verify before interpreting.** The package is read once into memory, the digest is
 //!    checked over those bytes, and only then is `reviewer.toml` parsed — from the verified
 //!    bytes, not from a second read the filesystem could have changed in between.
@@ -49,9 +47,11 @@ pub enum LockError {
     NotLocked {
         name: String,
     },
+    /// The registry has no package by that name. `path` is the directory a disk registry
+    /// looked for; a captured registry has none.
     NotFound {
         name: String,
-        searched: Vec<PathBuf>,
+        path: Option<PathBuf>,
     },
     DigestMismatch {
         name: String,
@@ -117,14 +117,17 @@ impl std::fmt::Display for LockError {
                 f,
                 "reviewer `{name}` is not in the lockfile; an unlocked reviewer does not run"
             ),
-            LockError::NotFound { name, searched } => write!(
+            LockError::NotFound {
+                name,
+                path: Some(path),
+            } => write!(
                 f,
-                "reviewer `{name}` is locked but present in no registry (searched {})",
-                searched
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                "reviewer `{name}` is locked but missing from the registry ({} does not exist)",
+                path.display()
+            ),
+            LockError::NotFound { name, path: None } => write!(
+                f,
+                "reviewer `{name}` is locked but missing from the captured packages"
             ),
             LockError::DigestMismatch {
                 name,
@@ -348,16 +351,18 @@ pub struct Lockfile {
 /// (`review-runner`), which consume it; this module is the resolver that mints it.
 pub use review_runner::ResolvedReviewer;
 
-/// Registries searched in order. Typically project, user, system.
+/// Where reviewer packages are read from: one directory on disk, or the package bytes a
+/// Campaign captured.
 pub struct Registry {
-    roots: Vec<PathBuf>,
+    root: Option<PathBuf>,
     captured: BTreeMap<String, BTreeMap<String, Vec<u8>>>,
 }
 
 impl Registry {
-    pub fn new(roots: impl IntoIterator<Item = impl Into<PathBuf>>) -> Registry {
+    /// A registry directory holding one package directory per reviewer name.
+    pub fn new(root: impl Into<PathBuf>) -> Registry {
         Registry {
-            roots: roots.into_iter().map(Into::into).collect(),
+            root: Some(root.into()),
             captured: BTreeMap::new(),
         }
     }
@@ -365,7 +370,7 @@ impl Registry {
     /// A registry reconstructed from a Campaign's immutable package artifacts.
     pub fn captured(packages: BTreeMap<String, BTreeMap<String, Vec<u8>>>) -> Registry {
         Registry {
-            roots: Vec::new(),
+            root: None,
             captured: packages,
         }
     }
@@ -382,9 +387,8 @@ impl Registry {
         Ok((root, files))
     }
 
-    /// The first root that has the package directory. Search stops here: whether that copy
-    /// verifies is the next question, and a failure there must not be papered over by a copy
-    /// further down the chain.
+    /// The package directory for `name` under the registry root. Whether that copy verifies is
+    /// the next question.
     fn locate(&self, name: &str) -> Result<PathBuf, LockError> {
         if name.is_empty()
             || !name.bytes().enumerate().all(|(index, byte)| {
@@ -395,35 +399,34 @@ impl Registry {
                 name: name.to_string(),
             });
         }
-        for root in &self.roots {
-            let candidate = root.join(name);
-            match std::fs::symlink_metadata(&candidate) {
-                Ok(metadata) if metadata.file_type().is_symlink() => {
-                    return Err(LockError::Symlink {
-                        name: name.to_string(),
-                        path: candidate,
-                    });
-                }
-                Ok(metadata) if metadata.is_dir() => return Ok(candidate),
-                Ok(_) => {
-                    return Err(LockError::UnsupportedFileType {
-                        name: name.to_string(),
-                        path: candidate,
-                    });
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(LockError::Io {
-                        path: candidate,
-                        error: error.to_string(),
-                    });
-                }
+        let Some(root) = &self.root else {
+            return Err(LockError::NotFound {
+                name: name.to_string(),
+                path: None,
+            });
+        };
+        let candidate = root.join(name);
+        match std::fs::symlink_metadata(&candidate) {
+            Ok(metadata) if metadata.file_type().is_symlink() => Err(LockError::Symlink {
+                name: name.to_string(),
+                path: candidate,
+            }),
+            Ok(metadata) if metadata.is_dir() => Ok(candidate),
+            Ok(_) => Err(LockError::UnsupportedFileType {
+                name: name.to_string(),
+                path: candidate,
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(LockError::NotFound {
+                    name: name.to_string(),
+                    path: Some(candidate),
+                })
             }
+            Err(error) => Err(LockError::Io {
+                path: candidate,
+                error: error.to_string(),
+            }),
         }
-        Err(LockError::NotFound {
-            name: name.to_string(),
-            searched: self.roots.clone(),
-        })
     }
 }
 

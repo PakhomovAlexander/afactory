@@ -1688,7 +1688,7 @@ args = [{{ value = "--model" }}, {{ value = "gpt-fixture-1" }}, {{ value = "-c" 
         "Review the exact Change Set.\n",
     )
     .unwrap();
-    let registry = review_config::lock::Registry::new([&reviewers]);
+    let registry = review_config::lock::Registry::new(&reviewers);
     let mut lockfile = review_config::lock::Lockfile::empty();
     lockfile.workers.insert(
         "tester".into(),
