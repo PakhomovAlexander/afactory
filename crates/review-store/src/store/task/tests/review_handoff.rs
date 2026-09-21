@@ -127,7 +127,7 @@ fn start(f: &mut Fixture) -> (TaskLease, execution::PreparedTaskAttempt) {
     let context = f.cas.put_json(&json!({"context":"old epoch"})).unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
         .unwrap();
     f.store
         .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)

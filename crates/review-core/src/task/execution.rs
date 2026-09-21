@@ -9,10 +9,7 @@ use std::collections::BTreeMap;
 mod accounting;
 mod experiment;
 mod owned;
-pub use accounting::{
-    TASK_EXECUTION_RECORD_V2, TASK_EXECUTION_RECORD_V3, TaskExecutionRecordV2,
-    TaskExecutionRecordV3,
-};
+pub use accounting::{TASK_EXECUTION_RECORD_V3, TaskExecutionRecordV3};
 pub use experiment::{TASK_EXECUTION_RECORD_V5, TaskExecutionRecordV5};
 pub use owned::{TASK_EXECUTION_RECORD_V4, TaskExecutionRecordV4};
 
@@ -90,16 +87,6 @@ pub enum TaskExecutionRecordV1 {
     Invocation {
         invocation_id: String,
     },
-    Prepared {
-        invocation_id: String,
-        attempt_id: String,
-        reservation_id: String,
-        reserved_tokens: u64,
-        deadline_unix_ms: u64,
-        context_id: String,
-        /// Admitted retry feedback, never diagnostic prose or in-memory transcript state.
-        feedback_ids: Vec<String>,
-    },
     /// Reserves the real Attempt identity before rendering its exact context.
     Reserved {
         invocation_id: String,
@@ -107,6 +94,7 @@ pub enum TaskExecutionRecordV1 {
         reservation_id: String,
         reserved_tokens: u64,
         deadline_unix_ms: u64,
+        /// Admitted retry feedback, never diagnostic prose or in-memory transcript state.
         feedback_ids: Vec<String>,
     },
     ContextBound {
@@ -120,17 +108,13 @@ pub enum TaskExecutionRecordV1 {
         attempt_id: String,
         reason: String,
     },
+    /// Normalized lifecycle only: accounting records have an explicit v3 wire encoding.
+    #[serde(skip)]
     Settled {
         attempt_id: String,
-        #[serde(deserialize_with = "legacy_charge")]
         charged_tokens: u128,
         result: TaskAttemptResultV1,
         raw_artifact_ids: Vec<String>,
-        #[serde(
-            default,
-            skip_serializing_if = "Option::is_none",
-            deserialize_with = "super::present_option"
-        )]
         usage_id: Option<String>,
     },
     Published {
@@ -144,9 +128,9 @@ pub enum TaskExecutionRecordV1 {
     },
     /// A trusted cumulative charge floor for started work, whether running or settled.
     /// It neither grants execution authority nor refunds an earlier observation.
+    #[serde(skip)]
     UsageObserved {
         attempt_id: String,
-        #[serde(deserialize_with = "legacy_charge")]
         charged_tokens: u128,
         usage_id: String,
         raw_artifact_ids: Vec<String>,
@@ -184,26 +168,11 @@ pub enum TaskExecutionRecordV1 {
     },
 }
 
-// This enum is also the normalized lifecycle representation. Its v1 wire reader retains
-// the original numeric domain; exact accounting is encoded through the versioned wrappers.
-fn legacy_charge<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u128, D::Error> {
-    u64::deserialize(deserializer).map(u128::from)
-}
-
 impl TaskExecutionRecordV1 {
     pub fn artifact_refs(&self) -> Vec<&str> {
         let mut refs = Vec::new();
         match self {
             Self::Invocation { invocation_id } => refs.push(invocation_id.as_str()),
-            Self::Prepared {
-                invocation_id,
-                context_id,
-                feedback_ids,
-                ..
-            } => {
-                refs.extend([invocation_id.as_str(), context_id.as_str()]);
-                refs.extend(feedback_ids.iter().map(String::as_str));
-            }
             Self::Reserved {
                 invocation_id,
                 feedback_ids,
@@ -277,7 +246,9 @@ impl TaskExecutionRecordV1 {
         require(
             !matches!(
                 self,
-                Self::OwnedChildrenRegistered { .. }
+                Self::Settled { .. }
+                    | Self::UsageObserved { .. }
+                    | Self::OwnedChildrenRegistered { .. }
                     | Self::OwnedChildPublished { .. }
                     | Self::OwnedChildrenCompleted { .. }
                     | Self::ExperimentPrepared { .. }
@@ -286,14 +257,6 @@ impl TaskExecutionRecordV1 {
             ),
             "Versioned Task execution records require their explicit encoding",
         )?;
-        if let Self::Settled { charged_tokens, .. } | Self::UsageObserved { charged_tokens, .. } =
-            self
-        {
-            require(
-                *charged_tokens <= crate::json::SAFE_INTEGER_MAX as u128,
-                "Task charge exceeds safe integer bound",
-            )?;
-        }
         self.validate_fields()
     }
 
@@ -309,15 +272,7 @@ impl TaskExecutionRecordV1 {
             | Self::ExperimentPrepared { .. }
             | Self::ExperimentPlanDecided { .. }
             | Self::ExperimentChildrenRegistered { .. } => None,
-            Self::Prepared {
-                attempt_id,
-                reservation_id,
-                reserved_tokens,
-                deadline_unix_ms,
-                feedback_ids,
-                ..
-            }
-            | Self::Reserved {
+            Self::Reserved {
                 attempt_id,
                 reservation_id,
                 reserved_tokens,
@@ -336,7 +291,7 @@ impl TaskExecutionRecordV1 {
                         && safe_number(*reserved_tokens)
                         && *deadline_unix_ms > 0
                         && safe_number(*deadline_unix_ms),
-                    "Invalid prepared Task reservation",
+                    "Invalid Task reservation",
                 )?;
                 require(
                     feedback_ids.len() <= 16

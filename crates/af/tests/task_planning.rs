@@ -576,26 +576,21 @@ fn planner_repairs_once_from_durable_compiler_feedback_and_never_runs_its_propos
     );
     assert_eq!(done["attempts"], 5);
     assert_eq!(done["result"]["acceptance"], "satisfied");
-    let prepared: Vec<_> = done["execution_records"]
+    let reserved: Vec<_> = done["execution_records"]
         .as_array()
         .unwrap()
         .iter()
-        .filter(|entry| {
-            matches!(
-                entry["record"]["kind"].as_str(),
-                Some("prepared" | "reserved")
-            )
-        })
+        .filter(|entry| entry["record"]["kind"] == "reserved")
         .collect();
     assert_eq!(
-        prepared[1]["record"]["feedback_ids"]
+        reserved[1]["record"]["feedback_ids"]
             .as_array()
             .unwrap()
             .len(),
         1
     );
     assert_eq!(
-        prepared[2]["record"]["feedback_ids"],
+        reserved[2]["record"]["feedback_ids"],
         json!([]),
         "The new plan must not inherit a colliding old node's compiler feedback"
     );

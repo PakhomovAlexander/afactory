@@ -247,7 +247,13 @@ fn inflight_usage_survives_reopen_revocation_lower_settlement_and_writer_loss() 
             .unwrap();
         let attempt = f
             .store
-            .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+            .reserve_and_bind_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.write",
+                &context,
+                &f.authority,
+            )
             .unwrap();
         let usage_id = f
             .cas

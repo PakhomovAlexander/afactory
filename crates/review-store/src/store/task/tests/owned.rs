@@ -326,7 +326,7 @@ fn run_child(
     let context = f.cas.put_json(&json!({"context":child.node})).unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, lease, &child.node, &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, lease, &child.node, &context, &f.authority)
         .unwrap();
     f.store
         .start_task_attempt(&f.cas, lease, &attempt, &f.authority)

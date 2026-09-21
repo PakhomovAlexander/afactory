@@ -138,9 +138,6 @@ impl ReservedTaskAttempt {
     pub fn plan_id(&self) -> &str {
         &self.plan_id
     }
-    pub fn writer_epoch(&self) -> u64 {
-        self.writer_epoch
-    }
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -179,9 +176,6 @@ pub enum TaskSettlement {
 impl PreparedTaskAttempt {
     pub fn task_id(&self) -> &str {
         &self.task_id
-    }
-    pub fn writer_epoch(&self) -> u64 {
-        self.writer_epoch
     }
     pub fn id(&self) -> &str {
         &self.id
@@ -246,7 +240,6 @@ pub(super) fn references(cas: &Cas, id: &str) -> Result<Vec<String>, StoreError>
     let mut invocation_ids = Vec::new();
     match &record {
         TaskExecutionRecordV1::Invocation { invocation_id }
-        | TaskExecutionRecordV1::Prepared { invocation_id, .. }
         | TaskExecutionRecordV1::Reserved { invocation_id, .. } => {
             invocation_ids.push(invocation_id.clone())
         }
@@ -758,7 +751,6 @@ impl TaskProjection {
         let dispatching = matches!(
             record,
             TaskExecutionRecordV1::Invocation { .. }
-                | TaskExecutionRecordV1::Prepared { .. }
                 | TaskExecutionRecordV1::Reserved { .. }
                 | TaskExecutionRecordV1::ContextBound { .. }
                 | TaskExecutionRecordV1::Started { .. }
@@ -908,16 +900,7 @@ impl TaskProjection {
                     .invocations
                     .insert(input.node.clone(), (invocation_id.clone(), input));
             }
-            TaskExecutionRecordV1::Prepared {
-                invocation_id,
-                attempt_id,
-                reservation_id,
-                reserved_tokens,
-                deadline_unix_ms,
-                feedback_ids,
-                ..
-            }
-            | TaskExecutionRecordV1::Reserved {
+            TaskExecutionRecordV1::Reserved {
                 invocation_id,
                 attempt_id,
                 reservation_id,
@@ -984,12 +967,7 @@ impl TaskProjection {
                         plan_id: input.plan_id.clone(),
                         reservation,
                         prepared_epoch: self.epoch,
-                        context_id: match &record {
-                            TaskExecutionRecordV1::Prepared { context_id, .. } => {
-                                Some(context_id.clone())
-                            }
-                            _ => None,
-                        },
+                        context_id: None,
                         feedback_ids: feedback_ids.clone(),
                         started: false,
                         started_unix_ms: None,
@@ -1576,79 +1554,6 @@ impl EventStore {
         Ok(())
     }
 
-    pub fn prepare_task_attempt(
-        &mut self,
-        cas: &Cas,
-        lease: &TaskLease,
-        node: &str,
-        context_id: &str,
-        authority: &dyn TaskAuthority,
-    ) -> Result<PreparedTaskAttempt, StoreError> {
-        let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
-        let mut execution = state
-            .execution
-            .ok_or_else(|| conflict("Task has no recorded invocation"))?;
-        execution.check_owned_open(node)?;
-        execution.validate_retry(cas, &state.revision, &plan, node, authority)?;
-        let (invocation_id, invocation) = execution
-            .invocations
-            .get(node)
-            .ok_or_else(|| conflict("Unknown Task invocation"))?;
-        let time = now()?;
-        let reservation = execution.budget.prepare(node, time).map_err(conflict)?;
-        let attempt = execution.ledger.dispatch(node);
-        let feedback_ids: Vec<String> = execution
-            .attempts
-            .values()
-            .filter(|a| &a.invocation_id == invocation_id)
-            .filter_map(|a| match &a.settlement {
-                Some(TaskExecutionRecordV1::Settled {
-                    result:
-                        TaskAttemptResultV1::Failed {
-                            feedback_id: Some(id),
-                            ..
-                        },
-                    ..
-                }) => Some(id.clone()),
-                _ => None,
-            })
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        authority
-            .validate_context(
-                cas,
-                &state.revision,
-                &plan,
-                invocation,
-                &feedback_ids,
-                context_id,
-            )
-            .map_err(conflict)?;
-        self.task_execution_record(
-            cas,
-            lease,
-            TaskExecutionRecordV1::Prepared {
-                invocation_id: invocation_id.clone(),
-                attempt_id: attempt.0.clone(),
-                reservation_id: reservation.id.clone(),
-                reserved_tokens: reservation.tokens,
-                deadline_unix_ms: reservation.deadline_unix_ms,
-                context_id: context_id.into(),
-                feedback_ids,
-            },
-            time,
-        )?;
-        Ok(PreparedTaskAttempt {
-            task_id: lease.task_id.clone(),
-            writer_epoch: lease.epoch,
-            id: attempt.0,
-            node: node.into(),
-            reservation,
-            context_id: context_id.into(),
-        })
-    }
-
     pub fn start_task_attempt(
         &mut self,
         cas: &Cas,
@@ -1732,23 +1637,6 @@ impl EventStore {
             now()?,
         )?;
         Ok(())
-    }
-
-    pub fn settle_task_attempt(
-        &mut self,
-        cas: &Cas,
-        lease: &TaskLease,
-        settlement: TaskExecutionRecordV1,
-        authority: &dyn TaskAuthority,
-    ) -> Result<(), StoreError> {
-        match self
-            .settle_task_attempt_with_feedback(cas, lease, settlement, authority, || Ok(None))?
-        {
-            TaskSettlement::Settled => Ok(()),
-            TaskSettlement::OutputRejected { reason } => {
-                Err(StoreError::TaskOutputRejected(reason))
-            }
-        }
     }
 
     /// The callback only captures bounded retry data; it cannot dispatch work. It runs
@@ -1956,7 +1844,6 @@ impl TaskExecutionProjection {
     ) -> Result<(), StoreError> {
         let node = match record {
             TaskExecutionRecordV1::Invocation { invocation_id }
-            | TaskExecutionRecordV1::Prepared { invocation_id, .. }
             | TaskExecutionRecordV1::Reserved { invocation_id, .. } => {
                 invocation(cas, invocation_id)?.node
             }

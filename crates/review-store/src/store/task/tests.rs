@@ -17,6 +17,38 @@ mod source;
 mod token_scopes;
 mod wide_usage;
 
+/// Fixture conveniences over the production reserve, bind and settle steps.
+impl EventStore {
+    fn reserve_and_bind_task_attempt(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        node: &str,
+        context_id: &str,
+        authority: &dyn TaskAuthority,
+    ) -> Result<execution::PreparedTaskAttempt, StoreError> {
+        let reserved = self.reserve_task_attempt(cas, lease, node, authority)?;
+        self.bind_task_attempt_context(cas, lease, &reserved, context_id, authority)
+    }
+
+    fn settle_task_attempt(
+        &mut self,
+        cas: &Cas,
+        lease: &TaskLease,
+        settlement: review_core::task::execution::TaskExecutionRecordV1,
+        authority: &dyn TaskAuthority,
+    ) -> Result<(), StoreError> {
+        match self
+            .settle_task_attempt_with_feedback(cas, lease, settlement, authority, || Ok(None))?
+        {
+            execution::TaskSettlement::Settled => Ok(()),
+            execution::TaskSettlement::OutputRejected { reason } => {
+                Err(StoreError::TaskOutputRejected(reason))
+            }
+        }
+    }
+}
+
 struct Authority {
     generated: Vec<GeneratedOriginV1>,
     authorization_id: String,
@@ -608,7 +640,7 @@ fn rejection_expiry_and_revocation_all_prevent_plan_admission() {
         let mut f = Fixture::new(true);
         let lease = f.open();
         f.propose(&lease);
-        let event = f.decide(
+        f.decide(
             &lease,
             if case == "reject" {
                 PlanDecisionKindV1::Rejected
@@ -633,20 +665,13 @@ fn rejection_expiry_and_revocation_all_prevent_plan_admission() {
                 continue;
             }
             "revoke" => {
-                let transition: TaskTransitionV1 = serde_json::from_value(event.payload).unwrap();
-                let TaskChangeV1::PlanDecided { decision_id, .. } = transition.change else {
-                    unreachable!()
-                };
                 f.store
-                    .task_change(
+                    .revoke_task_approval(
                         &f.cas,
                         &lease,
-                        TaskChangeV1::ApprovalRevoked {
-                            decision_id,
-                            reason: "Developer revoked this exact decision".into(),
-                            revocation_id: None,
-                        },
-                        now().unwrap(),
+                        &f.plan_id,
+                        "Developer revoked this exact decision",
+                        &f.authority,
                     )
                     .unwrap();
             }
@@ -664,48 +689,6 @@ fn rejection_expiry_and_revocation_all_prevent_plan_admission() {
 }
 
 #[test]
-fn changed_task_inputs_and_policy_cannot_reuse_old_plan_or_approval() {
-    let mut f = Fixture::new(true);
-    let lease = f.open();
-    f.propose(&lease);
-    f.decide(&lease, PlanDecisionKindV1::Approved);
-    f.revision.revision = 2;
-    f.revision.previous_revision_id = Some(f.revision_id.clone());
-    f.revision.goal = "An updated ticket requires a new plan".into();
-    let revision_id = f
-        .cas
-        .put_artifact(
-            task::TASK_REVISION_V1,
-            producer(),
-            vec![],
-            None,
-            serde_json::to_value(&f.revision).unwrap(),
-        )
-        .unwrap()
-        .0;
-    f.store
-        .task_change(
-            &f.cas,
-            &lease,
-            TaskChangeV1::RevisionRecorded { revision_id },
-            now().unwrap(),
-        )
-        .unwrap();
-    assert!(
-        f.store
-            .propose_task_plan(&f.cas, &lease, &f.plan_id, &f.authority)
-            .is_err()
-    );
-    assert!(
-        f.store
-            .admit_task_plan(&f.cas, &lease, &f.authority)
-            .is_err()
-    );
-    assert_eq!(f.state().revision.revision, 2);
-    assert!(f.state().plan_id.is_none());
-}
-
-#[test]
 fn released_lease_allows_immediate_handoff_and_fences_every_old_capability() {
     let mut f = Fixture::new(false);
     let old = f.open();
@@ -718,9 +701,9 @@ fn released_lease_allows_immediate_handoff_and_fences_every_old_capability() {
         .unwrap();
     assert_eq!(new.epoch(), old.epoch() + 1);
     let prefix = f.store.len(&task_run_id("task-1").unwrap()).unwrap();
-    assert!(f.store.check_task_lease_current(&f.cas, &old).is_err());
+    assert!(f.store.task_lease_state(&old).is_err());
     assert_eq!(
-        f.store.check_task_lease_current(&f.cas, &new).unwrap(),
+        f.store.task_lease_state(&new).unwrap(),
         f.state().lease_until_unix_ms()
     );
     assert_eq!(
@@ -745,7 +728,7 @@ fn pending_attempt_must_be_settled_or_released_before_writer_handoff() {
     let context = f.cas.put_json(&json!({"context":"fixture"})).unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
         .unwrap();
     assert!(f.store.release_task_lease(&f.cas, &lease).is_err());
     f.store
@@ -918,7 +901,7 @@ fn shared_execution_replays_reserved_attempts_and_publishes_outputs_once() {
         .unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(
+        .reserve_and_bind_task_attempt(
             &f.cas,
             &lease,
             "root.nodes.write",
@@ -981,7 +964,7 @@ fn output_publication_rechecks_authority_after_domain_validation_including_repla
         let context_id = f.cas.put_json(&json!({"context":"fixture"})).unwrap();
         let attempt = f
             .store
-            .prepare_task_attempt(
+            .reserve_and_bind_task_attempt(
                 &f.cas,
                 &lease,
                 "root.nodes.write",
@@ -1063,7 +1046,7 @@ fn rejected_task_output_keeps_its_charge_and_cannot_feed_downstream_nodes() {
         .unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(
+        .reserve_and_bind_task_attempt(
             &f.cas,
             &lease,
             "root.nodes.write",
@@ -1123,7 +1106,7 @@ fn crash_after_successful_settlement_reuses_the_selected_result_under_a_new_writ
     let context = f.cas.put_json(&json!({"exact":"context"})).unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
         .unwrap();
     f.store
         .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
@@ -1155,7 +1138,13 @@ fn crash_after_successful_settlement_reuses_the_selected_result_under_a_new_writ
     );
     assert!(
         f.store
-            .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+            .reserve_and_bind_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.write",
+                &context,
+                &f.authority
+            )
             .is_err()
     );
     let time = f.state().lease_until + 1;
@@ -1224,7 +1213,7 @@ fn writer_recovery_charges_started_work_and_releases_only_unstarted_work() {
             .unwrap();
         let attempt = f
             .store
-            .prepare_task_attempt(
+            .reserve_and_bind_task_attempt(
                 &f.cas,
                 &lease,
                 "root.nodes.write",
@@ -1290,7 +1279,7 @@ fn late_usage_is_charged_after_task_finish_without_reopening_its_result() {
         .unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(
+        .reserve_and_bind_task_attempt(
             &f.cas,
             &lease,
             "root.nodes.write",
@@ -1399,7 +1388,13 @@ fn warm_and_cold_replay_reject_missing_or_corrupt_execution_evidence() {
             .unwrap();
         let attempt = f
             .store
-            .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+            .reserve_and_bind_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.write",
+                &context,
+                &f.authority,
+            )
             .unwrap();
         f.store
             .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
@@ -1685,7 +1680,13 @@ fn native_usage_classification_keeps_exact_attempt_context_and_charge_guards() {
         let context = f.cas.put(b"usage context").unwrap();
         let attempt = f
             .store
-            .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+            .reserve_and_bind_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.write",
+                &context,
+                &f.authority,
+            )
             .unwrap();
         f.store
             .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)

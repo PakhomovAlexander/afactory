@@ -47,9 +47,6 @@ pub enum TaskChangeV1 {
         lease_until_unix_ms: u64,
     },
     LeaseReleased {},
-    RevisionRecorded {
-        revision_id: String,
-    },
     /// Atomic source-revision and replanning barrier. No execution approval carries over.
     SourceRefreshed {
         revision_id: String,
@@ -83,13 +80,7 @@ pub enum TaskChangeV1 {
     ApprovalRevoked {
         decision_id: String,
         reason: String,
-        /// Historical records lacked a retained proof. New trusted writes always include it.
-        #[serde(
-            default,
-            skip_serializing_if = "Option::is_none",
-            deserialize_with = "super::present_option"
-        )]
-        revocation_id: Option<String>,
+        revocation_id: String,
     },
     PlanAdmitted {
         plan_id: String,
@@ -215,8 +206,7 @@ impl TaskTransitionV1 {
                 revision_id,
                 plan_id,
             } => vec![bootstrap_plan_id, proposal_id, revision_id, plan_id],
-            TaskChangeV1::Opened { revision_id, .. }
-            | TaskChangeV1::RevisionRecorded { revision_id } => vec![revision_id],
+            TaskChangeV1::Opened { revision_id, .. } => vec![revision_id],
             TaskChangeV1::PlanProposed { plan_id } | TaskChangeV1::PlanAdmitted { plan_id } => {
                 vec![plan_id]
             }
@@ -225,9 +215,7 @@ impl TaskTransitionV1 {
                 decision_id,
                 revocation_id,
                 ..
-            } => std::iter::once(decision_id.as_str())
-                .chain(revocation_id.as_deref())
-                .collect(),
+            } => vec![decision_id, revocation_id],
             TaskChangeV1::Finished { result_id } => vec![result_id],
             TaskChangeV1::RunReported { report_id } => vec![report_id],
             TaskChangeV1::ExecutionRecorded { record_id }

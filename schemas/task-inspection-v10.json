@@ -72,7 +72,6 @@
           "artifact_type": {
             "enum": [
               "af/TaskExecutionRecord@1",
-              "af/TaskExecutionRecord@2",
               "af/TaskExecutionRecord@3",
               "af/TaskExecutionRecord@4",
               "af/TaskExecutionRecord@5"
@@ -82,9 +81,6 @@
             "oneOf": [
               {
                 "$ref": "urn:af:schema:task-execution-record:1"
-              },
-              {
-                "$ref": "urn:af:schema:task-execution-record:2"
               },
               {
                 "$ref": "urn:af:schema:task-execution-record:3"

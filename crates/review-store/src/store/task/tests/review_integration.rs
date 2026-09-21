@@ -133,7 +133,7 @@ fn dormant_sequence_has_original_allowance_but_no_store_dispatch_authority() {
     let context = f.cas.put_json(&json!({"fixture":"context"})).unwrap();
     assert!(
         f.store
-            .prepare_task_attempt(
+            .reserve_and_bind_task_attempt(
                 &f.cas,
                 &lease,
                 "root.integration_checks",

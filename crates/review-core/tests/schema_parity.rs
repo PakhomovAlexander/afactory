@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 191] = [
+const SCHEMAS: [&str; 190] = [
     "session-snapshot-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -172,7 +172,6 @@ const SCHEMAS: [&str; 191] = [
     "task-run-report-v1.json",
     "task-diagnostic-v1.json",
     "task-execution-record-v1.json",
-    "task-execution-record-v2.json",
     "task-token-usage-v1.json",
     "task-revision-v1.json",
     "task-result-v1.json",
@@ -266,15 +265,6 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
         TaskExecutionRecordV1::Invocation {
             invocation_id: id.clone(),
         },
-        TaskExecutionRecordV1::Prepared {
-            invocation_id: id.clone(),
-            attempt_id: attempt_id.clone(),
-            reservation_id: "reservation:0".into(),
-            reserved_tokens: 10,
-            deadline_unix_ms: 1000,
-            context_id: id.clone(),
-            feedback_ids: vec![],
-        },
         TaskExecutionRecordV1::Reserved {
             invocation_id: id.clone(),
             attempt_id: attempt_id.clone(),
@@ -294,6 +284,21 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
             attempt_id: attempt_id.clone(),
             reason: "not dispatched".into(),
         },
+        TaskExecutionRecordV1::Published {
+            output_id: id.clone(),
+            attempt_id: Some(attempt_id.clone()),
+        },
+    ];
+    for record in records {
+        record.validate().unwrap();
+        let mut value = serde_json::to_value(record).unwrap();
+        assert_valid("task-execution-record-v1.json", &value);
+        value["undeclared"] = json!(true);
+        assert!(!validator("task-execution-record-v1.json").is_valid(&value));
+        assert!(serde_json::from_value::<TaskExecutionRecordV1>(value).is_err());
+    }
+    // Accounting has only its exact decimal encoding; the v1 wire never carries it.
+    let accounting = [
         TaskExecutionRecordV1::Settled {
             attempt_id: attempt_id.clone(),
             charged_tokens: 11,
@@ -322,10 +327,6 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
             raw_artifact_ids: vec![],
             usage_id: None,
         },
-        TaskExecutionRecordV1::Published {
-            output_id: id.clone(),
-            attempt_id: Some(attempt_id.clone()),
-        },
         TaskExecutionRecordV1::UsageObserved {
             charged_tokens: 12,
             raw_artifact_ids: vec![],
@@ -333,13 +334,19 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
             attempt_id,
         },
     ];
-    for record in records {
-        record.validate().unwrap();
-        let mut value = serde_json::to_value(record).unwrap();
-        assert_valid("task-execution-record-v1.json", &value);
+    for record in accounting {
+        assert!(record.validate().is_err());
+        assert!(serde_json::to_value(&record).is_err());
+        let encoded = TaskExecutionRecordV3::from_accounting(&record).unwrap();
+        encoded.validate().unwrap();
+        let mut value = serde_json::to_value(&encoded).unwrap();
+        assert_valid("task-execution-record-v3.json", &value);
+        assert_invalid("task-execution-record-v1.json", &value, "v3 accounting");
+        assert!(serde_json::from_value::<TaskExecutionRecordV1>(value.clone()).is_err());
+        assert_eq!(encoded.into_record(), record);
         value["undeclared"] = json!(true);
-        assert!(!validator("task-execution-record-v1.json").is_valid(&value));
-        assert!(serde_json::from_value::<TaskExecutionRecordV1>(value).is_err());
+        assert!(!validator("task-execution-record-v3.json").is_valid(&value));
+        assert!(serde_json::from_value::<TaskExecutionRecordV3>(value).is_err());
     }
 }
 
@@ -2306,9 +2313,6 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
         TaskChangeV1::LeaseRenewed {
             lease_until_unix_ms: 200,
         },
-        TaskChangeV1::RevisionRecorded {
-            revision_id: id.clone(),
-        },
         TaskChangeV1::PlanProposed {
             plan_id: id.clone(),
         },
@@ -2335,7 +2339,7 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
         TaskChangeV1::ApprovalRevoked {
             decision_id: id.clone(),
             reason: "Revoked by developer".into(),
-            revocation_id: Some(id.clone()),
+            revocation_id: id.clone(),
         },
         TaskChangeV1::PlanAdmitted {
             plan_id: id.clone(),
@@ -2351,7 +2355,9 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
         TaskChangeV1::DeliveryRecorded {
             record_id: id.clone(),
         },
-        TaskChangeV1::Finished { result_id: id },
+        TaskChangeV1::Finished {
+            result_id: id.clone(),
+        },
     ];
     for change in changes {
         let transition = TaskTransitionV1 {
@@ -2371,6 +2377,11 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
                 .is_err()
         );
     }
+    // A revocation always carries its retained proof.
+    let unproven = json!({"writer":"writer-1","epoch":1,"now_unix_ms":100,
+        "change":{"kind":"approval_revoked","decision_id":id,"reason":"Revoked by developer"}});
+    assert_invalid("task-transition-v1.json", &unproven, "revocation proof");
+    assert!(serde_json::from_value::<TaskTransitionV1>(unproven).is_err());
 }
 
 #[test]

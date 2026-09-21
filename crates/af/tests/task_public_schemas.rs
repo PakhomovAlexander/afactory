@@ -6,7 +6,7 @@ use review_core::task::delivery::{
     TASK_DELIVERY_RECORD_V1, TaskDeliveryRecordV1, TaskDeliveryStatusV1,
 };
 use review_core::task::execution::{
-    TaskAttemptResultV1, TaskExecutionRecordV1, TaskExecutionRecordV2, TaskExecutionRecordV3,
+    TaskAttemptResultV1, TaskExecutionRecordV1, TaskExecutionRecordV3,
 };
 use review_graph::task::CompiledTask;
 use serde_json::{Value, json};
@@ -419,44 +419,27 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
     );
 
     let digest = format!("sha256:{}", "a".repeat(64));
-    let record = TaskExecutionRecordV1::Settled {
+    let wide = TaskExecutionRecordV3::from_accounting(&TaskExecutionRecordV1::Settled {
         attempt_id: "A".repeat(26),
-        charged_tokens: 7,
+        charged_tokens: u128::MAX,
         result: TaskAttemptResultV1::Failed {
             diagnostic_id: digest.clone(),
             feedback_id: None,
         },
         raw_artifact_ids: vec![],
         usage_id: None,
-    };
-    record.validate().unwrap();
-    let mut wide = record.clone();
-    if let TaskExecutionRecordV1::Settled { charged_tokens, .. } = &mut wide {
-        *charged_tokens = u128::MAX;
-    }
-    let v2 = TaskExecutionRecordV2::from_accounting(&record).unwrap();
-    let v3 = TaskExecutionRecordV3::from_accounting(&wide).unwrap();
-    v2.validate().unwrap();
-    v3.validate().unwrap();
-    for (version, record) in [
-        (1, serde_json::to_value(record).unwrap()),
-        (2, serde_json::to_value(v2).unwrap()),
-        (3, serde_json::to_value(v3).unwrap()),
-    ] {
-        let mut value = finished.clone();
-        value["execution_records"] = json!([{"artifact_id":digest,"artifact_type":format!("af/TaskExecutionRecord@{version}"),"record":record,"diagnostic":["historical",{"opaque":true}]}]);
-        value["chargeable_tokens"] = json!(u128::MAX.to_string());
-        valid(&runtime_inspection_schema, &value);
-        value["execution_records"][0]["artifact_type"] = json!(if version == 1 {
-            "af/TaskExecutionRecord@2"
-        } else {
-            "af/TaskExecutionRecord@1"
-        });
-        assert!(
-            !runtime_inspection_schema.is_valid(&value),
-            "mismatched version {version}"
-        );
-    }
+    })
+    .unwrap();
+    wide.validate().unwrap();
+    let mut value = finished.clone();
+    value["execution_records"] = json!([{"artifact_id":digest,"artifact_type":"af/TaskExecutionRecord@3","record":wide,"diagnostic":["opaque",{"opaque":true}]}]);
+    value["chargeable_tokens"] = json!(u128::MAX.to_string());
+    valid(&runtime_inspection_schema, &value);
+    value["execution_records"][0]["artifact_type"] = json!("af/TaskExecutionRecord@1");
+    assert!(
+        !runtime_inspection_schema.is_valid(&value),
+        "mismatched record version"
+    );
     for charge in [
         json!(7),
         json!("01"),

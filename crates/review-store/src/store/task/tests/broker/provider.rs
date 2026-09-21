@@ -298,7 +298,7 @@ impl ProbeFixture {
             .unwrap();
         let attempt = f
             .store
-            .prepare_task_attempt(&f.cas, &lease, PROBE, &context, &f.authority)
+            .reserve_and_bind_task_attempt(&f.cas, &lease, PROBE, &context, &f.authority)
             .unwrap();
         (lease, attempt)
     }

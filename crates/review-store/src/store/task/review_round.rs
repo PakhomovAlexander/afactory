@@ -138,7 +138,6 @@ pub(super) fn fence_for_transition(
             return ReviewRoundFence::capture(cas, &revision(cas, &handoff.successor_revision_id)?);
         }
         TaskChangeV1::Opened { revision_id, .. }
-        | TaskChangeV1::RevisionRecorded { revision_id }
         | TaskChangeV1::SourceRefreshed { revision_id, .. }
         | TaskChangeV1::PlanningCompleted { revision_id, .. } => {
             return ReviewRoundFence::capture(cas, &revision(cas, revision_id)?);
@@ -148,7 +147,6 @@ pub(super) fn fence_for_transition(
             match record {
                 TaskExecutionRecordV1::Invocation { .. }
                 | TaskExecutionRecordV1::Reserved { .. }
-                | TaskExecutionRecordV1::Prepared { .. }
                 | TaskExecutionRecordV1::ContextBound { .. }
                 | TaskExecutionRecordV1::Started { .. }
                 | TaskExecutionRecordV1::Published { .. }

@@ -428,15 +428,18 @@ impl Fixture {
 
     fn fail(&mut self, node: &str, charge: u64) -> String {
         let context = self.cas.put_json(&json!({"context":node})).unwrap();
-        let attempt = self
+        let reserved = self
             .store
-            .prepare_task_attempt(
+            .reserve_task_attempt(
                 &self.cas,
                 &self.lease,
                 &format!("root.nodes.{node}"),
-                &context,
                 &Authority,
             )
+            .unwrap();
+        let attempt = self
+            .store
+            .bind_task_attempt_context(&self.cas, &self.lease, &reserved, &context, &Authority)
             .unwrap();
         self.store
             .start_task_attempt(&self.cas, &self.lease, &attempt, &Authority)
@@ -445,8 +448,9 @@ impl Fixture {
             .cas
             .put_json(&json!({"failure":"deterministic fixture"}))
             .unwrap();
-        self.store
-            .settle_task_attempt(
+        let settlement = self
+            .store
+            .settle_task_attempt_with_feedback(
                 &self.cas,
                 &self.lease,
                 TaskExecutionRecordV1::Settled {
@@ -460,8 +464,13 @@ impl Fixture {
                     usage_id: None,
                 },
                 &Authority,
+                || Ok(None),
             )
             .unwrap();
+        assert_eq!(
+            settlement,
+            review_store::store::task::execution::TaskSettlement::Settled
+        );
         attempt.id().into()
     }
 

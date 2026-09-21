@@ -147,7 +147,7 @@ fn prepare(f: &mut Fixture) -> (TaskLease, PreparedTaskAttempt) {
     let context_id = f.cas.put_json(&json!({"broker_context":true})).unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, &lease, NODE, &context_id, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, &lease, NODE, &context_id, &f.authority)
         .unwrap();
     (lease, attempt)
 }
@@ -222,21 +222,35 @@ fn rejected(f: &mut Fixture, bound: &BoundTaskBroker, receipt: &BrokerOperationR
     assert_eq!(after.execution.unwrap().budget.committed_tokens(), budget);
 }
 
-fn operations(f: &Fixture) -> Vec<(ArtifactEnvelope, TaskBrokerOperationV1)> {
+fn broker_records(f: &Fixture, kind: &str) -> Vec<ArtifactEnvelope> {
     f.store
         .replay(&task_run_id(&f.revision.task_id).unwrap())
         .unwrap()
         .into_iter()
         .filter(|e| e.event_type == EventType::TaskBrokerTransitionV1)
-        .filter_map(|e| {
+        .map(|e| {
             let transition: TaskBrokerTransitionV1 = serde_json::from_value(e.payload).unwrap();
-            let envelope = read_task_broker_record(&f.cas, &transition.record_id).unwrap();
-            (envelope.artifact_type == TASK_BROKER_OPERATION_V1).then(|| {
-                let operation = serde_json::from_value(envelope.payload.clone()).unwrap();
-                (envelope, operation)
-            })
+            read_task_broker_record(&f.cas, &transition.record_id).unwrap()
+        })
+        .filter(|envelope| envelope.artifact_type == kind)
+        .collect()
+}
+
+fn operations(f: &Fixture) -> Vec<(ArtifactEnvelope, TaskBrokerOperationV1)> {
+    broker_records(f, TASK_BROKER_OPERATION_V1)
+        .into_iter()
+        .map(|envelope| {
+            let operation = serde_json::from_value(envelope.payload.clone()).unwrap();
+            (envelope, operation)
         })
         .collect()
+}
+
+/// The committed binding record is the only public handle on the binding artifact.
+fn binding_id(f: &Fixture) -> String {
+    let [binding] = <[ArtifactEnvelope; 1]>::try_from(broker_records(f, TASK_BROKER_BINDING_V1))
+        .expect("one committed Broker binding");
+    binding.artifact_id
 }
 
 fn settle(f: &mut Fixture, lease: &TaskLease, attempt: &PreparedTaskAttempt, charge: u128) {
@@ -700,7 +714,7 @@ fn multiple_broker_operations_share_one_attempt_and_exact_overrun_floor_after_re
         u64::MAX.to_string()
     );
     assert_eq!(records[1].1.receipt, overrun);
-    assert_eq!(records[1].1.binding_id, bound.binding_id());
+    assert_eq!(records[1].1.binding_id, binding_id(&f));
     let before = f.state().next_sequence;
     settle(&mut f, &lease, &attempt, 3);
     assert_eq!(f.state().next_sequence, before);
@@ -748,7 +762,7 @@ fn assert_late(f: &mut Fixture, bound: &BoundTaskBroker) {
     assert_eq!(stored.charged_usage, late.charged_usage);
     assert_eq!(stored.reserved_usage, late.reserved_usage);
     assert_eq!(stored.response_digest, late.response_digest);
-    assert_eq!(records[1].1.binding_id, bound.binding_id());
+    assert_eq!(records[1].1.binding_id, binding_id(f));
     assert_eq!(
         f.store
             .record_task_broker_receipt(&f.cas, bound, &late, &BrokerAuthority)

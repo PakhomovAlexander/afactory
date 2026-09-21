@@ -158,7 +158,7 @@ fn closed_review_round_refuses_prepared_start_and_keeps_credit_release_available
     let context = f.cas.put_json(&json!({"exact":"context"})).unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
         .unwrap();
     let fence = ReviewRoundFence::capture(&f.cas, &f.revision)
         .unwrap()
@@ -256,7 +256,7 @@ fn superseded_review_round_blocks_dispatch_but_retains_started_usage_and_settlem
     let context = f.cas.put_json(&json!({"exact":"context"})).unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
         .unwrap();
     f.store
         .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)

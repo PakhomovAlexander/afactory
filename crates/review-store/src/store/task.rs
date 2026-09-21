@@ -306,8 +306,7 @@ struct Decision {
     artifact_id: String,
     value: PlanDecisionV1,
     valid_until: u64,
-    revoked: bool,
-    revocation: Option<(Option<PlanDecisionV1>, RunEvent)>,
+    revocation: Option<(PlanDecisionV1, RunEvent)>,
     event: RunEvent,
 }
 
@@ -535,27 +534,47 @@ fn validate_input_refs(
     Ok(())
 }
 
+fn revision_references(
+    cas: &Cas,
+    revision_id: &str,
+    refs: &mut BTreeSet<String>,
+) -> Result<(), StoreError> {
+    let value = revision(cas, revision_id)?;
+    refs.insert(revision_id.into());
+    refs.insert(value.authority.policy_id);
+    refs.insert(value.provenance.adapter_id);
+    refs.extend(value.provenance.input_artifact_ids);
+    refs.extend(value.previous_revision_id);
+    refs.extend(value.acceptance.values().map(|o| o.verifier_policy.clone()));
+    for input in value.inputs.values() {
+        validate_input_refs(cas, input, refs)?;
+    }
+    Ok(())
+}
+
+fn decision_references(
+    cas: &Cas,
+    decision_id: &str,
+    refs: &mut BTreeSet<String>,
+) -> Result<(), StoreError> {
+    let value: PlanDecisionV1 = payload(cas, decision_id, task::PLAN_DECISION_V1)?;
+    value.validate().map_err(conflict)?;
+    refs.extend([
+        decision_id.into(),
+        value.task_revision_id,
+        value.plan_id,
+        value.policy_id,
+        value.authorization_id,
+    ]);
+    Ok(())
+}
+
 fn references(
     cas: &Cas,
     change: &TaskChangeV1,
     state: Option<&TaskProjection>,
 ) -> Result<Vec<String>, StoreError> {
     let mut refs = BTreeSet::new();
-    if let TaskChangeV1::ApprovalRevoked {
-        revocation_id: Some(id),
-        ..
-    } = change
-    {
-        let value: PlanDecisionV1 = payload(cas, id, task::PLAN_DECISION_V1)?;
-        value.validate().map_err(conflict)?;
-        refs.extend([
-            id.clone(),
-            value.task_revision_id,
-            value.plan_id,
-            value.policy_id,
-            value.authorization_id,
-        ]);
-    }
     match change {
         TaskChangeV1::RecordingResumed { report_id, .. } => {
             refs.extend(report::references(cas, report_id)?);
@@ -587,13 +606,7 @@ fn references(
                 .clone();
             next.revision = revision(cas, &handoff.successor_revision_id)?;
             next.revision_id = handoff.successor_revision_id.clone();
-            refs.extend(references(
-                cas,
-                &TaskChangeV1::RevisionRecorded {
-                    revision_id: handoff.successor_revision_id.clone(),
-                },
-                None,
-            )?);
+            revision_references(cas, &handoff.successor_revision_id, &mut refs)?;
             refs.extend(references(
                 cas,
                 &TaskChangeV1::PlanProposed {
@@ -612,13 +625,7 @@ fn references(
                 .clone();
             next.revision = revision(cas, revision_id)?;
             next.revision_id = revision_id.clone();
-            refs.extend(references(
-                cas,
-                &TaskChangeV1::RevisionRecorded {
-                    revision_id: revision_id.clone(),
-                },
-                None,
-            )?);
+            revision_references(cas, revision_id, &mut refs)?;
             if let Some(plan_id) = plan_id {
                 refs.extend(references(
                     cas,
@@ -641,13 +648,7 @@ fn references(
                 .clone();
             next.revision = revision(cas, revision_id)?;
             next.revision_id = revision_id.clone();
-            refs.extend(references(
-                cas,
-                &TaskChangeV1::RevisionRecorded {
-                    revision_id: revision_id.clone(),
-                },
-                None,
-            )?);
+            revision_references(cas, revision_id, &mut refs)?;
             refs.extend(references(
                 cas,
                 &TaskChangeV1::PlanProposed {
@@ -715,18 +716,8 @@ fn references(
         TaskChangeV1::RunReported { report_id } => {
             refs.extend(report::references(cas, report_id)?);
         }
-        TaskChangeV1::Opened { revision_id, .. }
-        | TaskChangeV1::RevisionRecorded { revision_id } => {
-            let value = revision(cas, revision_id)?;
-            refs.insert(revision_id.clone());
-            refs.insert(value.authority.policy_id);
-            refs.insert(value.provenance.adapter_id);
-            refs.extend(value.provenance.input_artifact_ids);
-            refs.extend(value.previous_revision_id);
-            refs.extend(value.acceptance.values().map(|o| o.verifier_policy.clone()));
-            for input in value.inputs.values() {
-                validate_input_refs(cas, input, &mut refs)?;
-            }
+        TaskChangeV1::Opened { revision_id, .. } => {
+            revision_references(cas, revision_id, &mut refs)?;
         }
         TaskChangeV1::PlanProposed { plan_id } | TaskChangeV1::PlanAdmitted { plan_id } => {
             let value = plan(
@@ -773,17 +764,16 @@ fn references(
                 validate_input_refs(cas, input, &mut refs)?;
             }
         }
-        TaskChangeV1::PlanDecided { decision_id, .. }
-        | TaskChangeV1::ApprovalRevoked { decision_id, .. } => {
-            let value: PlanDecisionV1 = payload(cas, decision_id, task::PLAN_DECISION_V1)?;
-            value.validate().map_err(conflict)?;
-            refs.extend([
-                decision_id.clone(),
-                value.task_revision_id,
-                value.plan_id,
-                value.policy_id,
-                value.authorization_id,
-            ]);
+        TaskChangeV1::PlanDecided { decision_id, .. } => {
+            decision_references(cas, decision_id, &mut refs)?;
+        }
+        TaskChangeV1::ApprovalRevoked {
+            decision_id,
+            revocation_id,
+            ..
+        } => {
+            decision_references(cas, revocation_id, &mut refs)?;
+            decision_references(cas, decision_id, &mut refs)?;
         }
         TaskChangeV1::Finished { result_id } => {
             refs.extend(envelope(cas, result_id, task::TASK_RESULT_V1)?.input_artifacts);
@@ -931,30 +921,6 @@ impl TaskProjection {
                     }
                     self.lease_until = transition.now_unix_ms;
                 }
-                TaskChangeV1::RevisionRecorded { revision_id } => {
-                    if self.admitted || self.execution.is_some() {
-                        return Err(conflict(
-                            "An executing Task needs a recorded replan barrier",
-                        ));
-                    }
-                    let next = revision(cas, revision_id)?;
-                    if next.task_id != self.task_id
-                        || next.previous_revision_id.as_ref() != Some(&self.revision_id)
-                        || self.revision.revision.checked_add(1) != Some(next.revision)
-                        || next.limits.tokens > self.revision.limits.tokens
-                        || next.limits.max_attempts > self.revision.limits.max_attempts
-                        || next.limits.deadline_unix_ms > self.revision.limits.deadline_unix_ms
-                    {
-                        return Err(conflict(
-                            "Task revision must retain its predecessor and remaining resource bounds",
-                        ));
-                    }
-                    self.revision_id = revision_id.clone();
-                    self.revision = next;
-                    self.plan_id = None;
-                    self.phase = TaskPhaseV1::Submitted {};
-                    self.resume_phase = None;
-                }
                 TaskChangeV1::PlanProposed { plan_id } => {
                     if self.admitted || self.execution.is_some() {
                         return Err(conflict("Cannot replace an executing Task plan"));
@@ -1008,7 +974,6 @@ impl TaskProjection {
                             artifact_id: decision_id.clone(),
                             value: decision,
                             valid_until: *valid_until_unix_ms,
-                            revoked: false,
                             revocation: None,
                             event: event.clone(),
                         },
@@ -1024,24 +989,20 @@ impl TaskProjection {
                         .values_mut()
                         .find(|d| &d.artifact_id == decision_id)
                         .ok_or_else(|| conflict("Unknown Task approval"))?;
-                    let mut proof = None;
-                    if let Some(id) = revocation_id {
-                        let revocation: PlanDecisionV1 = payload(cas, id, task::PLAN_DECISION_V1)?;
-                        revocation.validate().map_err(conflict)?;
-                        if revocation.decision != PlanDecisionKindV1::Rejected
-                            || revocation.task_revision_id != self.revision_id
-                            || revocation.plan_id != decision.value.plan_id
-                            || revocation.policy_id != self.revision.authority.policy_id
-                            || revocation.reason != *reason
-                        {
-                            return Err(conflict(
-                                "Revocation proof changed its exact plan, Task, authority or reason",
-                            ));
-                        }
-                        proof = Some(revocation);
+                    let revocation: PlanDecisionV1 =
+                        payload(cas, revocation_id, task::PLAN_DECISION_V1)?;
+                    revocation.validate().map_err(conflict)?;
+                    if revocation.decision != PlanDecisionKindV1::Rejected
+                        || revocation.task_revision_id != self.revision_id
+                        || revocation.plan_id != decision.value.plan_id
+                        || revocation.policy_id != self.revision.authority.policy_id
+                        || revocation.reason != *reason
+                    {
+                        return Err(conflict(
+                            "Revocation proof changed its exact plan, Task, authority or reason",
+                        ));
                     }
-                    decision.revocation = Some((proof, event.clone()));
-                    decision.revoked = true;
+                    decision.revocation = Some((revocation, event.clone()));
                     if self.plan_id.as_ref() == Some(&decision.value.plan_id) {
                         self.admitted = false;
                         self.phase = TaskPhaseV1::Waiting {
@@ -1261,7 +1222,7 @@ impl TaskProjection {
             .ok_or_else(|| conflict("Task has no plan"))?;
         let plan = plan(cas, id, self)?;
         if let Some(decision) = self.decisions.get(id) {
-            if decision.revoked
+            if decision.revocation.is_some()
                 || time >= decision.valid_until
                 || !decision.value.approves(id, &plan)
             {
@@ -1342,15 +1303,8 @@ impl EventStore {
             if state.planning.is_some() {
                 state.planning_proof(cas)?;
             }
-            let mut active_refs: BTreeSet<String> = references(
-                cas,
-                &TaskChangeV1::RevisionRecorded {
-                    revision_id: state.revision_id.clone(),
-                },
-                Some(state),
-            )?
-            .into_iter()
-            .collect();
+            let mut active_refs = BTreeSet::new();
+            revision_references(cas, &state.revision_id, &mut active_refs)?;
             if revision(cas, &state.revision_id)? != state.revision {
                 return Err(conflict("Cached Task revision changed identity"));
             }
@@ -1699,24 +1653,6 @@ impl EventStore {
         })
     }
 
-    /// Check the exact existing writer capability without renewing or granting dispatch.
-    pub fn check_task_lease_current(
-        &self,
-        cas: &Cas,
-        lease: &TaskLease,
-    ) -> Result<u64, StoreError> {
-        let state = self
-            .task_projection(cas, lease.task_id())?
-            .ok_or_else(|| conflict("Unknown Task"))?;
-        state.check_lease(&TaskTransitionV1 {
-            writer: lease.writer.clone(),
-            epoch: lease.epoch,
-            now_unix_ms: now()?,
-            change: TaskChangeV1::Resumed {},
-        })?;
-        Ok(state.lease_until_unix_ms())
-    }
-
     pub fn renew_task_lease(
         &mut self,
         cas: &Cas,
@@ -1841,7 +1777,7 @@ impl EventStore {
                 now_unix_ms: time,
                 change: TaskChangeV1::Resumed {},
             })?;
-            if old.value == value && !old.revoked && time < old.valid_until {
+            if old.value == value && old.revocation.is_none() && time < old.valid_until {
                 return Ok(old.event.clone());
             }
             return Err(conflict(
@@ -1931,22 +1867,6 @@ impl EventStore {
         )
     }
 
-    pub fn revise_task(
-        &mut self,
-        cas: &Cas,
-        lease: &TaskLease,
-        revision_id: &str,
-    ) -> Result<RunEvent, StoreError> {
-        self.task_change(
-            cas,
-            lease,
-            TaskChangeV1::RevisionRecorded {
-                revision_id: revision_id.into(),
-            },
-            now()?,
-        )
-    }
-
     pub fn wait_task(
         &mut self,
         cas: &Cas,
@@ -2016,10 +1936,8 @@ impl EventStore {
             now_unix_ms: time,
             change: TaskChangeV1::Resumed {},
         })?;
-        if decision.revoked {
-            if let Some((Some(previous), event)) = &decision.revocation
-                && previous == &revocation
-            {
+        if let Some((previous, event)) = &decision.revocation {
+            if previous == &revocation {
                 return Ok(event.clone());
             }
             return Err(conflict("Task approval already has a different revocation"));
@@ -2048,7 +1966,7 @@ impl EventStore {
             TaskChangeV1::ApprovalRevoked {
                 decision_id: decision.artifact_id.clone(),
                 reason: reason.into(),
-                revocation_id: Some(revocation_id),
+                revocation_id,
             },
             now()?,
         )

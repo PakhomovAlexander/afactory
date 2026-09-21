@@ -126,7 +126,9 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0065](0065-persist-task-run-diagnostics-and-recover-domain-publication.md): readability of
   older Tasks without run reports.
 - [ADR-0066](0066-reserve-task-attempts-before-binding-exact-context.md): the historical combined
-  `Prepared` record.
+  `Prepared` record and its Store API.
+- [ADR-0068](0068-retain-inflight-task-usage-in-the-common-budget.md): usage observations and
+  settlements encoded as `TaskExecutionRecord@1` with numeric charges.
 - [ADR-0071](0071-share-captured-review-authority-and-task-token-scopes.md): readability of
   historical `.review/` captures.
 - [ADR-0075](0075-retain-exact-task-usage-with-versioned-decimal-counters.md): readers for
@@ -163,7 +165,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   of captured policy-one plans, and omission selecting policy one. An omitted `review.generation`
   now selects generation two, the only generation.
 - [ADR-0101](0101-reuse-review-structure-with-fresh-task-boundaries.md): readability of historical
-  duplicate or non-approved revocations.
+  duplicate or non-approved revocations, and of unauthenticated revocations without a retained
+  proof.
 - [ADR-0104](0104-preview-captured-task-plans-before-first-execution.md): the preview for the
   legacy goal entry point; `task start` takes only a Task file.
 - [ADR-0106](0106-authorize-experimental-children-separately.md): earlier inspection and execution

@@ -59,59 +59,8 @@ fn exact_usage_rejects_noncanonical_numbers_and_never_coerces_optional_nulls() {
 }
 
 #[test]
-fn decimal_accounting_upgrades_only_its_declared_wire_version() {
-    use review_core::task::execution::{
-        TaskAttemptResultV1, TaskExecutionRecordV1, TaskExecutionRecordV2,
-    };
-    let record = TaskExecutionRecordV1::Settled {
-        attempt_id: "A".repeat(26),
-        charged_tokens: u128::from(u64::MAX),
-        result: TaskAttemptResultV1::Failed {
-            diagnostic_id: format!("sha256:{}", "1".repeat(64)),
-            feedback_id: None,
-        },
-        raw_artifact_ids: vec![],
-        usage_id: None,
-    };
-    assert!(
-        record.validate().is_err(),
-        "the released v1 bound remains frozen"
-    );
-    let upgraded = TaskExecutionRecordV2::from_accounting(&record).unwrap();
-    upgraded.validate().unwrap();
-    let value = serde_json::to_value(&upgraded).unwrap();
-    assert_valid("task-execution-record-v2.json", &value);
-    assert_invalid(
-        "task-execution-record-v1.json",
-        &value,
-        "versioned text counter",
-    );
-    assert_eq!(upgraded.into_record(), record);
-    for invalid in [json!(7), json!("01"), json!("18446744073709551616")] {
-        let mut refused = value.clone();
-        refused["charged_tokens"] = invalid;
-        assert_invalid(
-            "task-execution-record-v2.json",
-            &refused,
-            "strict charge encoding",
-        );
-        assert!(serde_json::from_value::<TaskExecutionRecordV2>(refused).is_err());
-    }
-    let started = json!({"kind":"started", "attempt_id":"A".repeat(26)});
-    assert_valid("task-execution-record-v1.json", &started);
-    assert_invalid(
-        "task-execution-record-v2.json",
-        &started,
-        "only accounting has version two",
-    );
-    assert!(serde_json::from_value::<TaskExecutionRecordV2>(started).is_err());
-}
-
-#[test]
-fn cumulative_execution_accounting_has_an_additive_full_width_version() {
-    use review_core::task::execution::{
-        TaskExecutionRecordV1, TaskExecutionRecordV2, TaskExecutionRecordV3,
-    };
+fn cumulative_execution_accounting_has_one_full_width_encoding() {
+    use review_core::task::execution::{TaskExecutionRecordV1, TaskExecutionRecordV3};
     let digest = format!("sha256:{}", "1".repeat(64));
     for tokens in [
         0,
@@ -143,21 +92,21 @@ fn cumulative_execution_accounting_has_an_additive_full_width_version() {
                     .into_record(),
                 normalized
             );
-            assert_eq!(
-                normalized.validate().is_ok(),
-                tokens <= review_core::json::SAFE_INTEGER_MAX as u128
+            assert!(
+                normalized.validate().is_err(),
+                "accounting is never v1 wire"
             );
-            assert_eq!(
-                TaskExecutionRecordV2::from_accounting(&normalized).is_some(),
-                tokens <= u128::from(u64::MAX)
+            assert_invalid(
+                "task-execution-record-v1.json",
+                &value,
+                "accounting is never v1 wire",
             );
         }
     }
-    let legacy = json!({"kind":"usage_observed", "attempt_id":"A".repeat(26),
+    let numeric = json!({"kind":"usage_observed", "attempt_id":"A".repeat(26),
         "charged_tokens":7, "usage_id":digest, "raw_artifact_ids":[]});
-    let record: TaskExecutionRecordV1 = serde_json::from_value(legacy.clone()).unwrap();
-    record.validate().unwrap();
-    assert_eq!(serde_json::to_value(record).unwrap(), legacy);
+    assert_invalid("task-execution-record-v1.json", &numeric, "numeric charge");
+    assert!(serde_json::from_value::<TaskExecutionRecordV1>(numeric).is_err());
     assert!(
         TaskExecutionRecordV3::from_accounting(&TaskExecutionRecordV1::Started {
             attempt_id: "A".repeat(26)

@@ -79,7 +79,7 @@ fn expired_publication_at_report(
         .unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
         .unwrap();
     f.store
         .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)

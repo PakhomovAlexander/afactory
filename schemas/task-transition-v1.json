@@ -92,23 +92,6 @@
           "additionalProperties": false,
           "required": [
             "kind",
-            "revision_id"
-          ],
-          "properties": {
-            "kind": {
-              "const": "revision_recorded"
-            },
-            "revision_id": {
-              "type": "string",
-              "pattern": "^sha256:[0-9a-f]{64}$"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
             "plan_id"
           ],
           "properties": {
@@ -150,7 +133,8 @@
           "required": [
             "kind",
             "decision_id",
-            "reason"
+            "reason",
+            "revocation_id"
           ],
           "properties": {
             "kind": {

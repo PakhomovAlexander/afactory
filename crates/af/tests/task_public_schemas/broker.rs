@@ -12,6 +12,7 @@ use review_core::{
     BrokerOperationReceiptV2, Producer,
 };
 use review_pipeline::task::code::{CodeTaskPolicy, code_signatures};
+use review_store::store::task::execution::TaskSettlement;
 use review_store::store::task::{DeveloperGrant, TaskAuthority, task_run_id};
 use review_store::{Cas, EventStore};
 use std::collections::BTreeMap;
@@ -308,8 +309,11 @@ fn broker_inspection_reopens_exact_receipts_in_one_task_history_and_keeps_normal
         .record_task_invocation(&cas, &lease, &invocation_id, &authority)
         .unwrap();
     let context_id = cas.put_json(&json!(invocation)).unwrap();
+    let reserved = store
+        .reserve_task_attempt(&cas, &lease, NODE, &authority)
+        .unwrap();
     let attempt = store
-        .prepare_task_attempt(&cas, &lease, NODE, &context_id, &authority)
+        .bind_task_attempt_context(&cas, &lease, &reserved, &context_id, &authority)
         .unwrap();
     assert_eq!(attempt.reservation().tokens, 10);
     store
@@ -356,8 +360,8 @@ fn broker_inspection_reopens_exact_receipts_in_one_task_history_and_keeps_normal
             .record_task_broker_receipt(&cas, &bound, &receipt, &authority)
             .unwrap();
     }
-    store
-        .settle_task_attempt(
+    let settlement = store
+        .settle_task_attempt_with_feedback(
             &cas,
             &lease,
             TaskExecutionRecordV1::Settled {
@@ -373,8 +377,10 @@ fn broker_inspection_reopens_exact_receipts_in_one_task_history_and_keeps_normal
                 usage_id: None,
             },
             &authority,
+            || Ok(None),
         )
         .unwrap();
+    assert_eq!(settlement, TaskSettlement::Settled);
     let run_id = task_run_id(TASK).unwrap();
     let before = store.replay(&run_id).unwrap();
     drop(store);
@@ -394,7 +400,11 @@ fn broker_inspection_reopens_exact_receipts_in_one_task_history_and_keeps_normal
         assert_eq!(view["chargeable_tokens"], total);
         let records = view["broker_records"].as_array().unwrap();
         assert_eq!(records.len(), 3);
-        assert_eq!(records[0]["artifact_id"], bound.binding_id());
+        let binding_id = records[0]["artifact_id"].as_str().unwrap();
+        assert_eq!(
+            cas.get_artifact(binding_id).unwrap().payload,
+            json!(bound.binding())
+        );
         assert_eq!(records[0]["artifact_type"], TASK_BROKER_BINDING_V1);
         assert_eq!(records[0]["record"], json!(bound.binding()));
         for (record, ordinal, charge) in [
@@ -402,7 +412,7 @@ fn broker_inspection_reopens_exact_receipts_in_one_task_history_and_keeps_normal
             (&records[2], 2, "18446744073709551615"),
         ] {
             assert_eq!(record["artifact_type"], TASK_BROKER_OPERATION_V1);
-            assert_eq!(record["record"]["binding_id"], bound.binding_id());
+            assert_eq!(record["record"]["binding_id"], binding_id);
             assert_eq!(record["record"]["receipt"]["attempt_id"], attempt.id());
             assert_eq!(record["record"]["receipt"]["ordinal"], ordinal);
             assert_eq!(record["record"]["receipt"]["charged_usage"], charge);

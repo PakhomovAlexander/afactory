@@ -69,7 +69,7 @@ fn append(
 }
 
 #[test]
-fn numeric_history_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery() {
+fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery() {
     for recover in [false, true] {
         let mut f = fixture_with_sibling();
         let actual = u128::from(u64::MAX) + 7;
@@ -103,12 +103,18 @@ fn numeric_history_and_cumulative_attempt_usage_reopen_exactly_including_crash_r
         let diagnostic = f.cas.put_json(&json!({"error":"fixture failure"})).unwrap();
         let first = f
             .store
-            .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+            .reserve_and_bind_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.write",
+                &context,
+                &f.authority,
+            )
             .unwrap();
         f.store
             .start_task_attempt(&f.cas, &lease, &first, &f.authority)
             .unwrap();
-        let old_usage_id = f
+        let first_usage_id = f
             .cas
             .put_artifact(
                 TASK_TOKEN_USAGE_V1,
@@ -123,21 +129,19 @@ fn numeric_history_and_cumulative_attempt_usage_reopen_exactly_including_crash_r
             )
             .unwrap()
             .0;
-        let old_observation = TaskExecutionRecordV2::UsageObserved {
-            attempt_id: first.id().into(),
-            charged_tokens: 3.into(),
-            usage_id: old_usage_id,
-            raw_artifact_ids: vec![],
-        };
-        let old_observation_id = append(
-            &mut f,
-            &lease,
-            TASK_EXECUTION_RECORD_V2,
-            serde_json::to_value(&old_observation).unwrap(),
-        )
-        .unwrap();
-        let old_observation_envelope = f.cas.get_artifact(&old_observation_id).unwrap();
-        let historical = TaskExecutionRecordV1::Settled {
+        f.store
+            .observe_task_usage(
+                &f.cas,
+                &lease,
+                TaskExecutionRecordV1::UsageObserved {
+                    attempt_id: first.id().into(),
+                    charged_tokens: 3,
+                    usage_id: first_usage_id,
+                    raw_artifact_ids: vec![],
+                },
+            )
+            .unwrap();
+        let settled = TaskExecutionRecordV1::Settled {
             attempt_id: first.id().into(),
             charged_tokens: 7,
             result: TaskAttemptResultV1::Failed {
@@ -147,26 +151,21 @@ fn numeric_history_and_cumulative_attempt_usage_reopen_exactly_including_crash_r
             raw_artifact_ids: vec![],
             usage_id: None,
         };
-        let historical_id = append(
-            &mut f,
-            &lease,
-            TASK_EXECUTION_RECORD_V1,
-            serde_json::to_value(&historical).unwrap(),
-        )
-        .unwrap();
-        let historical_envelope = f.cas.get_artifact(&historical_id).unwrap();
-        let sequence = f.state().next_sequence;
-        // The new writer must neither replace nor re-encode an existing terminal receipt.
         f.store
-            .settle_task_attempt(&f.cas, &lease, historical.clone(), &f.authority)
+            .settle_task_attempt(&f.cas, &lease, settled.clone(), &f.authority)
+            .unwrap();
+        let sequence = f.state().next_sequence;
+        // The writer must neither replace nor re-encode an existing terminal receipt.
+        f.store
+            .settle_task_attempt(&f.cas, &lease, settled.clone(), &f.authority)
             .unwrap();
         assert_eq!(f.state().next_sequence, sequence);
-        let equivalent = TaskExecutionRecordV2::from_accounting(&historical).unwrap();
+        let equivalent = TaskExecutionRecordV3::from_accounting(&settled).unwrap();
         assert!(
             append(
                 &mut f,
                 &lease,
-                TASK_EXECUTION_RECORD_V2,
+                TASK_EXECUTION_RECORD_V3,
                 serde_json::to_value(equivalent).unwrap()
             )
             .is_err()
@@ -174,14 +173,26 @@ fn numeric_history_and_cumulative_attempt_usage_reopen_exactly_including_crash_r
         assert_eq!(f.state().next_sequence, sequence);
         let active = f
             .store
-            .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+            .reserve_and_bind_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.write",
+                &context,
+                &f.authority,
+            )
             .unwrap();
         f.store
             .start_task_attempt(&f.cas, &lease, &active, &f.authority)
             .unwrap();
         let sibling = f
             .store
-            .prepare_task_attempt(&f.cas, &lease, "root.nodes.sibling", &context, &f.authority)
+            .reserve_and_bind_task_attempt(
+                &f.cas,
+                &lease,
+                "root.nodes.sibling",
+                &context,
+                &f.authority,
+            )
             .unwrap();
         assert_eq!(active.reservation().tokens, 10);
         assert_eq!(sibling.reservation().tokens, 10);
@@ -324,14 +335,6 @@ fn numeric_history_and_cumulative_attempt_usage_reopen_exactly_including_crash_r
         assert_eq!(active_accounting.charged_tokens, actual);
         assert_eq!(active_accounting.reservation.tokens, 10);
         assert_eq!(active_accounting.plan_id, f.plan_id);
-        let legacy = execution::read_execution_record(&f.cas, &historical_id).unwrap();
-        assert_eq!(legacy.envelope.artifact_id, historical_id);
-        assert_eq!(legacy.envelope.artifact_type, TASK_EXECUTION_RECORD_V1);
-        assert_eq!(legacy.envelope, historical_envelope);
-        let old = execution::read_execution_record(&f.cas, &old_observation_id).unwrap();
-        assert_eq!(old.envelope, old_observation_envelope);
-        assert_eq!(old.envelope.artifact_type, TASK_EXECUTION_RECORD_V2);
-        assert_eq!(old.envelope.payload["charged_tokens"], "3");
         let records: Vec<_> = f
             .store
             .replay(&task_run_id(lease.task_id()).unwrap())
@@ -346,6 +349,18 @@ fn numeric_history_and_cumulative_attempt_usage_reopen_exactly_including_crash_r
                 }
             })
             .collect();
+        let first_settled = records
+            .iter()
+            .find(|entry| {
+                matches!(&entry.record,
+            TaskExecutionRecordV1::Settled { attempt_id, .. } if attempt_id == first.id())
+            })
+            .unwrap();
+        assert_eq!(
+            first_settled.envelope.artifact_type,
+            TASK_EXECUTION_RECORD_V3
+        );
+        assert_eq!(first_settled.envelope.payload["charged_tokens"], "7");
         let current = records
             .iter()
             .find(|entry| {
@@ -395,7 +410,7 @@ fn execution_record_readers_preserve_each_declared_counter_domain() {
     let f = Fixture::new(false);
     let usage_id = f
         .cas
-        .put_json(&json!({"usage":"historical evidence"}))
+        .put_json(&json!({"usage":"observed evidence"}))
         .unwrap();
     let record = |charged_tokens: serde_json::Value| {
         json!({
@@ -405,16 +420,7 @@ fn execution_record_readers_preserve_each_declared_counter_domain() {
     };
     let wide = u128::from(u64::MAX) + 7;
     for (kind, value, expected) in [
-        (
-            TASK_EXECUTION_RECORD_V1,
-            json!(review_core::json::SAFE_INTEGER_MAX),
-            review_core::json::SAFE_INTEGER_MAX as u128,
-        ),
-        (
-            TASK_EXECUTION_RECORD_V2,
-            json!(u64::MAX.to_string()),
-            u128::from(u64::MAX),
-        ),
+        (TASK_EXECUTION_RECORD_V3, json!("7"), 7),
         (TASK_EXECUTION_RECORD_V3, json!(wide.to_string()), wide),
     ] {
         let (id, envelope) = f
@@ -428,9 +434,8 @@ fn execution_record_readers_preserve_each_declared_counter_domain() {
         );
     }
     for (kind, value) in [
+        (TASK_EXECUTION_RECORD_V1, json!(7)),
         (TASK_EXECUTION_RECORD_V1, json!("7")),
-        (TASK_EXECUTION_RECORD_V2, json!(7)),
-        (TASK_EXECUTION_RECORD_V2, json!(wide.to_string())),
         (TASK_EXECUTION_RECORD_V3, json!(7)),
         (
             TASK_EXECUTION_RECORD_V3,
@@ -453,7 +458,6 @@ fn execution_record_readers_preserve_each_declared_counter_domain() {
         raw_artifact_ids: vec![],
     };
     assert!(normalized.validate().is_err());
-    assert!(TaskExecutionRecordV2::from_accounting(&normalized).is_none());
     assert!(
         TaskExecutionRecordV3::from_accounting(&normalized)
             .unwrap()
@@ -474,7 +478,7 @@ fn native_usage_observation_binds_context_producer_floor_and_preserves_late_char
     let context = f.cas.put_json(&json!({"context":"native usage"})).unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
         .unwrap();
     f.store
         .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)

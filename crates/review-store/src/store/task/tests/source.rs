@@ -130,7 +130,7 @@ fn source_refresh_is_atomic_invalidates_approval_and_retains_paid_and_late_usage
     let context = f.cas.put_json(&json!({"context":"source-test"})).unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
         .unwrap();
     f.store
         .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)
@@ -369,7 +369,7 @@ fn source_refresh_records_changed_input_when_a_valid_plan_can_no_longer_fit() {
     let context = f.cas.put_json(&json!({"context":"resource-race"})).unwrap();
     let attempt = f
         .store
-        .prepare_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
+        .reserve_and_bind_task_attempt(&f.cas, &lease, "root.nodes.write", &context, &f.authority)
         .unwrap();
     f.store
         .start_task_attempt(&f.cas, &lease, &attempt, &f.authority)

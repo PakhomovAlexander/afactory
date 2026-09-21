@@ -21,7 +21,6 @@ pub fn read_execution_record(
     if !matches!(
         kind,
         TASK_EXECUTION_RECORD_V1
-            | TASK_EXECUTION_RECORD_V2
             | TASK_EXECUTION_RECORD_V3
             | TASK_EXECUTION_RECORD_V4
             | TASK_EXECUTION_RECORD_V5
@@ -33,11 +32,6 @@ pub fn read_execution_record(
             let record: TaskExecutionRecordV1 = serde_json::from_value(envelope.payload.clone())?;
             record.validate().map_err(conflict)?;
             record
-        }
-        TASK_EXECUTION_RECORD_V2 => {
-            let record: TaskExecutionRecordV2 = serde_json::from_value(envelope.payload.clone())?;
-            record.validate().map_err(conflict)?;
-            record.into_record()
         }
         TASK_EXECUTION_RECORD_V3 => {
             let record: TaskExecutionRecordV3 = serde_json::from_value(envelope.payload.clone())?;

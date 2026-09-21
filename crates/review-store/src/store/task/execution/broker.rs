@@ -29,9 +29,6 @@ pub struct BoundTaskBroker {
 }
 
 impl BoundTaskBroker {
-    pub fn binding_id(&self) -> &str {
-        &self.id
-    }
     pub fn binding(&self) -> &TaskBrokerBindingV1 {
         &self.binding
     }

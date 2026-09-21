@@ -465,29 +465,6 @@
                 "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
               },
               "artifact_type": {
-                "const": "af/TaskExecutionRecord@2"
-              },
-              "record": {
-                "$ref": "urn:af:schema:task-execution-record:2"
-              },
-              "diagnostic": {
-                "$comment": "Exact referenced CAS JSON, intentionally opaque: historical Failed records may point at any JSON value."
-              }
-            }
-          },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "artifact_id",
-              "artifact_type",
-              "record"
-            ],
-            "properties": {
-              "artifact_id": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
-              },
-              "artifact_type": {
                 "const": "af/TaskExecutionRecord@3"
               },
               "record": {

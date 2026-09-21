@@ -1,6 +1,8 @@
 # ADR-0068: Retain in-flight Task usage in the common budget
 
-Status: accepted
+Status: accepted. Superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): usage
+observations and settlements are encoded only as `TaskExecutionRecord@3`, never as
+`TaskExecutionRecord@1` with numeric charges.
 Date: 2026-09-12
 
 ## Context

@@ -66,7 +66,7 @@ fn planning_barrier_preserves_paid_history_fences_forgery_and_charges_late_usage
         .unwrap();
     let planner = f
         .store
-        .prepare_task_attempt(
+        .reserve_and_bind_task_attempt(
             &f.cas,
             &lease,
             "root.nodes.write",
@@ -221,7 +221,7 @@ fn planning_barrier_preserves_paid_history_fences_forgery_and_charges_late_usage
     let invocation = f.record_execution_inputs(&lease);
     let work = f
         .store
-        .prepare_task_attempt(
+        .reserve_and_bind_task_attempt(
             &f.cas,
             &lease,
             "root.nodes.write",

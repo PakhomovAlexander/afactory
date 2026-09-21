@@ -360,7 +360,6 @@ fn validate_derived_worker_package(
 fn validate_child_plan(
     cas: &Cas,
     outer_plan_id: &str,
-    _prepared_id: &str,
     prepared: &ExperimentPreparedV1,
     value: &ExperimentExecutionPlanV1,
 ) -> Result<(), StoreError> {
@@ -469,7 +468,7 @@ impl TaskExecutionProjection {
                     typed(cas, prepared_id, EXPERIMENT_PREPARED_V1)?;
                 prepared.validate().map_err(conflict)?;
                 let plan = child_plan(cas, &prepared.compiled_child_plan_id)?;
-                validate_child_plan(cas, outer_plan_id, prepared_id, &prepared, &plan)?;
+                validate_child_plan(cas, outer_plan_id, &prepared, &plan)?;
                 let slot = self
                     .graph
                     .experimental_slots
@@ -592,7 +591,7 @@ impl TaskExecutionProjection {
                     _ => return Err(conflict("Unsupported experimental slot generation")),
                 };
                 let plan = child_plan(cas, child_plan_id)?;
-                validate_child_plan(cas, outer_plan_id, prepared_id, &recorded.prepared, &plan)?;
+                validate_child_plan(cas, outer_plan_id, &recorded.prepared, &plan)?;
                 self.budget
                     .register_experimental_children(
                         &recorded.parent_node,
@@ -1160,13 +1159,7 @@ mod derived_package_tests {
         }
 
         fn validate(&self) -> Result<(), StoreError> {
-            validate_child_plan(
-                &self.cas,
-                &self.outer_plan_id,
-                "unused-prepared-id",
-                &self.prepared,
-                &self.plan,
-            )
+            validate_child_plan(&self.cas, &self.outer_plan_id, &self.prepared, &self.plan)
         }
     }
 
@@ -1183,14 +1176,7 @@ mod derived_package_tests {
         *signature = format!("worker/{}", fixture.original_id);
         let mut prepared = fixture.prepared.clone();
         prepared.children[0].worker_package_id = fixture.original_id.clone();
-        validate_child_plan(
-            &fixture.cas,
-            &fixture.outer_plan_id,
-            "unused",
-            &prepared,
-            &normal,
-        )
-        .unwrap();
+        validate_child_plan(&fixture.cas, &fixture.outer_plan_id, &prepared, &normal).unwrap();
         let CompiledOperator::Primitive { signature, .. } = &mut normal
             .children
             .values_mut()
@@ -1203,14 +1189,7 @@ mod derived_package_tests {
         };
         *signature = format!("worker-derived/{}", fixture.original_id);
         assert!(
-            validate_child_plan(
-                &fixture.cas,
-                &fixture.outer_plan_id,
-                "unused",
-                &prepared,
-                &normal,
-            )
-            .is_err()
+            validate_child_plan(&fixture.cas, &fixture.outer_plan_id, &prepared, &normal,).is_err()
         );
     }
 

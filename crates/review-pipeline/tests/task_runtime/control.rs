@@ -177,13 +177,7 @@ fn heartbeat_detects_a_replaced_writer_even_when_its_new_lease_is_far_from_renew
     assert!(result.is_err());
     assert!(cancellation.load(Ordering::Acquire));
     assert!(started.elapsed() < Duration::from_secs(2));
-    assert!(
-        shared
-            .lock()
-            .unwrap()
-            .check_task_lease_current(&f.cas, &new)
-            .is_ok()
-    );
+    assert!(shared.lock().unwrap().task_lease_state(&new).is_ok());
 }
 
 #[test]
