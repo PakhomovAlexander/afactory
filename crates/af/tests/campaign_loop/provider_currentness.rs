@@ -64,10 +64,7 @@ fn invoke(repo: &Path, home: &Path, state: &str, doctor: bool) -> std::process::
         .current_dir(repo)
         .env("HOME", home)
         .env("USER", "loop-test")
-        .env(
-            "AF_PROVIDERS_FILE",
-            home.join(".config/afactory/providers.toml"),
-        )
+        .env("AF_PROVIDERS_FILE", home.join(".config/af/providers.toml"))
         .env(
             "PATH",
             std::env::join_paths(

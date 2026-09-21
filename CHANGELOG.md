@@ -4,8 +4,7 @@ Every release has a section here before it is tagged: `scripts/release.sh X.Y.Z 
 writes it from the pull requests merged since the previous release, and the release workflow
 publishes the section as the release notes. The **Authority compatibility** line is mandatory:
 it says whether committed `.af/` policy keeps working as is, needs `af onboard --refresh-lock`,
-or needs a documented hand edit. Releases before 0.7.1 are described on their GitHub release
-pages only.
+or needs a documented hand edit.
 
 ## [Unreleased]
 
@@ -46,6 +45,17 @@ pages only.
   directory named by its label.
 - Removed `af help trust` and its `af-trust.7` man page, which described an `af trust` command that
   never shipped.
+- `af self` and `install.sh` no longer install, activate or dispatch to releases older than 0.8.0,
+  the first release with a signed `SHA256SUMS`: `af self install 0.7.x` (or a 0.8.0 release
+  candidate) is refused, and a project whose lock pins one runs the current `af` instead, with a
+  warning. A binary that embeds the
+  release key, and `install.sh` with `minisign` on PATH, now refuse any release whose `SHA256SUMS`
+  is unsigned, instead of accepting a pre-0.8.0 release on its checksums alone.
+- The pre-rename `~/.config/afactory/` directory is no longer read, and nothing warns about it:
+  move `providers.toml` and `caches.toml` from there to `~/.config/af/` (or
+  `$XDG_CONFIG_HOME/af/`), or `af` finds no provider registry and no cache policy. Setting
+  `AFACTORY_CACHE_POLICY_FILE` is no longer an error; it is ignored, so use
+  `AF_CACHE_POLICY_FILE`.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

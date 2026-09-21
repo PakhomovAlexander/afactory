@@ -4,7 +4,7 @@
 
 Only the latest `0.x` minor line receives security fixes. A fix ships as a patch release on
 that line (`0.N.1`, `0.N.2`, …); older minors are not patched, and `af self update` moves an
-installation forward. Releases before `0.7.1` cannot self-update and should be replaced.
+installation forward.
 
 | Version                    | Supported |
 | -------------------------- | --------- |

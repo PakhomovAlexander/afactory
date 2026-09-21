@@ -90,7 +90,7 @@ print(json.dumps({'type':'turn.completed','usage':usage}))
             .env("USER", "loop-test")
             .env(
                 "AF_PROVIDERS_FILE",
-                self.home.join(".config/afactory/providers.toml"),
+                self.home.join(".config/af/providers.toml"),
             )
             .env(
                 "PATH",

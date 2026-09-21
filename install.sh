@@ -19,12 +19,10 @@ set -eu
 REPO="${AF_REPO:-PakhomovAlexander/afactory}"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/af/versions"
 BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
-# The first release with `af self`. Older releases cannot activate themselves or update back.
-FLOOR="0.7.1"
-# The first release that ships SHA256SUMS.minisig. Older releases verify by checksum only.
-SIGNED_FROM="0.8.0"
+# The oldest supported release: the first that ships SHA256SUMS.minisig. Nothing older installs.
+FLOOR="0.8.0"
 
-# crates/af/keys/release.pub — the key every release from $SIGNED_FROM on is signed with.
+# crates/af/keys/release.pub — the key every release is signed with.
 RELEASE_PUB='untrusted comment: minisign public key 0FA9BDD8A1D67165
 RWRlcdah2L2pD6l9dkQHwwqt2PjfdxZTyuAZwArbnqaVkKPrkIGOmqAL'
 
@@ -101,7 +99,7 @@ else
 fi
 version="${tag#v}"
 if semver_lt "$version" "$FLOOR"; then
-  echo "af: $version predates self-management (the first release with \`af self\` is $FLOOR); pick a newer release" >&2
+  echo "af: $version is older than the oldest supported release ($FLOOR); pick a newer release" >&2
   exit 1
 fi
 asset="af-${tag}-${host}.tar.gz"
@@ -141,8 +139,6 @@ else
       minisign -V -q -m "$tmp/SHA256SUMS" -x "$tmp/SHA256SUMS.minisig" -p "$key" \
         || { echo "af: SHA256SUMS of $tag does not verify against $key" >&2; exit 1; }
       verified_by=minisign
-    elif semver_lt "$version" "$SIGNED_FROM"; then
-      echo "af: release $tag predates signed checksums (first signed release: $SIGNED_FROM); verifying the checksum only"
     else
       echo "af: release $tag has no SHA256SUMS.minisig to verify against $key" >&2; exit 1
     fi

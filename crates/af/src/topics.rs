@@ -118,14 +118,15 @@ Pins
   `af onboard --refresh-lock --af <v>` moves the pin to <v> (that release writes the lock).
 
   Only a released, receipted binary writes a pin; a source build leaves the lock unpinned or the
-  existing pin untouched. Nothing older than 0.7.1 — the first release with `af self` — is ever
-  dispatched to or made the default: it could not read the lock or update itself back.
+  existing pin untouched. Nothing older than 0.8.0 — the oldest supported release — is ever
+  dispatched to or made the default.
 
 What binds bytes
   Under a lock: the lock's digest. Outside one: the release's SHA256SUMS, which every release
-  since 0.8.0 signs (minisign) with the key embedded in the binary at build time; an unsigned or
-  badly signed SHA256SUMS is refused. `af self status` shows whether this build carries the key;
-  a receipt's verified_by says which check installed each version (lock, minisign, sha256sums).
+  signs (minisign) with the key embedded in the binary at build time; an unsigned or badly
+  signed SHA256SUMS is refused. `af self status` shows whether this build carries the key; a
+  receipt's verified_by says which check installed each version (lock, minisign, or sha256sums
+  when a build without a key or install.sh without minisign checked the checksum alone).
 
 Updates — `[self]` in ~/.config/af/config.toml
   update_check = true      look for a newer release, at most once per check_every

@@ -47,7 +47,7 @@ fn invoke_af(
         .current_dir(repo)
         .env("HOME", home)
         .env("USER", "loop-test");
-    let provider_registry = home.join(".config/afactory/providers.toml");
+    let provider_registry = home.join(".config/af/providers.toml");
     if provider_registry.is_file() {
         command.env("AF_PROVIDERS_FILE", provider_registry);
     }
@@ -1633,7 +1633,7 @@ printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_
     }
     let auth_dir = home.join("codex-auth");
     std::fs::create_dir_all(&auth_dir).unwrap();
-    let provider_registry = home.join(".config/afactory/providers.toml");
+    let provider_registry = home.join(".config/af/providers.toml");
     std::fs::create_dir_all(provider_registry.parent().unwrap()).unwrap();
     std::fs::write(
         &provider_registry,
@@ -1730,7 +1730,7 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = native_diff_fixture(dir.path());
     let codex = home.join("codex");
-    let provider_registry = home.join(".config/afactory/providers.toml");
+    let provider_registry = home.join(".config/af/providers.toml");
 
     let (code, plan_stdout, plan_stderr) = invoke_af(
         &repo,

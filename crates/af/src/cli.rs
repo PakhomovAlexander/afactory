@@ -171,7 +171,7 @@ digest the lock records. Outside a lock, releases are verified against their sig
 `SHA256SUMS`. Updates are checked by a detached, rate-limited child and applied by the policy \
 in `[self]` (see `af help self`).\n\n\
 Never: touches a binary it did not install, stores a token, changes the version a pinned \
-project runs, or activates a release older than 0.7.1 (the first that can update itself).",
+project runs, or activates a release older than 0.8.0 (the oldest supported release).",
         after_long_help = "Examples:\n  af self status\n  af self update --check\n  af self update\n  af self rollback\n  af self setup-shell --write"
     )]
     SelfCmd {
@@ -1218,10 +1218,10 @@ pub(crate) enum SelfCommand {
     /// Install a newer release as the default (or just check for one)
     #[command(
         long_about = "Install a newer release as the default.\n\nDownloads the release for this \
-machine's target, verifies it against the release's SHA256SUMS (signed with the release key \
-since 0.8.0; the signature is required), installs it beside the other versions, and retargets \
-the default symlink atomically. The previous version stays installed for `af self rollback`.\n\n\
-Never: changes what a pinned project runs, activates a release older than 0.7.1, or stores a \
+machine's target, verifies it against the release's SHA256SUMS (signed with the release key; \
+the signature is required), installs it beside the other versions, and retargets the default \
+symlink atomically. The previous version stays installed for `af self rollback`.\n\n\
+Never: changes what a pinned project runs, activates a release older than 0.8.0, or stores a \
 token.",
         after_long_help = "Examples:\n  af self update --check        exit 10 when a newer release exists\n  af self update\n  af self update --version 0.9.0"
     )]

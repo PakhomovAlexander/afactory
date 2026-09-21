@@ -119,9 +119,9 @@ fn a_source_build_pins_nothing_and_says_so() {
     assert_eq!(validated["warnings"].as_array().unwrap().len(), 0);
 
     // A refresh by a source build keeps whatever pin is there.
-    set_lock_af_version(&repo, Some("0.7.1"));
+    set_lock_af_version(&repo, Some("0.8.1"));
     let refreshed = report(&onboard(&repo, &["--refresh-lock", "--json"]));
-    assert_eq!(read_lock(&repo).af_version(), Some("0.7.1"));
+    assert_eq!(read_lock(&repo).af_version(), Some("0.8.1"));
     assert!(
         refreshed["warnings"]
             .as_array()
@@ -138,7 +138,7 @@ fn a_receipted_release_pins_itself_with_every_published_digest() {
     let signer = Signer::new(keys.path());
     let sandbox = Sandbox::new().with_key(&signer);
     // The "release" of the version under test: its SHA256SUMS lists this target and one more,
-    // signed, as every release from 0.8.0 on is.
+    // signed, as every release is.
     let digest = sandbox.publish(VERSION, false);
     sandbox.sign(VERSION, &signer, None);
     let real = sandbox.adopt_real_binary_with(&digest);
