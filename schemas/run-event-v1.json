@@ -1770,7 +1770,6 @@
         "provided_isolation": {
           "enum": [
             "none",
-            "process",
             "container"
           ]
         },

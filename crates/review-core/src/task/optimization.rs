@@ -15,7 +15,6 @@ use crate::is_digest;
 pub const OPTIMIZATION_HISTORY_V1: &str = "af/OptimizationHistory@1";
 pub const OPTIMIZATION_ECONOMICS_V1: &str = "af/OptimizationEconomics@1";
 pub const OPTIMIZATION_REPORT_V1: &str = "af/OptimizationReport@1";
-pub const OPTIMIZATION_POLICY_V1: &str = "af/OptimizationPolicy@1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -172,8 +172,14 @@ fn an_over_limit_rename_search_records_truncation_without_losing_scope_paths() {
         .unwrap();
     assert!(change_set.rename_detection_truncated);
     assert_eq!(change_set.changed_paths.len(), 2_002);
-    assert!(change_set.contains_report_path("old/0000.txt"));
-    assert!(change_set.contains_report_path("new/1000.txt"));
+    assert!(review_core::contains_report_path(
+        &change_set.changed_paths,
+        "old/0000.txt"
+    ));
+    assert!(review_core::contains_report_path(
+        &change_set.changed_paths,
+        "new/1000.txt"
+    ));
 }
 
 #[test]

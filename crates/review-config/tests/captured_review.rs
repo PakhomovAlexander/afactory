@@ -105,7 +105,7 @@ fn captured_review_refuses_valid_but_unreachable_bytes_and_changed_authority() {
             .contains("not reachable")
     );
     changed = original.clone();
-    changed.check_timeout_seconds = Some(19);
+    changed.check_timeout_seconds = 19;
     assert!(
         load_captured_review(&cas, &changed, ReviewMode::Light)
             .err()

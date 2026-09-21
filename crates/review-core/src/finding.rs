@@ -111,11 +111,6 @@ pub struct FindingReport {
 }
 
 impl FindingReport {
-    /// True when the claim is about the change as a whole rather than any path.
-    pub fn is_change_wide(&self) -> bool {
-        self.locations.is_empty()
-    }
-
     /// Enforce the language-neutral `FindingReport@1` semantic contract.
     pub fn validate(&self) -> Result<(), String> {
         self.validate_claim_fields()?;

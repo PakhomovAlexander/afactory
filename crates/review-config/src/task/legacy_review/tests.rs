@@ -374,6 +374,7 @@ fn resource_manifest(loaded: &Loaded) -> review_core::CampaignManifestV1 {
         "convergence": {"clean_rounds": 1, "max_rounds": 1, "gate": "major"},
         "reviewer_timeout_seconds": 9,
         "check_timeout_seconds": loaded.check_timeout_seconds(),
+        "git_timeout_seconds": 300,
         "budgets": loaded.budgets().map(|caps| review_core::CampaignBudgetV1 {
             attempt_tokens: caps.attempt, run_tokens: caps.run,
         }),

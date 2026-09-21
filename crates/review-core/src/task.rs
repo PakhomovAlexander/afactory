@@ -37,7 +37,6 @@ use crate::{PortCardinality, is_artifact_type, is_digest};
 
 pub const TASK_REVISION_V1: &str = "af/TaskRevision@1";
 pub const TASK_RESULT_V1: &str = "af/TaskResult@1";
-pub const PIPELINE_V1: &str = "af/Pipeline@1";
 pub const EXECUTION_PLAN_V1: &str = "af/ExecutionPlan@1";
 pub const PLAN_DECISION_V1: &str = "af/PlanDecision@1";
 pub const REVIEW_HISTORY_V1: &str = "af/ReviewHistory@1";
@@ -365,9 +364,7 @@ impl TaskRevisionV1 {
 pub enum TaskExecutionV1 {
     Completed,
     Incomplete,
-    Blocked,
     Exhausted,
-    Cancelled,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -391,11 +388,8 @@ pub enum TaskWaitingReasonV1 {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskPhaseV1 {
     Submitted {},
-    Resolving {},
-    Planning {},
     Ready {},
     Running {},
-    Verifying {},
     Waiting { reason: TaskWaitingReasonV1 },
     Finished { result_id: String },
 }

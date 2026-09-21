@@ -176,7 +176,7 @@ fn open_round_inner(
         "reviewer_lock": {"path": ".af/af.lock", "artifact_id": lock_id},
         "reviewers": reviewers, "execution_policy_ids": execution_policy_ids, "project_policy_ids": [],
         "convergence": convergence,
-        "reviewer_timeout_seconds": 7, "check_timeout_seconds": 3600,
+        "reviewer_timeout_seconds": 7, "check_timeout_seconds": 3600, "git_timeout_seconds": 300,
         "budgets": {"attempt_tokens": attempt_tokens, "run_tokens": run_tokens},
         "finding_identity_policy": review_core::CANONICAL_FINDING_IDENTITY_POLICY,
         "finding_genesis_id": finding_genesis, "demand_genesis_id": demand_genesis,

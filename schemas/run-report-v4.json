@@ -52,7 +52,7 @@
             "pattern": "^[^-\\s].*@sha256:[0-9a-f]{64}$"
           },
           "required_isolation": { "enum": ["none", "container"] },
-          "provided_isolation": { "enum": ["none", "process", "container"] },
+          "provided_isolation": { "enum": ["none", "container"] },
           "mode": { "const": "ephemeral-write" },
           "admitted": { "type": "boolean" }
         }

@@ -137,11 +137,7 @@ fn validate_manifest_authority(
     if manifest.budgets != budgets {
         return Err("CampaignManifest budgets differ from captured pipeline authority".into());
     }
-    if manifest
-        .check_timeout_seconds
-        .unwrap_or(loaded.check_timeout_seconds())
-        != loaded.check_timeout_seconds()
-    {
+    if manifest.check_timeout_seconds != loaded.check_timeout_seconds() {
         return Err(
             "CampaignManifest check timeout differs from captured pipeline authority".into(),
         );

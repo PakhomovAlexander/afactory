@@ -29,7 +29,7 @@ fn fixture() -> Fixture {
         .unwrap()
         .0;
     let mut pipeline: task::pipeline::PipelineDefinitionV1 =
-        payload(&f.cas, &f.plan.pipeline_id, task::PIPELINE_V1).unwrap();
+        payload(&f.cas, &f.plan.pipeline_id, PIPELINE_V1).unwrap();
     pipeline
         .contract
         .outputs
@@ -43,7 +43,7 @@ fn fixture() -> Fixture {
     let (id, artifact) = f
         .cas
         .put_artifact(
-            task::PIPELINE_V1,
+            PIPELINE_V1,
             producer(),
             vec![],
             None,
@@ -164,8 +164,8 @@ runner = { program = "/bin/true" }
                     gate: "major".into(),
                 },
                 reviewer_timeout_seconds: 60,
-                check_timeout_seconds: None,
-                git_timeout_seconds: None,
+                check_timeout_seconds: 3600,
+                git_timeout_seconds: 300,
                 budgets: None,
                 focus: None,
                 finding_identity_policy: "legacy-path-title@1".into(),

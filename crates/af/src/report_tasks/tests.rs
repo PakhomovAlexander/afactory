@@ -176,6 +176,7 @@ fn open_round(cas: &Cas, store: &mut EventStore) -> (String, String) {
         "pipeline":{"path":"pipeline.toml", "artifact_id":pipeline}, "reviewer_lock":{"path":"af.lock", "artifact_id":lock},
         "reviewers":[], "execution_policy_ids":[], "project_policy_ids":[],
         "convergence":{"clean_rounds":1, "max_rounds":2, "gate":"major"}, "reviewer_timeout_seconds":60,
+        "check_timeout_seconds":3600, "git_timeout_seconds":300,
         "finding_identity_policy":review_core::CANONICAL_FINDING_IDENTITY_POLICY,
         "finding_genesis_id":finding_genesis, "demand_genesis_id":demand_genesis,
     })).unwrap();
@@ -296,7 +297,7 @@ impl Fixture {
         second.id = "second".into();
         pipeline.nodes.extend([probe, second]);
         pipeline.max_attempts = 9;
-        let pipeline_id = put(&cas, task::PIPELINE_V1, &pipeline);
+        let pipeline_id = put(&cas, "af/Pipeline@1", &pipeline);
         let mut output = pipeline.contract.outputs["document"].clone();
         output.covers.clear();
         let signature = OperatorSignature {

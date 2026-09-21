@@ -563,7 +563,6 @@ mod tests {
     fn maps_path_and_line_to_one_location() {
         let report = finding().into_report(0).unwrap();
         assert_eq!(report.locations, vec![Location::at("src/a.rs", 12)]);
-        assert!(!report.is_change_wide());
     }
 
     #[test]
@@ -575,7 +574,6 @@ mod tests {
         }
         .into_report(0)
         .unwrap();
-        assert!(report.is_change_wide());
         assert!(report.locations.is_empty());
     }
 

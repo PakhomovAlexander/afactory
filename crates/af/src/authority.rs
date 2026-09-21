@@ -792,14 +792,6 @@ pub(super) fn prepare(
 
     let round = prepare_round(options, cas, store, repo, &run_id, &campaign, &events)?;
     let authority = RoundAuthority::load(store, cas, &run_id, &round.event_id)?;
-    let check_timeout_seconds = campaign
-        .manifest
-        .check_timeout_seconds
-        .unwrap_or(campaign.loaded.check_timeout_seconds());
-    let git_timeout_seconds = campaign
-        .manifest
-        .git_timeout_seconds
-        .unwrap_or(review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS);
     let convergence = options.mode.convergence(campaign.loaded.convergence());
     Ok(PreparedRun {
         loaded: campaign.loaded,
@@ -807,8 +799,8 @@ pub(super) fn prepare(
         run_id,
         focus: campaign.manifest.focus,
         timeout: Duration::from_secs(campaign.manifest.reviewer_timeout_seconds),
-        check_timeout: Duration::from_secs(check_timeout_seconds),
-        git_timeout: Duration::from_secs(git_timeout_seconds),
+        check_timeout: Duration::from_secs(campaign.manifest.check_timeout_seconds),
+        git_timeout: Duration::from_secs(campaign.manifest.git_timeout_seconds),
         convergence,
         authority,
         ledger_projection: round.ledger_projection,
@@ -1056,8 +1048,8 @@ fn open_new(
             .timeout
             .unwrap_or(Duration::from_secs(1800))
             .as_secs(),
-        check_timeout_seconds: Some(loaded.check_timeout_seconds()),
-        git_timeout_seconds: Some(requested_git_timeout(options.git_timeout).as_secs()),
+        check_timeout_seconds: loaded.check_timeout_seconds(),
+        git_timeout_seconds: requested_git_timeout(options.git_timeout).as_secs(),
         budgets,
         focus: options.focus.clone(),
         finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.to_string(),
@@ -1160,10 +1152,7 @@ fn resume(
     {
         return Err("reviewer timeout differs from the pinned Campaign manifest".into());
     }
-    let pinned_git_timeout = manifest
-        .git_timeout_seconds
-        .unwrap_or(review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS);
-    if requested_git_timeout(options.git_timeout).as_secs() != pinned_git_timeout {
+    if requested_git_timeout(options.git_timeout).as_secs() != manifest.git_timeout_seconds {
         return Err("Git capture timeout differs from the pinned Campaign manifest".into());
     }
 

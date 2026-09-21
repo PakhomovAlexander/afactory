@@ -52,9 +52,7 @@ impl ReviewResourcePolicy {
             || manifest.convergence.clean_rounds != convergence.clean_rounds
             || manifest.convergence.max_rounds != convergence.max_rounds
             || manifest.convergence.gate != format!("{:?}", convergence.gate).to_lowercase()
-            || manifest
-                .check_timeout_seconds
-                .is_some_and(|v| v != loaded.check_timeout_seconds())
+            || manifest.check_timeout_seconds != loaded.check_timeout_seconds()
             || now_unix_ms == 0
             || provider.tokens == 0
             || provider.wall_ms == 0
@@ -186,9 +184,7 @@ impl ReviewResourcePolicy {
             run_tokens: caps.run,
         });
         if manifest.budgets != expected
-            || manifest
-                .check_timeout_seconds
-                .is_some_and(|bound| bound != loaded.check_timeout_seconds())
+            || manifest.check_timeout_seconds != loaded.check_timeout_seconds()
         {
             return Err("Review resource authority differs from its captured definition".into());
         }

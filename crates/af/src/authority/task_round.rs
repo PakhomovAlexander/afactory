@@ -284,18 +284,8 @@ pub(crate) fn prepare_recorded_round(
         projection,
     )?;
     let authority = RoundAuthority::load_recorded(store, cas, &run_id, &round.event_id)?;
-    let check_timeout = Duration::from_secs(
-        campaign
-            .manifest
-            .check_timeout_seconds
-            .unwrap_or(campaign.loaded.check_timeout_seconds()),
-    );
-    let git_timeout = Duration::from_secs(
-        campaign
-            .manifest
-            .git_timeout_seconds
-            .unwrap_or(review_source_git::DEFAULT_GIT_TIMEOUT_SECONDS),
-    );
+    let check_timeout = Duration::from_secs(campaign.manifest.check_timeout_seconds);
+    let git_timeout = Duration::from_secs(campaign.manifest.git_timeout_seconds);
     let convergence = options.mode.convergence(campaign.loaded.convergence());
     Ok(PreparedRun {
         loaded: campaign.loaded,

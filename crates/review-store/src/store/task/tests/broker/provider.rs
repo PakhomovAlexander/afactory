@@ -72,7 +72,7 @@ fn business_fixture() -> Fixture {
     f.plan.task_revision_id = f.revision_id.clone();
     f.plan.limits = f.revision.limits.clone();
     let mut pipeline: task::pipeline::PipelineDefinitionV1 =
-        payload(&f.cas, &f.plan.pipeline_id, task::PIPELINE_V1).unwrap();
+        payload(&f.cas, &f.plan.pipeline_id, PIPELINE_V1).unwrap();
     pipeline
         .slots
         .insert("other".into(), pipeline.slots["author"].clone());
@@ -85,7 +85,7 @@ fn business_fixture() -> Fixture {
     let (id, envelope) = f
         .cas
         .put_artifact(
-            task::PIPELINE_V1,
+            PIPELINE_V1,
             producer(),
             vec![],
             None,

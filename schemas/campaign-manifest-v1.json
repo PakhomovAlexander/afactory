@@ -4,7 +4,7 @@
   "title": "CampaignManifest@1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["authority_snapshot_id", "subject_kind", "pipeline", "reviewer_lock", "execution_policy_ids", "project_policy_ids", "convergence", "reviewer_timeout_seconds", "finding_identity_policy", "finding_genesis_id", "demand_genesis_id"],
+  "required": ["authority_snapshot_id", "subject_kind", "pipeline", "reviewer_lock", "execution_policy_ids", "project_policy_ids", "convergence", "reviewer_timeout_seconds", "check_timeout_seconds", "git_timeout_seconds", "finding_identity_policy", "finding_genesis_id", "demand_genesis_id"],
   "properties": {
     "authority_snapshot_id": { "$ref": "#/$defs/digest" },
     "subject_kind": { "enum": ["diff", "whole-tree"] },

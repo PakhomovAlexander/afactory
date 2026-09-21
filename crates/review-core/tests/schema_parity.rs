@@ -1282,8 +1282,8 @@ fn subject_and_campaign_authority_roundtrip() {
             gate: "major".into(),
         },
         reviewer_timeout_seconds: 1800,
-        check_timeout_seconds: Some(3600),
-        git_timeout_seconds: Some(300),
+        check_timeout_seconds: 3600,
+        git_timeout_seconds: 300,
         budgets: None,
         focus: Some("authority bootstrap".into()),
         finding_identity_policy: "legacy-path-title@1".into(),
@@ -1331,8 +1331,14 @@ fn change_set_roundtrips_with_exact_patch_bytes() {
     )
     .unwrap();
     change_set.validate().unwrap();
-    assert!(change_set.contains_report_path("src/old.rs"));
-    assert!(!change_set.contains_report_path("src/untouched.rs"));
+    assert!(review_core::contains_report_path(
+        &change_set.changed_paths,
+        "src/old.rs"
+    ));
+    assert!(!review_core::contains_report_path(
+        &change_set.changed_paths,
+        "src/untouched.rs"
+    ));
     assert_eq!(
         change_set.canonical_patch().unwrap(),
         b"diff --git a/src/old.rs b/src/new.rs\n\0\xff"
@@ -2016,9 +2022,6 @@ fn run_reports_are_structural_and_every_report_version_remains_readable() {
     let mut dishonest = report_v4;
     dishonest.execution_bindings[0].provided_isolation = RunIsolationV4::Container;
     assert!(dishonest.validate().is_err());
-    dishonest.execution_bindings[0].provided_isolation = RunIsolationV4::None;
-    dishonest.execution_bindings[0].required_isolation = RunIsolationV4::Process;
-    assert!(dishonest.validate().is_err());
 }
 
 #[test]
@@ -2154,7 +2157,6 @@ fn artifact_envelope_roundtrips_both_producers() {
         },
     ];
     for producer in producers {
-        let deterministic = producer.is_deterministic();
         let envelope = ArtifactEnvelope {
             artifact_type: review_core::contract::FINDING_REPORT_V1.into(),
             artifact_id: digest.clone(),
@@ -2170,7 +2172,6 @@ fn artifact_envelope_roundtrips_both_producers() {
             serde_json::from_value::<ArtifactEnvelope>(value).unwrap(),
             envelope
         );
-        assert_eq!(envelope.producer.is_deterministic(), deterministic);
     }
 }
 

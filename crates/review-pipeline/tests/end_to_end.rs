@@ -571,7 +571,10 @@ fn canonical_barrier_keeps_same_presentation_claims_distinct_and_emits_the_exact
     assert_eq!(set.selected_report_ids.len(), 2);
     assert_eq!(set.findings.len(), 2);
     assert!(
-        envelope.producer.is_deterministic(),
+        matches!(
+            envelope.producer,
+            review_core::Producer::KernelOperation { .. }
+        ),
         "a ledger barrier is a kernel operation"
     );
     assert!(matches!(

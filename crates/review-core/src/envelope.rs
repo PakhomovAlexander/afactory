@@ -51,11 +51,6 @@ impl Producer {
             Producer::Attempt { run_id, .. } | Producer::KernelOperation { run_id, .. } => run_id,
         }
     }
-
-    /// Whether this producer is replayable to the same identity by re-execution.
-    pub fn is_deterministic(&self) -> bool {
-        matches!(self, Producer::KernelOperation { .. })
-    }
 }
 
 impl ArtifactEnvelope {

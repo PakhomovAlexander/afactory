@@ -165,7 +165,7 @@ pub fn admit(required: Isolation, provided: Isolation) -> Result<(), Refused>;
 ```
 
 **What "admit wired" means — D8, explained.** The kernel already contains the pieces: an
-`Isolation` enum (`None`, `Process`, `Container`), a `Policy`, an `admit(required, provided)`
+`Isolation` enum (`None`, `Container`), a `Policy`, an `admit(required, provided)`
 function that refuses a pairing where the sandbox provides less than the pipeline requires,
 and a `ContainerProvider`. Nothing calls them: `Kernel::sandbox` always builds the host copy
 and reports `Isolation::None`, a pipeline cannot state a requirement, and the container probe

@@ -158,7 +158,6 @@ pub fn is_digest(value: &str) -> bool {
 /// Contract type URIs, as they appear in an [`ArtifactEnvelope::artifact_type`].
 pub mod contract {
     pub const CACHE_MANIFEST_V1: &str = "review.kernel/CacheManifest@1";
-    pub const CAMPAIGN_MANIFEST_V1: &str = "review.kernel/CampaignManifest@1";
     pub const CHANGE_SET_V1: &str = "review.kernel/ChangeSet@1";
     pub const FINDING_REPORT_V1: &str = "review.kernel/FindingReport@1";
     pub const FINDING_DISPOSITION_V1: &str = "review.kernel/FindingDisposition@1";
@@ -187,11 +186,9 @@ pub mod contract {
     pub const REVIEWER_RESULT_V1: &str = "review.kernel/ReviewerResult@1";
     pub const REVIEWER_RESULT_V2: &str = "review.kernel/ReviewerResult@2";
     pub const SOURCE_SNAPSHOT_V1: &str = "review.kernel/SourceSnapshot@1";
-    pub const SUBJECT_V1: &str = "review.kernel/Subject@1";
     pub const SLICE_SET_V1: &str = "review.kernel/SliceSet@1";
     pub const SHARD_SET_V1: &str = "review.kernel/ShardSet@1";
     pub const SEMANTIC_CLOSURE_V1: &str = "review.kernel/SemanticClosure@1";
-    pub const REVIEWER_PACKAGE_V1: &str = "review.kernel/ReviewerPackage@1";
     pub const WORKER_NOTES_V1: &str = "review.kernel/WorkerNotes@1";
     pub const HEAD_DELTA_V1: &str = "review.kernel/HeadDelta@1";
     pub const WARM_SET_V1: &str = "review.kernel/WarmSet@1";

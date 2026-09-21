@@ -60,8 +60,6 @@ use review_store::Cas;
 pub enum Isolation {
     /// A directory. Filesystem conventions only — no boundary a determined process respects.
     None,
-    /// A separate process tree with a rebuilt environment and no inherited descriptors.
-    Process,
     /// A container or VM: filesystem, network and credentials are genuinely out of reach.
     Container,
 }

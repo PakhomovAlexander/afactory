@@ -129,6 +129,15 @@ or needs a documented hand edit.
   having it silently dropped. Optimizer artifacts an earlier release stored may no longer decode,
   and native observations that older captures stored under source-dependent IDs are no longer
   merged, so replaying such a history can count them twice.
+- Published schemas drop values that no release ever wrote. `campaign-manifest-v1.json` now
+  requires `check_timeout_seconds` and `git_timeout_seconds`, which every current Campaign manifest
+  already carries; a manifest from a release that predates them no longer loads. A dirty
+  `SourceSnapshot@1` capture `boundary` is always `revalidated` (`filesystem_snapshot` is gone), and
+  a Gate Execution Binding's `provided_isolation` in `run-report-v4.json`, `run-report-v5.json` and
+  `run-event-v1.json` is `none` or `container` (`process` is gone). In `task-contracts-v1.json`, and
+  every schema that embeds its Task phase or result, a Task phase is never `resolving`, `planning`
+  or `verifying`, a Task result's `execution` is `completed`, `incomplete` or `exhausted` (never
+  `blocked` or `cancelled`), and the unreferenced `reviewConclusion` definition is gone.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

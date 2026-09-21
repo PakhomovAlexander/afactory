@@ -21,14 +21,14 @@ fn fixture_with_sibling() -> Fixture {
     f.plan.task_revision_id = f.revision_id.clone();
     f.plan.limits = f.revision.limits.clone();
     let mut pipeline: task::pipeline::PipelineDefinitionV1 =
-        payload(&f.cas, &f.plan.pipeline_id, task::PIPELINE_V1).unwrap();
+        payload(&f.cas, &f.plan.pipeline_id, PIPELINE_V1).unwrap();
     let mut sibling = pipeline.nodes[0].clone();
     sibling.id = "sibling".into();
     pipeline.nodes.push(sibling);
     let (id, envelope) = f
         .cas
         .put_artifact(
-            task::PIPELINE_V1,
+            PIPELINE_V1,
             producer(),
             vec![],
             None,

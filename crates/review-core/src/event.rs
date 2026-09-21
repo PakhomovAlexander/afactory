@@ -609,7 +609,6 @@ pub struct RunReportPayloadV3 {
 #[serde(rename_all = "snake_case")]
 pub enum RunIsolationV4 {
     None,
-    Process,
     Container,
 }
 
@@ -644,11 +643,6 @@ impl RunExecutionBindingV4 {
     pub fn validate(&self) -> Result<(), String> {
         if self.node.trim().is_empty() {
             return Err("Gate Execution Binding has an empty node".into());
-        }
-        if self.required_isolation == RunIsolationV4::Process {
-            return Err(
-                "Gate Execution Binding cannot require unsupported process isolation".into(),
-            );
         }
         let provider_usable = match self.provider {
             RunExecutionProviderV4::TrustedLocal => {

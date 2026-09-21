@@ -163,7 +163,6 @@ fn is_change_set_port(port: &PortContract, pipeline_version: u32) -> bool {
 fn run_isolation(isolation: Isolation) -> RunIsolationV4 {
     match isolation {
         Isolation::None => RunIsolationV4::None,
-        Isolation::Process => RunIsolationV4::Process,
         Isolation::Container => RunIsolationV4::Container,
     }
 }
@@ -3482,8 +3481,8 @@ outputs = ["findings"]
                 gate: "major".into(),
             },
             reviewer_timeout_seconds: 60,
-            check_timeout_seconds: Some(3600),
-            git_timeout_seconds: Some(300),
+            check_timeout_seconds: 3600,
+            git_timeout_seconds: 300,
             budgets: None,
             focus: None,
             finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
@@ -3590,8 +3589,8 @@ outputs = [{ name = "set", type = "review.kernel/FindingSet@1", cardinality = "o
                 gate: "major".into(),
             },
             reviewer_timeout_seconds: 60,
-            check_timeout_seconds: Some(3600),
-            git_timeout_seconds: Some(300),
+            check_timeout_seconds: 3600,
+            git_timeout_seconds: 300,
             budgets: None,
             focus: None,
             finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
@@ -3733,8 +3732,8 @@ outputs = ["findings"]
                 gate: "major".into(),
             },
             reviewer_timeout_seconds: 60,
-            check_timeout_seconds: Some(3600),
-            git_timeout_seconds: Some(300),
+            check_timeout_seconds: 3600,
+            git_timeout_seconds: 300,
             budgets: None,
             focus: None,
             finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),

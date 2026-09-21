@@ -394,30 +394,6 @@
           ],
           "properties": {
             "kind": {
-              "const": "resolving"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "const": "planning"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
               "const": "ready"
             }
           }
@@ -431,18 +407,6 @@
           "properties": {
             "kind": {
               "const": "running"
-            }
-          }
-        },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind"
-          ],
-          "properties": {
-            "kind": {
-              "const": "verifying"
             }
           }
         },
@@ -505,9 +469,7 @@
           "enum": [
             "completed",
             "incomplete",
-            "blocked",
-            "exhausted",
-            "cancelled"
+            "exhausted"
           ]
         },
         "acceptance": {
@@ -1764,14 +1726,6 @@
           "minProperties": 1
         }
       }
-    },
-    "reviewConclusion": {
-      "enum": [
-        "pass",
-        "changes_requested",
-        "convergence_exhausted",
-        "incomplete"
-      ]
     },
     "resultOutput": {
       "allOf": [

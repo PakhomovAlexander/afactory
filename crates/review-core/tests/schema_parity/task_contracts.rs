@@ -244,14 +244,7 @@ fn many_inputs_and_explicit_empty_history_are_valid() {
 #[test]
 fn empty_tagged_variants_reject_hidden_fields() {
     use review_core::task::pipeline::{PortAffinityV1, TaskOperatorV1};
-    for kind in [
-        "submitted",
-        "resolving",
-        "planning",
-        "ready",
-        "running",
-        "verifying",
-    ] {
+    for kind in ["submitted", "ready", "running"] {
         assert!(
             serde_json::from_value::<TaskPhaseV1>(json!({"kind":kind,"plan":"hidden"})).is_err()
         );
@@ -447,12 +440,6 @@ fn review_exit_preserves_findings_and_missing_output_precedence() {
             TaskAcceptanceV1::Inconclusive,
             4,
         ),
-        (
-            ReviewConclusionV1::Incomplete,
-            TaskExecutionV1::Cancelled,
-            TaskAcceptanceV1::Inconclusive,
-            4,
-        ),
     ];
     for (conclusion, execution, acceptance, exit) in cases {
         conclusion
@@ -533,9 +520,7 @@ fn missing_review_receipts_cannot_be_relabeled_as_convergence_exhaustion() {
     for execution in [
         TaskExecutionV1::Completed,
         TaskExecutionV1::Incomplete,
-        TaskExecutionV1::Blocked,
         TaskExecutionV1::Exhausted,
-        TaskExecutionV1::Cancelled,
     ] {
         for acceptance in [
             TaskAcceptanceV1::Satisfied,

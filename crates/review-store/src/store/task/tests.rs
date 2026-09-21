@@ -17,6 +17,10 @@ mod source;
 mod token_scopes;
 mod wide_usage;
 
+/// Artifact type of the fixture Pipeline definition envelope. Production captures the
+/// Pipeline as a package dependency, so only these fixtures wrap it.
+const PIPELINE_V1: &str = "af/Pipeline@1";
+
 /// Fixture conveniences over the production reserve, bind and settle steps.
 impl EventStore {
     fn reserve_and_bind_task_attempt(
@@ -233,7 +237,7 @@ impl Fixture {
             .0;
         let (pipeline_id, pipeline) = cas
             .put_artifact(
-                task::PIPELINE_V1,
+                PIPELINE_V1,
                 producer(),
                 vec![],
                 None,
@@ -342,7 +346,7 @@ impl Fixture {
             CompileContext, OperatorAttemptCost, OperatorSignature, compile_task,
         };
         let pipeline: PipelineDefinitionV1 =
-            payload(&self.cas, &self.plan.pipeline_id, task::PIPELINE_V1).unwrap();
+            payload(&self.cas, &self.plan.pipeline_id, PIPELINE_V1).unwrap();
         let mut output = pipeline.contract.outputs["document"].clone();
         output.covers.clear();
         let signature = OperatorSignature {
