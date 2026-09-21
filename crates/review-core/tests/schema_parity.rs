@@ -3810,7 +3810,7 @@ mod provider_doctor;
 mod task_recording;
 
 #[test]
-fn task_review_readable_context_generations_are_strict() {
+fn task_review_readable_subject_is_strict() {
     use review_core::task::review::*;
     let id = format!("sha256:{}", "a".repeat(64));
     let value = TaskReviewSubjectV2 {

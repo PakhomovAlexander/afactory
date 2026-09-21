@@ -164,7 +164,7 @@ fn configure(repo: &Path, case: &str) {
     } else {
         "print(json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'verdict':'approve','summary':'Current S2 checked','reports':[],'benchmark_demands':[],'dispositions':[{'finding_id':f['finding_id'],'position':'not_reproduced','reason':'Repeated the original current-Snapshot check.'} for f in r['inputs']['assignment'][0]['payload']['findings']]}]}}))".to_string()
     };
-    std::fs::write(&bug,format!("import json,sys,runpy\nr=json.load(sys.stdin)\nif r['inputs']['subject'][0]['payload']['round']==1:\n    {first}\nelse:\n    f=runpy.run_path('pagination.py')['paginate']\n    try:\n        f([1,2],-1,1)\n        raise AssertionError('negative offset accepted')\n    except ValueError: pass\n    {second}\n")).unwrap();
+    std::fs::write(&bug,format!("import json,sys,runpy\nr=json.load(sys.stdin)\na=r['inputs']['assignment'][0]['payload']\nassert a['reviewer']=='bugs' and all(f['source']=='bugs' for f in a['findings'])\nif r['inputs']['subject'][0]['payload']['round']==1:\n    {first}\nelse:\n    f=runpy.run_path('pagination.py')['paginate']\n    try:\n        f([1,2],-1,1)\n        raise AssertionError('negative offset accepted')\n    except ValueError: pass\n    {second}\n")).unwrap();
     if matches!(case, "negative" | "missing" | "stale") {
         let path = packages.join("fix-verifier/worker.py");
         let script = std::fs::read_to_string(&path).unwrap();
