@@ -4,8 +4,8 @@ Every release has a section here before it is tagged: `scripts/release.sh X.Y.Z 
 writes it from the pull requests merged since the previous release, and the release workflow
 publishes the section as the release notes. The **Authority compatibility** line is mandatory:
 it says whether committed `.af/` policy keeps working as is, needs `af onboard --refresh-lock`,
-or needs `af onboard --migrate --apply`. Releases before 0.7.1 are described on their GitHub
-release pages only.
+or needs a documented hand edit. Releases before 0.7.1 are described on their GitHub release
+pages only.
 
 ## [Unreleased]
 
@@ -23,6 +23,12 @@ release pages only.
 - Removed `af review tui`. It read Worker pins only from the lock's legacy `[reviewers]` table,
   so it failed on every lock this release writes. The subcommand is now a usage error, and the
   release no longer ships its `af-review-tui.1` man page.
+- Removed `af onboard --migrate` and the `.review/` to `.af/` conversion; the retired `.review/`
+  layout is not read at all. The flag is now a usage error. `af onboard` on a repository that
+  still carries `.review/` scaffolds `.af/` as for any other repository, a `.review/…` pipeline
+  path gets the generic "must live under `.af/pipelines/`" error, and Campaigns whose manifests
+  pinned `.review/` paths (af 0.7 and earlier) can no longer be resumed, reported or compiled into
+  a Task.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

@@ -110,11 +110,6 @@ Behavior:\n\
   * Without .af/: preview a deterministic multi-review scaffold; --apply atomically creates it.\n\
   * With .af/: validate the selected pipeline, exact pins, Worker packages, graph, and Gates.\n\
   * --refresh-lock: explicitly recompute only the selected pipeline and referenced Worker pins.\n\
-  * With legacy .review/ and no .af/: preview the `.af/` it becomes — pipelines with format \
-upgrades applied, the reviewer packages they reference byte for byte, a project file, a lock; \
---migrate --apply \
-writes it (absent-only) and leaves .review/ for you to delete. Since v0.8.0 `.review/` is no \
-longer read for new Campaigns; scaffolding .af/ beside it is refused.\n\
   * .af/af.lock records the af release that wrote it and the archive digest of that release for \
 every target. Inside such a project any `af` on PATH runs that release, installing it on demand \
 only when the bytes match; --refresh-lock re-pins to the running release, and --af VERSION runs \
@@ -128,7 +123,7 @@ stages of that Campaign or Task. Afactory does not ask for per-call confirmation
 Review Campaigns are light by default: one closed Round, then fix concrete Findings and run the \
 deterministic project gate. Do not start another Campaign. Use `--heavy` only when a human \
 explicitly requests convergence review, and repeat that explicit mode when resuming it.",
-        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus/high; architecture = machine-configured Codex (default)\n  claude  both Workers = Claude Opus/high\n  codex   both Workers = machine-configured Codex\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  af onboard\n  af onboard --gate 'check=make check' --apply\n  af onboard --runner mixed --apply\n  af onboard --refresh-lock\n  af onboard --refresh-lock --af 0.9.0     move the pin to 0.9.0\n  af onboard --migrate --apply"
+        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus/high; architecture = machine-configured Codex (default)\n  claude  both Workers = Claude Opus/high\n  codex   both Workers = machine-configured Codex\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  af onboard\n  af onboard --gate 'check=make check' --apply\n  af onboard --runner mixed --apply\n  af onboard --refresh-lock\n  af onboard --refresh-lock --af 0.9.0     move the pin to 0.9.0"
     )]
     Onboard(OnboardArgs),
     /// Start, inspect, and deliver an implement Task
@@ -819,9 +814,6 @@ pub(crate) struct OnboardArgs {
     /// Repin the selected pipeline and its Workers after a reviewed edit
     #[arg(long, help_heading = "Action")]
     pub(crate) refresh_lock: bool,
-    /// Move legacy `.review/` policy to `.af/` (preview; add --apply to write)
-    #[arg(long, help_heading = "Action", conflicts_with = "refresh_lock")]
-    pub(crate) migrate: bool,
     /// Run this command under release VERSION, installing it on demand (how a pin moves)
     #[arg(long, value_name = "VERSION", help_heading = "Action")]
     pub(crate) af: Option<String>,

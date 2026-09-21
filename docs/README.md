@@ -19,11 +19,10 @@ and `--help` on every namespace and command.
 | [`../CONTEXT.md`](../CONTEXT.md) | What a word means. Snapshot, Subject, Base, Campaign, Round, Report, Finding, Attempt, Provider and the rest, each with the nearby term it must not be confused with. Read it before arguing about behaviour. |
 | [`tasks.md`](tasks.md) | How to run implementation Tasks with `af task`: start, inspect, evaluate, and deliver to a new local worktree. |
 | [`task-execution.md`](task-execution.md) | The Task runtime reference: fixed product decisions, contracts, fixtures, and compatibility checkpoints for the common Task execution abstraction. |
-| [`migration.md`](migration.md) | Moving a repository from the retired `.review/` authority layout to `.af/` with `af onboard --migrate --apply`. |
 | [`non-goals.md`](non-goals.md) | What the kernel deliberately does not do, so a missing feature can be told from a refused one. |
 | [`design/`](design/overview.md) | The design notes the implementation was ported from: [overview](design/overview.md), [entities](design/entities.md), [state machines](design/state-machines.md), [config](design/config.md), [store](design/store.md), [research](design/research.md), [values](design/values.md), [Task execution](design/task-execution.md) and its [examples](design/task-execution-examples.md). Their examples are YAML where the shipped format is TOML; the shape is the same. |
 | [`adr/`](adr/README.md) | The binding decisions, one per file, with the options that were rejected and why. The index in `adr/README.md` lists every one. |
-| [`../CHANGELOG.md`](../CHANGELOG.md) | What each release changed and whether committed `.af/` policy keeps working, needs `af onboard --refresh-lock`, or needs a migration. |
+| [`../CHANGELOG.md`](../CHANGELOG.md) | What each release changed and whether committed `.af/` policy keeps working, needs `af onboard --refresh-lock`, or needs a documented hand edit. |
 
 ## Reading and writing ADRs
 

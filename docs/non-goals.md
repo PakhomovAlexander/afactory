@@ -67,12 +67,6 @@ probes that remain open are recorded as open in
 than claimed covered. Pointing the tool at untrusted code requires revisiting that acceptance
 first ([ADR-0010](adr/0010-proposals-are-exported-by-id-and-base-bound.md)).
 
-### Two review authorities in one repository
-
-`af onboard` refuses to scaffold `.af/` beside a legacy `.review/` directory, so a repository never
-carries two authorities. The legacy layout is migrated, not read alongside
-([ADR-0043](adr/0043-drop-legacy-review-authority-in-v0-8-0.md); see [migration](migration.md)).
-
 ## Tasks
 
 ### Delivery that commits, pushes or opens a pull request

@@ -68,8 +68,7 @@ pub struct Route {
 /// Manifest pins; printed by `plan` and at Campaign open.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(crate) struct RouteDecision {
-    /// `explicit` (`--pipeline`), `legacy` (no `.af/af.toml`), `default`, `route`, or
-    /// `oversized`.
+    /// `explicit` (`--pipeline`), `default`, `route`, or `oversized`.
     pub policy: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -91,13 +90,6 @@ impl RouteDecision {
             changed_paths: 0,
             pipeline_path: pipeline_path.to_string(),
             replaced: None,
-        }
-    }
-
-    pub(crate) fn legacy(pipeline_path: &str) -> Self {
-        RouteDecision {
-            policy: "legacy",
-            ..Self::explicit(pipeline_path)
         }
     }
 }

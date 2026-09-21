@@ -141,7 +141,6 @@ struct Options {
     gates: Vec<Gate>,
     apply: bool,
     refresh_lock: bool,
-    migrate: bool,
     /// `--af VERSION`: dispatch already ran this command under that release; here it is only
     /// checked, because a pin can be moved forward only by the release that will hold it.
     af: Option<String>,
@@ -154,16 +153,6 @@ struct ReviewerSummary {
     package: String,
     runner: String,
     model: String,
-}
-
-/// One legacy `.review/` pipeline and where the migration puts it, with the format upgrades the
-/// conversion applies on the way.
-#[derive(Debug, Clone, Serialize)]
-struct LegacyPipeline {
-    path: String,
-    to: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    applied: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -182,8 +171,6 @@ struct Report {
     warnings: Vec<String>,
     files: Vec<String>,
     next_steps: Vec<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pipelines: Vec<LegacyPipeline>,
     #[serde(skip_serializing_if = "Option::is_none")]
     lock_af_version: Option<String>,
     /// The targets whose archive digests the lock's `af` pin records.
@@ -293,7 +280,6 @@ fn options_from_cli(args: crate::cli::OnboardArgs) -> Result<Options, String> {
         gates,
         apply: args.apply,
         refresh_lock: args.refresh_lock,
-        migrate: args.migrate,
         af: args
             .af
             .map(|version| version.trim_start_matches('v').to_string()),
@@ -318,14 +304,6 @@ fn options_from_cli(args: crate::cli::OnboardArgs) -> Result<Options, String> {
     if options.refresh_lock && options.profile != RunnerProfile::Mixed {
         return Err(
             "--runner cannot be combined with --refresh-lock; edit Worker manifests first".into(),
-        );
-    }
-    if options.migrate && options.refresh_lock {
-        return Err("--migrate and --refresh-lock are mutually exclusive".to_string());
-    }
-    if options.migrate && (!options.gates.is_empty() || options.profile != RunnerProfile::Mixed) {
-        return Err(
-            "--gate and --runner configure only a new `.af/` bundle; --migrate moves existing `.review/` policy to `.af/` as it is".into(),
         );
     }
     Ok(options)
@@ -376,12 +354,6 @@ fn execute(options: &Options) -> Result<Report, String> {
             Err("review authority `.af` exists but is not a directory".to_string())
         }
         Ok(_) => {
-            if options.migrate {
-                return Err(
-                    "`.af/` is current authority; --migrate applies only to legacy `.review/` policy"
-                        .to_string(),
-                );
-            }
             if options.apply {
                 return Err(
                     "`.af/` already exists; plain `af onboard` validates it and never overwrites it"
@@ -400,15 +372,6 @@ fn execute(options: &Options) -> Result<Report, String> {
             inspect_existing(&repo, "onboarded")
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            if let Some(legacy) = legacy_authority(&repo)? {
-                return migrate_legacy(&repo, &legacy, options);
-            }
-            if options.migrate {
-                return Err(
-                    "--migrate applies to legacy `.review/` authority; this repository has none"
-                        .to_string(),
-                );
-            }
             if options.refresh_lock {
                 return Err("cannot refresh a lock before `.af/` exists".to_string());
             }
@@ -441,15 +404,6 @@ fn print_human(report: &Report) {
     println!("repository  {}", report.repository);
     println!("profile     {}", report.profile);
     println!("pipeline    {}", report.pipeline);
-    if !report.pipelines.is_empty() {
-        println!("pipelines");
-        for pipeline in &report.pipelines {
-            println!("  {} -> {}", pipeline.path, pipeline.to);
-            for change in &pipeline.applied {
-                println!("    applied  {change}");
-            }
-        }
-    }
     if let Some(version) = &report.lock_af_version {
         println!(
             "lock        pinned by af {version}{}",
@@ -697,7 +651,6 @@ fn build_bundle(
         topology: topology_lines(&definition),
         warnings,
         files: files.keys().cloned().collect(),
-        pipelines: Vec::new(),
         lock_af_version: af_pin.as_ref().map(|pin| pin.version.clone()),
         lock_af_targets: pin_targets(af_pin.as_ref()),
         next_steps: vec![
@@ -1492,7 +1445,6 @@ fn inspect_existing(repo: &Path, status: &str) -> Result<Report, String> {
         topology: topology_lines(&authority.definition),
         warnings,
         files,
-        pipelines: Vec::new(),
         lock_af_version: authority.lock.af_version().map(str::to_string),
         lock_af_targets: pin_targets(authority.lock.af.as_ref()),
         next_steps: vec![
@@ -1660,486 +1612,10 @@ fn atomic_replace_authority(path: &Path, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// Legacy `.review/` authority: the layout consumers pinned before `.af/` existed.
-struct LegacyAuthority {
-    root: PathBuf,
-    pipelines: Vec<PathBuf>,
-}
-
-/// The repository's legacy authority, if it carries `.review/` and no `.af/`.
-fn legacy_authority(repo: &Path) -> Result<Option<LegacyAuthority>, String> {
-    let root = repo.join(".review");
-    match std::fs::symlink_metadata(&root) {
-        Ok(metadata) if metadata.file_type().is_symlink() => {
-            Err("refusing symlinked review authority `.review`".to_string())
-        }
-        Ok(metadata) if !metadata.is_dir() => {
-            Err("review authority `.review` exists but is not a directory".to_string())
-        }
-        Ok(_) => {
-            let pipelines_dir = root.join("pipelines");
-            let mut pipelines: Vec<PathBuf> = match std::fs::read_dir(&pipelines_dir) {
-                Ok(entries) => entries
-                    .map(|entry| entry.map(|entry| entry.path()))
-                    .collect::<Result<_, _>>()
-                    .map_err(|error| format!("listing {}: {error}", pipelines_dir.display()))?,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-                Err(error) => {
-                    return Err(format!("listing {}: {error}", pipelines_dir.display()));
-                }
-            };
-            pipelines.retain(|path| {
-                path.extension()
-                    .is_some_and(|extension| extension == "toml")
-            });
-            pipelines.sort();
-            if pipelines.is_empty() {
-                return Err(
-                    "`.review/` carries no pipelines/*.toml; nothing to validate or migrate".into(),
-                );
-            }
-            Ok(Some(LegacyAuthority { root, pipelines }))
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(error) => Err(format!("inspecting {}: {error}", root.display())),
-    }
-}
-
-/// Legacy `.review/` authority is no longer read for new Campaigns (ADR-0043). Onboarding turns
-/// it into `.af/`: every pipeline with the format upgrades it needs (comments intact), every
-/// reviewer package byte for byte, a project file, and a lock that pins Workers, pipelines, and
-/// this release. Preview by default; `--migrate --apply` writes `.af/` atomically (absent-only)
-/// and leaves `.review/` for the consumer to delete after review.
-fn migrate_legacy(
-    repo: &Path,
-    legacy: &LegacyAuthority,
-    options: &Options,
-) -> Result<Report, String> {
-    if options.refresh_lock {
-        return Err(
-            "--refresh-lock applies to `.af/af.lock`; this repository still carries legacy `.review/` authority — run `af onboard --migrate --apply` first"
-                .into(),
-        );
-    }
-    if !options.gates.is_empty() || options.profile != RunnerProfile::Mixed {
-        return Err(
-            "--gate and --runner configure only a new `.af/` bundle; this repository carries legacy `.review/` authority, which --migrate moves as it is"
-                .into(),
-        );
-    }
-    if options.apply && !options.migrate {
-        return Err(
-            "`.review/` already carries review authority; run `af onboard --migrate --apply` to move it to `.af/`. Scaffolding `.af/` beside it would leave two authorities"
-                .into(),
-        );
-    }
-    let mut bundle = plan_migration(repo, legacy, options.af.as_deref())?;
-    validate_migration(&bundle)?;
-    if options.migrate && options.apply {
-        apply_bundle(repo, &bundle)?;
-        bundle.report.status = "migrated".to_string();
-        bundle.report.next_steps = vec![
-            "Review the generated `.af/` diff, commit it on the trusted base branch, and delete `.review/`.".into(),
-            "Run `af onboard` again; it must validate every pipeline and Worker pin under `.af/`.".into(),
-            "Run `af review plan` against the committed policy before the next Campaign.".into(),
-        ];
-    }
-    Ok(bundle.report)
-}
-
-/// Every regular file of a legacy reviewer package, keyed by `/`-separated relative path, the
-/// way a lock digests it. Symlinks and special files are refused, as the resolver refuses them.
-fn read_package_files(name: &str, root: &Path) -> Result<BTreeMap<String, Vec<u8>>, String> {
-    let mut files = BTreeMap::new();
-    let mut pending = vec![root.to_path_buf()];
-    while let Some(dir) = pending.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .map_err(|error| format!("reviewer `{name}`: reading {}: {error}", dir.display()))?;
-        for entry in entries {
-            let path = entry
-                .map_err(|error| format!("reviewer `{name}`: {error}"))?
-                .path();
-            let kind = std::fs::symlink_metadata(&path)
-                .map_err(|error| format!("reviewer `{name}`: {}: {error}", path.display()))?;
-            if kind.file_type().is_symlink() {
-                return Err(format!(
-                    "reviewer `{name}` contains a symlink at {}; a package is regular files only",
-                    path.display()
-                ));
-            }
-            if kind.is_dir() {
-                pending.push(path);
-                continue;
-            }
-            if !kind.is_file() {
-                return Err(format!(
-                    "reviewer `{name}` contains a non-regular file at {}",
-                    path.display()
-                ));
-            }
-            let relative = path
-                .strip_prefix(root)
-                .expect("walked paths live under the root")
-                .components()
-                .map(|component| {
-                    component
-                        .as_os_str()
-                        .to_str()
-                        .map(str::to_string)
-                        .ok_or_else(|| {
-                            format!(
-                                "reviewer `{name}` contains a non-UTF-8 path at {}",
-                                path.display()
-                            )
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()?
-                .join("/");
-            let bytes = std::fs::read(&path)
-                .map_err(|error| format!("reviewer `{name}`: {}: {error}", path.display()))?;
-            files.insert(relative, bytes);
-        }
-    }
-    Ok(files)
-}
-
-fn migration_minimum_af(running: &semver::Version) -> String {
-    if running.pre.is_empty() {
-        format!("{}.{}", running.major, running.minor)
-    } else {
-        // A prerelease sorts below its stable version. Dropping the suffix would
-        // produce authority that the migrating executable itself cannot read.
-        running.to_string()
-    }
-}
-
-fn migrated_project_file(project_name: &str, pipeline: &str, workers: &BTreeSet<String>) -> String {
-    #[derive(Serialize)]
-    struct ProjectFile<'a> {
-        version: u32,
-        project: Project<'a>,
-        defaults: Defaults<'a>,
-        worker: BTreeMap<&'a str, Worker<'a>>,
-    }
-    #[derive(Serialize)]
-    struct Project<'a> {
-        name: &'a str,
-        min_af: String,
-    }
-    #[derive(Serialize)]
-    struct Defaults<'a> {
-        pipeline: &'a str,
-    }
-    #[derive(Serialize)]
-    struct Worker<'a> {
-        package: &'a str,
-    }
-    let running = semver::Version::parse(env!("CARGO_PKG_VERSION")).expect("a version");
-    toml::to_string_pretty(&ProjectFile {
-        version: 1,
-        project: Project {
-            name: project_name,
-            min_af: migration_minimum_af(&running),
-        },
-        defaults: Defaults { pipeline },
-        worker: workers
-            .iter()
-            .map(|name| (name.as_str(), Worker { package: name }))
-            .collect(),
-    })
-    .expect("the migrated project file serializes")
-}
-
-fn plan_migration(
-    repo: &Path,
-    legacy: &LegacyAuthority,
-    af: Option<&str>,
-) -> Result<Bundle, String> {
-    let legacy_lock = Lockfile::from_toml(&read_authority_text(&legacy.root.join("review.lock"))?)
-        .map_err(|error| error.to_string())?;
-    let registry = Registry::new([legacy.root.join("reviewers")]);
-
-    struct Converted {
-        name: String,
-        row: LegacyPipeline,
-        text: String,
-        definition: Definition,
-        loaded: review_config::Loaded,
-    }
-    let mut converted: Vec<Converted> = Vec::new();
-    let mut names = BTreeSet::new();
-    let mut referenced: BTreeSet<String> = BTreeSet::new();
-    for path in &legacy.pipelines {
-        let relative = path
-            .strip_prefix(repo)
-            .unwrap_or(path)
-            .display()
-            .to_string();
-        let stem = path
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .ok_or_else(|| format!("{relative}: the pipeline file name is not UTF-8"))?;
-        // `heavy` was the legacy default's conventional name; `review` is `.af/`'s.
-        let name = if stem == "heavy" {
-            PIPELINE_NAME.to_string()
-        } else {
-            stem.to_string()
-        };
-        if !safe_name(&name) {
-            return Err(format!("{relative}: `{name}` is not a safe pipeline name"));
-        }
-        if !names.insert(name.clone()) {
-            return Err(format!(
-                "{relative}: two legacy pipelines would both become `.af/pipelines/{name}.toml`"
-            ));
-        }
-        let text = read_authority_text(path)?;
-        let needed = review_config::pipeline_edit::legacy_upgrades(&text)
-            .map_err(|error| format!("{relative}: {error}"))?;
-        let applied: Vec<String> = needed
-            .iter()
-            .map(|upgrade| upgrade.describe().to_string())
-            .collect();
-        let text = if needed.is_empty() {
-            text
-        } else {
-            review_config::pipeline_edit::apply_legacy_upgrades(&text)
-                .map_err(|error| format!("{relative}: {error}"))?
-                .ok_or_else(|| format!("{relative}: upgrades were pending but nothing changed"))?
-        };
-        let definition =
-            Definition::from_toml(&text).map_err(|error| format!("{relative}: {error}"))?;
-        let loaded = definition
-            .clone()
-            .load_with(&legacy_lock, &registry)
-            .map_err(|error| format!("{relative}: {error}"))?;
-        referenced.extend(
-            definition
-                .nodes
-                .iter()
-                .filter_map(|node| node.package.clone()),
-        );
-        converted.push(Converted {
-            row: LegacyPipeline {
-                path: relative,
-                to: format!(".af/pipelines/{name}.toml"),
-                applied,
-            },
-            name,
-            text,
-            definition,
-            loaded,
-        });
-    }
-    if referenced.is_empty() {
-        return Err("`.review/` pipelines reference no reviewer package".into());
-    }
-    let default_name = if names.contains(PIPELINE_NAME) {
-        PIPELINE_NAME.to_string()
-    } else {
-        converted[0].name.clone()
-    };
-
-    let mut worker_files = BTreeMap::new();
-    let (af_pin, mut pin_warnings) = running_af_pin()?;
-    let mut lockfile = Lockfile::empty();
-    lockfile.af = af_pin.clone();
-    for name in &referenced {
-        let files = read_package_files(name, &legacy.root.join("reviewers").join(name))?;
-        let pin = Lockfile::pin_package_files(name, &files).map_err(|error| error.to_string())?;
-        lockfile.workers.insert(name.clone(), pin);
-        worker_files.insert(name.clone(), files);
-    }
-    // Packages no pipeline references are policy nothing runs: named, not moved.
-    let reviewers_dir = legacy.root.join("reviewers");
-    if let Ok(entries) = std::fs::read_dir(&reviewers_dir) {
-        let mut unreferenced: Vec<String> = entries
-            .filter_map(Result::ok)
-            .filter(|entry| entry.path().is_dir())
-            .filter_map(|entry| entry.file_name().to_str().map(str::to_string))
-            .filter(|name| !referenced.contains(name))
-            .collect();
-        unreferenced.sort();
-        if !unreferenced.is_empty() {
-            pin_warnings.push(format!(
-                "no pipeline references reviewer package(s) {}; they stay under `.review/reviewers/` and are not moved",
-                unreferenced.join(", ")
-            ));
-        }
-    }
-    for pipeline in &converted {
-        lockfile.pipelines.insert(
-            pipeline.name.clone(),
-            Pin {
-                version: PIPELINE_VERSION.to_string(),
-                digest: review_store::canonical::blob_content_id(pipeline.text.as_bytes()),
-            },
-        );
-    }
-    let project_name = repo
-        .file_name()
-        .and_then(|name| name.to_str())
-        .filter(|name| !name.is_empty())
-        .unwrap_or("project");
-    let mut files = BTreeMap::from([
-        (".af/af.lock".to_string(), lockfile.to_toml().into_bytes()),
-        (
-            ".af/af.toml".to_string(),
-            migrated_project_file(project_name, &default_name, &referenced).into_bytes(),
-        ),
-    ]);
-    for pipeline in &converted {
-        files.insert(pipeline.row.to.clone(), pipeline.text.clone().into_bytes());
-    }
-    for (name, package) in &worker_files {
-        for (path, bytes) in package {
-            files.insert(format!(".af/workers/{name}/{path}"), bytes.clone());
-        }
-    }
-
-    let default = converted
-        .iter()
-        .find(|pipeline| pipeline.name == default_name)
-        .expect("the default pipeline was converted");
-    let gates = default
-        .definition
-        .checks
-        .iter()
-        .map(|check| Gate {
-            name: check.name.clone(),
-            program: check.command.program.clone(),
-            args: check
-                .command
-                .args
-                .iter()
-                .map(|argument| argument.value.clone())
-                .collect(),
-            source: "project authority".into(),
-        })
-        .collect();
-    let reviewers = default
-        .loaded
-        .packages()
-        .iter()
-        .map(|(node, package)| ReviewerSummary {
-            node: node.clone(),
-            package: package.name.clone(),
-            runner: package.runner.program.clone(),
-            model: runner_model(&package.runner),
-        })
-        .collect();
-    let (attempt_tokens, run_tokens) = default
-        .definition
-        .budgets
-        .as_ref()
-        .map(|budgets| (Some(budgets.attempt), Some(budgets.run)))
-        .unwrap_or((None, None));
-    let mut warnings = validate_budget_arithmetic(&default.definition)?;
-    warnings.extend(pin_warnings);
-    let repository = repo
-        .to_str()
-        .ok_or_else(|| {
-            format!(
-                "repository path {} is not valid UTF-8 and cannot be represented in copyable onboarding commands",
-                repo.display()
-            )
-        })?
-        .to_string();
-    let mut migrate_command = format!(
-        "af onboard --repo {} --migrate",
-        shell_words::quote(&repository)
-    );
-    migrate_command.push_str(" --af ");
-    migrate_command.push_str(&shell_words::quote(af.unwrap_or(env!("CARGO_PKG_VERSION"))));
-    migrate_command.push_str(" --apply");
-    let report = Report {
-        status: "legacy".to_string(),
-        profile: "legacy .review/ authority -> .af/".into(),
-        repository: repository.clone(),
-        pipeline: format!(".af/pipelines/{default_name}.toml"),
-        reviewers,
-        gates,
-        attempt_tokens,
-        run_tokens,
-        clean_rounds: default.definition.convergence.clean_rounds,
-        max_rounds: default.definition.convergence.max_rounds,
-        topology: topology_lines(&default.definition),
-        warnings,
-        files: files.keys().cloned().collect(),
-        pipelines: converted
-            .iter()
-            .map(|pipeline| pipeline.row.clone())
-            .collect(),
-        lock_af_version: af_pin.as_ref().map(|pin| pin.version.clone()),
-        lock_af_targets: pin_targets(af_pin.as_ref()),
-        next_steps: vec![
-            format!(
-                "Run `{migrate_command}` to write `.af/` (absent-only; `.review/` stays until you delete it)."
-            ),
-            "Review the `.af/` diff, commit it on the trusted base branch, then delete `.review/`."
-                .into(),
-            "Run `af review plan`: `.review/` is no longer read for new Campaigns (ADR-0043)."
-                .into(),
-        ],
-    };
-    Ok(Bundle {
-        files,
-        worker_files,
-        report,
-    })
-}
-
-/// The converted bundle must be exactly what this binary accepts under `.af/`: every pipeline
-/// pinned, loadable against the captured packages, and the project's default present.
-fn validate_migration(bundle: &Bundle) -> Result<(), String> {
-    let lock = Lockfile::from_toml(bundle_text(&bundle.files, ".af/af.lock")?)
-        .map_err(|error| error.to_string())?;
-    let selected = selected_pipeline(bundle_text(&bundle.files, ".af/af.toml")?)?;
-    let registry = Registry::captured(bundle.worker_files.clone());
-    let mut seen_default = false;
-    for (path, bytes) in &bundle.files {
-        let Some(name) = path
-            .strip_prefix(".af/pipelines/")
-            .and_then(|file| file.strip_suffix(".toml"))
-        else {
-            continue;
-        };
-        seen_default |= name == selected;
-        validate_pipeline_pin(&lock, name, bytes)?;
-        let text = std::str::from_utf8(bytes)
-            .map_err(|error| format!("migrated `{path}` is not UTF-8: {error}"))?;
-        Definition::from_toml(text)
-            .map_err(|error| format!("migrated `{path}`: {error}"))?
-            .load_with(&lock, &registry)
-            .map_err(|error| format!("migrated `{path}` does not load: {error}"))?;
-    }
-    if !seen_default {
-        return Err(format!(
-            "migrated project selects pipeline `{selected}`, which the migration did not produce"
-        ));
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::{build_definition, runner_model, validate_budget_arithmetic};
     use review_core::{Arg, Command};
-
-    #[test]
-    fn migration_minimum_preserves_prerelease_compatibility() {
-        let candidate = semver::Version::parse("0.9.0-rc.1").unwrap();
-        let minimum = super::migration_minimum_af(&candidate);
-        let required = semver::Version::parse(&minimum).unwrap();
-        assert_eq!(minimum, "0.9.0-rc.1");
-        assert!(semver::Version::parse("0.9.0-rc.0").unwrap() < required);
-        assert!(candidate >= required);
-        assert!(semver::Version::parse("0.9.0").unwrap() >= required);
-        assert_eq!(
-            super::migration_minimum_af(&semver::Version::parse("0.8.3").unwrap()),
-            "0.8"
-        );
-    }
 
     #[test]
     fn model_summary_understands_codex_short_flag() {

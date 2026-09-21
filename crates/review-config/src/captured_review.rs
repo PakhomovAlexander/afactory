@@ -224,14 +224,12 @@ fn validate_manifest_authority(
         .parent()
         .and_then(std::path::Path::parent)
         .and_then(std::path::Path::to_str);
-    let registry = match root {
-        Some(".af") => ".af/workers",
-        Some(".review") => ".review/reviewers",
-        _ => return Err("the pipeline path must live under `.af/pipelines/`".into()),
-    };
+    if root != Some(".af") {
+        return Err("the pipeline path must live under `.af/pipelines/`".into());
+    }
     for (package, _) in captured.values() {
         for (path, artifact_id) in &package.files {
-            let authority_path = format!("{}/{}/{path}", registry, package.name);
+            let authority_path = format!(".af/workers/{}/{path}", package.name);
             if tree.get(&authority_path).map(|entry| &entry.content) != Some(artifact_id) {
                 return Err(format!(
                     "captured reviewer file `{authority_path}` is not authority Snapshot content"

@@ -7,7 +7,7 @@
 #   scripts/release.sh X.Y.Z --compat "<one line on authority compatibility>" [--dry-run] [--yes]
 #
 # The compatibility line is required: every release says whether committed `.af/` authority
-# keeps working as is, needs `af onboard --refresh-lock`, or needs `af onboard --migrate --apply`.
+# keeps working as is, needs `af onboard --refresh-lock`, or needs a documented hand edit.
 set -euo pipefail
 
 usage() {

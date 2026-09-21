@@ -341,8 +341,8 @@ pub struct Lockfile {
     /// into `af` on parse, never written again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     af_version: Option<String>,
-    /// The `af` release that wrote this lock (`af onboard --apply`, `--migrate --apply`, or
-    /// `--refresh-lock`) and its per-target archive digests. A newer `af` proceeds and notes the
+    /// The `af` release that wrote this lock (`af onboard --apply` or `--refresh-lock`) and its
+    /// per-target archive digests. A newer `af` proceeds and notes the
     /// difference; an older `af` refuses, because it cannot know what the newer release meant by
     /// these pins; inside the project, any `af` on `PATH` dispatches to the pinned release.
     /// Absent on locks written before the pin existed, and on locks written by a build that has

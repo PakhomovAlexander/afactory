@@ -102,8 +102,6 @@ Record the options you rejected and why — that is the part future readers need
   Diffs](0041-make-review-selectors-explicit-and-refuse-empty-diffs.md)
 - [0042 — Require Provider bindings and isolate Claude
   reviewers](0042-require-provider-bindings-and-isolate-claude-reviewers.md)
-- [0043 — Drop legacy `.review/` authority in
-  v0.8.0](0043-drop-legacy-review-authority-in-v0-8-0.md)
 - [0044 — `af` manages itself: dispatch to the pinned release, policy-driven updates, a
   layered configuration](0044-af-manages-itself-and-dispatches-to-the-pinned-release.md)
 - [0045 — One release train, and a pin that binds

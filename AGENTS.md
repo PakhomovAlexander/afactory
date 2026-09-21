@@ -14,12 +14,9 @@ review corpora belong in consuming repositories, not here.
 
 - Product rebranding must not rename `review.kernel/*` artifact types, persisted events, or
   established Review Kernel domain terms until a separate accepted migration ADR supersedes this
-  rule. The `.review/` authority *layout* is no longer read for new Campaigns since `v0.8.0`
-  ([ADR-0043](docs/adr/0043-drop-legacy-review-authority-in-v0-8-0.md), executed by
-  [ADR-0045](docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md): `af onboard --migrate
-  --apply` moves a consumer to `.af/`), which renames nothing persisted. Releases are cut only
-  through `make release` and the release workflow; a lock pins the release's bytes, not just its
-  version (ADR-0045).
+  rule. Releases are cut only through `make release` and the release workflow; a lock pins the
+  release's bytes, not just its version
+  ([ADR-0045](docs/adr/0045-one-release-train-and-a-pin-that-binds-bytes.md)).
 - Compatibility obligations start at GA: never add a reader, migration, fallback or replay path
   for state, configuration or flags that only a pre-GA (0.x) release wrote; such state is
   unsupported and is discarded on upgrade

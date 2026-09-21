@@ -145,7 +145,6 @@ and budgets are described in [`docs/architecture.md`](docs/architecture.md).
 - [`CONTEXT.md`](CONTEXT.md) — the vocabulary: Snapshot, Subject, Campaign, Round, Finding, Attempt.
 - [`docs/adr/README.md`](docs/adr/README.md) — the binding design decisions.
 - [`docs/tasks.md`](docs/tasks.md) — the `af task` guide.
-- [`docs/migration.md`](docs/migration.md) — moving a `.review/` consumer to `.af/`.
 - [`docs/design/overview.md`](docs/design/overview.md) — the ported design notes.
 - [`CHANGELOG.md`](CHANGELOG.md) — every release and its authority compatibility.
 

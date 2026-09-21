@@ -43,15 +43,12 @@ fn load_pinned_pipeline(
     cas: &Cas,
     lockfile: &Lockfile,
     registry: &Registry,
-    layout: &AuthorityLayout,
     path: &str,
 ) -> Result<PinnedPipeline, String> {
     let bytes = authority_bytes(manifest, cas, path)?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|error| format!("authority pipeline `{path}` is not UTF-8: {error}"))?;
-    if layout.root == ".af" {
-        validate_af_pipeline_pin(lockfile, path, &bytes)?;
-    }
+    validate_af_pipeline_pin(lockfile, path, &bytes)?;
     let definition = Definition::from_toml(text).map_err(|error| error.to_string())?;
     let loaded = definition
         .clone()
@@ -66,20 +63,16 @@ fn load_pinned_pipeline(
     })
 }
 
-/// The project policy under `.af/`, when that is the layout in use.
+/// The project policy under `.af/`.
 fn captured_project(
     manifest: &Manifest,
     cas: &Cas,
-    layout: &AuthorityLayout,
-) -> Result<Option<(Vec<u8>, crate::project::ProjectFile)>, String> {
-    if layout.root != ".af" {
-        return Ok(None);
-    }
+) -> Result<(Vec<u8>, crate::project::ProjectFile), String> {
     let bytes = authority_bytes(manifest, cas, ".af/af.toml")?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|error| format!("authority project `.af/af.toml` is not UTF-8: {error}"))?;
     let project = crate::project::ProjectFile::parse(text)?;
-    Ok(Some((bytes, project)))
+    Ok((bytes, project))
 }
 
 /// Capture the candidate and, given a Base, the exact Change Set between them. Shared by plan
@@ -146,7 +139,7 @@ fn capture_candidate(
 /// reports `fits`, run refuses before admission.
 fn apply_oversized_policy(
     cas: &Cas,
-    project: Option<&crate::project::ProjectFile>,
+    project: &crate::project::ProjectFile,
     route: &mut crate::project::RouteDecision,
     pipeline: PinnedPipeline,
     change_set: Option<&ChangeSetV1>,
@@ -158,7 +151,7 @@ fn apply_oversized_policy(
     if sizes.iter().all(|size| size.fits) || route.policy == "explicit" {
         return Ok((pipeline, sizes));
     }
-    let Some(alternative) = project.and_then(|project| project.oversized_pipeline()) else {
+    let Some(alternative) = project.oversized_pipeline() else {
         return Ok((pipeline, sizes));
     };
     let alternative_path = crate::project::pipeline_path_for(alternative);
@@ -203,16 +196,20 @@ pub(super) fn resolve_plan(
         .map_err(|error| format!("capturing policy `{policy_ref}`: {error}"))?;
     let (policy_snapshot_id, _) = publish_snapshot(&policy, cas)?;
     let requested_path = authority_path(&options.repo, &options.pipeline)?;
-    let layout = authority_layout(&requested_path, false)?;
-    let lock_bytes = authority_bytes(&policy.manifest, cas, &layout.lock)?;
+    require_af_pipeline(&requested_path)?;
+    let lock_bytes = authority_bytes(&policy.manifest, cas, AUTHORITY_LOCK)?;
     let lock_text = std::str::from_utf8(&lock_bytes)
-        .map_err(|error| format!("authority lock `{}` is not UTF-8: {error}", layout.lock))?;
+        .map_err(|error| format!("authority lock `{AUTHORITY_LOCK}` is not UTF-8: {error}"))?;
     let lockfile = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
-    if let Some(note) = crate::project::check_lock_af_version(&lockfile, &layout.lock)? {
+    if let Some(note) = crate::project::check_lock_af_version(&lockfile, AUTHORITY_LOCK)? {
         eprintln!("af review: note: {note}");
     }
-    let project = captured_project(&policy.manifest, cas, &layout)?;
-    let registry = Registry::captured(captured_registry(&policy.manifest, cas, &layout.registry)?);
+    let (project_bytes, project) = captured_project(&policy.manifest, cas)?;
+    let registry = Registry::captured(captured_registry(
+        &policy.manifest,
+        cas,
+        AUTHORITY_REGISTRY,
+    )?);
 
     // Base and candidate before the pipeline: routing decides the pipeline from the changed
     // paths, and sizing needs the exact Change Set.
@@ -245,18 +242,14 @@ pub(super) fn resolve_plan(
         .as_ref()
         .map(|change_set| change_set.changed_paths.clone())
         .unwrap_or_default();
-    let mut route = match (&project, options.pipeline_explicit) {
-        (Some((_, project)), false) => project.select_route(&changed_paths)?,
-        (Some(_), true) => crate::project::RouteDecision::explicit(&requested_path),
-        (None, _) => crate::project::RouteDecision::legacy(&requested_path),
+    let mut route = if options.pipeline_explicit {
+        crate::project::RouteDecision::explicit(&requested_path)
+    } else {
+        project.select_route(&changed_paths)?
     };
-    let load = |path: &str| {
-        load_pinned_pipeline(&policy.manifest, cas, &lockfile, &registry, &layout, path)
-    };
+    let load = |path: &str| load_pinned_pipeline(&policy.manifest, cas, &lockfile, &registry, path);
     let pipeline = load(&route.pipeline_path)?;
-    if let Some((project_bytes, _)) = &project {
-        validate_af_project(project_bytes, &pipeline.path)?;
-    }
+    validate_af_project(&project_bytes, &pipeline.path)?;
     match (pipeline.loaded.subject_kind(), base.is_some()) {
         (SubjectKind::Diff, false) => return Err("diff review plan requires `--base REV`".into()),
         (SubjectKind::WholeTree, _) if options.base.is_some() => {
@@ -272,7 +265,7 @@ pub(super) fn resolve_plan(
         };
     let (pipeline, input_sizes) = apply_oversized_policy(
         cas,
-        project.as_ref().map(|(_, project)| project),
+        &project,
         &mut route,
         pipeline,
         change_set.as_ref(),
@@ -852,20 +845,19 @@ fn open_new(
         .map_err(|error| format!("capturing authority `{authority_ref}`: {error}"))?;
     let (authority_snapshot_id, authority_manifest_id) = publish_snapshot(&snapshot, cas)?;
 
-    let layout = authority_layout(pipeline_path, false)?;
-    let lock_path = layout.lock.clone();
-    let lock_bytes = authority_bytes(&snapshot.manifest, cas, &lock_path)?;
+    require_af_pipeline(pipeline_path)?;
+    let lock_bytes = authority_bytes(&snapshot.manifest, cas, AUTHORITY_LOCK)?;
     let lock_text = std::str::from_utf8(&lock_bytes)
-        .map_err(|error| format!("authority lock `{lock_path}` is not UTF-8: {error}"))?;
+        .map_err(|error| format!("authority lock `{AUTHORITY_LOCK}` is not UTF-8: {error}"))?;
     let lockfile = Lockfile::from_toml(lock_text).map_err(|error| error.to_string())?;
-    if let Some(note) = crate::project::check_lock_af_version(&lockfile, &lock_path)? {
+    if let Some(note) = crate::project::check_lock_af_version(&lockfile, AUTHORITY_LOCK)? {
         eprintln!("af review: note: {note}");
     }
-    let project = captured_project(&snapshot.manifest, cas, &layout)?;
+    let (project_bytes, project) = captured_project(&snapshot.manifest, cas)?;
     let registry = Registry::captured(captured_registry(
         &snapshot.manifest,
         cas,
-        &layout.registry,
+        AUTHORITY_REGISTRY,
     )?);
 
     // Base before the pipeline: routing decides the pipeline from the changed paths, and the
@@ -891,10 +883,7 @@ fn open_new(
         }
         None => (None, None),
     };
-    let routing_applies = !options.pipeline_explicit
-        && project
-            .as_ref()
-            .is_some_and(|(_, project)| project.routes_configured());
+    let routing_applies = !options.pipeline_explicit && project.routes_configured();
     let change_set = match (routing_applies, &base, base_snapshot_id.as_deref()) {
         (true, Some(base), Some(base_snapshot_id)) => {
             capture_candidate(
@@ -912,14 +901,13 @@ fn open_new(
         .as_ref()
         .map(|change_set| change_set.changed_paths.clone())
         .unwrap_or_default();
-    let mut route = match (&project, options.pipeline_explicit) {
-        (Some((_, project)), false) => project.select_route(&changed_paths)?,
-        (Some(_), true) => crate::project::RouteDecision::explicit(pipeline_path),
-        (None, _) => crate::project::RouteDecision::legacy(pipeline_path),
+    let mut route = if options.pipeline_explicit {
+        crate::project::RouteDecision::explicit(pipeline_path)
+    } else {
+        project.select_route(&changed_paths)?
     };
-    let load = |path: &str| {
-        load_pinned_pipeline(&snapshot.manifest, cas, &lockfile, &registry, &layout, path)
-    };
+    let load =
+        |path: &str| load_pinned_pipeline(&snapshot.manifest, cas, &lockfile, &registry, path);
     let pipeline = load(&route.pipeline_path)?;
     match (pipeline.loaded.subject_kind(), base.is_some()) {
         (SubjectKind::Diff, false) => {
@@ -936,7 +924,7 @@ fn open_new(
     let (pipeline, _input_sizes) = if routing_applies {
         apply_oversized_policy(
             cas,
-            project.as_ref().map(|(_, project)| project),
+            &project,
             &mut route,
             pipeline,
             change_set.as_ref(),
@@ -996,13 +984,8 @@ fn open_new(
         .put(&pipeline_bytes)
         .map_err(|error| error.to_string())?;
     let lock_artifact_id = cas.put(&lock_bytes).map_err(|error| error.to_string())?;
-    let project_policy_ids = match &project {
-        Some((project_bytes, _)) => {
-            validate_af_project(project_bytes, pipeline_path)?;
-            vec![cas.put(project_bytes).map_err(|error| error.to_string())?]
-        }
-        None => Vec::new(),
-    };
+    validate_af_project(&project_bytes, pipeline_path)?;
+    let project_policy_ids = vec![cas.put(&project_bytes).map_err(|error| error.to_string())?];
     let finding_genesis_id = cas
         .put_json(&serde_json::json!({
             "kind": "finding-set-genesis@1",
@@ -1075,7 +1058,7 @@ fn open_new(
             artifact_id: pipeline_artifact_id.clone(),
         },
         reviewer_lock: AuthorityFileV1 {
-            path: lock_path,
+            path: AUTHORITY_LOCK.to_string(),
             artifact_id: lock_artifact_id.clone(),
         },
         reviewers,
@@ -2136,38 +2119,20 @@ fn captured_registry(
     Ok(packages)
 }
 
-pub(crate) struct AuthorityLayout {
-    pub(crate) root: String,
-    pub(crate) lock: String,
-    pub(crate) registry: String,
-}
+/// The lock and the Worker registry every `.af/` pipeline is pinned and loaded against.
+const AUTHORITY_LOCK: &str = ".af/af.lock";
+const AUTHORITY_REGISTRY: &str = ".af/workers";
 
-/// The authority files a pipeline path implies. `recorded` says the path comes from a stored
-/// Campaign Manifest: such a Campaign may still name the retired `.review/` layout and stays
-/// replayable, while a new invocation may not (ADR-0043, since v0.8.0).
-fn authority_layout(pipeline: &str, recorded: bool) -> Result<AuthorityLayout, String> {
+/// Review authority lives only under `.af/`: a pipeline path must name a file there.
+fn require_af_pipeline(pipeline: &str) -> Result<(), String> {
     let root = Path::new(pipeline)
         .parent()
         .and_then(Path::parent)
-        .and_then(Path::to_str)
-        .filter(|path| !path.is_empty())
-        .ok_or_else(|| "the pipeline path must live under `.af/pipelines/`".to_string())?;
-    match root {
-        ".af" => Ok(AuthorityLayout {
-            root: root.to_string(),
-            lock: ".af/af.lock".to_string(),
-            registry: ".af/workers".to_string(),
-        }),
-        ".review" if recorded => Ok(AuthorityLayout {
-            root: root.to_string(),
-            lock: ".review/review.lock".to_string(),
-            registry: ".review/reviewers".to_string(),
-        }),
-        ".review" => Err(
-            "`.review/` authority is no longer read for new Campaigns (since v0.8.0, ADR-0043) — fix: `af onboard --migrate --apply` moves it to `.af/`; commit the result and delete `.review/`"
-                .to_string(),
-        ),
-        _ => Err("the pipeline path must live under `.af/pipelines/`".to_string()),
+        .and_then(Path::to_str);
+    if root == Some(".af") {
+        Ok(())
+    } else {
+        Err("the pipeline path must live under `.af/pipelines/`".to_string())
     }
 }
 
