@@ -13,7 +13,7 @@ review-process = { path = "../review-process" }
 review-store = { path = "../review-store" }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
-toml = "0.8.23"
+toml = "1.1.6"
 tempfile = "3.27.0"
 
 [lints]

@@ -15,7 +15,7 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
 sha2 = "0.11.0"
-toml = "0.8.23"
+toml = "1.1.6"
 tempfile = "3.27.0"
 reflink-copy = "0.1.30"
 
