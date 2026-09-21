@@ -1370,10 +1370,8 @@ impl super::host::TaskEnvironment for OptimizationEnvironment {
                 .collect(),
             caches: vec![TaskCacheObservationV1 {
                 observation_id,
-                layer: TaskCacheLayerV1::DependencyPreparation,
                 kind: "cargo".into(),
                 eligible: prepared.snapshot.is_some(),
-                result: TaskCacheResultV1::Prepared,
                 source_digest: prepared.source_digest.clone(),
                 toolchain_id: prepared.toolchain_id.clone(),
                 bytes_available: prepared.snapshot.as_ref().map_or(0, |value| value.bytes),

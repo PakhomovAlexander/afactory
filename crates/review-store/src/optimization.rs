@@ -847,6 +847,38 @@ mod tests {
     }
 
     #[test]
+    fn one_execution_without_context_leaves_the_project_context_unknown() {
+        let measured = |id: char, execution: &str, context: Option<u128>| {
+            let mut observation = observation(id, execution, 10, 0, 10);
+            observation.tokens.as_mut().unwrap().context_tokens = context.map(Into::into);
+            observation
+        };
+        let economics = |observations| {
+            project_economics(&[(digest('8'), capture(None, observations))]).unwrap()
+        };
+        let both = economics(vec![
+            measured('4', "first", Some(80)),
+            measured('5', "second", Some(20)),
+        ]);
+        assert_eq!(both.context_tokens.unwrap().get(), 100);
+        let one = economics(vec![
+            measured('4', "first", Some(80)),
+            measured('5', "second", None),
+        ]);
+        assert!(one.context_tokens.is_none());
+        assert_eq!(
+            one.rows
+                .iter()
+                .find(|row| row.execution_id == "first")
+                .unwrap()
+                .context_tokens
+                .unwrap()
+                .get(),
+            80
+        );
+    }
+
+    #[test]
     fn concurrent_executions_do_not_sum_overlapping_elapsed_time() {
         let captures = vec![(
             digest('8'),

@@ -16,7 +16,6 @@ pub const TASK_RUNTIME_EVIDENCE_V1: &str = "af/TaskRuntimeEvidence@1";
 pub enum TaskRuntimeSpanKindV1 {
     Check,
     DependencyPreparation,
-    Verification,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,31 +41,14 @@ impl TaskRuntimeSpanV1 {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskCacheLayerV1 {
-    DependencyPreparation,
-    ToolInternal,
-    ProviderInternal,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum TaskCacheResultV1 {
-    Prepared,
-    Hit,
-    Miss,
-    Unknown,
-}
-
+/// Dependency bytes AF prepared for a sandbox. It records availability and host time only,
+/// never a tool or provider cache result.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskCacheObservationV1 {
     pub observation_id: String,
-    pub layer: TaskCacheLayerV1,
     pub kind: String,
     pub eligible: bool,
-    pub result: TaskCacheResultV1,
     pub source_digest: String,
     #[serde(
         default,
@@ -88,10 +70,8 @@ impl TaskCacheObservationV1 {
                 && self.toolchain_id.as_deref().is_none_or(is_digest)
                 && self.bytes_available <= crate::json::SAFE_INTEGER_MAX as u64
                 && self.lookup_ms <= crate::json::SAFE_INTEGER_MAX as u64
-                && self.materialization_ms <= crate::json::SAFE_INTEGER_MAX as u64
-                && (self.layer != TaskCacheLayerV1::DependencyPreparation
-                    || self.result == TaskCacheResultV1::Prepared),
-            "Task cache evidence requires bounded identity, layer and measurements",
+                && self.materialization_ms <= crate::json::SAFE_INTEGER_MAX as u64,
+            "Task cache evidence requires bounded identity and measurements",
         )
     }
 }

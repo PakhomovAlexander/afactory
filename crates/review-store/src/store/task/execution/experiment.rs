@@ -12,8 +12,7 @@ use review_core::task::optimization_light::{
     OPTIMIZATION_EXECUTION_CONFIGURATION_V1, OptimizationExecutionConfigurationV1,
 };
 use review_core::task::runtime::{
-    TASK_RUNTIME_EVIDENCE_V1, TaskCacheLayerV1, TaskCacheResultV1, TaskRuntimeEvidenceV1,
-    TaskRuntimeSpanKindV1,
+    TASK_RUNTIME_EVIDENCE_V1, TaskRuntimeEvidenceV1, TaskRuntimeSpanKindV1,
 };
 use review_graph::task::{
     EXPERIMENT_EXECUTION_PLAN_V1, ExperimentExecutionPlanV1, ExperimentPlannedChildV1,
@@ -119,8 +118,6 @@ pub fn experiment_measured_costs(
     let mut saw_cache = false;
     let mut cache_population_cursor = 0u64;
     let mut cache_lookup_cursor = 0u64;
-    let mut cache_copy_cursor = 0u64;
-    let mut cache_unknown = false;
     let mut toolchain_unknown = false;
     for attempt in attempts {
         for id in &attempt.raw_artifact_ids {
@@ -161,9 +158,10 @@ pub fn experiment_measured_costs(
                 }
             }
             for cache in evidence.caches {
+                // Every cache observation is dependency preparation that populates the cache.
                 saw_cache = true;
+                saw_preparation = true;
                 toolchain_unknown |= cache.toolchain_id.is_none();
-                saw_preparation |= cache.layer == TaskCacheLayerV1::DependencyPreparation;
                 if cache.lookup_ms > 0 {
                     let end = cache_lookup_cursor
                         .checked_add(cache.lookup_ms)
@@ -175,29 +173,16 @@ pub fn experiment_measured_costs(
                     });
                     cache_lookup_cursor = end;
                 }
-                let (kind, cursor) = match cache.result {
-                    TaskCacheResultV1::Prepared | TaskCacheResultV1::Miss => (
-                        ExperimentIntervalKindV1::CachePopulation,
-                        &mut cache_population_cursor,
-                    ),
-                    TaskCacheResultV1::Hit => {
-                        (ExperimentIntervalKindV1::CacheCopy, &mut cache_copy_cursor)
-                    }
-                    TaskCacheResultV1::Unknown => {
-                        cache_unknown = true;
-                        continue;
-                    }
-                };
                 if cache.materialization_ms > 0 {
-                    let end = cursor
+                    let end = cache_population_cursor
                         .checked_add(cache.materialization_ms)
                         .ok_or_else(|| conflict("Cache materialization timing overflow"))?;
                     intervals.push(ExperimentMeasurementIntervalV1 {
-                        kind,
-                        start_ms: *cursor,
+                        kind: ExperimentIntervalKindV1::CachePopulation,
+                        start_ms: cache_population_cursor,
                         end_ms: end,
                     });
-                    *cursor = end;
+                    cache_population_cursor = end;
                 }
             }
         }
@@ -206,7 +191,7 @@ pub fn experiment_measured_costs(
     if !saw_preparation {
         missing_measurements.insert("preparation".into());
     }
-    if !saw_cache || cache_unknown {
+    if !saw_cache {
         missing_measurements.extend(
             ["cache_population", "cache_lookup", "cache_copy"]
                 .into_iter()

@@ -14,8 +14,7 @@
 //! replayed binding cannot widen the boundary at runtime.
 
 use review_core::task::runtime::{
-    TaskCacheLayerV1, TaskCacheObservationV1, TaskCacheResultV1, TaskRuntimeSpanKindV1,
-    TaskRuntimeSpanV1,
+    TaskCacheObservationV1, TaskRuntimeSpanKindV1, TaskRuntimeSpanV1,
 };
 use review_core::{
     BuildCacheCapturedPayloadV1, BuildCacheDropReasonV1, BuildCacheKindV1,
@@ -377,10 +376,8 @@ impl ReviewDomainState<'_> {
             },
             observation: TaskCacheObservationV1 {
                 observation_id,
-                layer: TaskCacheLayerV1::DependencyPreparation,
                 kind: kind.as_str().into(),
                 eligible: true,
-                result: TaskCacheResultV1::Prepared,
                 source_digest: manifest_id.to_string(),
                 toolchain_id: None,
                 bytes_available: bytes,

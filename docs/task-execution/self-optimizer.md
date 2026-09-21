@@ -29,33 +29,32 @@ max_record_bytes = 1048576
 max_normalized_bytes = 16777216
 
 [[sources]]
-    adapter = "af" # native AF event export; codex | claude | external are also supported
-path = "../captured-history/af.jsonl"
-source_id = "af-task-store-export"
-execution_id = "project-history"
+adapter = "af" # `af task show --json` receipts; codex | claude | external are also supported
+path = "../captured-history/task.jsonl"
+source_id = "af-task-inspection"
+execution_id = "TASK_ID"
+attest_project = true
 ```
 
-`external` is the explicit normalized import and fixture adapter. Each JSONL line has
+`external` is the normalized import and fixture adapter. Each JSONL line has
 `observed_unix_ms`, exact `attribution`, and optional typed `tokens`, `spans`, `caches`, `outcome`,
-and `missing_fields`; unknown fields are rejected. Historical files that used another adapter
-label for this shape remain readable and are receipted as `legacy-normalized-v1`.
+and `missing_fields`; unknown fields are rejected. The native adapters never read this shape.
 
-`af`, `codex`, and `claude` consume their declared native JSONL shapes. Their parsers select only
+`af` reads only the `af/task-inspection` receipts that `af task show --json` prints (see
+[Historical native receipts](#historical-native-receipts)); any other line is refused. `codex` and
+`claude` consume their declared native JSONL shapes. Every native parser selects only
 project/session identities, timestamps, model/effort labels, exact usage counters, lifecycle,
 cache receipts and outcome authority. Message text, tool payloads, headers, environment values,
-thinking and redacted-thinking blocks are never copied to an Observation. AF records require an
-exact `project_id`; provider sessions require either that identity or a canonical `cwd` equal to
-the selected repository. Foreign and unassigned sessions are excluded and reported as coverage
-gaps. Codex cumulative `token_count` snapshots and repeated Claude message snapshots share stable
-cumulative keys, while distinct turns/messages remain distinct. Provider-native costs are marked
-as outer-session usage and never added to AF charges.
+thinking and redacted-thinking blocks are never copied to an Observation. Provider sessions
+require either the configured `project_id` or a canonical `cwd` equal to the selected repository.
+Foreign and unassigned sessions are excluded and reported as coverage gaps. Codex cumulative
+`token_count` snapshots and repeated Claude message snapshots share stable cumulative keys, while
+distinct turns/messages remain distinct. Provider-native costs are marked as outer-session usage
+and never added to AF charges.
 
-Credential-free examples of all three formats live in `fixtures/self-optimizer/native/`. AF event
-exports join `attempt_started`, `usage_observed`, and `attempt_settled` by exact Attempt identity;
-the joined lifecycle creates concurrent-safe host spans, and declared cache observations retain
-eligibility, hit/miss/unknown, temperature, invalidation identity and reuse measurements. Fields
-that the historical source did not measure remain named unknowns. No provider-internal span or
-cache result is inferred.
+Credential-free Codex and Claude examples live in `fixtures/self-optimizer/native/`. Fields that
+a source did not measure remain named unknowns. No provider-internal span or cache result is
+inferred.
 
 Every source file is read only to a complete bounded record under a stable size/mtime check. The
 receipt records the exact byte range, prefix digest, UTC cutoff, adapter/redaction version and
@@ -204,8 +203,9 @@ usage-observed and settled charges are reconciled by Attempt identity and each b
 candidate, failed arm, retry and admission is counted once. Shared Code Task and captured Review
 checks retain host-observed check spans. Captured
 Review cache setup retains lookup/materialization timing, source digest and bytes made available.
-That cache evidence is labelled `dependency_preparation`: it is never reported as a compiler or
-provider cache hit, and absent toolchain or internal-hit evidence remains unknown.
+That cache evidence is a `dependency_preparation` span and a preparation cache observation with
+no hit or miss field: it is never reported as a compiler or provider cache hit, and absent
+toolchain or internal-hit evidence remains unknown.
 Queue intervals come from exact reservation/start transitions; approval and user-wait intervals
 come only from recorded planning/wait/resume transitions. AF does not infer provider-internal
 phases from those host clocks.

@@ -183,7 +183,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         repo.join(".af/optimization-sources.toml"),
         toml::to_string(&json!({
             "schema":"af.optimization-sources/1", "project_id":project,
-            "sources":[{"adapter":"af","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]
+            "sources":[{"adapter":"external","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]
         }))
         .unwrap(),
     )
@@ -978,7 +978,10 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         });
     let runtime = cas.get_artifact(runtime_id).unwrap();
     assert_eq!(runtime.payload["caches"][0]["kind"], "cargo");
-    assert_eq!(runtime.payload["caches"][0]["result"], "prepared");
+    assert!(
+        runtime.payload["caches"][0].get("result").is_none(),
+        "preparation evidence makes no cache-result claim"
+    );
     assert!(
         runtime.payload["caches"][0]["bytes_available"]
             .as_u64()
@@ -1324,7 +1327,7 @@ fn controlled_candidate_with_inputs(
     let project = format!("sha256:{}", "3".repeat(64));
     std::fs::write(repo.join(".af/optimization-sources.toml"), toml::to_string(&json!({
         "schema":"af.optimization-sources/1", "project_id":project,
-        "sources":[{"adapter":"af","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]
+        "sources":[{"adapter":"external","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]
     })).unwrap()).unwrap();
     std::fs::write(repo.join(".af/history.jsonl"), json!({"observed_unix_ms":"1","attribution":{"project_id":project,"case_family":"prior","execution_id":"prior"},"outcome":{"outcome":"verified","retries":0,"repairs":0,"later_defects":0}}).to_string()+"\n").unwrap();
     std::fs::write(
@@ -1583,7 +1586,7 @@ fn approved_experiment_that_exceeds_parent_resources_becomes_explicit_non_succes
         repo.join(".af/optimization-sources.toml"),
         toml::to_string(&json!({
             "schema":"af.optimization-sources/1", "project_id":project,
-            "sources":[{"adapter":"af","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]
+            "sources":[{"adapter":"external","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]
         }))
         .unwrap(),
     )
@@ -1719,7 +1722,7 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
     let key = install_candidate_optimizer_catalog(&repo);
     let project = format!("sha256:{}", "3".repeat(64));
     let config = json!({"schema":"af.optimization-sources/1","project_id":project,
-        "sources":[{"adapter":"af","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]});
+        "sources":[{"adapter":"external","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]});
     std::fs::write(
         repo.join(".af/optimization-sources.toml"),
         toml::to_string(&config).unwrap(),
@@ -2062,7 +2065,7 @@ fn self_optimize_compiles_executes_and_replays_without_model_calls() {
     install_optimizer_catalog(&repo);
     let project = format!("sha256:{}", "1".repeat(64));
     let config = json!({"schema":"af.optimization-sources/1","project_id":project,
-        "sources":[{"adapter":"af","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]});
+        "sources":[{"adapter":"external","path":"history.jsonl","source_id":"fixture","execution_id":"session"}]});
     std::fs::write(
         repo.join(".af/optimization-sources.toml"),
         toml::to_string(&config).unwrap(),

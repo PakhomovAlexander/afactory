@@ -100,6 +100,20 @@ or needs a documented hand edit.
   record schemas at once, now validates. `task-transition-v1.json` drops `revision_recorded`, which
   no release wrote, and requires `revocation_id` on `approval_revoked`, which this release always
   writes.
+- `af self optimize` history sources: the `af` adapter reads only the `af/task-inspection`
+  receipts that `af task show --json` prints and refuses any other line, including the
+  `af.task-event/1` event export that no af command produced. The `af`, `codex` and `claude`
+  adapters no longer read normalized records (receipted as `legacy-normalized-v1`): `af` refuses
+  such a line, and `codex` and `claude` take no observation from it. Label such a source
+  `adapter = "external"` and give it a new `source_id`, because a retained source cannot change
+  adapter. Report-only and `--experiment` requests now derive their `optimize-…` Task ID
+  the same way light requests do, so re-running one whose capture an earlier release took starts a
+  new Task.
+- `af/TaskRuntimeEvidence@1` cache observations no longer carry `layer` and `result`, which were
+  always `dependency_preparation` and `prepared`, and a runtime span's `kind` is `check` or
+  `dependency_preparation` only. `task-runtime-evidence-v1.json`, and the `af/task-inspection`
+  schemas that embed it, are narrowed to match, so runtime evidence an earlier release recorded no
+  longer decodes.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

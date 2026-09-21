@@ -637,14 +637,6 @@ fn cache_receipts_and_failed_gate_observations_survive_store_reopen() {
                     == review_core::task::runtime::TaskRuntimeSpanKindV1::DependencyPreparation
             }));
             assert_eq!(evidence.caches.len(), 1);
-            assert_eq!(
-                evidence.caches[0].layer,
-                review_core::task::runtime::TaskCacheLayerV1::DependencyPreparation
-            );
-            assert_eq!(
-                evidence.caches[0].result,
-                review_core::task::runtime::TaskCacheResultV1::Prepared
-            );
             assert_eq!(evidence.caches[0].bytes_available, 13);
             assert!(evidence.caches[0].toolchain_id.is_none());
         }
@@ -1099,8 +1091,7 @@ fn late_usage_fences_task_finish_while_preserving_its_prior_review_conclusion() 
 #[test]
 fn a_task_hosted_worker_retains_its_build_cache_clone_with_its_own_attempt() {
     use review_core::task::runtime::{
-        TASK_RUNTIME_EVIDENCE_V1, TaskCacheLayerV1, TaskCacheResultV1, TaskRuntimeEvidenceV1,
-        TaskRuntimeSpanKindV1,
+        TASK_RUNTIME_EVIDENCE_V1, TaskRuntimeEvidenceV1, TaskRuntimeSpanKindV1,
     };
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
@@ -1201,11 +1192,6 @@ fn a_task_hosted_worker_retains_its_build_cache_clone_with_its_own_attempt() {
     assert_eq!(clone.spans[0].label, "cargo_target");
     assert_eq!(clone.caches.len(), 1);
     assert_eq!(clone.caches[0].kind, "cargo_target");
-    assert_eq!(
-        clone.caches[0].layer,
-        TaskCacheLayerV1::DependencyPreparation
-    );
-    assert_eq!(clone.caches[0].result, TaskCacheResultV1::Prepared);
     assert_eq!(
         clone.caches[0].lookup_ms, 0,
         "a clone is materialization only"

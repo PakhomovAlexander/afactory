@@ -570,10 +570,8 @@ impl<'a> ReviewDomainState<'a> {
                     .or_default()
                     .push(review_core::task::runtime::TaskCacheObservationV1 {
                         observation_id: cache_observation_id,
-                        layer: review_core::task::runtime::TaskCacheLayerV1::DependencyPreparation,
                         kind: snapshot.kind.name().into(),
                         eligible: true,
-                        result: review_core::task::runtime::TaskCacheResultV1::Prepared,
                         source_digest: snapshot.source_digest.clone(),
                         toolchain_id: None,
                         bytes_available: snapshot.bytes,

@@ -12,14 +12,12 @@ use serde_json::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum AdapterVersion {
     Normalized,
-    LegacyNormalized,
     Native,
 }
 
 #[derive(Default)]
 struct AttemptState {
     started_unix_ms: Option<u64>,
-    attribution: Option<OptimizationAttributionV1>,
 }
 
 pub(super) struct AdapterState {
@@ -198,21 +196,16 @@ pub(super) fn parse_adapter_record(
     state: &mut AdapterState,
     line: &[u8],
 ) -> Result<Vec<NormalizedRecord>, String> {
-    // `external` is the public normalized import/fixture adapter. Continue reading historical
-    // normalized files bearing the old AF/Codex/Claude label without changing their receipts.
-    if let Ok(record) = serde_json::from_slice::<NormalizedRecord>(line) {
+    // `external` is the public normalized import/fixture adapter; native adapters never read
+    // the normalized record contract.
+    if state.adapter == "external" {
+        let record = serde_json::from_slice::<NormalizedRecord>(line)
+            .map_err(|_| "external adapter requires the normalized record contract")?;
         if record.attribution.project_id != state.project_id {
             return Err("normalized record has a foreign project identity".into());
         }
-        state.version = Some(if state.adapter == "external" {
-            AdapterVersion::Normalized
-        } else {
-            AdapterVersion::LegacyNormalized
-        });
+        state.version = Some(AdapterVersion::Normalized);
         return Ok(vec![record]);
-    }
-    if state.adapter == "external" {
-        return Err("external adapter requires the normalized record contract".into());
     }
     let value: Value = serde_json::from_slice(line).map_err(|error| error.to_string())?;
     state.mark_native();
@@ -233,118 +226,10 @@ fn parse_af(state: &mut AdapterState, value: &Value) -> Result<Vec<NormalizedRec
     {
         return parse_af_inspection(state, value);
     }
-    state.observe_identity(value);
-    // AF exports must bind every row to the configured project. Unlike provider transcripts,
-    // source location alone is not enough authority for Task receipts.
-    if string_at(value, &["/project_id", "/payload/project_id"]).is_none() {
-        state.gaps.insert("project_identity_unknown".into());
-        return Ok(Vec::new());
-    }
-    if !state.project_member() {
-        return Ok(Vec::new());
-    }
-    let observed = state.observed_time(value);
-    let payload = value.get("payload").unwrap_or(value);
-    let event = string_at(
-        value,
-        &["/event", "/kind", "/payload/event", "/payload/kind"],
+    Err(
+        "af adapter accepts af/task-inspection receipts from `af task show --json`; use external for normalized records"
+            .into(),
     )
-    .unwrap_or("observation");
-    let execution = string_at(
-        value,
-        &[
-            "/execution_id",
-            "/payload/execution_id",
-            "/task_id",
-            "/payload/task_id",
-        ],
-    )
-    .unwrap_or(&state.declared_execution_id);
-    let attempt_id = string_at(value, &["/attempt_id", "/payload/attempt_id"]);
-    let case = string_at(value, &["/case_family", "/payload/case_family"]).unwrap_or("af-task");
-    let mut attribution = state.attribution(case, Some(execution));
-    attribution.task_id =
-        string_at(value, &["/task_id", "/payload/task_id"]).map(|value| bounded(value, "task"));
-    attribution.attempt_id = attempt_id.map(|value| bounded(value, "attempt"));
-    attribution.pipeline = string_at(value, &["/pipeline", "/payload/pipeline"])
-        .map(|value| bounded(value, "pipeline"));
-    attribution.node = string_at(
-        value,
-        &["/node", "/node_id", "/payload/node", "/payload/node_id"],
-    )
-    .map(|value| bounded(value, "node"));
-    attribution.worker =
-        string_at(value, &["/worker", "/payload/worker"]).map(|value| bounded(value, "worker"));
-    attribution.model =
-        string_at(value, &["/model", "/payload/model"]).map(|value| bounded(value, "model"));
-    attribution.effort =
-        string_at(value, &["/effort", "/payload/effort"]).map(|value| bounded(value, "effort"));
-
-    if let Some(attempt) = attempt_id {
-        let joined = state.attempts.entry(attempt.into()).or_default();
-        joined.attribution = Some(attribution.clone());
-        if matches!(event, "attempt_started" | "started") {
-            joined.started_unix_ms = Some(observed);
-        }
-    }
-
-    let usage_value = payload
-        .get("usage")
-        .or_else(|| payload.pointer("/observation/reported_usage"));
-    let charge_complete = payload
-        .get("charge_complete")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
-    let tokens = usage_value
-        .map(|usage| usage_from_af(usage, charge_complete, attempt_id.unwrap_or(execution)))
-        .transpose()?;
-    let mut spans = Vec::new();
-    if matches!(
-        event,
-        "attempt_settled" | "settled" | "attempt_finished" | "finished"
-    ) && let Some(attempt) = attempt_id
-        && let Some(start) = state
-            .attempts
-            .get(attempt)
-            .and_then(|attempt| attempt.started_unix_ms)
-    {
-        spans.extend(runtime_spans("af", attempt, start, observed));
-    }
-    if let (Some(start), Some(elapsed)) = (
-        payload.get("started_unix_ms").and_then(decimal_u64),
-        payload.get("elapsed_ms").and_then(decimal_u64),
-    ) {
-        spans.extend(runtime_spans(
-            "af",
-            attempt_id.unwrap_or(execution),
-            start,
-            start.saturating_add(elapsed),
-        ));
-    }
-    let caches = payload
-        .get("caches")
-        .cloned()
-        .map(serde_json::from_value::<Vec<OptimizationCacheObservationV1>>)
-        .transpose()
-        .map_err(|error| format!("invalid AF cache observation: {error}"))?
-        .unwrap_or_default();
-    let outcome = outcome_from_value(payload);
-    if tokens.is_none() && spans.is_empty() && caches.is_empty() && outcome.is_none() {
-        return Ok(Vec::new());
-    }
-    let mut missing = missing_for_tokens(tokens.as_ref());
-    if spans.is_empty() {
-        missing.insert("elapsed_time".into());
-    }
-    Ok(vec![NormalizedRecord {
-        observed_unix_ms: observed.into(),
-        attribution,
-        tokens,
-        spans,
-        caches,
-        outcome,
-        missing_fields: missing,
-    }])
 }
 
 /// Read the actual public AF inspection receipt, preserving its cumulative accounting.
@@ -666,9 +551,6 @@ fn parse_af_inspection(
                 review_core::task::runtime::TaskRuntimeSpanKindV1::DependencyPreparation => {
                     OptimizationSpanKindV1::DependencyPreparation
                 }
-                review_core::task::runtime::TaskRuntimeSpanKindV1::Verification => {
-                    OptimizationSpanKindV1::Verification
-                }
             };
             spans.push(OptimizationSpanV1 {
                 span_id: span.span_id,
@@ -684,35 +566,15 @@ fn parse_af_inspection(
             .caches
             .into_iter()
             .map(|cache| {
-                let (result, kind) = match cache.layer {
-                    review_core::task::runtime::TaskCacheLayerV1::DependencyPreparation => {
-                        missing.insert("cache_internal_result".into());
-                        (
-                            CacheResultV1::Unknown,
-                            format!("preparation_{}", cache.kind),
-                        )
-                    }
-                    review_core::task::runtime::TaskCacheLayerV1::ToolInternal
-                    | review_core::task::runtime::TaskCacheLayerV1::ProviderInternal => (
-                        match cache.result {
-                            review_core::task::runtime::TaskCacheResultV1::Hit => {
-                                CacheResultV1::Hit
-                            }
-                            review_core::task::runtime::TaskCacheResultV1::Miss => {
-                                CacheResultV1::Miss
-                            }
-                            _ => CacheResultV1::Unknown,
-                        },
-                        cache.kind,
-                    ),
-                };
+                // AF records dependency preparation only, never a tool or provider cache result.
+                missing.insert("cache_internal_result".into());
                 if cache.toolchain_id.is_none() {
                     missing.insert("cache_toolchain_identity".into());
                 }
                 OptimizationCacheObservationV1 {
-                    kind,
+                    kind: format!("preparation_{}", cache.kind),
                     eligible: cache.eligible,
-                    result,
+                    result: CacheResultV1::Unknown,
                     temperature: CacheTemperatureV1::Unknown,
                     invalidation_id: Some(cache.source_digest),
                     // Preparation bytes were made available; they are not evidence of an
@@ -979,28 +841,6 @@ fn parse_claude(state: &mut AdapterState, value: &Value) -> Result<Vec<Normalize
     }])
 }
 
-fn usage_from_af(
-    value: &Value,
-    charge_complete: bool,
-    cumulative_key: &str,
-) -> Result<OptimizationTokenObservationV1, String> {
-    let usage: TaskTokenUsageV3 = serde_json::from_value(value.clone())
-        .map_err(|error| format!("invalid AF Task usage: {error}"))?;
-    Ok(OptimizationTokenObservationV1 {
-        cumulative_key: bounded(cumulative_key, "af-attempt"),
-        usage,
-        status: if charge_complete {
-            MeasurementStatusV1::Exact
-        } else {
-            MeasurementStatusV1::LowerBound
-        },
-        context_tokens: None,
-        retrieval_tokens: None,
-        repeated_context_tokens: None,
-        outer_session: false,
-    })
-}
-
 fn usage_from_codex(value: &Value, cumulative_key: &str) -> OptimizationTokenObservationV1 {
     let input = counter(value, "input_tokens");
     let output = counter(value, "output_tokens");
@@ -1088,33 +928,6 @@ fn provider_cache(value: &Value) -> OptimizationCacheObservationV1 {
     }
 }
 
-fn outcome_from_value(value: &Value) -> Option<OptimizationOutcomeObservationV1> {
-    let raw = value.get("outcome").and_then(|outcome| {
-        outcome
-            .as_str()
-            .or_else(|| outcome.get("outcome")?.as_str())
-    })?;
-    let outcome = match raw {
-        "verified" | "satisfied" | "succeeded" => OptimizationOutcomeV1::Verified,
-        "failed" | "unsatisfied" => OptimizationOutcomeV1::Failed,
-        "cancelled" => OptimizationOutcomeV1::Cancelled,
-        "abandoned" => OptimizationOutcomeV1::Abandoned,
-        _ => OptimizationOutcomeV1::Incomplete,
-    };
-    Some(OptimizationOutcomeObservationV1 {
-        outcome,
-        requirements_id: string_at(value, &["/requirements_id", "/outcome/requirements_id"])
-            .filter(|id| review_core::is_digest(id))
-            .map(str::to_owned),
-        verifier_id: string_at(value, &["/verifier_id", "/outcome/verifier_id"])
-            .filter(|id| review_core::is_digest(id))
-            .map(str::to_owned),
-        retries: u32_at(value, &["/retries", "/outcome/retries"]),
-        repairs: u32_at(value, &["/repairs", "/outcome/repairs"]),
-        later_defects: u32_at(value, &["/later_defects", "/outcome/later_defects"]),
-    })
-}
-
 fn runtime_spans(adapter: &str, id: &str, start: u64, end: u64) -> Vec<OptimizationSpanV1> {
     [
         OptimizationSpanKindV1::EndToEnd,
@@ -1184,14 +997,6 @@ fn decimal_u64(value: &Value) -> Option<u64> {
 
 fn string_at<'a>(value: &'a Value, paths: &[&str]) -> Option<&'a str> {
     paths.iter().find_map(|path| value.pointer(path)?.as_str())
-}
-
-fn u32_at(value: &Value, paths: &[&str]) -> u32 {
-    paths
-        .iter()
-        .find_map(|path| value.pointer(path)?.as_u64())
-        .and_then(|value| u32::try_from(value).ok())
-        .unwrap_or(0)
 }
 
 fn bounded(value: &str, fallback: &str) -> String {
@@ -1470,53 +1275,6 @@ mod tests {
                 .is_empty()
         );
         assert!(foreign.gaps.contains("excluded_foreign_project"));
-    }
-
-    #[test]
-    fn native_af_joins_lifecycle_usage_cache_and_outcome_by_attempt() {
-        let dir = tempfile::tempdir().unwrap();
-        let project = format!("sha256:{}", "1".repeat(64));
-        let mut adapter = state("af", dir.path());
-        let base = |event: &str, at: &str| {
-            serde_json::json!({
-                "schema":"af.task-event/1","project_id":project,"observed_unix_ms":at,
-                "event":event,"task_id":"task","execution_id":"execution","attempt_id":"attempt",
-                "case_family":"fixture","node":"gate"
-            })
-        };
-        assert!(
-            parse_adapter_record(
-                &mut adapter,
-                base("attempt_started", "10").to_string().as_bytes()
-            )
-            .unwrap()
-            .is_empty()
-        );
-        let mut usage = base("usage_observed", "15");
-        usage["usage"] =
-            serde_json::json!({"input_tokens":"10","output_tokens":"2","chargeable_tokens":"12"});
-        assert_eq!(
-            parse_adapter_record(&mut adapter, usage.to_string().as_bytes()).unwrap()[0]
-                .tokens
-                .as_ref()
-                .unwrap()
-                .usage
-                .chargeable_tokens
-                .get(),
-            12
-        );
-        let mut settled = base("attempt_settled", "30");
-        settled["outcome"] = Value::String("verified".into());
-        settled["caches"] = serde_json::json!([{"kind":"cargo","eligible":true,"result":"hit","temperature":"warm","bytes_reused":"20"}]);
-        let record = parse_adapter_record(&mut adapter, settled.to_string().as_bytes())
-            .unwrap()
-            .remove(0);
-        assert_eq!(record.spans.len(), 2);
-        assert_eq!(record.caches.len(), 1);
-        assert_eq!(
-            record.outcome.unwrap().outcome,
-            OptimizationOutcomeV1::Verified
-        );
     }
 
     #[test]
