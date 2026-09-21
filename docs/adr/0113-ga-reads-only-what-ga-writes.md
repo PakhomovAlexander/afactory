@@ -95,8 +95,9 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0044](0044-af-manages-itself-and-dispatches-to-the-pinned-release.md): the `afactory/`
   configuration read-through and the `AFACTORY_*` rename refusals.
 - [ADR-0045](0045-one-release-train-and-a-pin-that-binds-bytes.md): the 0.7.1 `af_version` lock
-  shape, unsigned pre-0.8.0 releases, the 0.7.1 floor, replay of `.review/` Campaigns, and the
-  release gate that plans a downstream consumer's pinned policy with every built binary.
+  shape, unsigned pre-0.8.0 releases, the 0.7.1 floor, the `.review/` to `.af/` conversion
+  (`af onboard --migrate`), replay of `.review/` Campaigns, and the release gate that plans a
+  downstream consumer's pinned policy with every built binary.
 - [ADR-0051](0051-compile-fixed-implementation-tasks-into-the-common-runtime.md): readers for the
   original implementation history and delivery schemas, and the v0.8.0 compatibility fixture.
 - [ADR-0057](0057-export-portable-task-definitions-without-execution-authority.md): readability of

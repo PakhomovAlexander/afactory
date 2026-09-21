@@ -174,7 +174,7 @@ pub struct NodeSpec {
     /// meaningless on any other kind of node.
     #[serde(default)]
     pub runner: Option<CommandSpec>,
-    /// A reviewer package from the registries, pinned in `review.lock`. The runner command
+    /// A reviewer package from the registries, pinned in `.af/af.lock`. The runner command
     /// then comes from the package's digest-verified manifest.
     #[serde(default)]
     pub package: Option<String>,

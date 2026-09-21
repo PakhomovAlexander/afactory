@@ -5383,7 +5383,7 @@ mod option_tests {
                 artifact_id: pipeline_id,
             },
             reviewer_lock: review_core::AuthorityFileV1 {
-                path: ".af/review.lock".into(),
+                path: ".af/af.lock".into(),
                 artifact_id: opaque,
             },
             reviewers: Vec::new(),

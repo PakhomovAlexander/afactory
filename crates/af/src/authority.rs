@@ -2119,7 +2119,7 @@ fn captured_registry(
     Ok(packages)
 }
 
-/// The lock and the Worker registry every `.af/` pipeline is pinned and loaded against.
+// The lock and the Worker registry every `.af/` pipeline is pinned and loaded against.
 const AUTHORITY_LOCK: &str = ".af/af.lock";
 const AUTHORITY_REGISTRY: &str = ".af/workers";
 
@@ -2236,6 +2236,25 @@ mod tests {
             correlation_id: None,
             artifact_refs: vec![],
             payload,
+        }
+    }
+
+    #[test]
+    fn a_pipeline_outside_af_pipelines_is_refused() {
+        assert_eq!(
+            super::require_af_pipeline(".af/pipelines/review.toml"),
+            Ok(())
+        );
+        for pipeline in [
+            ".review/pipelines/heavy.toml",
+            "pipelines/review.toml",
+            "review.toml",
+        ] {
+            let error = super::require_af_pipeline(pipeline).unwrap_err();
+            assert!(
+                error.contains("must live under `.af/pipelines/`"),
+                "{pipeline}: {error}"
+            );
         }
     }
 
