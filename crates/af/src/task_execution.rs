@@ -20,7 +20,7 @@ use review_pipeline::task::document::{
     DocumentTaskDomain, DocumentTaskPolicy, document_signatures,
 };
 use review_pipeline::task::host::{
-    CapturedTaskAuthority, CommandTaskHost, NoTaskDeveloper, TaskDomain, TaskModelBinding,
+    CapturedTaskAuthority, CapturedTaskHost, NoTaskDeveloper, TaskDomain, TaskModelBinding,
 };
 use review_pipeline::task::optimization::{
     OptimizationCandidateTaskDomain, OptimizationTaskDomain, optimization_signatures,
@@ -1241,7 +1241,7 @@ fn start_captured(
         inner: inner.as_ref(),
     };
     let environment = domain::environment(&cas, &authority, profile)?;
-    let host = CommandTaskHost::capture_with_models(
+    let host = CapturedTaskHost::capture_with_models(
         &cas,
         &compiler,
         &revision,
@@ -1552,7 +1552,7 @@ fn execute(
     store: &mut EventStore,
     lease: &TaskLease,
     authority: &CapturedTaskAuthority<'_>,
-    host: &CommandTaskHost<'_>,
+    host: &CapturedTaskHost<'_>,
     domain: &dyn TaskDomain,
 ) -> Result<(), String> {
     let cancellation = std::sync::atomic::AtomicBool::new(false);
@@ -1702,7 +1702,7 @@ pub(super) fn run(
         inner: inner.as_ref(),
     };
     let environment = domain::environment(&cas, &authority, profile)?;
-    let host = CommandTaskHost::capture_with_models(
+    let host = CapturedTaskHost::capture_with_models(
         &cas,
         &compiler,
         &projection.revision,

@@ -581,9 +581,17 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
         let environment = SnapshotTaskEnvironment {
             policy: code.isolation(),
         };
-        let host =
-            CapturedTaskHost::capture(&cas, &compiler, &task, &plan, graph, &environment, &domain)
-                .unwrap();
+        let host = CapturedTaskHost::capture_with_models(
+            &cas,
+            &compiler,
+            &task,
+            &plan,
+            graph,
+            &environment,
+            &domain,
+            &BTreeMap::new(),
+        )
+        .unwrap();
         let authority = CapturedTaskAuthority::new(&compiler, &host, &NoTaskDeveloper);
         let lease = store
             .open_task(&cas, &revision, "test-writer", 60000)

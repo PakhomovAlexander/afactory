@@ -10,7 +10,9 @@ mod owned;
 #[path = "plan/provider_probe.rs"]
 mod provider_probe;
 use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
-use review_pipeline::task::legacy_review::plan::{LegacyReviewPlanCompiler, ReviewPlanSettings};
+use review_pipeline::task::legacy_review::plan::{
+    LegacyReviewPlanCompiler, ReviewPlanSettings, ReviewPlanSettingsV2,
+};
 use review_pipeline::task::{TaskOperatorHost, TaskWorkOutput};
 use review_store::store::task::execution::PreparedTaskAttempt;
 
@@ -72,6 +74,13 @@ pub(super) fn settings() -> ReviewPlanSettings {
             wall_ms: 1000,
         },
         allowed_effects: Default::default(),
+    }
+}
+/// The captured policy settings with no Brokered Provider probe, as `af review run` writes them.
+pub(super) fn without_probes(review: ReviewPlanSettings) -> ReviewPlanSettingsV2 {
+    ReviewPlanSettingsV2 {
+        review,
+        provider_probes: BTreeMap::new(),
     }
 }
 pub(super) fn artifact(cas: &Cas, ty: &str, value: impl serde::Serialize) -> String {
@@ -203,7 +212,7 @@ fn captured_review_plan_admits_reopens_and_refuses_changed_or_missing_authority(
         &cas,
         CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
         engine.clone(),
-        settings(),
+        without_probes(settings()),
     )
     .unwrap();
     let task = compiler
@@ -336,7 +345,7 @@ fn captured_native_runner_requires_exact_model_binding_and_common_provider_budge
             &cas,
             CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
             engine.clone(),
-            settings,
+            without_probes(settings),
         )
     };
     assert!(
@@ -412,16 +421,8 @@ fn assert_plan_schemas(cas: &Cas, compiler: &LegacyReviewPlanCompiler, plan: &Ex
         .unwrap();
         [
             (
-                "af/LegacyReviewTaskPolicy@1",
-                "legacy-review-task-policy-v1.json",
-            ),
-            (
-                "af/LegacyReviewTaskPolicy@2",
-                "legacy-review-task-policy-v2.json",
-            ),
-            (
-                "af/LegacyReviewTaskPolicy@3",
-                "legacy-review-task-policy-v3.json",
+                "af/LegacyReviewTaskPolicy@4",
+                "legacy-review-task-policy-v4.json",
             ),
             (
                 "af/TaskProviderProbePolicy@1",
@@ -442,24 +443,21 @@ fn assert_plan_schemas(cas: &Cas, compiler: &LegacyReviewPlanCompiler, plan: &Ex
             let schema: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(root.join("schemas").join(file)).unwrap())
                     .unwrap();
-            let mut registry = jsonschema::Registry::new();
-            let id = common["$id"].as_str().unwrap().to_owned();
-            registry = registry
-                .add(id, jsonschema::Resource::from_contents(common.clone()))
-                .unwrap();
-            for file in [
-                "legacy-review-task-policy-v1.json",
-                "task-broker-binding-v1.json",
-            ] {
-                let value: serde_json::Value = serde_json::from_slice(
-                    &std::fs::read(root.join("schemas").join(file)).unwrap(),
+            let broker: serde_json::Value = serde_json::from_slice(
+                &std::fs::read(root.join("schemas/task-broker-binding-v1.json")).unwrap(),
+            )
+            .unwrap();
+            let registry = jsonschema::Registry::new()
+                .add(
+                    common["$id"].as_str().unwrap(),
+                    jsonschema::Resource::from_contents(common.clone()),
+                )
+                .unwrap()
+                .add(
+                    broker["$id"].as_str().unwrap(),
+                    jsonschema::Resource::from_contents(broker.clone()),
                 )
                 .unwrap();
-                let id = value["$id"].as_str().unwrap().to_owned();
-                registry = registry
-                    .add(id, jsonschema::Resource::from_contents(value))
-                    .unwrap();
-            }
             (ty, {
                 let registry = registry.prepare().unwrap();
                 jsonschema::options()

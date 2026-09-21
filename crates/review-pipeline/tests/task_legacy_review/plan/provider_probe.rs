@@ -4,8 +4,7 @@ use review_core::task::provider::{
 };
 use review_graph::task::CompiledOperator;
 use review_pipeline::task::legacy_review::plan::{
-    REVIEW_TASK_POLICY_V1, REVIEW_TASK_POLICY_V2, ReviewPlanSettingsV2,
-    ReviewProviderProbeSettingsV1,
+    REVIEW_TASK_POLICY_V4, ReviewPlanSettingsV2, ReviewProviderProbeSettingsV1,
 };
 
 fn definition() -> String {
@@ -59,7 +58,7 @@ fn brokered_provider_compiler_captures_independent_policy_and_reopens_read_only(
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
     let round = capture::open_round_with_package(&cas, &mut store, &definition());
     let engine = cas.put(b"probe compiler fixture engine").unwrap();
-    let compiler = LegacyReviewPlanCompiler::capture_v2(
+    let compiler = LegacyReviewPlanCompiler::capture(
         &cas,
         CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
         engine.clone(),
@@ -70,7 +69,7 @@ fn brokered_provider_compiler_captures_independent_policy_and_reopens_read_only(
         cas.get_artifact(compiler.policy_id())
             .unwrap()
             .artifact_type,
-        REVIEW_TASK_POLICY_V2
+        REVIEW_TASK_POLICY_V4
     );
     let mut limits = capture::limits();
     limits.tokens = 100_000;
@@ -172,46 +171,6 @@ fn brokered_provider_compiler_captures_independent_policy_and_reopens_read_only(
     assert!(reopened.validate_plan(&cas, &task, &changed).is_err());
     reopened.validate_plan(&cas, &task, &plan).unwrap();
     assert!(store.attempt_wall("review").unwrap().is_empty());
-
-    // Existing authority is never silently upgraded to V2 or given probe operations.
-    let old = LegacyReviewPlanCompiler::capture(
-        &cas,
-        CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
-        engine,
-        selected().review,
-    )
-    .unwrap();
-    assert_eq!(
-        cas.get_artifact(old.policy_id()).unwrap().artifact_type,
-        REVIEW_TASK_POLICY_V1
-    );
-    assert_ne!(old.policy_id(), compiler.policy_id());
-    let old_task = old
-        .prepare_revision(&cas, "old-probe-plan", task.limits.clone())
-        .unwrap();
-    let old_revision = artifact(&cas, review_core::task::TASK_REVISION_V1, &old_task);
-    let (old_plan, old_compiled) = old.compile(&cas, &old_revision).unwrap();
-    assert_eq!(old_plan.dependencies.len(), 2);
-    assert!(
-        old_compiled
-            .compilation
-            .graph
-            .nodes
-            .values()
-            .any(|node| matches!(node.operator, CompiledOperator::ProviderAdmission { .. }))
-    );
-    assert!(
-        !old_compiled
-            .compilation
-            .graph
-            .nodes
-            .values()
-            .any(|node| matches!(
-                node.operator,
-                CompiledOperator::ProviderAdmissionBrokered { .. }
-            ))
-    );
-    old.validate_plan(&cas, &old_task, &old_plan).unwrap();
 }
 
 #[test]
@@ -245,7 +204,7 @@ fn brokered_provider_settings_refuse_unknown_native_and_over_budget_probes() {
         let mut settings = selected();
         mutate(&mut settings);
         assert!(
-            LegacyReviewPlanCompiler::capture_v2(
+            LegacyReviewPlanCompiler::capture(
                 &cas,
                 CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
                 engine.clone(),
@@ -260,7 +219,7 @@ fn brokered_provider_settings_refuse_unknown_native_and_over_budget_probes() {
     let mut store = EventStore::open(other.path().join("events.sqlite")).unwrap();
     let round = capture::open_round_with_package(&cas, &mut store, &definition);
     assert!(
-        LegacyReviewPlanCompiler::capture_v2(
+        LegacyReviewPlanCompiler::capture(
             &cas,
             CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
             cas.put(b"engine").unwrap(),

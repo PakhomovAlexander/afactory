@@ -119,30 +119,21 @@ execution={credential_mode="brokered",operations=[{name="inference",destination=
         );
         let round = CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap();
         let engine = cas.put(b"Broker forwarding fixture engine").unwrap();
-        let compiler = if probe {
+        // Without a probe this is the shape `af review run` captures: a Brokered reviewer
+        // behind plain Provider admission.
+        let mut settings = plan::without_probes(settings);
+        if probe {
             use review_core::task::provider::TaskProviderProbeProtocolV1;
-            use review_pipeline::task::legacy_review::plan::{
-                ReviewPlanSettingsV2, ReviewProviderProbeSettingsV1,
-            };
-            LegacyReviewPlanCompiler::capture_v2(
-                cas,
-                round,
-                engine,
-                ReviewPlanSettingsV2 {
-                    review: settings,
-                    provider_probes: BTreeMap::from([(
-                        "reviewer".into(),
-                        ReviewProviderProbeSettingsV1 {
-                            probe_protocol: TaskProviderProbeProtocolV1::OkV1,
-                            operations: probe_operations(),
-                        },
-                    )]),
+            use review_pipeline::task::legacy_review::plan::ReviewProviderProbeSettingsV1;
+            settings.provider_probes.insert(
+                "reviewer".into(),
+                ReviewProviderProbeSettingsV1 {
+                    probe_protocol: TaskProviderProbeProtocolV1::OkV1,
+                    operations: probe_operations(),
                 },
-            )
-        } else {
-            LegacyReviewPlanCompiler::capture(cas, round, engine, settings)
+            );
         }
-        .unwrap();
+        let compiler = LegacyReviewPlanCompiler::capture(cas, round, engine, settings).unwrap();
         let mut limits = capture::limits();
         limits.tokens = 100_000;
         let task = compiler

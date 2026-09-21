@@ -11,7 +11,7 @@ use review_config::task::legacy_review::{
 use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
 use review_core::task::{ArtifactInputV1, TaskLimitsV1};
 use review_core::{ArtifactEnvelope, PortCardinality, Producer, contract};
-use review_graph::{Node, NodeKind};
+use review_graph::NodeKind;
 use review_store::{Cas, EventStore, validate_envelope};
 
 use crate::RoundAuthority;
@@ -51,7 +51,7 @@ impl CapturedLegacyReviewRound {
     }
 
     /// Reconstruct compiler data from Store-validated prospective history. No event has
-    /// landed yet, so normal `check_current` still refuses execution against this Round.
+    /// landed yet, so loading this Round from the Store still refuses it.
     pub fn from_prospective(
         cas: &Cas,
         preview: &review_store::store::task::review_round_publication::TaskReviewRoundPreview,
@@ -92,42 +92,6 @@ impl CapturedLegacyReviewRound {
             round: self.authority.round,
             epoch: self.authority.epoch,
         }
-    }
-
-    pub fn check_current(&self, cas: &Cas, store: &EventStore) -> Result<(), String> {
-        let current = Self::load(
-            cas,
-            store,
-            &self.authority.run_id,
-            &self.authority.round_event_id,
-        )?;
-        if current.binding() != self.binding() {
-            return Err("Captured Review Round authority changed".into());
-        }
-        Ok(())
-    }
-
-    /// Compile the actual captured Round without consulting a live authority directory.
-    /// The trusted host supplies the new original Task allowance and public output mapping;
-    /// captured Review authority determines every Worker/Gate bound and aggregate scope.
-    pub fn compile(
-        &self,
-        cas: &Cas,
-        mode: review_config::captured_review::ReviewMode,
-        resources: &ReviewResourcePolicy,
-        limits: TaskLimitsV1,
-        outputs: BTreeMap<String, review_graph::task::Address>,
-    ) -> Result<CapturedReviewCompilation, String> {
-        self.compile_existing(
-            cas,
-            mode,
-            resources,
-            ReviewCompilationRequest {
-                limits,
-                inputs: self.capture_inputs(cas)?,
-                outputs,
-            },
-        )
     }
 
     /// Read-only recompilation for plan admission and resume. In particular, missing recorded
@@ -307,58 +271,6 @@ impl CapturedLegacyReviewRound {
                 )?,
             ),
         ]))
-    }
-
-    /// The existing Generation semantics over the exact Round, with compiled output codecs.
-    /// Historical Finding Sets are forwarded unchanged; Campaign genesis remains optional
-    /// absence rather than a freshly stamped, invented empty reduction.
-    pub fn generation_outputs(
-        &self,
-        cas: &Cas,
-        pipeline_version: u32,
-        node: &Node,
-        mapping: &ReviewNodeMapping,
-    ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
-        if node.kind != NodeKind::Generation || mapping.outputs.len() != node.outputs.len() {
-            return Err("Review Generation differs from its compiled outputs".into());
-        }
-        let raw_outputs = crate::review_domain::generation_outputs(
-            &self.authority,
-            pipeline_version,
-            Some(&self.authority.prior_finding_set_id),
-            node,
-        )?;
-        let mut outputs = BTreeMap::new();
-        for (port, output) in &mapping.outputs {
-            let original = node
-                .outputs
-                .iter()
-                .find(|original| original.name == output.review_port)
-                .ok_or("Unknown original Generation output")?;
-            let raw = &raw_outputs[&original.name];
-            if raw.is_empty() {
-                if !original.optional {
-                    return Err("Review genesis requires an optional Finding Set output".into());
-                }
-                continue;
-            }
-            let [raw] = raw.as_slice() else {
-                return Err(
-                    "Review Generation requires exactly one artifact per present output".into(),
-                );
-            };
-            let ids = vec![output.codec.capture(
-                cas,
-                raw,
-                self.producer(Some(node.id.clone()), &format!("generation-{port}")),
-                Some(self.authority.head_snapshot_id.clone()),
-            )?];
-            outputs.insert(
-                port.clone(),
-                artifact_input(cas, output.codec.artifact_type(), ids, original.cardinality)?,
-            );
-        }
-        Ok(outputs)
     }
 }
 

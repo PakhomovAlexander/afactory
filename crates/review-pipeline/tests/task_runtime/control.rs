@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 #[test]
 fn precancelled_runtime_records_no_new_invocation_or_attempt() {
     let mut f = Fixture::new(SUCCESS);
-    let host = CapturedTaskHost::capture(
+    let host = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -14,6 +14,7 @@ fn precancelled_runtime_records_no_new_invocation_or_attempt() {
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &DocumentDomain,
+        &BTreeMap::new(),
     )
     .unwrap();
     let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
@@ -48,7 +49,7 @@ fn captured_command_cancellation_retains_both_streams_and_never_retries() {
         ready.to_str().unwrap()
     );
     let mut f = Fixture::new(&script);
-    let host = CapturedTaskHost::capture(
+    let host = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -56,6 +57,7 @@ fn captured_command_cancellation_retains_both_streams_and_never_retries() {
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &DocumentDomain,
+        &BTreeMap::new(),
     )
     .unwrap();
     let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
@@ -273,7 +275,7 @@ fn cancellation_between_successful_work_and_selection_retains_spend_but_refuses_
         }
     }
     let mut f = Fixture::new(SUCCESS);
-    let inner = CapturedTaskHost::capture(
+    let inner = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -281,6 +283,7 @@ fn cancellation_between_successful_work_and_selection_retains_spend_but_refuses_
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &DocumentDomain,
+        &BTreeMap::new(),
     )
     .unwrap();
     let authority = CapturedTaskAuthority::new(&f.compiler, &inner, &NoTaskDeveloper);

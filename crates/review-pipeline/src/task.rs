@@ -393,10 +393,6 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             .ok_or_else(|| "Unknown Task".into())
     }
 
-    pub fn task(&self) -> Result<TaskRevisionV1, String> {
-        Ok(self.projection()?.revision)
-    }
-
     pub fn finish(&self, result_id: &str) -> Result<(), String> {
         self.store
             .lock()

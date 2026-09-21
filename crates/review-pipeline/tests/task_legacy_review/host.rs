@@ -64,7 +64,7 @@ fn admit_with_limits(
         cas,
         CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap(),
         cas.put(b"Review host test engine").unwrap(),
-        plan::settings(),
+        plan::without_probes(plan::settings()),
     )
     .unwrap();
     let task = compiler
@@ -97,7 +97,7 @@ fn captured_command_review_uses_common_attempt_selection_and_replays_canonical_o
         &cas,
         CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
         cas.put(b"Review host test engine").unwrap(),
-        plan::settings(),
+        plan::without_probes(plan::settings()),
     )
     .unwrap();
     let task = compiler
@@ -187,6 +187,40 @@ fn captured_command_review_uses_common_attempt_selection_and_replays_canonical_o
         }
     }
     let outputs = expected_outputs.unwrap();
+    // Generation forwards the Round's exact prior Findings; genesis history stays absent
+    // rather than becoming an invented empty Finding Set.
+    let generation = &mapping.compilation.nodes["generation"];
+    let produced = &outputs[&generation.task_node].1.outputs;
+    for (port, output) in &generation.outputs {
+        assert_eq!(
+            produced.contains_key(port),
+            output.review_port == "assigned",
+            "{port} ({})",
+            output.review_port
+        );
+    }
+    let (port, assigned) = generation
+        .outputs
+        .iter()
+        .find(|(_, output)| output.review_port == "assigned")
+        .unwrap();
+    let round: RoundStartedPayloadV1 = serde_json::from_value(
+        shared
+            .lock()
+            .unwrap()
+            .latest_round_started("review")
+            .unwrap()
+            .unwrap()
+            .payload,
+    )
+    .unwrap();
+    assert_eq!(
+        assigned
+            .codec
+            .restore(&cas, &produced[port].artifact_ids[0])
+            .unwrap(),
+        round.prior_finding_set_id
+    );
     let ledger = &outputs[&mapping.compilation.nodes["ledger"].task_node]
         .1
         .outputs;
@@ -532,7 +566,7 @@ fn cache_receipts_and_failed_gate_observations_survive_store_reopen() {
             )
             .unwrap();
             let host = if available {
-                host.with_cache_sources(BTreeMap::from([(CacheKind::Cargo, source)]))
+                host.with_cache_source_resolver(move |_| Ok(source.clone()))
             } else {
                 host.with_cache_source_resolver(|_| -> Result<CacheSource, CacheError> {
                     Err(CacheError::new(

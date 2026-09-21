@@ -639,8 +639,6 @@ pub struct CapturedTaskHost<'a> {
     domain: &'a dyn TaskDomain,
 }
 
-pub type CommandTaskHost<'a> = CapturedTaskHost<'a>;
-
 /// Durable admission and replay recheck of every `af/WorkerNotes@1` output: the stored payload
 /// must be a closed `WorkerNotesV1` bound to the producing Attempt, this node and the head the
 /// output port names. Worker JSON never establishes that identity on its own.
@@ -682,30 +680,6 @@ fn validate_worker_notes_outputs(
 }
 
 impl<'a> CapturedTaskHost<'a> {
-    fn experimental_worker(&self, node: &str) -> Option<&CapturedWorker<'a>> {
-        self.graph.nodes.iter().find_map(|(parent, definition)| {
-            let CompiledOperator::Primitive {
-                operator:
-                    TaskOperatorV1::OptimizationExperiment {
-                        baseline_slot,
-                        candidate_slot,
-                    },
-                ..
-            } = &definition.operator
-            else {
-                return None;
-            };
-            let slot = if node == format!("{parent}.baseline") {
-                baseline_slot
-            } else if node == format!("{parent}.candidate") {
-                candidate_slot
-            } else {
-                return None;
-            };
-            self.slot_workers.get(slot).map(std::sync::Arc::as_ref)
-        })
-    }
-
     fn resolved_worker(
         &self,
         cas: &Cas,
@@ -829,27 +803,6 @@ impl<'a> CapturedTaskHost<'a> {
             .map_err(|e| e.to_string())?,
         )?;
         Ok(())
-    }
-
-    pub fn capture(
-        cas: &Cas,
-        compiler: &TaskPlanCompiler,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        graph: CompiledTask,
-        environment: &'a dyn TaskEnvironment,
-        domain: &'a dyn TaskDomain,
-    ) -> Result<Self, String> {
-        Self::capture_with_models(
-            cas,
-            compiler,
-            task,
-            plan,
-            graph,
-            environment,
-            domain,
-            &BTreeMap::new(),
-        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1579,12 +1532,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
         feedback: &[String],
         context_id: &str,
     ) -> Result<(), String> {
-        if let Some(worker) = self
-            .workers
-            .get(&input.node)
-            .map(std::sync::Arc::as_ref)
-            .or_else(|| self.experimental_worker(&input.node))
-        {
+        if let Some(worker) = self.workers.get(&input.node).map(std::sync::Arc::as_ref) {
             let (context, _) = worker.contract.read_context(cas, context_id)?;
             if matches!(worker.transport, WorkerTransport::Model(_))
                 && self
@@ -1635,9 +1583,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
                     "Task context differs from the exact registered Worker definition".into(),
                 );
             }
-        } else if self.workers.contains_key(&input.node)
-            || self.experimental_worker(&input.node).is_some()
-        {
+        } else if self.workers.contains_key(&input.node) {
             self.validate_context(cas, input, attempt.feedback_ids(), context_id)?;
         }
         self.domain

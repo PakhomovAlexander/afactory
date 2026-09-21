@@ -116,7 +116,7 @@ fn admitted_plan_with_provider(
         cas,
         CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap(),
         cas.put(b"native Review test engine").unwrap(),
-        settings,
+        plan::without_probes(settings),
     )
     .unwrap();
     let mut limits = capture::limits();

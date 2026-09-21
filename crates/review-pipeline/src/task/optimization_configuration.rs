@@ -439,27 +439,6 @@ pub fn source_port(
 
 /// Prepare one candidate with a conservative oracle closure: all captured files outside the
 /// explicitly writable roots are protected, including policy, check code and tool configuration.
-pub fn prepare_configuration(
-    cas: &Cas,
-    source: &str,
-    requirements: &str,
-    engine: &str,
-    environment: &str,
-    task_revision: &str,
-    producer: Producer,
-) -> Result<Configuration, String> {
-    prepare_configuration_with_proposal(
-        cas,
-        source,
-        requirements,
-        engine,
-        environment,
-        task_revision,
-        producer,
-        None,
-    )
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn prepare_configuration_with_proposal(
     cas: &Cas,

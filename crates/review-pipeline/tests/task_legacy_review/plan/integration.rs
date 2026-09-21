@@ -18,54 +18,53 @@ fn settings_for(mode: &str) -> ReviewPlanSettingsV2 {
         ("scatter".into(), WorkerExecutionV1::Command {}),
         ("closeout".into(), WorkerExecutionV1::Command {}),
     ]);
-    ReviewPlanSettingsV2 {
-        review,
-        provider_probes: BTreeMap::new(),
+    without_probes(review)
+}
+
+/// A light Campaign closes after its one Round; a heavy one may continue to a third.
+fn convergence(mode: &str) -> review_core::CampaignConvergenceV1 {
+    let (clean_rounds, max_rounds) = if mode == "heavy" { (2, 3) } else { (1, 1) };
+    review_core::CampaignConvergenceV1 {
+        clean_rounds,
+        max_rounds,
+        gate: "major".into(),
     }
 }
 
 #[test]
-fn integration_is_captured_only_in_v4_with_its_original_dormant_allowance() {
-    let dir = tempfile::tempdir().unwrap();
-    let cas_root = dir.path().join("cas");
-    let cas = Cas::open(&cas_root).unwrap();
-    let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
-    let round = capture::captured_fixture::open_round_authority_with_convergence(
-        &cas,
-        &mut store,
-        &definition(&["first", "second"]),
-        None,
-        review_core::CampaignConvergenceV1 {
-            clean_rounds: 2,
-            max_rounds: 3,
-            gate: "major".into(),
-        },
-    );
-    let engine = cas.put(b"Integration compiler fixture").unwrap();
-    for (generation, mode) in [(3, "heavy"), (4, "heavy")] {
+fn integration_is_captured_only_for_heavy_rounds_with_its_original_dormant_allowance() {
+    for mode in ["light", "heavy"] {
+        let dir = tempfile::tempdir().unwrap();
+        let cas_root = dir.path().join("cas");
+        let cas = Cas::open(&cas_root).unwrap();
+        let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+        let round = capture::captured_fixture::open_round_authority_with_convergence(
+            &cas,
+            &mut store,
+            &definition(&["first", "second"]),
+            None,
+            convergence(mode),
+        );
+        let engine = cas.put(b"Integration compiler fixture").unwrap();
         let captured = CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap();
-        let compiler = if generation == 3 {
-            LegacyReviewPlanCompiler::capture_v3(&cas, captured, engine.clone(), settings_for(mode))
-        } else {
-            LegacyReviewPlanCompiler::capture_v4(&cas, captured, engine.clone(), settings_for(mode))
-        }
-        .unwrap();
+        let compiler =
+            LegacyReviewPlanCompiler::capture(&cas, captured, engine, settings_for(mode)).unwrap();
         let mut limits = capture::limits();
         limits.max_attempts = 6;
         let task = compiler
-            .prepare_revision(&cas, &format!("integration-{generation}-{mode}"), limits)
+            .prepare_revision(&cas, &format!("integration-{mode}"), limits)
             .unwrap();
         let revision = artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
         let (plan, captured) = compiler.compile(&cas, &revision).unwrap();
         assert_cached_authority_is_fresh(&cas, &cas_root, &compiler, &task, &plan);
         let graph = &captured.compilation.graph;
-        if generation == 4 && mode == "heavy" {
-            assert_eq!(
-                cas.get_artifact(compiler.policy_id())
-                    .unwrap()
-                    .artifact_type,
-                REVIEW_TASK_POLICY_V4
-            );
+        assert_eq!(
+            cas.get_artifact(compiler.policy_id())
+                .unwrap()
+                .artifact_type,
+            REVIEW_TASK_POLICY_V4
+        );
+        if mode == "heavy" {
             let dormant = graph.review_integration.as_ref().unwrap();
             assert!(!graph.nodes.contains_key(&dormant.node));
             assert!(!graph.order.contains(&dormant.node));
@@ -136,49 +135,39 @@ fn integration_is_captured_only_in_v4_with_its_original_dormant_allowance() {
 }
 
 #[test]
-fn v4_refuses_ambiguous_check_order_without_changing_legacy_compilation() {
-    let dir = tempfile::tempdir().unwrap();
-    let cas = Cas::open(dir.path().join("cas")).unwrap();
-    let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
-    let round = capture::captured_fixture::open_round_authority_with_convergence(
-        &cas,
-        &mut store,
-        &definition(&["second", "first"]),
-        None,
-        review_core::CampaignConvergenceV1 {
-            clean_rounds: 2,
-            max_rounds: 3,
-            gate: "major".into(),
-        },
-    );
-    let engine = cas.put(b"Integration compiler fixture").unwrap();
-    for generation in [3, 4] {
+fn heavy_review_refuses_ambiguous_check_order_and_light_review_ignores_it() {
+    for mode in ["light", "heavy"] {
+        let dir = tempfile::tempdir().unwrap();
+        let cas = Cas::open(dir.path().join("cas")).unwrap();
+        let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+        let round = capture::captured_fixture::open_round_authority_with_convergence(
+            &cas,
+            &mut store,
+            &definition(&["second", "first"]),
+            None,
+            convergence(mode),
+        );
+        let engine = cas.put(b"Integration compiler fixture").unwrap();
         let captured = CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap();
-        let compiler = if generation == 3 {
-            LegacyReviewPlanCompiler::capture_v3(
-                &cas,
-                captured,
-                engine.clone(),
-                settings_for("heavy"),
-            )
-        } else {
-            LegacyReviewPlanCompiler::capture_v4(
-                &cas,
-                captured,
-                engine.clone(),
-                settings_for("heavy"),
-            )
-        }
-        .unwrap();
+        let compiler =
+            LegacyReviewPlanCompiler::capture(&cas, captured, engine, settings_for(mode)).unwrap();
         let mut limits = capture::limits();
         limits.max_attempts = 6;
         let task = compiler
-            .prepare_revision(&cas, &format!("ordered-{generation}"), limits)
+            .prepare_revision(&cas, &format!("ordered-{mode}"), limits)
             .unwrap();
         let revision = artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
         let result = compiler.compile(&cas, &revision);
-        if generation == 3 {
-            assert!(result.is_ok());
+        if mode == "light" {
+            assert!(
+                result
+                    .unwrap()
+                    .1
+                    .compilation
+                    .graph
+                    .review_integration
+                    .is_none()
+            );
         } else {
             assert!(result.err().unwrap().contains("declaration order"));
         }
@@ -186,8 +175,8 @@ fn v4_refuses_ambiguous_check_order_without_changing_legacy_compilation() {
 }
 
 #[test]
-fn v4_bounds_check_evidence_without_changing_legacy_compilation() {
-    for count in [63, 64] {
+fn heavy_review_bounds_check_evidence_and_light_review_ignores_it() {
+    for (count, mode) in [(63, "light"), (63, "heavy"), (64, "light"), (64, "heavy")] {
         let dir = tempfile::tempdir().unwrap();
         let cas = Cas::open(dir.path().join("cas")).unwrap();
         let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
@@ -211,69 +200,49 @@ fn v4_bounds_check_evidence_without_changing_legacy_compilation() {
             &mut store,
             &definition,
             None,
-            review_core::CampaignConvergenceV1 {
-                clean_rounds: 2,
-                max_rounds: 3,
-                gate: "major".into(),
-            },
+            convergence(mode),
         );
         let engine = cas
             .put(b"Integration compiler evidence-bound fixture")
             .unwrap();
-        for generation in [3, 4] {
-            let captured = CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap();
-            let compiler = if generation == 3 {
-                LegacyReviewPlanCompiler::capture_v3(
-                    &cas,
-                    captured,
-                    engine.clone(),
-                    settings_for("heavy"),
-                )
-            } else {
-                LegacyReviewPlanCompiler::capture_v4(
-                    &cas,
-                    captured,
-                    engine.clone(),
-                    settings_for("heavy"),
-                )
-            }
+        let captured = CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap();
+        let compiler =
+            LegacyReviewPlanCompiler::capture(&cas, captured, engine, settings_for(mode)).unwrap();
+        let mut limits = capture::limits();
+        limits.max_attempts = 6;
+        let task = compiler
+            .prepare_revision(&cas, &format!("bounded-{count}-{mode}"), limits)
             .unwrap();
-            let mut limits = capture::limits();
-            limits.max_attempts = 6;
-            let task = compiler
-                .prepare_revision(&cas, &format!("bounded-{count}-{generation}"), limits)
-                .unwrap();
-            let revision = artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
-            let result = compiler.compile(&cas, &revision);
-            if generation == 4 && count == 64 {
-                let error = result.err().unwrap();
-                assert!(error.contains("at most 63 post-apply checks"), "{error}");
-                assert!(error.contains("64-artifact settlement bound"), "{error}");
-            } else {
-                let (plan, compiled) = result.unwrap();
-                if generation == 4 {
-                    let dormant = compiled
+        let revision = artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
+        let result = compiler.compile(&cas, &revision);
+        if mode == "heavy" && count == 64 {
+            let error = result.err().unwrap();
+            assert!(error.contains("at most 63 post-apply checks"), "{error}");
+            assert!(error.contains("64-artifact settlement bound"), "{error}");
+        } else {
+            let (plan, compiled) = result.unwrap();
+            if mode == "heavy" {
+                let dormant = compiled
+                    .compilation
+                    .graph
+                    .review_integration
+                    .as_ref()
+                    .unwrap();
+                let sequence = cas.get_artifact(&dormant.sequence_policy_id).unwrap();
+                assert_eq!(
+                    sequence.payload["ordered_check_names"],
+                    serde_json::json!(names)
+                );
+                assert_eq!(
+                    compiler
+                        .recompile(&cas, &task, &plan)
+                        .unwrap()
                         .compilation
-                        .graph
-                        .review_integration
-                        .as_ref()
-                        .unwrap();
-                    let sequence = cas.get_artifact(&dormant.sequence_policy_id).unwrap();
-                    assert_eq!(
-                        sequence.payload["ordered_check_names"],
-                        serde_json::json!(names)
-                    );
-                    assert_eq!(
-                        compiler
-                            .recompile(&cas, &task, &plan)
-                            .unwrap()
-                            .compilation
-                            .graph,
-                        compiled.compilation.graph
-                    );
-                } else {
-                    assert!(compiled.compilation.graph.review_integration.is_none());
-                }
+                        .graph,
+                    compiled.compilation.graph
+                );
+            } else {
+                assert!(compiled.compilation.graph.review_integration.is_none());
             }
         }
         assert!(store.attempt_wall("review").unwrap().is_empty());

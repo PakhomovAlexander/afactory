@@ -1,7 +1,9 @@
 # ADR-0080: Bind Broker evidence to the original Task Attempt
 
 Date: 2026-09-12
-Status: Accepted
+Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
+`LegacyReviewTaskPolicy@1` and `@2` capture generations and the preserved bytes of V1 capture.
+Probe operations are captured in `LegacyReviewTaskPolicy@4`, the only generation.
 
 ## Context
 

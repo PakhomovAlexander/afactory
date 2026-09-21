@@ -3,7 +3,6 @@ use review_core::task::execution::TaskExecutionRecordV1;
 use review_core::task::plan::WorkerExecutionV1;
 use review_graph::Dispatch;
 use review_pipeline::task::host::TaskDomain;
-use review_pipeline::task::legacy_review::plan::ReviewPlanSettingsV2;
 use serde_json::json;
 
 fn definition(fail: bool) -> String {
@@ -54,14 +53,11 @@ fn admit_owned_with_limits(
         ("scatter".into(), WorkerExecutionV1::Command {}),
         ("closeout".into(), WorkerExecutionV1::Command {}),
     ]);
-    let compiler = LegacyReviewPlanCompiler::capture_v3(
+    let compiler = LegacyReviewPlanCompiler::capture(
         cas,
         CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap(),
         cas.put(b"owned Review host fixture").unwrap(),
-        ReviewPlanSettingsV2 {
-            review: settings,
-            provider_probes: BTreeMap::new(),
-        },
+        plan::without_probes(settings),
     )
     .unwrap();
     let task = compiler

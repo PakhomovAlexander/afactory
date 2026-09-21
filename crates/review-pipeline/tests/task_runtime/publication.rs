@@ -341,7 +341,7 @@ fn pre_attempt_context_failure_remains_inspectable_after_reopening() {
         }
     }
     let mut f = Fixture::new(SUCCESS);
-    let host = CommandTaskHost::capture(
+    let host = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -349,6 +349,7 @@ fn pre_attempt_context_failure_remains_inspectable_after_reopening() {
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &DocumentDomain,
+        &BTreeMap::new(),
     )
     .unwrap();
     let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);

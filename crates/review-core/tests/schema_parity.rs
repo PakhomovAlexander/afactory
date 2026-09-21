@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 194] = [
+const SCHEMAS: [&str; 191] = [
     "session-snapshot-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -126,8 +126,6 @@ const SCHEMAS: [&str; 194] = [
     "task-provider-admission-v1.json",
     "task-provider-admission-v2.json",
     "task-provider-probe-policy-v1.json",
-    "legacy-review-task-policy-v2.json",
-    "legacy-review-task-policy-v3.json",
     "task-review-subject-v2.json",
     "task-review-assignment-v1.json",
     "task-review-round-v1.json",
@@ -135,7 +133,6 @@ const SCHEMAS: [&str; 194] = [
     "task-review-context-v1.json",
     "task-review-gate-facts-v1.json",
     "legacy-review-round-v1.json",
-    "legacy-review-task-policy-v1.json",
     "legacy-review-dependency-v1.json",
     "legacy-review-invocation-policy-v1.json",
     "legacy-review-gate-outcome-v1.json",

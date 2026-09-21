@@ -1241,7 +1241,7 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
     }
 
     let mut f = Fixture::new(SUCCESS);
-    let host = CommandTaskHost::capture(
+    let host = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -1249,6 +1249,7 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &DocumentDomain,
+        &BTreeMap::new(),
     )
     .unwrap();
     let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
@@ -1570,7 +1571,7 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
 #[test]
 fn captured_command_worker_executes_and_replays_through_the_common_task_runtime() {
     let mut f = Fixture::new(SUCCESS);
-    let host = CommandTaskHost::capture(
+    let host = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -1578,6 +1579,7 @@ fn captured_command_worker_executes_and_replays_through_the_common_task_runtime(
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &DocumentDomain,
+        &BTreeMap::new(),
     )
     .unwrap();
     let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);
@@ -1637,7 +1639,7 @@ fn failed_command_and_schema_refusal_exhaust_bounded_attempts_without_publishing
         "print('{\"schema\":\"af.worker-reply/1\",\"outputs\":{\"output\":[{\"outcome\":\"passed\"}]}}')\n",
     ] {
         let mut f = Fixture::new(script);
-        let host = CommandTaskHost::capture(
+        let host = CapturedTaskHost::capture_with_models(
             &f.cas,
             &f.compiler,
             &f.task,
@@ -1645,6 +1647,7 @@ fn failed_command_and_schema_refusal_exhaust_bounded_attempts_without_publishing
             f.graph.clone(),
             &EmptyTaskEnvironment,
             &DocumentDomain,
+            &BTreeMap::new(),
         )
         .unwrap();
         let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);

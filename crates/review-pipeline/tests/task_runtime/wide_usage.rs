@@ -248,7 +248,7 @@ fn one_attempt_retains_aggregate_charge_above_u64_through_failure_and_reopen() {
         }
     }
     let mut f = Fixture::new(SUCCESS);
-    let host = CommandTaskHost::capture(
+    let host = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -256,6 +256,7 @@ fn one_attempt_retains_aggregate_charge_above_u64_through_failure_and_reopen() {
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &DocumentDomain,
+        &BTreeMap::new(),
     )
     .unwrap();
     let authority = CapturedTaskAuthority::new(&f.compiler, &host, &NoTaskDeveloper);

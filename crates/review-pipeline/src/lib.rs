@@ -1579,11 +1579,6 @@ impl<'a> Kernel<'a> {
         self
     }
 
-    pub fn with_cache_sources(mut self, sources: BTreeMap<CacheKind, CacheSource>) -> Self {
-        self.domain.cache_sources = sources;
-        self
-    }
-
     pub fn with_cache_source_resolver<F>(mut self, resolver: F) -> Self
     where
         F: Fn(CacheKind) -> Result<CacheSource, CacheError> + Send + Sync + 'static,

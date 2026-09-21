@@ -136,8 +136,11 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   `RunReport` versions and raw provenance.
 - [ADR-0079](0079-retain-exact-cumulative-charge-within-one-task-attempt.md): readers for frozen
   execution `@1` and `@2`, usage `@1`, and `af/review-report@1` and `@2`.
+- [ADR-0080](0080-bind-broker-evidence-to-the-original-task-attempt.md): the
+  `LegacyReviewTaskPolicy@1` and `@2` capture generations and the preserved bytes of V1 capture.
 - [ADR-0081](0081-register-owned-review-children-in-the-common-task-runtime.md): earlier execution
-  and inspection generations.
+  and inspection generations, and the Review Task policy generations before
+  `LegacyReviewTaskPolicy@4` that compiled without owned children.
 - [ADR-0082](0082-continue-captured-review-rounds-within-the-original-task.md): earlier
   `TaskTransition` generations.
 - [ADR-0083](0083-run-post-round-integration-within-the-original-task.md): earlier inspection

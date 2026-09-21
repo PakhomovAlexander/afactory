@@ -168,14 +168,6 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
         CapturedTaskAuthority::for_legacy_review(self.compiler, self, &NoTaskDeveloper)
     }
 
-    pub fn with_cache_sources(
-        mut self,
-        sources: BTreeMap<review_sandbox::CacheKind, review_sandbox::CacheSource>,
-    ) -> Self {
-        self.domain.cache_sources = sources;
-        self
-    }
-
     pub fn with_cache_source_resolver<F>(mut self, resolver: F) -> Self
     where
         F: Fn(

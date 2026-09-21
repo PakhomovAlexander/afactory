@@ -1,4 +1,5 @@
-//! Explicit generation-three transformation. Frozen static compilation is unchanged.
+//! Installs each Scatter's captured owned-child template on top of the static Review
+//! compilation, which is otherwise unchanged.
 
 use super::*;
 use review_graph::task::OwnedChildTemplateV1;

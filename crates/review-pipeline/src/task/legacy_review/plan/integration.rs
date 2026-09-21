@@ -18,8 +18,7 @@ impl LegacyReviewPlanCompiler {
         recorded: Option<&ExecutionPlanV1>,
     ) -> Result<Option<String>, String> {
         let Some(policy) = loaded.integration().filter(|_| {
-            self.integration
-                && self.policy.settings.mode == "heavy"
+            self.settings().mode == "heavy"
                 && self.round.binding().round < loaded.convergence().max_rounds
         }) else {
             return Ok(None);

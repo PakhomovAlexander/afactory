@@ -220,7 +220,7 @@ pub(super) fn admit_heavy_definition_with_limits(
     );
     let mut settings = plan::settings();
     settings.mode = "heavy".into();
-    let compiler = LegacyReviewPlanCompiler::capture_v3(
+    let compiler = LegacyReviewPlanCompiler::capture(
         cas,
         CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap(),
         cas.put(b"heavy Review fixture engine").unwrap(),

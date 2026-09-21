@@ -50,7 +50,6 @@ pub(super) struct ReviewDomainState<'a> {
     pub(super) container_provider: Option<ContainerProvider>,
     /// Machine-local sources resolved by the CLI. Host paths never enter captured pipeline
     /// authority or durable events.
-    pub(super) cache_sources: BTreeMap<CacheKind, CacheSource>,
     pub(super) cache_source_resolver: Option<Arc<CacheSourceResolver>>,
     pub(super) execution_bindings: Mutex<BTreeMap<String, RunExecutionBindingV4>>,
     pub(super) cache_snapshots: Mutex<BTreeMap<(String, RunCacheKindV5), RunCacheSnapshotV5>>,
@@ -286,7 +285,6 @@ impl<'a> ReviewDomainState<'a> {
             check_timeout: Duration::from_secs(3600),
             gate_execution: None,
             container_provider: None,
-            cache_sources: BTreeMap::new(),
             cache_source_resolver: None,
             execution_bindings: Mutex::new(BTreeMap::new()),
             cache_snapshots: Mutex::new(BTreeMap::new()),
@@ -467,9 +465,7 @@ impl<'a> ReviewDomainState<'a> {
                 let kind = match requested {
                     review_config::CacheKindSpec::Cargo => CacheKind::Cargo,
                 };
-                let resolved = if let Some(source) = self.cache_sources.get(&kind).cloned() {
-                    Ok(source)
-                } else if let Some(resolver) = self.cache_source_resolver.as_ref() {
+                let resolved = if let Some(resolver) = self.cache_source_resolver.as_ref() {
                     resolver(kind)
                 } else {
                     Err(CacheError::new(
@@ -1142,34 +1138,6 @@ impl<'a> ReviewDomainState<'a> {
                                 let value = self.cas.get_json(id).map_err(|e| e.to_string())?;
                                 load(&node, id, value)?;
                             }
-                        }
-                    }
-                    // Compatibility for gather manifests emitted before source-labelled maps.
-                    serde_json::Value::Array(ids) => {
-                        for id in &ids {
-                            let id = id
-                                .as_str()
-                                .ok_or_else(|| format!("gather manifest {input} holds a non-id"))?;
-                            if canonical {
-                                let value = self.cas.get_json(id).map_err(|e| e.to_string())?;
-                                load(input_port, id, value)?;
-                                continue;
-                            }
-                            let selected: Vec<String> = self
-                                .reviewer_selections
-                                .lock()
-                                .expect("reviewer selections")
-                                .iter()
-                                .filter(|(_, selection)| selection.result_artifact == id)
-                                .map(|(node, _)| node.clone())
-                                .collect();
-                            if selected.len() != 1 {
-                                return Err(format!(
-                                    "legacy gather manifest {input} cannot uniquely identify artifact {id}"
-                                ));
-                            }
-                            let value = self.cas.get_json(id).map_err(|e| e.to_string())?;
-                            load(&selected[0], id, value)?;
                         }
                     }
                     _ => {

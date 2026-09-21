@@ -181,7 +181,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         },
         provider_probes: BTreeMap::new(),
     };
-    let compiler = LegacyReviewPlanCompiler::capture_v3(
+    let compiler = LegacyReviewPlanCompiler::capture(
         &cas,
         CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
         cas.put(b"owned public inspection fixture").unwrap(),

@@ -190,7 +190,7 @@ pub(super) fn admit_integration(
             review_core::task::plan::WorkerExecutionV1::Command {},
         ),
     ]);
-    let compiler = LegacyReviewPlanCompiler::capture_v4(
+    let compiler = LegacyReviewPlanCompiler::capture(
         cas,
         CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap(),
         cas.put(b"Integration host fixture").unwrap(),
@@ -360,8 +360,15 @@ pub fn run_integration_handoff_with_preparation_delay(
         compiler.policy_id(),
     )
     .unwrap();
+    let prospective = successor.round().binding();
     assert!(
-        successor.round().check_current(&cas, &locked).is_err(),
+        CapturedLegacyReviewRound::load(
+            &cas,
+            &locked,
+            &prospective.campaign_id,
+            &prospective.round_event_id
+        )
+        .is_err(),
         "preview must never grant live Round authority"
     );
     drop(locked);

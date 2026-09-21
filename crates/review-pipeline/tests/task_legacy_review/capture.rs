@@ -2,6 +2,7 @@ use super::*;
 use review_config::captured_review::ReviewMode;
 use review_config::task::legacy_review::resources::ReviewResourcePolicy;
 use review_core::{CampaignManifestV1, EventType};
+use review_pipeline::task::legacy_review::{CapturedReviewCompilation, ReviewCompilationRequest};
 use review_store::NewEvent;
 use serde_json::json;
 #[path = "../support/captured_review.rs"]
@@ -45,6 +46,26 @@ pub(super) fn limits() -> TaskLimitsV1 {
     }
 }
 
+/// Compile the actual captured Round from freshly captured inputs, as initial capture does.
+fn compile_captured(
+    round: &CapturedLegacyReviewRound,
+    cas: &Cas,
+    mode: ReviewMode,
+    resources: &ReviewResourcePolicy,
+    limits: TaskLimitsV1,
+) -> Result<CapturedReviewCompilation, String> {
+    round.compile_existing(
+        cas,
+        mode,
+        resources,
+        ReviewCompilationRequest {
+            limits,
+            inputs: round.capture_inputs(cas)?,
+            outputs: outputs(),
+        },
+    )
+}
+
 pub(super) fn outputs() -> BTreeMap<String, Address> {
     BTreeMap::from([(
         "findings".into(),
@@ -67,9 +88,7 @@ fn real_captured_round_compiles_bound_resources_and_reopens_without_execution() 
     let resources = ReviewResourcePolicy {
         uncapped_attempt_tokens: 1,
     };
-    let compiled = round
-        .compile(&cas, ReviewMode::Light, &resources, limits(), outputs())
-        .unwrap();
+    let compiled = compile_captured(&round, &cas, ReviewMode::Light, &resources, limits()).unwrap();
     let graph = &compiled.compilation.graph;
     assert_eq!(graph.allowances.len(), 1);
     assert_eq!(graph.slots.len(), 1);
@@ -95,23 +114,14 @@ fn real_captured_round_compiles_bound_resources_and_reopens_without_execution() 
     let round = CapturedLegacyReviewRound::load(&cas, &store, "review", &round_event).unwrap();
     assert_eq!(
         expected,
-        round
-            .compile(&cas, ReviewMode::Light, &resources, limits(), outputs())
+        compile_captured(&round, &cas, ReviewMode::Light, &resources, limits())
             .unwrap()
             .compilation
     );
     let mut too_small = limits();
     too_small.tokens = 18;
-    assert!(
-        round
-            .compile(&cas, ReviewMode::Light, &resources, too_small, outputs())
-            .is_err()
-    );
-    assert!(
-        round
-            .compile(&cas, ReviewMode::Heavy, &resources, limits(), outputs())
-            .is_err()
-    );
+    assert!(compile_captured(&round, &cas, ReviewMode::Light, &resources, too_small).is_err());
+    assert!(compile_captured(&round, &cas, ReviewMode::Heavy, &resources, limits()).is_err());
     let manifest: CampaignManifestV1 = serde_json::from_value(
         cas.get_json(round.authority().campaign_manifest_id())
             .unwrap(),
@@ -127,17 +137,12 @@ fn real_captured_round_compiles_bound_resources_and_reopens_without_execution() 
         b"version = 2\n",
     )
     .unwrap();
-    assert!(
-        round
-            .compile(&cas, ReviewMode::Light, &resources, limits(), outputs())
-            .is_err()
-    );
+    assert!(compile_captured(&round, &cas, ReviewMode::Light, &resources, limits()).is_err());
     assert_eq!(store.len("review").unwrap(), 2);
 }
 
 #[test]
 fn recorded_input_recompilation_is_read_only_and_refuses_missing_or_forged_wrappers() {
-    use review_pipeline::task::legacy_review::ReviewCompilationRequest;
     let directory = tempfile::tempdir().unwrap();
     let cas_root = directory.path().join("cas");
     let cas = Cas::open(&cas_root).unwrap();
@@ -147,9 +152,7 @@ fn recorded_input_recompilation_is_read_only_and_refuses_missing_or_forged_wrapp
     let resources = ReviewResourcePolicy {
         uncapped_attempt_tokens: 1,
     };
-    let captured = round
-        .compile(&cas, ReviewMode::Light, &resources, limits(), outputs())
-        .unwrap();
+    let captured = compile_captured(&round, &cas, ReviewMode::Light, &resources, limits()).unwrap();
     let inputs = captured.compilation.graph.inputs.clone();
     let compile = |inputs| {
         round.compile_existing(
@@ -223,9 +226,7 @@ fn historical_round_recompilation_does_not_grant_current_epoch_authority() {
     let resources = ReviewResourcePolicy {
         uncapped_attempt_tokens: 1,
     };
-    let compiled = round
-        .compile(&cas, ReviewMode::Light, &resources, limits(), outputs())
-        .unwrap();
+    let compiled = compile_captured(&round, &cas, ReviewMode::Light, &resources, limits()).unwrap();
     let old = store.latest_round_started("review").unwrap().unwrap();
     let mut next_payload = old.payload.clone();
     next_payload["epoch"] = json!(2);
@@ -258,7 +259,6 @@ fn historical_round_recompilation_does_not_grant_current_epoch_authority() {
         .unwrap();
     let before = store.len("review").unwrap();
     assert!(CapturedLegacyReviewRound::load(&cas, &store, "review", &first).is_err());
-    assert!(round.check_current(&cas, &store).is_err());
     let historical =
         CapturedLegacyReviewRound::load_recorded(&cas, &store, "review", &first).unwrap();
     assert_eq!(historical.binding(), round.binding());
@@ -268,7 +268,7 @@ fn historical_round_recompilation_does_not_grant_current_epoch_authority() {
                 &cas,
                 ReviewMode::Light,
                 &resources,
-                review_pipeline::task::legacy_review::ReviewCompilationRequest {
+                ReviewCompilationRequest {
                     limits: limits(),
                     inputs: compiled.compilation.graph.inputs.clone(),
                     outputs: outputs(),
@@ -278,7 +278,6 @@ fn historical_round_recompilation_does_not_grant_current_epoch_authority() {
             .compilation,
         compiled.compilation
     );
-    assert!(historical.check_current(&cas, &store).is_err());
     assert!(CapturedLegacyReviewRound::load(&cas, &store, "review", &next.event_id).is_ok());
     assert!(CapturedLegacyReviewRound::load_recorded(&cas, &store, "different", &first).is_err());
     let opened = store.campaign_opened("review").unwrap().unwrap();

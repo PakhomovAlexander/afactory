@@ -25,7 +25,101 @@
       ],
       "properties": {
         "review": {
-          "$ref": "urn:af:schema:legacy-review-task-policy:1#/properties/settings"
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "resources",
+            "outputs",
+            "executions",
+            "provider_admission",
+            "allowed_effects"
+          ],
+          "properties": {
+            "mode": {
+              "enum": [
+                "light",
+                "heavy"
+              ]
+            },
+            "resources": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "uncapped_attempt_tokens"
+              ],
+              "properties": {
+                "uncapped_attempt_tokens": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              }
+            },
+            "outputs": {
+              "type": "object",
+              "minProperties": 1,
+              "propertyNames": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+              },
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "node",
+                  "port"
+                ],
+                "properties": {
+                  "node": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "port": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            },
+            "executions": {
+              "type": "object",
+              "propertyNames": {
+                "type": "string",
+                "minLength": 1
+              },
+              "additionalProperties": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/workerExecution"
+              }
+            },
+            "provider_admission": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "tokens",
+                "wall_ms"
+              ],
+              "properties": {
+                "tokens": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                },
+                "wall_ms": {
+                  "type": "integer",
+                  "minimum": 1,
+                  "maximum": 9007199254740991
+                }
+              }
+            },
+            "allowed_effects": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+              },
+              "$comment": "Canonical ascending order is checked by captured-policy admission."
+            }
+          }
         },
         "provider_probes": {
           "type": "object",
@@ -58,5 +152,5 @@
       }
     }
   },
-  "$comment": "Generation three installs captured owned-child templates; the approved settings retain the generation-two shape."
+  "$comment": "Compilation installs captured owned-child templates and the optional post-Round Integration phase from this policy; resume and successor Rounds recheck its bytes exactly."
 }

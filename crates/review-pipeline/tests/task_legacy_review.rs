@@ -8,10 +8,6 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use review_attempt::task_budget::NodeAllowance;
-use review_config::task::legacy_review::{
-    ReviewCompileContext, ReviewWorker, compile_legacy_review,
-};
 use review_core::task::{TaskLimitsV1, VerificationReserveV1};
 use review_core::{ArtifactEnvelope, RoundStartedPayloadV1};
 use review_graph::task::Address;
@@ -46,7 +42,7 @@ to = { node = "ledger", port = "reports" }
 "#;
 
 #[test]
-fn actual_round_capture_and_generation_reopen_without_a_second_execution_log() {
+fn actual_round_capture_reopens_without_a_second_execution_log() {
     let temp = tempfile::tempdir().unwrap();
     let cas_root = temp.path().join("cas");
     let store_path = temp.path().join("events.sqlite");
@@ -78,101 +74,19 @@ fn actual_round_capture_and_generation_reopen_without_a_second_execution_log() {
         serde_json::from_value(cas.get_json(&inputs["round"].artifact_ids[0]).unwrap()).unwrap();
     assert_eq!(round.payload, serde_json::to_value(&binding).unwrap());
     assert_eq!(round.input_artifacts, binding.artifact_refs());
-    let loaded = review_config::Definition::from_toml(PIPELINE)
-        .unwrap()
-        .load()
-        .unwrap();
-    let compilation = compile_legacy_review(
-        &loaded,
-        ReviewCompileContext {
-            finding_identity_policy: captured.authority().finding_identity_policy().into(),
-            inputs: inputs.clone(),
-            head_input: "head".into(),
-            round_input: "round".into(),
-            workers: BTreeMap::from([(
-                "reviewer".into(),
-                ReviewWorker {
-                    package: "fixture/reviewer".into(),
-                    allowance: NodeAllowance {
-                        tokens_per_attempt: 0,
-                        wall_ms_per_attempt: 1000,
-                        max_attempts: 1,
-                        verification_attempts: 0,
-                    },
-                },
-            )]),
-            outputs: BTreeMap::from([(
-                "prior".into(),
-                Address {
-                    node: "generation".into(),
-                    port: "assigned".into(),
-                },
-            )]),
-            limits: TaskLimitsV1 {
-                tokens: 0,
-                max_attempts: 1,
-                deadline_unix_ms: 9999999999999,
-                verification: VerificationReserveV1 {
-                    tokens: 0,
-                    attempts: 0,
-                    wall_ms: 0,
-                },
-            },
-            max_parallel: 1,
-            gate_wall_ms: 1000,
-        },
-    )
-    .unwrap();
-    let mapping = &compilation.nodes["generation"];
-    let node = &loaded.planned().nodes["generation"];
-    let outputs = captured
-        .generation_outputs(&cas, loaded.version(), node, mapping)
-        .unwrap();
-    assert_eq!(
-        outputs.len(),
-        1,
-        "genesis is absent, never an invented Finding Set"
-    );
-    let assigned = mapping
-        .outputs
-        .iter()
-        .find(|(_, port)| port.review_port == "assigned")
-        .unwrap();
-    let round_payload: RoundStartedPayloadV1 = serde_json::from_value(
-        store
-            .latest_round_started("review")
-            .unwrap()
-            .unwrap()
-            .payload,
-    )
-    .unwrap();
-    assert_eq!(
-        assigned
-            .1
-            .codec
-            .restore(&cas, &outputs[assigned.0].artifact_ids[0])
-            .unwrap(),
-        round_payload.prior_finding_set_id
-    );
     assert_eq!(store.len("review").unwrap(), before);
     assert_eq!(
         before, 2,
-        "input capture and Generation allocate no Attempt or legacy events"
+        "input capture allocates no Attempt or legacy events"
     );
-    captured.check_current(&cas, &store).unwrap();
     drop(captured);
     drop(store);
     drop(cas);
     let cas = Cas::open_existing(&cas_root).unwrap();
     let store = EventStore::open(&store_path).unwrap();
     let captured = CapturedLegacyReviewRound::load(&cas, &store, "review", &round_event).unwrap();
+    assert_eq!(captured.binding(), binding);
     assert_eq!(captured.capture_inputs(&cas).unwrap(), inputs);
-    assert_eq!(
-        captured
-            .generation_outputs(&cas, loaded.version(), node, mapping)
-            .unwrap(),
-        outputs
-    );
     assert!(CapturedLegacyReviewRound::load(&cas, &store, "review", &"z".repeat(26)).is_err());
     let hex = binding.head_snapshot_id.strip_prefix("sha256:").unwrap();
     std::fs::write(
@@ -180,6 +94,6 @@ fn actual_round_capture_and_generation_reopen_without_a_second_execution_log() {
         b"{}",
     )
     .unwrap();
-    assert!(captured.check_current(&cas, &store).is_err());
+    assert!(CapturedLegacyReviewRound::load(&cas, &store, "review", &round_event).is_err());
     assert!(captured.capture_inputs(&cas).is_err());
 }

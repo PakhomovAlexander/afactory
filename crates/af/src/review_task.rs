@@ -207,7 +207,7 @@ fn capture_new(
         // operation permissions are never copied to an admission probe.
         provider_probes: BTreeMap::new(),
     };
-    let compiler = LegacyReviewPlanCompiler::capture_v4(cas, round, engine_id, settings)?;
+    let compiler = LegacyReviewPlanCompiler::capture(cas, round, engine_id, settings)?;
     let revision = compiler.prepare_revision(cas, task_id, limits)?;
     let mut refs = BTreeSet::from([
         revision.authority.policy_id.clone(),

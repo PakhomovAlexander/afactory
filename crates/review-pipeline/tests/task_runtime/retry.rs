@@ -81,7 +81,7 @@ fn every_host_layer_preserves_retry_refusal_on_reopened_execution() {
         models: &models,
         inner: &domain,
     };
-    let captured = CommandTaskHost::capture(
+    let captured = CapturedTaskHost::capture_with_models(
         &f.cas,
         &f.compiler,
         &f.task,
@@ -89,6 +89,7 @@ fn every_host_layer_preserves_retry_refusal_on_reopened_execution() {
         f.graph.clone(),
         &EmptyTaskEnvironment,
         &provider,
+        &BTreeMap::new(),
     )
     .unwrap();
     let planning = PlanningTaskHost {

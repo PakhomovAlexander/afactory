@@ -1239,7 +1239,6 @@ fn a_v3_cargo_cache_is_offline_bounded_and_replayed_into_run_report_v5() {
             max_copy_bytes: 1024 * 1024,
         },
     };
-    let sources = std::collections::BTreeMap::from([(CacheKind::Cargo, source)]);
 
     let repo = Repo::open(&repo_path, &home);
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
@@ -1255,7 +1254,7 @@ fn a_v3_cargo_cache_is_offline_bounded_and_replayed_into_run_report_v5() {
         authority.clone(),
     )
     .unwrap()
-    .with_cache_sources(sources)
+    .with_cache_source_resolver(move |_| Ok(source.clone()))
     .with_checks(vec![CheckDefinition::new(
         "offline-cache",
         Command::new(
