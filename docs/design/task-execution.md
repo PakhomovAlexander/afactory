@@ -800,8 +800,8 @@ ADRs as implementation proceeds; this document owns the product proposal.
 
 Migration preserves existing Campaign IDs, Findings, dispositions, event sequence semantics,
 artifact versions, CLI exit behavior, source/delivery boundaries, and pinned-release policy.
-New Task IDs link to imported histories once; reopened legacy executions retain their original
-authority and runner until equivalence is proved. New executions move to the common runtime
+Reopened legacy executions retain their original authority and runner until equivalence is
+proved. New executions move to the common runtime
 behind a controlled compatibility cutover. No log rewriting or regeneration of old evidence.
 
 ## 14. Proving the product claim

@@ -1,6 +1,8 @@
 # ADR-0046 — Add versioned Task contracts with exact-plan approval
 
-**Status:** accepted for the Task execution increment, 2026-09-10.
+**Status:** accepted for the Task execution increment, 2026-09-10. Superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): retained `tasks.sqlite` histories and the
+idempotent linking of historical Stores.
 
 ## Context
 

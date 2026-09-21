@@ -59,6 +59,13 @@ or needs a documented hand edit.
   `$XDG_CONFIG_HOME/af/`), or `af` finds no provider registry and no cache policy. Setting
   `AFACTORY_CACHE_POLICY_FILE` is no longer an error; it is ignored, so use
   `AF_CACHE_POLICY_FILE`.
+- `af task list`, `af task show` and `af task deliver` read only the common `events.sqlite` Task
+  store. Implementation Tasks that af 0.8.x and earlier kept in `tasks.sqlite` no longer appear,
+  `af task show` no longer emits `af/task-inspection@1`, and delivery no longer knows the
+  `refs/afactory/deliveries/<task>` ownership ref. In `af/task-inspection` and `af/task-list`
+  output, every delivery preparation and receipt now carries `result_id` and every receipt carries
+  `ignored_paths`, as this release always wrote them; the published schema requires both, and a
+  Task whose stored receipt lacks one is refused.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

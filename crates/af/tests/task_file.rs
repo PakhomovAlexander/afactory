@@ -51,7 +51,6 @@ fn review_file_uses_common_task_state_and_keeps_changes_requested_exit() {
         2
     );
     assert!(state.join("events.sqlite").is_file());
-    assert!(!state.join("tasks.sqlite").exists());
     let replay = Command::new(env!("CARGO_BIN_EXE_af"))
         .current_dir(&repo)
         .args([
@@ -847,7 +846,6 @@ fn plan_then_run_uses_captured_inputs_and_does_not_repeat_finished_attempts() {
     assert!(planned["plan"].is_object());
     assert!(planned["graph"].is_object());
     assert!(state.join("events.sqlite").is_file());
-    assert!(!state.join("tasks.sqlite").exists());
 
     std::fs::write(repo.join("pagination.py"), "live source changed\n").unwrap();
     std::fs::write(repo.join(".af/code-policy.toml"), "invalid after planning").unwrap();
@@ -887,7 +885,6 @@ fn task_start_accepts_a_file_without_legacy_goal_or_kind_flags() {
     );
     assert_eq!(run["result"]["acceptance"], "satisfied");
     assert_eq!(run["attempts"], 3);
-    assert!(!state.join("tasks.sqlite").exists());
     let destination = temp.path().join("delivered");
     let deliver = [
         "deliver",
@@ -908,7 +905,6 @@ fn task_start_accepts_a_file_without_legacy_goal_or_kind_flags() {
             .unwrap()
             .contains("offset")
     );
-    assert!(!state.join("tasks.sqlite").exists());
 }
 
 #[test]

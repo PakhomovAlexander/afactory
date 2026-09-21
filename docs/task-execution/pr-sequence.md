@@ -7,9 +7,9 @@ the frozen fixture corpus or treating a generic Task completion as review approv
 
 | Package | Scope | Reference |
 |---|---|---|
-| P00 | Unchanged-source baseline gate and frozen fixture identities | `fixtures/synthetic/`, `fixtures/compatibility/` |
+| P00 | Unchanged-source baseline gate and frozen fixture identities | `fixtures/synthetic/` |
 | P01 | Versioned Task/Pipeline contracts, schemas and parity fixtures | [ADR-0046](../adr/0046-add-versioned-task-contracts-with-exact-plan-approval.md), [ADR-0047](../adr/0047-preserve-task-wire-identity-and-review-completeness.md) |
-| P02–P03 | Common Store lifecycle, developer decisions, legacy links and typed compilation | [ADR-0048](../adr/0048-compile-task-ports-and-fence-developer-plan-decisions.md) |
+| P02–P03 | Common Store lifecycle, developer decisions and typed compilation | [ADR-0048](../adr/0048-compile-task-ports-and-fence-developer-plan-decisions.md) |
 | P04–P06 | Worker execution through durable Attempts, Task-file CLI, local delivery and Review Tasks | [Task file](task-file.md), [Review Tasks](review-task.md), [ADR-0049](../adr/0049-run-task-workers-through-shared-durable-attempts.md), [ADR-0050](../adr/0050-reduce-review-tasks-with-the-canonical-domain-ledger.md), [ADR-0051](../adr/0051-compile-fixed-implementation-tasks-into-the-common-runtime.md) |
 | P07–P09 | Local bindings, Git catalog sync, Task-kind packages, embedded Review, bounded repair and heavy continuation | [Local bindings](local-bindings.md), [Shared catalogs](shared-catalogs.md), [Embedded Review](embedded-review.md), [Bounded repair](bounded-repair.md), [Heavy Review](heavy-review.md) |
 | P10 | Captured Pipeline selection before generation | [Selection](selection.md), [ADR-0055](../adr/0055-select-captured-pipelines-before-generation.md) |
@@ -23,6 +23,5 @@ the frozen fixture corpus or treating a generic Task completion as review approv
 Legacy review result parsing and ledger replay, Campaign authority, incomplete and resumable
 review, existing Task completion, failure and delivery, consumer policy versions and CLI exit
 statuses all remain. Historical Campaigns keep their captured execution path; missing common Task
-state refuses instead of falling back. The frozen synthetic corpus, its manifest and the
-compatibility fixtures under `fixtures/compatibility/` identify the anchors that later packages
-must reproduce byte for byte.
+state refuses instead of falling back. The frozen synthetic corpus and its manifest identify the
+anchors that later packages must reproduce byte for byte.

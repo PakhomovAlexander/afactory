@@ -1,6 +1,7 @@
 # ADR-0062: Refresh issue revisions without resetting execution authority
 
-**Status:** accepted
+**Status:** accepted. Superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
+original ownership scheme and recovery kept for historical receipts without a result field.
 
 ## Context
 

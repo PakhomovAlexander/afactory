@@ -49,7 +49,6 @@ fixtures/
   adversarial/   four cases specified where no legacy behavior exists to capture
   task-contracts/ the additive Task contract corpus
   task-runtime/  Task runtime scenarios (review, embedded review, bounded repair)
-  compatibility/ frozen runtime behavior a later release must still reproduce
 compat/
   legacy-harness/ the retired shell harness, kept as the reference implementation that
                  regenerates the synthetic fixture corpus

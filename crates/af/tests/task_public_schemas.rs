@@ -111,7 +111,7 @@ fn append_delivery(
     lease: &review_store::store::task::TaskLease,
     template: &TaskDeliveryRecordV1,
     receipt: &Value,
-) {
+) -> Result<(), review_store::StoreError> {
     let mut record = template.clone();
     record.receipt_id = cas.put_json(receipt).unwrap();
     record.target_id = cas.put_json(&receipt["target"]).unwrap();
@@ -129,7 +129,7 @@ fn append_delivery(
         )
         .unwrap()
         .0;
-    store.record_task_delivery(cas, lease, &id).unwrap();
+    store.record_task_delivery(cas, lease, &id).map(drop)
 }
 
 #[test]
@@ -562,13 +562,12 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
         "extra_receipt",
         "extra_outcome",
         "invalid_ignored_paths",
-        "historical_ignored_paths",
+        "missing_ignored_paths",
     ]
     .into_iter()
     .enumerate()
     {
         let is_prepared = index < 4;
-        let historical = case == "historical_ignored_paths";
         let mut raw = if is_prepared {
             preparation.clone()
         } else {
@@ -583,18 +582,14 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
             "extra_preparation" | "extra_receipt" => raw["unexpected"] = json!(true),
             "extra_outcome" => raw["outcome"]["unexpected"] = json!(true),
             "invalid_ignored_paths" => raw["ignored_paths"] = json!([7]),
-            "historical_ignored_paths" => {
+            "missing_ignored_paths" => {
                 raw.as_object_mut().unwrap().remove("ignored_paths");
             }
             _ => unreachable!(),
         }
         let mut view = delivered.clone();
         view["delivery"] = raw.clone();
-        assert_eq!(
-            runtime_inspection_schema.is_valid(&view),
-            historical,
-            "{case}"
-        );
+        assert!(!runtime_inspection_schema.is_valid(&view), "{case}");
         let isolated = directory.path().join(format!("delivery-{index}"));
         task_cli::copy_tree(&before_delivery, &isolated);
         let cas = review_store::Cas::open_existing(isolated.join("cas")).unwrap();
@@ -603,7 +598,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
             .take_task_lease(&cas, "pagination-cli", "schema-test", 15000)
             .unwrap();
         if !is_prepared {
-            append_delivery(&cas, &mut store, &lease, &prepared.1, &preparation);
+            append_delivery(&cas, &mut store, &lease, &prepared.1, &preparation).unwrap();
         }
         append_delivery(
             &cas,
@@ -615,23 +610,32 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
                 &terminal.1
             },
             &raw,
-        );
+        )
+        .unwrap();
         store.release_task_lease(&cas, &lease).unwrap();
         drop(store);
         for args in [vec!["task", "show", "pagination-cli"], vec!["task", "list"]] {
-            let output = cli(&repo, &isolated, &args);
-            if historical {
-                let shown = json_output(output, 0);
-                let retained = if args[1] == "show" {
-                    &shown["delivery"]
-                } else {
-                    &shown["tasks"][0]["delivery"]
-                };
-                assert_eq!(retained, &raw, "Historical receipt was rewritten");
-                assert!(retained.get("ignored_paths").is_none());
-            } else {
-                refused(output, case);
-            }
+            refused(cli(&repo, &isolated, &args), case);
         }
     }
+
+    // Every delivery binds the exact Task result: the public schema and the Store both refuse a
+    // preparation or receipt without it.
+    let isolated = directory.path().join("delivery-missing-result");
+    task_cli::copy_tree(&before_delivery, &isolated);
+    let cas = review_store::Cas::open_existing(isolated.join("cas")).unwrap();
+    let mut store = review_store::EventStore::open(isolated.join("events.sqlite")).unwrap();
+    let lease = store
+        .take_task_lease(&cas, "pagination-cli", "schema-test", 15000)
+        .unwrap();
+    for (template, bound) in [(&prepared.1, &preparation), (&terminal.1, &receipt)] {
+        let mut raw = bound.clone();
+        raw.as_object_mut().unwrap().remove("result_id");
+        let mut view = delivered.clone();
+        view["delivery"] = raw.clone();
+        assert!(!runtime_inspection_schema.is_valid(&view), "{raw}");
+        append_delivery(&cas, &mut store, &lease, template, &raw).unwrap_err();
+        append_delivery(&cas, &mut store, &lease, template, bound).unwrap();
+    }
+    store.release_task_lease(&cas, &lease).unwrap();
 }

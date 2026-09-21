@@ -102,10 +102,19 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   shape, unsigned pre-0.8.0 releases, the 0.7.1 floor, the `.review/` to `.af/` conversion
   (`af onboard --migrate`), replay of `.review/` Campaigns, and the release gate that plans a
   downstream consumer's pinned policy with every built binary.
+- [ADR-0046](0046-add-versioned-task-contracts-with-exact-plan-approval.md): retained
+  `tasks.sqlite` histories and the idempotent linking of historical Stores.
+- [ADR-0048](0048-compile-task-ports-and-fence-developer-plan-decisions.md): the legacy-link
+  obligation.
+- [ADR-0049](0049-run-task-workers-through-shared-durable-attempts.md): retained legacy
+  implementation Stores, the common Store's read-only links to legacy histories, and the
+  historical delivery fixture.
 - [ADR-0051](0051-compile-fixed-implementation-tasks-into-the-common-runtime.md): readers for the
   original implementation history and delivery schemas, and the v0.8.0 compatibility fixture.
 - [ADR-0057](0057-export-portable-task-definitions-without-execution-authority.md): readability of
   previously captured locks.
+- [ADR-0062](0062-refresh-issue-revisions-without-resetting-execution-authority.md): the original
+  ownership scheme and recovery kept for historical delivery receipts without a result field.
 - [ADR-0063](0063-require-goal-acceptance-alongside-embedded-review.md): persisted legacy
   contracts, the frozen v0.8.0 fixtures and the compatibility gate.
 - [ADR-0065](0065-persist-task-run-diagnostics-and-recover-domain-publication.md): readability of

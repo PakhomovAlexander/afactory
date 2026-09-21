@@ -21,7 +21,6 @@ use crate::cas::{Cas, CasError};
 
 mod attempt_wall;
 pub mod task;
-pub mod task_legacy;
 
 /// Read a non-negative SQLite integer column as `u64`.
 ///

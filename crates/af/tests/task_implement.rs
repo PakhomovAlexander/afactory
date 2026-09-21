@@ -245,7 +245,6 @@ fn verified_task_ends_at_a_materializable_internal_snapshot() {
         "source checkout changed"
     );
     assert!(state.join("events.sqlite").exists());
-    assert!(!state.join("tasks.sqlite").exists());
 
     let cas = Cas::open(state.join("cas")).unwrap();
     let snapshot_id = outcome["result"]["outputs"]["snapshot"]["snapshot_id"]

@@ -1,7 +1,8 @@
 # ADR-0048 — Compile Task ports and fence developer plan decisions
 
 **Status:** accepted for the unreleased Task increment, 2026-09-11. Implementation is in
-progress; the common runtime and production authority adapter are not yet enabled.
+progress; the common runtime and production authority adapter are not yet enabled. Superseded in
+part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the legacy-link obligation.
 
 ## Decision
 

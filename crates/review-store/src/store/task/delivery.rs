@@ -516,9 +516,7 @@ impl TaskProjection {
         };
         if receipt["schema"] != expected_schema
             || receipt["task_id"] != value.task_id
-            || receipt
-                .get("result_id")
-                .is_some_and(|id| id.as_str() != Some(value.result_id.as_str()))
+            || receipt["result_id"] != value.result_id
             || receipt["source_snapshot_id"] != value.source_snapshot_id
             || receipt["derived_snapshot_id"] != value.derived_snapshot_id
             || receipt.get("target") != Some(&target)
@@ -550,9 +548,7 @@ impl TaskProjection {
                 let prepared = cas
                     .get_json(&previous.receipt_id)
                     .map_err(|e| conflict(e.to_string()))?;
-                if receipt["delivery_id"] != prepared["delivery_id"]
-                    || receipt.get("result_id") != prepared.get("result_id")
-                {
+                if receipt["delivery_id"] != prepared["delivery_id"] {
                     return Err(conflict(
                         "Delivery terminal receipt changed prepared operation",
                     ));

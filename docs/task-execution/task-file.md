@@ -65,8 +65,7 @@ af task deliver pagination-cli --state /tmp/pagination-state \
 
 The branch and worktree must be absent. Delivery records its preparation before creating them,
 verifies the materialized result, and supports retry/recovery with the same command. It makes
-no commit, push, PR or remote call. The common Store keeps delivery receipts alongside the Task;
-it does not create the historical `tasks.sqlite` execution store.
+no commit, push, PR or remote call. The common Store keeps delivery receipts alongside the Task.
 
 New Tasks using version-1 implementation definitions are adapted to the common runtime for
 dispatch, accounting, acceptance and delivery. Historical Task resumes retain their compatibility

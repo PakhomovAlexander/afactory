@@ -591,6 +591,7 @@
             "schema",
             "delivery_id",
             "task_id",
+            "result_id",
             "source_snapshot_id",
             "derived_snapshot_id",
             "target",
@@ -651,10 +652,12 @@
             "schema",
             "delivery_id",
             "task_id",
+            "result_id",
             "source_snapshot_id",
             "derived_snapshot_id",
             "target",
             "outcome",
+            "ignored_paths",
             "remote_actions"
           ],
           "properties": {

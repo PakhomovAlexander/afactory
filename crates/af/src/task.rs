@@ -17,13 +17,12 @@ use review_source_git::{
     Capture, Entry, EntryKind, Manifest, PathEncoding, Repo, decode_path, digest_bytes,
 };
 use review_store::Cas;
-use rusqlite::{Connection, params};
+use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::{normalize_absolute, resolve_filesystem_path, xdg_state_root};
 mod delivery_common;
-use delivery_common::DeliveryJournal;
 
 #[derive(Debug, Clone)]
 pub(crate) struct TaskOptions {
@@ -238,18 +237,14 @@ impl TaskPipeline {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+/// The parts of a verified Task Snapshot that delivery checks against the target repository.
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct SnapshotReceipt {
-    schema: String,
-    kind: String,
     content_digest: String,
     manifest_artifact_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    parent_snapshot_id: Option<String>,
     repository_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_revision: Option<String>,
+    /// The committed source revision; delivery accepts only Tasks captured from a commit.
+    source_revision: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -262,107 +257,11 @@ pub(crate) struct WorkerAuthority {
     pub(crate) package_artifact_id: String,
 }
 
-struct TaskStore {
-    connection: Connection,
-}
-
-#[derive(Debug, Clone, Serialize)]
+/// One delivery transition of a Task result, in journal order.
+#[derive(Debug, Clone)]
 struct TaskEvent {
-    sequence: u64,
     event_type: String,
     artifact_id: String,
-}
-
-impl TaskStore {
-    fn open(path: &Path) -> Result<Self, String> {
-        let connection = Connection::open(path).map_err(|error| error.to_string())?;
-        connection
-            .execute_batch(
-                "PRAGMA journal_mode=WAL;
-                 PRAGMA synchronous=FULL;
-                 CREATE TABLE IF NOT EXISTS task_events (
-                   task_id TEXT NOT NULL,
-                   sequence INTEGER NOT NULL,
-                   event_type TEXT NOT NULL,
-                   artifact_id TEXT NOT NULL,
-                   PRIMARY KEY(task_id, sequence)
-                 );",
-            )
-            .map_err(|error| error.to_string())?;
-        Ok(Self { connection })
-    }
-
-    fn append(
-        &mut self,
-        cas: &Cas,
-        task_id: &str,
-        event_type: &str,
-        artifact_id: &str,
-    ) -> Result<(), String> {
-        cas.flush().map_err(|error| error.to_string())?;
-        let transaction = self
-            .connection
-            .transaction()
-            .map_err(|error| error.to_string())?;
-        let sequence: i64 = transaction
-            .query_row(
-                "SELECT COALESCE(MAX(sequence), 0) + 1 FROM task_events WHERE task_id = ?1",
-                [task_id],
-                |row| row.get(0),
-            )
-            .map_err(|error| error.to_string())?;
-        transaction
-            .execute(
-                "INSERT INTO task_events(task_id, sequence, event_type, artifact_id)
-                 VALUES (?1, ?2, ?3, ?4)",
-                params![task_id, sequence, event_type, artifact_id],
-            )
-            .map_err(|error| error.to_string())?;
-        transaction.commit().map_err(|error| error.to_string())
-    }
-
-    fn events(&self, task_id: &str) -> Result<Vec<TaskEvent>, String> {
-        let mut statement = self
-            .connection
-            .prepare(
-                "SELECT sequence, event_type, artifact_id
-                 FROM task_events WHERE task_id = ?1 ORDER BY sequence",
-            )
-            .map_err(|error| error.to_string())?;
-        let rows = statement
-            .query_map([task_id], |row| {
-                let sequence: i64 = row.get(0)?;
-                Ok(TaskEvent {
-                    sequence: u64::try_from(sequence).map_err(|error| {
-                        rusqlite::Error::FromSqlConversionFailure(
-                            0,
-                            rusqlite::types::Type::Integer,
-                            Box::new(error),
-                        )
-                    })?,
-                    event_type: row.get(1)?,
-                    artifact_id: row.get(2)?,
-                })
-            })
-            .map_err(|error| error.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())
-    }
-
-    fn task_ids(&self) -> Result<Vec<String>, String> {
-        let mut statement = self
-            .connection
-            .prepare(
-                "SELECT task_id FROM task_events
-                 GROUP BY task_id ORDER BY MIN(rowid) DESC, task_id",
-            )
-            .map_err(|error| error.to_string())?;
-        let rows = statement
-            .query_map([], |row| row.get(0))
-            .map_err(|error| error.to_string())?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|error| error.to_string())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -380,13 +279,8 @@ struct DeliveryPrepared {
     schema: String,
     delivery_id: String,
     task_id: String,
-    /// New common-Task deliveries bind one exact result. Absent in historical receipts.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "review_core::task::present_option"
-    )]
-    result_id: Option<String>,
+    /// The exact Task result this delivery materializes.
+    result_id: String,
     source_snapshot_id: String,
     derived_snapshot_id: String,
     source_revision: String,
@@ -399,21 +293,14 @@ struct DeliveryReceipt {
     schema: String,
     delivery_id: String,
     task_id: String,
-    /// New common-Task deliveries bind one exact result. Absent in historical receipts.
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "review_core::task::present_option"
-    )]
-    result_id: Option<String>,
+    /// The exact Task result this delivery materializes.
+    result_id: String,
     source_snapshot_id: String,
     derived_snapshot_id: String,
     target: DeliveryTarget,
     outcome: DeliveryOutcome,
     /// Losslessly encoded Snapshot paths that the operator's ordinary `git add` will ignore in
-    /// the delivered worktree. Old pilot receipts predate this advisory field and deserialize as
-    /// an empty set.
-    #[serde(default)]
+    /// the delivered worktree.
     ignored_paths: Vec<String>,
     remote_actions: Vec<String>,
 }
@@ -428,7 +315,7 @@ enum DeliveryOutcome {
 /// Inspect the original receipt only after checking its published typed shape. Store binds
 /// delivery identity and status, while these private CLI types own the receipt/target fields.
 pub(super) fn validate_delivery_view(value: &serde_json::Value) -> Result<(), String> {
-    let mut typed = match value.get("schema").and_then(serde_json::Value::as_str) {
+    let typed = match value.get("schema").and_then(serde_json::Value::as_str) {
         Some("af/task-delivery-prepared@1") => serde_json::to_value(
             serde_json::from_value::<DeliveryPrepared>(value.clone())
                 .map_err(|error| format!("Invalid Task delivery preparation: {error}"))?,
@@ -440,11 +327,6 @@ pub(super) fn validate_delivery_view(value: &serde_json::Value) -> Result<(), St
         _ => return Err("Unsupported Task delivery inspection schema".into()),
     }
     .map_err(|error| error.to_string())?;
-    // Historical receipts omit this advisory field. Validate its typed default, but neither
-    // require it in those bytes nor add it to the public historical inspection response.
-    if value.get("ignored_paths").is_none() {
-        typed.as_object_mut().unwrap().remove("ignored_paths");
-    }
     // Serde unit enum variants may ignore extra properties even with deny_unknown_fields.
     // Comparing the typed shape also closes that case without changing persisted enums.
     if typed != *value {
@@ -637,7 +519,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     if state.starts_with(&repository) {
         return Err("Task state must be outside the repository".into());
     }
-    if !state.join("tasks.sqlite").is_file() && !state.join("events.sqlite").is_file() {
+    if !state.join("events.sqlite").is_file() {
         return Err(format!("Task state {} does not exist", state.display()));
     }
     // A separate SQLite write transaction is an OS-released process lock. Prepared delivery
@@ -648,51 +530,21 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     let repository_text = utf8_path(&repository, "repository")?;
     let worktree_text = utf8_path(&worktree, "worktree")?;
     let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
-    let common = delivery_common::projection(&state, &cas, &options.task_id)?;
-    let (mut store, events, assets): (Box<dyn DeliveryJournal>, _, _) = if let Some(task) = &common
-    {
-        let events = delivery_common::events(task);
-        let assets = delivery_common::assets(&cas, task)?;
-        (
-            Box::new(delivery_common::CommonDelivery::open(&state, task)?),
-            events,
-            assets,
-        )
-    } else {
-        if !state.join("tasks.sqlite").is_file() {
-            return Err("Unknown Task".into());
-        }
-        let store = TaskStore::open(&state.join("tasks.sqlite"))?;
-        let events = store.events(&options.task_id)?;
-        let assets = load_delivery_assets(&cas, &events)?;
-        (Box::new(store), events, assets)
-    };
-    let source_revision = assets
-        .source
-        .source_revision
-        .clone()
-        .ok_or("v3a delivery requires a Task captured from a committed source")?;
+    let task =
+        delivery_common::projection(&state, &cas, &options.task_id)?.ok_or("Unknown Task")?;
+    let events = delivery_common::events(&task);
+    let assets = delivery_common::assets(&cas, &task)?;
+    let mut store = delivery_common::CommonDelivery::open(&state, &task)?;
+    let source_revision = assets.source.source_revision.clone();
     let target = DeliveryTarget {
         repository: repository_text,
         repository_id: assets.source.repository_id.clone(),
         branch: options.branch.clone(),
         worktree: worktree_text,
     };
-    let result_id = if let Some(task) = &common {
-        // Resume the captured ownership scheme for an existing delivery of this result.
-        if let Some(event) = events.last() {
-            cas.get_json(&event.artifact_id)
-                .map_err(|e| e.to_string())?
-                .get("result_id")
-                .and_then(serde_json::Value::as_str)
-                .map(str::to_owned)
-        } else if let review_core::task::TaskPhaseV1::Finished { result_id } = &task.phase {
-            Some(result_id.clone())
-        } else {
-            return Err("Task has no finished result".into());
-        }
-    } else {
-        None
+    // The Store binds every delivery record and receipt of this Task to its finished result.
+    let review_core::task::TaskPhaseV1::Finished { result_id } = &task.phase else {
+        return Err("Task has no finished result".into());
     };
     let prepared = DeliveryPrepared {
         schema: "af/task-delivery-prepared@1".into(),
@@ -701,10 +553,10 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
             &assets.source_snapshot_id,
             &assets.derived_snapshot_id,
             &target,
-            result_id.as_deref(),
+            result_id,
         )?,
         task_id: options.task_id.clone(),
-        result_id,
+        result_id: result_id.clone(),
         source_snapshot_id: assets.source_snapshot_id.clone(),
         derived_snapshot_id: assets.derived_snapshot_id.clone(),
         source_revision,
@@ -732,7 +584,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
                     &assets.derived_manifest,
                 )?;
                 let receipt = delivered_receipt(&existing, ignored_paths);
-                append_delivery_receipt(store.as_mut(), &cas, &receipt, "TaskDelivered@1")?;
+                append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
                 print_delivery(&options, &receipt)?;
                 return Ok(());
             }
@@ -749,24 +601,14 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
                             "Incomplete delivery was rolled back before retry: {verification}"
                         ),
                     );
-                    append_delivery_receipt(
-                        store.as_mut(),
-                        &cas,
-                        &receipt,
-                        "TaskDeliveryFailed@1",
-                    )?;
+                    append_delivery_receipt(&mut store, &cas, &receipt, "TaskDeliveryFailed@1")?;
                 }
                 Err(rollback) => {
                     let reason = format!(
                         "delivery recovery preserved the unsealed branch/worktree because it could not prove the content was delivery-owned: verification failed: {verification}; rollback refused: {rollback}"
                     );
                     let receipt = failed_receipt(&existing, &reason);
-                    append_delivery_receipt(
-                        store.as_mut(),
-                        &cas,
-                        &receipt,
-                        "TaskDeliveryFailed@1",
-                    )?;
+                    append_delivery_receipt(&mut store, &cas, &receipt, "TaskDeliveryFailed@1")?;
                     return Err(format!(
                         "delivery recovery stopped and preserved branch `{}` at `{}`; retry this Task with a new absent branch and worktree (or remove the preserved target with normal Git controls before reusing it): {rollback}",
                         existing.target.branch, existing.target.worktree
@@ -793,7 +635,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     match execute_delivery(&git, &git_home, &cas, &assets, &prepared) {
         Ok(ignored_paths) => {
             let receipt = delivered_receipt(&prepared, ignored_paths);
-            append_delivery_receipt(store.as_mut(), &cas, &receipt, "TaskDelivered@1")?;
+            append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
             print_delivery(&options, &receipt)
         }
         Err(reason) => match rollback_owned_delivery(
@@ -804,7 +646,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
         ) {
             Ok(()) => {
                 let receipt = failed_receipt(&prepared, &reason);
-                append_delivery_receipt(store.as_mut(), &cas, &receipt, "TaskDeliveryFailed@1")?;
+                append_delivery_receipt(&mut store, &cas, &receipt, "TaskDeliveryFailed@1")?;
                 Err(format!("delivery failed and was rolled back: {reason}"))
             }
             Err(rollback) => Err(format!(
@@ -1237,27 +1079,7 @@ pub(super) fn list(options: InspectOptions) -> Result<(), String> {
     let repository = std::fs::canonicalize(&options.repo)
         .map_err(|error| format!("opening repository {}: {error}", options.repo.display()))?;
     let state = resolve_task_state(&options.state, &repository)?;
-    let mut tasks = super::task_execution::list_common(&state)?;
-    if !state.join("tasks.sqlite").is_file() {
-        return print_task_list(&options, tasks);
-    }
-    let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
-    let store = TaskStore::open(&state.join("tasks.sqlite"))?;
-    for task_id in store.task_ids()? {
-        if tasks.iter().any(|task| task["task_id"] == task_id) {
-            return Err("Task ID is ambiguous across common and legacy stores".into());
-        }
-        let events = store.events(&task_id)?;
-        let outcome = latest_event_json(&cas, &events, "TaskCompleted@1")?;
-        let delivery = latest_delivery_value(&cas, &events)?;
-        tasks.push(serde_json::json!({
-            "task_id": task_id,
-            "outcome": outcome.as_ref().and_then(|value| value.pointer("/outcome/kind")).cloned(),
-            "derived_snapshot_id": outcome.as_ref().and_then(|value| value.get("derived_snapshot_id")).cloned(),
-            "chargeable_tokens": outcome.as_ref().and_then(|value| value.pointer("/totals/usage/chargeable_tokens")).cloned(),
-            "delivery": delivery,
-        }));
-    }
+    let tasks = super::task_execution::list_common(&state)?;
     print_task_list(&options, tasks)
 }
 
@@ -1269,57 +1091,7 @@ pub(super) fn show(options: InspectOptions) -> Result<(), String> {
     if super::task_execution::show_if_common(task_id, &state, options.json)? {
         return Ok(());
     }
-    if !state.join("tasks.sqlite").is_file() {
-        return Err(format!("Task `{task_id}` was not found"));
-    }
-    let cas = Cas::open(state.join("cas")).map_err(|error| error.to_string())?;
-    let store = TaskStore::open(&state.join("tasks.sqlite"))?;
-    let events = store.events(task_id)?;
-    if events.is_empty() {
-        return Err(format!("Task `{task_id}` was not found"));
-    }
-    let outcome = latest_event_json(&cas, &events, "TaskCompleted@1")?;
-    let delivery = latest_delivery_value(&cas, &events)?;
-    let view = serde_json::json!({
-        "schema": "af/task-inspection@1",
-        "task_id": task_id,
-        "outcome": outcome,
-        "delivery": delivery,
-        "history": events,
-    });
-    if options.json {
-        println!(
-            "{}",
-            serde_json::to_string(&view).map_err(|error| error.to_string())?
-        );
-    } else {
-        let outcome = view
-            .pointer("/outcome/outcome/kind")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("incomplete");
-        let snapshot = view
-            .pointer("/outcome/derived_snapshot_id")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("-");
-        let tokens = view
-            .pointer("/outcome/totals/usage/chargeable_tokens")
-            .and_then(serde_json::Value::as_u64)
-            .unwrap_or(0);
-        let delivery = view
-            .pointer("/delivery/outcome/kind")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("none");
-        println!(
-            "task     {task_id}\noutcome  {outcome}\nsnapshot {snapshot}\ntokens   {tokens} chargeable\ndelivery {delivery}"
-        );
-        for event in &events {
-            println!(
-                "  {:>3} {:<24} {}",
-                event.sequence, event.event_type, event.artifact_id
-            );
-        }
-    }
-    Ok(())
+    Err(format!("Task `{task_id}` was not found"))
 }
 
 fn resolve_delivery_path(
@@ -1365,122 +1137,20 @@ fn utf8_path(path: &Path, kind: &str) -> Result<String, String> {
         .ok_or_else(|| format!("delivery {kind} path must be valid UTF-8"))
 }
 
-fn load_delivery_assets(cas: &Cas, events: &[TaskEvent]) -> Result<DeliveryAssets, String> {
-    let outcome = latest_event_json(cas, events, "TaskCompleted@1")?
-        .ok_or("Task has no completed outcome")?;
-    if outcome.get("schema").and_then(serde_json::Value::as_str) != Some("af/task-outcome@1") {
-        return Err("Task completed artifact has an unsupported schema".into());
-    }
-    if outcome
-        .pointer("/outcome/kind")
-        .and_then(serde_json::Value::as_str)
-        != Some("verified")
-    {
-        return Err("only a verified Task can be delivered".into());
-    }
-    let source_snapshot_id = outcome
-        .get("source_snapshot_id")
-        .and_then(serde_json::Value::as_str)
-        .ok_or("verified Task has no source Snapshot")?
-        .to_string();
-    let derived_snapshot_id = outcome
-        .get("derived_snapshot_id")
-        .and_then(serde_json::Value::as_str)
-        .ok_or("verified Task has no derived Snapshot")?
-        .to_string();
-    if outcome
-        .pointer("/outcome/snapshot_id")
-        .and_then(serde_json::Value::as_str)
-        != Some(derived_snapshot_id.as_str())
-    {
-        return Err("verified Task outcome disagrees with its derived Snapshot".into());
-    }
-    let source = load_snapshot(cas, &source_snapshot_id)?;
-    let derived = load_snapshot(cas, &derived_snapshot_id)?;
-    if source.schema != "af/snapshot@1" || source.kind != "source" {
-        return Err("Task source Snapshot has an unsupported contract".into());
-    }
-    if derived.schema != "af/snapshot@1"
-        || derived.kind != "derived"
-        || derived.parent_snapshot_id.as_deref() != Some(source_snapshot_id.as_str())
-        || derived.repository_id != source.repository_id
-    {
-        return Err("Task derived Snapshot is not exactly parented by its source".into());
-    }
-    if source.parent_snapshot_id.is_some() || source.source_revision.is_none() {
-        return Err("v3a delivery requires a committed source Snapshot".into());
-    }
-    let source_manifest = load_manifest(cas, &source)?;
-    let derived_manifest = load_manifest(cas, &derived)?;
-    verify_snapshot(cas, &source_manifest, &source_snapshot_id)?;
-    verify_snapshot(cas, &derived_manifest, &derived_snapshot_id)?;
-    if source.content_digest != source_manifest.content_digest()
-        || derived.content_digest != derived_manifest.content_digest()
-    {
-        return Err("Snapshot receipt content digest disagrees with its Manifest".into());
-    }
-    ensure_no_git_admin_paths(&derived_manifest)?;
-    Ok(DeliveryAssets {
-        source_snapshot_id,
-        source,
-        source_manifest,
-        derived_snapshot_id,
-        derived,
-        derived_manifest,
-    })
-}
-
-fn load_snapshot(cas: &Cas, snapshot_id: &str) -> Result<SnapshotReceipt, String> {
-    serde_json::from_value(
-        cas.get_json(snapshot_id)
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| format!("reading Snapshot {snapshot_id}: {error}"))
-}
-
-fn load_manifest(cas: &Cas, snapshot: &SnapshotReceipt) -> Result<Manifest, String> {
-    let manifest: Manifest = serde_json::from_value(
-        cas.get_json(&snapshot.manifest_artifact_id)
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| format!("reading Snapshot Manifest: {error}"))?;
-    manifest.validate().map_err(|error| error.to_string())?;
-    Ok(manifest)
-}
-
-fn ensure_no_git_admin_paths(manifest: &Manifest) -> Result<(), String> {
-    for entry in &manifest.entries {
-        let decoded = decode_path(&entry.path);
-        let first = decoded
-            .split(|byte| *byte == b'/')
-            .next()
-            .unwrap_or_default();
-        if first.eq_ignore_ascii_case(b".git") {
-            return Err(format!(
-                "derived Snapshot contains reserved Git administration path `{}`",
-                entry.path
-            ));
-        }
-    }
-    Ok(())
-}
-
 fn delivery_id(
     task_id: &str,
     source_snapshot_id: &str,
     derived_snapshot_id: &str,
     target: &DeliveryTarget,
-    result_id: Option<&str>,
+    result_id: &str,
 ) -> Result<String, String> {
-    let mut value = serde_json::json!({
+    let value = serde_json::json!({
         "task_id": task_id,
         "source_snapshot_id": source_snapshot_id,
         "derived_snapshot_id": derived_snapshot_id,
         "target": target,
+        "result_id": result_id,
     });
-    if let Some(id) = result_id {
-        value["result_id"] = serde_json::json!(id);
-    }
     let bytes = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
     Ok(format!(
         "delivery-{}",
@@ -1489,15 +1159,14 @@ fn delivery_id(
 }
 
 fn owner_ref(prepared: &DeliveryPrepared) -> Result<String, String> {
-    match &prepared.result_id {
-        Some(id) if review_core::is_digest(id) => Ok(format!(
-            "refs/afactory/task-deliveries/{}/{}",
-            prepared.task_id,
-            &id[7..]
-        )),
-        Some(_) => Err("Delivery has an invalid result identity".into()),
-        None => Ok(format!("refs/afactory/deliveries/{}", prepared.task_id)),
+    if !review_core::is_digest(&prepared.result_id) {
+        return Err("Delivery has an invalid result identity".into());
     }
+    Ok(format!(
+        "refs/afactory/task-deliveries/{}/{}",
+        prepared.task_id,
+        &prepared.result_id[7..]
+    ))
 }
 
 fn branch_ref(branch: &str) -> String {
@@ -1617,26 +1286,6 @@ fn release_failed_delivery_owner(
     Ok(())
 }
 
-fn latest_delivery_value(
-    cas: &Cas,
-    events: &[TaskEvent],
-) -> Result<Option<serde_json::Value>, String> {
-    events
-        .iter()
-        .rev()
-        .find(|event| {
-            matches!(
-                event.event_type.as_str(),
-                "TaskDeliveryPrepared@1" | "TaskDelivered@1" | "TaskDeliveryFailed@1"
-            )
-        })
-        .map(|event| {
-            cas.get_json(&event.artifact_id)
-                .map_err(|error| error.to_string())
-        })
-        .transpose()
-}
-
 fn ensure_same_delivery(
     requested: &DeliveryPrepared,
     existing: &DeliveryReceipt,
@@ -1677,7 +1326,7 @@ fn verify_source_authority(
         .map_err(|_| "Git HEAD object ID is not UTF-8".to_string())?
         .trim()
         .to_string();
-    if assets.source.source_revision.as_deref() != Some(head.as_str()) {
+    if assets.source.source_revision != head {
         return Err("target repository HEAD no longer equals the Task source revision".into());
     }
     let repo = Repo::open(repository, git_home);
@@ -1687,7 +1336,7 @@ fn verify_source_authority(
     let committed_manifest_id = put_manifest(cas, &committed.manifest)?;
     if committed.repository_id != assets.source.repository_id
         || committed.content_digest != assets.source.content_digest
-        || committed.source_revision != assets.source.source_revision
+        || committed.source_revision.as_ref() != Some(&assets.source.source_revision)
         || committed_manifest_id != assets.source.manifest_artifact_id
         || committed.manifest != assets.source_manifest
     {
@@ -2100,7 +1749,7 @@ fn failed_receipt(prepared: &DeliveryPrepared, reason: &str) -> DeliveryReceipt 
 }
 
 fn append_delivery_receipt(
-    store: &mut dyn DeliveryJournal,
+    store: &mut delivery_common::CommonDelivery,
     cas: &Cas,
     receipt: &DeliveryReceipt,
     event_type: &str,
@@ -2147,12 +1796,7 @@ fn print_task_list(options: &InspectOptions, tasks: Vec<serde_json::Value>) -> R
                 "{}  {:<10} {:>8} tokens  {}",
                 task["task_id"].as_str().unwrap_or("-"),
                 task["outcome"].as_str().unwrap_or("incomplete"),
-                task["chargeable_tokens"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .unwrap_or_else(|| task["chargeable_tokens"]
-                        .as_u64()
-                        .map_or_else(|| "-".into(), |tokens| tokens.to_string())),
+                task["chargeable_tokens"].as_str().unwrap_or("-"),
                 task.pointer("/delivery/outcome/kind")
                     .and_then(serde_json::Value::as_str)
                     .unwrap_or("not-delivered"),
@@ -2490,13 +2134,4 @@ fn publish_worker(
 fn put_manifest(cas: &Cas, manifest: &Manifest) -> Result<String, String> {
     cas.put_json(&serde_json::to_value(manifest).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())
-}
-
-fn verify_snapshot(cas: &Cas, manifest: &Manifest, snapshot_id: &str) -> Result<(), String> {
-    cas.verify(snapshot_id).map_err(|error| error.to_string())?;
-    for entry in &manifest.entries {
-        cas.verify(&entry.content)
-            .map_err(|error| error.to_string())?;
-    }
-    Ok(())
 }
