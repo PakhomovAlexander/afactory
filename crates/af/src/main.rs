@@ -125,8 +125,13 @@ fn xdg_state_root() -> Result<PathBuf, String> {
     Ok(user_home.join(".local/state"))
 }
 
+/// Where Campaign state lives when `--state` and `--state-root` are omitted.
+fn default_campaigns_root() -> Result<PathBuf, String> {
+    Ok(xdg_state_root()?.join("af/review/campaigns"))
+}
+
 fn default_campaign_state(campaign: &str) -> Result<PathBuf, String> {
-    campaign_state_beneath(&xdg_state_root()?.join("af/review/campaigns"), campaign)
+    campaign_state_beneath(&default_campaigns_root()?, campaign)
 }
 
 fn campaign_id(campaign: &str) -> String {
@@ -574,7 +579,7 @@ struct GcCandidateView {
 fn print_gc(options: &GcOptions) -> Result<(), String> {
     let requested_root = match &options.state_root {
         Some(root) => root.clone(),
-        None => xdg_state_root()?.join("af/review/campaigns"),
+        None => default_campaigns_root()?,
     };
     let root = resolve_filesystem_path(&requested_root)?;
     let enumeration = enumerate_campaigns(&root, true)?;
@@ -710,10 +715,13 @@ fn challenge_kind_of(arg: cli::ChallengeKindArg) -> review_core::ResolutionChall
 /// Campaign labels under the default state root, for shell completion. Bounded: one directory
 /// listing, no Store beyond the manifest each campaign already exposes.
 pub(crate) fn campaign_names_for_completion() -> Vec<String> {
-    let Ok(root) = xdg_state_root() else {
-        return Vec::new();
-    };
-    enumerate_campaigns(&root, false)
+    default_campaigns_root()
+        .map(|root| campaign_labels_beneath(&root))
+        .unwrap_or_default()
+}
+
+fn campaign_labels_beneath(root: &Path) -> Vec<String> {
+    enumerate_campaigns(root, false)
         .map(|enumeration| {
             enumeration
                 .campaigns
@@ -2239,7 +2247,7 @@ fn human_bytes(bytes: u64) -> String {
 fn print_campaigns(options: &CampaignsOptions) -> Result<(), String> {
     let requested_root = match &options.state_root {
         Some(root) => root.clone(),
-        None => xdg_state_root()?.join("af/review/campaigns"),
+        None => default_campaigns_root()?,
     };
     let root = resolve_filesystem_path(&requested_root)?;
     let enumeration = enumerate_campaigns(&root, options.sizes)?;
@@ -5214,9 +5222,10 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
 #[cfg(test)]
 mod option_tests {
     use super::{
-        CampaignMode, Options, campaign_id, campaign_state_beneath, enumerate_campaigns,
-        last_closed_summary, latest_round_evidence, report_round_authority, report_rounds,
-        report_spend, require_static_attempt_capacity, validate_campaign_name,
+        CampaignMode, Options, campaign_id, campaign_labels_beneath, campaign_state_beneath,
+        default_campaigns_root, enumerate_campaigns, last_closed_summary, latest_round_evidence,
+        report_round_authority, report_rounds, report_spend, require_static_attempt_capacity,
+        validate_campaign_name,
     };
 
     fn event(
@@ -5363,6 +5372,20 @@ mod option_tests {
                 .unwrap_err()
                 .contains("reserved opaque Campaign ID shape")
         );
+    }
+
+    #[test]
+    fn completion_lists_the_labels_under_the_campaigns_root() {
+        if let Ok(root) = default_campaigns_root() {
+            assert!(root.ends_with("af/review/campaigns"), "{}", root.display());
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("af/review/campaigns");
+        write_campaign_opening(&root.join(campaign_id("heavy")), "heavy");
+        write_campaign_opening(&root.join("loop"), "loop");
+        assert_eq!(campaign_labels_beneath(&root), ["heavy", "loop"]);
+        // The state root above it holds no Campaign directly.
+        assert!(campaign_labels_beneath(temp.path()).is_empty());
     }
 
     #[test]

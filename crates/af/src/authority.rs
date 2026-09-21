@@ -251,17 +251,11 @@ pub(super) fn resolve_plan(
     validate_af_project(&project_bytes, &pipeline.path)?;
     match (pipeline.loaded.subject_kind(), base.is_some()) {
         (SubjectKind::Diff, false) => return Err("diff review plan requires `--base REV`".into()),
-        (SubjectKind::WholeTree, _) if options.base.is_some() => {
+        (SubjectKind::WholeTree, true) => {
             return Err("whole-tree review plan does not accept `--base`".into());
         }
         _ => {}
     }
-    let (base, base_snapshot_id, change_set) =
-        if pipeline.loaded.subject_kind() == SubjectKind::WholeTree {
-            (None, None, None)
-        } else {
-            (base, base_snapshot_id, change_set)
-        };
     let (pipeline, input_sizes) = apply_oversized_policy(
         cas,
         &project,
@@ -906,7 +900,7 @@ fn open_new(
         (SubjectKind::Diff, false) => {
             return Err("a new diff Campaign requires `--base REV`".into());
         }
-        (SubjectKind::WholeTree, _) if options.base.is_some() => {
+        (SubjectKind::WholeTree, true) => {
             return Err(
                 "whole-tree review does not accept a Base; select a whole-tree pipeline with --policy-rev only"
                     .into(),

@@ -40,9 +40,12 @@ or needs a documented hand edit.
   `--light`, which only restated the default. The `af/review-plan@1` document no longer carries
   `selectors.compatibility_authority`, and the text plan drops its `compat` line.
 - Default Campaign state resolves only the opaque `c-<id>` directory under
-  `$XDG_STATE_HOME/af/review/campaigns/`; a directory named by the label (af 0.4 and earlier) is no
-  longer a fallback. `af review campaigns|gc --state-root` still list an explicit `--state`
-  directory named by its label.
+  `$XDG_STATE_HOME/af/review/campaigns/`; a directory there named by the label (the layout af 0.4
+  and earlier wrote) is no longer a fallback. `af review campaigns|gc --state-root` still list an
+  explicit `--state` directory named by its label. A Campaign you placed under that root yourself
+  with `--state …/campaigns/<label>` must keep being addressed with `--state`: omitting it starts a
+  new `c-<id>` Campaign, and `af review campaigns|gc` then refuse the root because one label holds
+  state under both names.
 - Removed `af help trust` and its `af-trust.7` man page, which described an `af trust` command that
   never shipped.
 - `af self` and `install.sh` no longer install, activate or dispatch to releases older than 0.8.0,
