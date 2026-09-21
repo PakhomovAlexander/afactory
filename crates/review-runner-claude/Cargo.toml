@@ -21,7 +21,7 @@ nix = { version = "0.31.3", default-features = false, features = ["dir", "fs"] }
 [dev-dependencies]
 # Tests build real locked packages; the library itself never touches the config layer.
 review-config = { path = "../review-config" }
-jsonschema = { version = "0.26.1", default-features = false }
+jsonschema = { version = "0.56.0", default-features = false }
 tempfile = "3.27.0"
 
 [lints]
