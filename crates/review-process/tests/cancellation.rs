@@ -43,7 +43,15 @@ fn dead(pid: i32) -> bool {
             .rsplit_once(')')
             .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'));
     }
-    false
+    // Init may reap the zombie between the signal probe and the read, which removes its stat
+    // file; probe again rather than report a reaped process as live.
+    gone(pid)
+}
+
+/// The kernel's view of `pid`, so a failed liveness assertion explains itself.
+fn proc_stat(pid: i32) -> String {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .unwrap_or_else(|error| format!("/proc/{pid}/stat unreadable: {error}"))
 }
 
 #[test]
@@ -143,13 +151,17 @@ fn cancellation_retains_prefixes_and_stops_running_stdin_and_each_held_drain() {
             "cancellation must interrupt the current wait: {mode}"
         );
         assert!(gone(ids[0]), "direct child was not reaped: {mode}");
+        // A process observed dead stays dead: assert that observation instead of probing again.
         let limit = Instant::now() + Duration::from_secs(2);
-        while !dead(ids[1]) && Instant::now() < limit {
+        let mut exited = dead(ids[1]);
+        while !exited && Instant::now() < limit {
             std::thread::sleep(Duration::from_millis(10));
+            exited = dead(ids[1]);
         }
         assert!(
-            dead(ids[1]),
-            "descendant survived group cancellation: {mode}"
+            exited,
+            "descendant survived group cancellation: {mode}: {}",
+            proc_stat(ids[1])
         );
     }
 }
