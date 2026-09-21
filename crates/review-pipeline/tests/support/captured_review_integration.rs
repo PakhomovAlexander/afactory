@@ -158,10 +158,12 @@ pub(super) fn definition(
         + &format!("\n[integration]\npost_apply_checks=[\"first\",\"second\"]\n[[checks]]\nname=\"first\"\nprogram=\"/bin/sh\"\nargs=[{{value=\"-c\"}},{{value={}}}]\n[[checks]]\nname=\"second\"\nprogram=\"/bin/sh\"\nargs=[{{value=\"-c\"}},{{value={}}}]\n",serde_json::to_string(&first).unwrap(),serde_json::to_string(&second).unwrap())
 }
 
+/// Admit Round 1 of a heavy Campaign capped at `max_rounds`; Integration needs at least two.
 pub(super) fn admit_integration(
     cas: &Cas,
     store: &mut EventStore,
     definition: &str,
+    max_rounds: u32,
 ) -> (
     LegacyReviewPlanCompiler,
     review_store::store::task::TaskLease,
@@ -173,7 +175,7 @@ pub(super) fn admit_integration(
         None,
         review_core::CampaignConvergenceV1 {
             clean_rounds: 1,
-            max_rounds: 3,
+            max_rounds,
             gate: "major".into(),
         },
         BTreeMap::from([("value.txt".into(), b"before\n".to_vec())]),
@@ -221,11 +223,14 @@ pub(super) fn admit_integration(
 /// One Task named integration-review, Campaign review, stored in cas/ and events.sqlite.
 /// A real Proposal is checked, promoted, handed off and resolved by the next complete Review.
 pub fn run_integration_handoff() -> tempfile::TempDir {
-    run_integration_handoff_with_preparation_delay(std::time::Duration::ZERO)
+    run_integration_handoff_with(std::time::Duration::ZERO, 3)
 }
 
-pub fn run_integration_handoff_with_preparation_delay(
+/// The same handoff after a slow successor preparation, in a Campaign capped at
+/// `max_rounds`. When the successor is the final permitted Round, it captures no Integration.
+pub fn run_integration_handoff_with(
     delay: std::time::Duration,
+    max_rounds: u32,
 ) -> tempfile::TempDir {
     use review_core::task::review_handoff::*;
     use review_store::store::task::review_handoff::capture_task_review_handoff;
@@ -243,8 +248,12 @@ pub fn run_integration_handoff_with_preparation_delay(
         node["runner"]["args"][1]["value"] =
             toml::Value::String(format!("{reviewed}{command}; fi"));
     }
-    let (compiler, lease) =
-        admit_integration(&cas, &mut store, &toml::to_string(&definition).unwrap());
+    let (compiler, lease) = admit_integration(
+        &cas,
+        &mut store,
+        &toml::to_string(&definition).unwrap(),
+        max_rounds,
+    );
     let lease = if delay.is_zero() {
         lease
     } else {
@@ -376,7 +385,18 @@ pub fn run_integration_handoff_with_preparation_delay(
         .prepare_continuation_revision(&cas, &before.revision_id, &before.revision)
         .unwrap();
     let revision_id = artifact(&cas, review_core::task::TASK_REVISION_V1, &revision);
-    let (plan, _) = successor.compile(&cas, &revision_id).unwrap();
+    let (plan, compiled) = successor.compile(&cas, &revision_id).unwrap();
+    // A promoted head needs another complete Round, so only a non-final Round captures one.
+    let integrates = next.round < max_rounds;
+    assert_eq!(
+        compiled.compilation.graph.review_integration.is_some(),
+        integrates
+    );
+    assert_eq!(
+        plan.dependencies
+            .contains_key("af/review-integration-checks"),
+        integrates
+    );
     let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V1, &plan);
     let handoff = preview.prepare_handoff(&cas, &plan_id).unwrap();
     assert_eq!(handoff.successor_revision_id, revision_id);
@@ -533,11 +553,16 @@ pub fn run_integration_handoff_with_preparation_delay(
     assert!(report.complete(), "{report:?}");
     let conclusion = next_host.publish_recorded_round_conclusion(&cas).unwrap();
     assert_eq!(conclusion.verdict, review_pipeline::RunVerdict::Pass);
-    let phase = next_host
-        .select_recorded_integration(&cas)
-        .unwrap()
-        .unwrap();
-    assert!(phase.finished() && !phase.requires_checks());
+    let phase = next_host.select_recorded_integration(&cas).unwrap();
+    if integrates {
+        let phase = phase.unwrap();
+        assert!(phase.finished() && !phase.requires_checks());
+    } else {
+        assert!(
+            phase.is_none(),
+            "the final permitted Round selects no Integration"
+        );
+    }
     let after = runtime.projection().unwrap();
     assert_eq!(after.revision.limits, before.revision.limits);
     let after_attempts = after.execution.as_ref().unwrap().attempt_accounting();

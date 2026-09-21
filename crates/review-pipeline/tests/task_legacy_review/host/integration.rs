@@ -17,6 +17,7 @@ fn empty_integration_is_durable_without_an_attempt_and_preserves_original_accept
         &cas,
         &mut store,
         &definition(&cas, false, false, &dir.path().join("calls")),
+        3,
     );
     let shared = SharedEventStore::new(&mut store);
     let host = LegacyReviewTaskHost::new(
@@ -89,7 +90,7 @@ fn prepared_integration_reuses_one_common_attempt_and_replays_its_exact_phase_re
         let cas = Cas::open(dir.path().join("cas")).unwrap();
         let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
         let (compiler, lease) =
-            admit_integration(&cas, &mut store, &definition(&cas, true, failed, &calls));
+            admit_integration(&cas, &mut store, &definition(&cas, true, failed, &calls), 3);
         let shared = SharedEventStore::new(&mut store);
         let host = LegacyReviewTaskHost::new(
             &cas,
@@ -353,7 +354,7 @@ fn late_usage_before_checks_retains_a_failed_phase_without_dispatch_or_false_acc
     let cas = Cas::open(dir.path().join("cas")).unwrap();
     let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
     let (compiler, lease) =
-        admit_integration(&cas, &mut store, &definition(&cas, true, false, &calls));
+        admit_integration(&cas, &mut store, &definition(&cas, true, false, &calls), 3);
     let shared = SharedEventStore::new(&mut store);
     let host = LegacyReviewTaskHost::new(
         &cas,
@@ -490,7 +491,7 @@ fn overlapping_captured_proposals_record_conflict_without_a_check_attempt_or_pro
             "execution = { credential_mode = \"credential_free\" }",
             "execution={credential_mode=\"credential_free\",auto_apply=true}",
         );
-    let (compiler, lease) = admit_integration(&cas, &mut store, &definition);
+    let (compiler, lease) = admit_integration(&cas, &mut store, &definition, 3);
     let shared = SharedEventStore::new(&mut store);
     let host = LegacyReviewTaskHost::new(
         &cas,
@@ -559,6 +560,11 @@ fn overlapping_captured_proposals_record_conflict_without_a_check_attempt_or_pro
 #[test]
 fn integrated_head_requires_and_receives_a_full_successor_review_in_the_same_task() {
     fixture::run_integration_handoff();
+}
+
+#[test]
+fn final_permitted_successor_round_captures_no_integration() {
+    fixture::run_integration_handoff_with(std::time::Duration::ZERO, 2);
 }
 
 fn reject_forged_attestation(
@@ -652,7 +658,7 @@ fn late_usage_after_successful_checks_seals_a_new_resource_observation_without_p
     let cas = Cas::open(dir.path().join("cas")).unwrap();
     let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
     let (compiler, lease) =
-        admit_integration(&cas, &mut store, &definition(&cas, true, false, &calls));
+        admit_integration(&cas, &mut store, &definition(&cas, true, false, &calls), 3);
     let shared = SharedEventStore::new(&mut store);
     let host = LegacyReviewTaskHost::new(
         &cas,
@@ -777,7 +783,7 @@ fn a_final_check_that_could_not_run_remains_incomplete_with_its_raw_evidence() {
     checks[1]["program"] = toml::Value::String("./next-check".into());
     checks[1]["args"] = toml::Value::Array(vec![]);
     let (compiler, lease) =
-        admit_integration(&cas, &mut store, &toml::to_string(&definition).unwrap());
+        admit_integration(&cas, &mut store, &toml::to_string(&definition).unwrap(), 3);
     let shared = SharedEventStore::new(&mut store);
     let host = LegacyReviewTaskHost::new(
         &cas,
@@ -871,5 +877,5 @@ fn a_final_check_that_could_not_run_remains_incomplete_with_its_raw_evidence() {
 
 #[test]
 fn delayed_prospective_review_preparation_renews_lease_and_refreshes_only_the_task_prefix() {
-    fixture::run_integration_handoff_with_preparation_delay(std::time::Duration::from_secs(16));
+    fixture::run_integration_handoff_with(std::time::Duration::from_secs(16), 3);
 }

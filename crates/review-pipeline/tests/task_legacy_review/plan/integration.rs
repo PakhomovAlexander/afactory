@@ -108,6 +108,9 @@ fn integration_is_captured_only_for_heavy_rounds_with_its_original_dormant_allow
             );
             std::fs::write(sequence_path, bytes).unwrap();
         } else {
+            // The captured pipeline still permits three Rounds, so Round 1 is not final:
+            // only the mode gate keeps Integration out of this light Round.
+            assert_eq!(captured.loaded.convergence().max_rounds, 3);
             assert!(graph.review_integration.is_none());
             assert!(
                 !plan
