@@ -38,11 +38,13 @@ automatic Integration are outside this path.
 - a reviewed Task catalog committed in the repository: `.af/task-catalog.toml`, the Pipeline and
   Worker packages it pins, and `.af/code-policy.toml` with the required checks.
 
-`af catalog init --profile software` creates a working, credential-free starter catalog with
-runnable Task files ([starters](task-execution/starters.md)), and `af catalog sync` imports
-shared definitions from Git ([shared catalogs](task-execution/shared-catalogs.md)). The catalog
-pins every package by digest, so changing any package byte requires a newly reviewed pin. Checks
-are project-specific, so the code policy is written per repository.
+`af catalog init --profile software --destination task-demo` creates a new starter directory,
+which must not exist yet, holding a working, credential-free catalog and runnable Task files
+([starters](task-execution/starters.md)); it does not add a catalog to the current repository.
+`af catalog sync` imports shared definitions from Git
+([shared catalogs](task-execution/shared-catalogs.md)). The catalog pins every package by digest,
+so changing any package byte requires a newly reviewed pin. Checks are project-specific, so the
+code policy is written per repository.
 
 Trusting that committed authority and running `af task start --execute`, or confirming the
 previewed plan, authorizes Afactory to deliver each Worker its exact declared inputs for every

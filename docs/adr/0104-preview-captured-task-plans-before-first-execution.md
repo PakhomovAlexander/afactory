@@ -1,7 +1,8 @@
 # ADR-0104: Preview captured Task plans before first execution
 
 Date: 2026-09-15
-Status: Accepted (2026-09-17)
+Status: Accepted (2026-09-17); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the preview for the legacy goal entry point.
 
 ## Context
 

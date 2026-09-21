@@ -96,7 +96,8 @@ af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directori
   read-only acceptance checks inspect the sealed result, an independent evaluator approves a
   content-addressed Snapshot, and `af task deliver` — only after explicit Task-ID confirmation —
   creates a new branch and linked worktree. It never commits, pushes, opens a PR, or touches the
-  source checkout. `af catalog init` writes a runnable starter catalog.
+  source checkout. `af catalog init --destination DIR` creates a new starter directory with a
+  runnable catalog.
 - **Deterministic gates that reuse CI checks.** A Gate is whatever the pipeline declares — usually
   the project's own `make check` — executed through an admitted provider in a disposable clone. A
   check that could not run is not a pass, and neither is a Gate with no required checks.

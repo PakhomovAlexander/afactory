@@ -1,5 +1,5 @@
-//! Local Tasks: v2 seals one independently verified internal Snapshot; the first v3 slice may
-//! deliver that exact result only to a new local branch and linked worktree.
+//! Delivery and inspection of verified Task results: only explicit delivery places the exact
+//! sealed Snapshot in a new local branch and linked worktree.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};

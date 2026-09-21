@@ -72,8 +72,9 @@ or needs a documented hand edit.
   accepts `defaults.task_pipeline`: every `af` command refuses a project file that still sets it,
   so delete that line by hand. The `implement` pipeline, its two Worker packages and their pins in
   `.af/af.lock` are then unused and can go too. Run implementation Tasks from a Task file against
-  a Task catalog instead; `af catalog init --profile software` writes a runnable starter. The
-  `make pilot-check` target is gone; `make check` runs the same delivery and recovery tests.
+  a Task catalog instead; `af catalog init --profile software --destination <new-dir>` creates a
+  new starter directory with a runnable catalog and Task files. The `make pilot-check` target is
+  gone; `make check` runs the same delivery and recovery tests.
 - A Task catalog Worker's `worker.toml` can no longer declare
   `runner.kind = "legacy_task_command"` with its `protocol` and `legacy_budget_tokens` keys: the
   catalog refuses such a package. That runner spoke the fixed implementation v1 Markdown and

@@ -130,11 +130,11 @@ explicitly requests convergence review, and repeat that explicit mode when resum
         arg_required_else_help = true,
         long_about = "Start, inspect, and deliver an implement Task.\n\n\
 A Task file (`--file`) names the Task's ID, kind, goal and limits. The Pipeline and Worker \
-packages it runs are pinned in the committed `.af/task-catalog.toml`; `af catalog init` creates \
-a working starter catalog with runnable Task files. The Task runs over a captured source \
-Snapshot and ends at a verified or unverified derived Snapshot. Nothing is written back to the \
-repository unless you `deliver` it, to a new local branch and worktree, after confirming the \
-Task ID.",
+packages it runs are pinned in the committed `.af/task-catalog.toml`; `af catalog init \
+--destination DIR` creates a new starter directory with a working catalog and runnable Task \
+files. The Task runs over a captured source Snapshot and ends at a verified or unverified \
+derived Snapshot. Nothing is written back to the repository unless you `deliver` it, to a new \
+local branch and worktree, after confirming the Task ID.",
         after_long_help = "Examples:\n  af task start --file ticket.json\n  af task run TASK_ID --confirm-plan PLAN_ID\n  af task list --json\n  af task show TASK_ID\n  af task deliver TASK_ID --repo . --branch af/TASK_ID --worktree ../TASK_ID --confirm TASK_ID"
     )]
     Task {

@@ -34,7 +34,7 @@ Two ways it plugs into a developer's day, one kernel:
   environments through providers, verifies the result with gates and an evaluator, and returns
   a verified derived snapshot or an evidence-backed terminal outcome.
 
-`af review …` is sugar over `af task start --kind review`; the Review Kernel's vocabulary
+`af review …` is sugar over a review-kind Task; the Review Kernel's vocabulary
 (Subject, Report, Finding, Demand, Evidence, Convergence …) is the review Task kind's
 artifact vocabulary, unchanged in meaning.
 
@@ -168,9 +168,9 @@ $XDG_RUNTIME_DIR/af/            # locks, sockets
 <store>                         # the Store: tasks, log, objects, views — a sqlite file now; a distributed coordinator later
 ```
 
-`.af/af.local.toml` is the one personal file (gitignored by `af init`). Tasks are not files in
-the repo: `af task start --file ticket.json` records the contract in the Store;
-`af task show <id> --toml` prints it back. Nothing under `.af/` is machine-written except the lock.
+`.af/af.local.toml` is the one personal file (gitignored by `af init`). Tasks are not stored in
+the repo: `af task start --file ticket.json` captures the Task file's contract in the Store, and
+`af task show <id>` inspects it. Nothing under `.af/` is machine-written except the lock.
 
 ## 7. Kernel layout — crate map
 

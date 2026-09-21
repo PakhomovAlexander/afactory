@@ -154,6 +154,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   of captured policy-one plans.
 - [ADR-0101](0101-reuse-review-structure-with-fresh-task-boundaries.md): readability of historical
   duplicate or non-approved revocations.
+- [ADR-0104](0104-preview-captured-task-plans-before-first-execution.md): the preview for the
+  legacy goal entry point; `task start` takes only a Task file.
 - [ADR-0106](0106-authorize-experimental-children-separately.md): earlier inspection and execution
   generations.
 
