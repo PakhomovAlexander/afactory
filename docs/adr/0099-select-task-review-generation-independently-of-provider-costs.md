@@ -1,7 +1,9 @@
 # ADR-0099: Select Task Review generation independently of Provider costs
 
 Status: accepted for the authorized Task correction, 2026-09-14. Superseded in part by
-[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the semantics of captured policy-one plans.
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the semantics of captured policy-one plans,
+and omission selecting policy one. An omitted `review.generation` now selects generation two,
+the only generation.
 
 This supersedes only the catalog-selection paragraph of
 [ADR-0094](0094-bind-task-review-assignments-and-readable-inputs.md). Its assignment, provenance,

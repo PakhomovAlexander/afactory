@@ -92,7 +92,7 @@
       "properties": {
         "generation": {
           "const": 2,
-          "description": "Explicit Review policy generation. Omission retains generation one independently of Provider admission costs."
+          "description": "Review policy generation. Two is the only generation, and omission also selects it."
         },
         "reviewers": {
           "type": "object",

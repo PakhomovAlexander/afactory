@@ -32,7 +32,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 195] = [
+const SCHEMAS: [&str; 194] = [
     "session-snapshot-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -128,7 +128,6 @@ const SCHEMAS: [&str; 195] = [
     "task-provider-probe-policy-v1.json",
     "legacy-review-task-policy-v2.json",
     "legacy-review-task-policy-v3.json",
-    "task-review-subject-v1.json",
     "task-review-subject-v2.json",
     "task-review-assignment-v1.json",
     "task-review-round-v1.json",
@@ -487,8 +486,8 @@ fn review_task_round_contracts_preserve_completeness() {
     use review_core::task::review::*;
     let id = format!("sha256:{}", "a".repeat(64));
     let subject = json!({"subject_id":id,"snapshot_id":id,"prior_history_id":id,"round":1,"subject":{"kind":"whole-tree","head_snapshot_id":id}});
-    assert_valid("task-review-subject-v1.json", &subject);
-    serde_json::from_value::<TaskReviewSubjectV1>(subject)
+    assert_valid("task-review-subject-v2.json", &subject);
+    serde_json::from_value::<TaskReviewSubjectV2>(subject)
         .unwrap()
         .validate()
         .unwrap();
@@ -548,7 +547,7 @@ fn review_task_round_contracts_preserve_completeness() {
 
 #[test]
 fn review_continuation_keeps_repair_evidence_distinct_from_closed_rounds() {
-    use review_core::task::{repair::TaskReviewContinuationV1, review::TaskReviewSubjectV1};
+    use review_core::task::{repair::TaskReviewContinuationV1, review::TaskReviewSubjectV2};
     let id = format!("sha256:{}", "a".repeat(64));
     let value = json!({"invocation":{"plan_id":id,"node":"root.continue","inputs":{}},
         "original_round_report_id":id,"prior_history_id":id,
@@ -566,15 +565,15 @@ fn review_continuation_keeps_repair_evidence_distinct_from_closed_rounds() {
     assert!(serde_json::from_value::<TaskReviewContinuationV1>(forged).is_err());
     let mut subject = json!({"subject_id":id,"snapshot_id":id,"prior_history_id":id,
         "continuation_id":id,"round":2,"subject":{"kind":"whole-tree","head_snapshot_id":id}});
-    assert_valid("task-review-subject-v1.json", &subject);
-    serde_json::from_value::<TaskReviewSubjectV1>(subject.clone())
+    assert_valid("task-review-subject-v2.json", &subject);
+    serde_json::from_value::<TaskReviewSubjectV2>(subject.clone())
         .unwrap()
         .validate()
         .unwrap();
     subject["round"] = json!(1);
-    assert!(!validator("task-review-subject-v1.json").is_valid(&subject));
+    assert!(!validator("task-review-subject-v2.json").is_valid(&subject));
     assert!(
-        serde_json::from_value::<TaskReviewSubjectV1>(subject)
+        serde_json::from_value::<TaskReviewSubjectV2>(subject)
             .unwrap()
             .validate()
             .is_err()
@@ -3840,7 +3839,6 @@ fn task_review_readable_context_generations_are_strict() {
     value.validate().unwrap();
     let encoded = serde_json::to_value(value).unwrap();
     assert_valid("task-review-subject-v2.json", &encoded);
-    assert!(serde_json::from_value::<TaskReviewSubjectV1>(encoded.clone()).is_err());
     for (field, replacement) in [
         ("bytes", json!(4194305)),
         ("bytes", json!(-1)),
@@ -3887,7 +3885,8 @@ fn task_review_readable_context_generations_are_strict() {
 }
 
 #[test]
-fn task_catalog_review_generation_does_not_change_provider_authority() {
+fn task_catalog_review_generation_is_omitted_or_two() {
+    // Task Review has one generation: an omitted selector and `generation = 2` both mean it.
     let mut value = json!({"schema":"af.task-catalog/1","code_policy":".af/code-policy.toml","packages":{"fixture/review":{"version":"1.0.0","digest":format!("sha256:{}","a".repeat(64)),"path":".af/packages/review"}},"independence":{"command_workers_by_package":true,"distinct_principals":true,"distinct_providers":false,"distinct_models":false},"review":{"reviewers":{"correctness":"required"},"gate":"major","clean_rounds":1,"max_rounds":2}});
     for generation in [1, 2] {
         let name = format!("task-catalog-v{generation}.json");

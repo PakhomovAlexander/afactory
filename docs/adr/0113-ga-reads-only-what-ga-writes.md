@@ -41,6 +41,10 @@ GA reads only what GA writes. Compatibility obligations start at the GA release.
    either: `af task start` takes only a Task file, and its `--kind`, `--goal` and `--pipeline`
    flags are gone. A Task catalog Worker declares a `command` or `model` runner; the
    `legacy_task_command` runner, which spoke the fixed format's Worker protocol, is refused.
+   Task Review has one generation: a catalog's `review.generation` may be omitted or `2`, and
+   either way captures `af.review-task-policy/2`. A reviewer package that lacks the
+   `af/TaskReviewAssignment@1` input or declares `af/TaskReviewSubject@1` or
+   `review.kernel/ReviewerResult@1` ports is refused at planning.
 3. **One contract per name, at its highest pre-GA version.** Each pre-GA version ladder of a
    persisted or emitted contract (event and artifact types, execution and usage records, CLI JSON
    outputs and their JSON Schemas, and catalog and review-policy generations) collapses at GA to a
@@ -151,7 +155,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   `af/TaskContext@2` with its compatibility contracts and 8 MiB metadata limit, and the original
   context rendering for previously captured packages. Its output-admission retry decision stays.
 - [ADR-0099](0099-select-task-review-generation-independently-of-provider-costs.md): the semantics
-  of captured policy-one plans.
+  of captured policy-one plans, and omission selecting policy one. An omitted `review.generation`
+  now selects generation two, the only generation.
 - [ADR-0101](0101-reuse-review-structure-with-fresh-task-boundaries.md): readability of historical
   duplicate or non-approved revocations.
 - [ADR-0104](0104-preview-captured-task-plans-before-first-execution.md): the preview for the

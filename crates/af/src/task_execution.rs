@@ -26,7 +26,9 @@ use review_pipeline::task::optimization::{
     OptimizationCandidateTaskDomain, OptimizationTaskDomain, optimization_signatures,
 };
 use review_pipeline::task::provider::ProviderTaskDomain;
-use review_pipeline::task::review::{ReviewTaskDomain, ReviewTaskPolicy, review_signatures};
+use review_pipeline::task::review::{
+    REVIEW_TASK_POLICY_SCHEMA, ReviewTaskDomain, ReviewTaskPolicy, review_signatures,
+};
 use review_pipeline::task::source::SnapshotTaskEnvironment;
 use review_source_git::task::{SOURCE_TREE_V1, capture_snapshot, source_tree};
 use review_source_git::{Capture, EntryKind, Manifest, Repo};
@@ -192,6 +194,7 @@ struct TaskCatalog {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct ReviewSettings {
+    /// Task Review has one generation. Omitted or `2`, it selects that generation.
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -207,13 +210,10 @@ struct ReviewSettings {
 }
 
 impl ReviewSettings {
-    fn policy_generation(&self) -> Result<u32, String> {
+    fn check_generation(&self) -> Result<(), String> {
         match self.generation {
-            None => Ok(1),
-            Some(2) => Ok(2),
-            Some(_) => {
-                Err("Review generation must be omitted for compatibility or explicitly 2".into())
-            }
+            None | Some(2) => Ok(()),
+            Some(_) => Err("Review generation must be omitted or 2".into()),
         }
     }
 }
@@ -576,8 +576,9 @@ fn capture_authority(
             catalog
                 .review
                 .map(|review| {
+                    review.check_generation()?;
                     let review = ReviewTaskPolicy {
-                        schema: format!("af.review-task-policy/{}", review.policy_generation()?),
+                        schema: REVIEW_TASK_POLICY_SCHEMA.into(),
                         check_policy_id: code_policy_id
                             .clone()
                             .ok_or("Review requires code checks")?,
@@ -2229,20 +2230,16 @@ mod review_generation_tests {
     use super::*;
 
     #[test]
-    fn review_generation_is_explicit_and_preserves_absent_compatibility() {
+    fn review_generation_is_omitted_or_two() {
         let value = serde_json::json!({"reviewers":{"correctness":"required"},"gate":"major","clean_rounds":1,"max_rounds":2,"allow_targeted_repairs":false});
         let settings: ReviewSettings = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(settings.policy_generation().unwrap(), 1);
+        settings.check_generation().unwrap();
         assert_eq!(serde_json::to_value(settings).unwrap(), value);
         let mut explicit = value;
         explicit["generation"] = serde_json::json!(2);
-        assert_eq!(
-            serde_json::from_value::<ReviewSettings>(explicit.clone())
-                .unwrap()
-                .policy_generation()
-                .unwrap(),
-            2
-        );
+        let settings: ReviewSettings = serde_json::from_value(explicit.clone()).unwrap();
+        settings.check_generation().unwrap();
+        assert_eq!(serde_json::to_value(settings).unwrap(), explicit);
         for invalid in [
             serde_json::json!(0),
             serde_json::json!(1),
@@ -2255,7 +2252,7 @@ mod review_generation_tests {
             assert!(
                 serde_json::from_value::<ReviewSettings>(explicit.clone())
                     .map_err(|e| e.to_string())
-                    .and_then(|v| v.policy_generation())
+                    .and_then(|v| v.check_generation())
                     .is_err()
             );
         }

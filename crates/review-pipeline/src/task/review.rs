@@ -38,40 +38,18 @@ pub struct ReviewTaskPolicy {
     pub gate: Severity,
     pub clean_rounds: u32,
     pub max_rounds: u32,
-    #[serde(default)]
     pub allow_targeted_repairs: bool,
 }
-impl ReviewTaskPolicy {
-    pub fn generation_two(&self) -> bool {
-        self.schema == "af.review-task-policy/2"
-    }
-    fn subject_type(&self) -> &'static str {
-        if self.generation_two() {
-            TASK_REVIEW_SUBJECT_V2
-        } else {
-            TASK_REVIEW_SUBJECT_V1
-        }
-    }
-    fn result_contract(&self) -> review_core::ReviewerResultContract {
-        if self.generation_two() {
-            review_core::ReviewerResultContract::V2
-        } else {
-            review_core::ReviewerResultContract::V1
-        }
-    }
-    fn result_type(&self) -> &'static str {
-        if self.generation_two() {
-            review_core::contract::REVIEWER_RESULT_V2
-        } else {
-            review_core::contract::REVIEWER_RESULT_V1
-        }
-    }
+/// The one Task Review policy: Subject@2, one assignment per reviewer and ReviewerResult@2.
+pub const REVIEW_TASK_POLICY_SCHEMA: &str = "af.review-task-policy/2";
+const RESULT_TYPE: &str = review_core::contract::REVIEWER_RESULT_V2;
+const RESULT_CONTRACT: review_core::ReviewerResultContract =
+    review_core::ReviewerResultContract::V2;
 
+impl ReviewTaskPolicy {
     pub fn validate(&self) -> Result<(), String> {
-        if !matches!(
-            self.schema.as_str(),
-            "af.review-task-policy/1" | "af.review-task-policy/2"
-        ) || !review_core::is_digest(&self.check_policy_id)
+        if self.schema != REVIEW_TASK_POLICY_SCHEMA
+            || !review_core::is_digest(&self.check_policy_id)
             || self.reviewers.is_empty()
             || self.reviewers.len() > 64
             || self.reviewers.keys().any(|name| {
@@ -130,12 +108,12 @@ pub fn review_signatures(
     };
     let source = port(SOURCE_TREE_V1, PortAffinityV1::Unbound {}, false);
     let history = port(REVIEW_HISTORY_V1, PortAffinityV1::Unbound {}, false);
-    let mut bind_outputs =
-        BTreeMap::from([("subject".into(), port(policy.subject_type(), same(), false))]);
-    if policy.generation_two() {
-        for name in policy.reviewers.keys() {
-            bind_outputs.insert(name.clone(), port(TASK_REVIEW_ASSIGNMENT_V1, same(), false));
-        }
+    let mut bind_outputs = BTreeMap::from([(
+        "subject".into(),
+        port(TASK_REVIEW_SUBJECT_V2, same(), false),
+    )]);
+    for name in policy.reviewers.keys() {
+        bind_outputs.insert(name.clone(), port(TASK_REVIEW_ASSIGNMENT_V1, same(), false));
     }
     let bind = signature(
         BTreeMap::from([
@@ -162,11 +140,14 @@ pub fn review_signatures(
     let mut inputs = BTreeMap::from([
         ("source".into(), source),
         ("history".into(), history),
-        ("subject".into(), port(policy.subject_type(), same(), false)),
+        (
+            "subject".into(),
+            port(TASK_REVIEW_SUBJECT_V2, same(), false),
+        ),
         ("checks".into(), port(TASK_CHECK_RECEIPT_V1, same(), true)),
     ]);
     for name in policy.reviewers.keys() {
-        inputs.insert(name.clone(), port(policy.result_type(), same(), true));
+        inputs.insert(name.clone(), port(RESULT_TYPE, same(), true));
     }
     let retained = inputs
         .keys()
@@ -279,39 +260,37 @@ impl ReviewTaskDomain {
                     {
                         return Err("Required reviewer must use a reserved verification role and the reducer's exact declared inputs".into());
                     }
-                    if policy.generation_two() {
-                        let subject = node
-                            .inputs
-                            .get("subject")
-                            .ok_or("Review has no Subject binding")?;
-                        let assignment = reviewer
+                    let subject = node
+                        .inputs
+                        .get("subject")
+                        .ok_or("Review has no Subject binding")?;
+                    let assignment = reviewer
+                        .inputs
+                        .get("assignment")
+                        .ok_or("Reviewer lacks its explicit assignment")?;
+                    if assignment.node != subject.node
+                        || assignment.port != *name
+                        || reviewer
+                            .contract
                             .inputs
                             .get("assignment")
-                            .ok_or("Reviewer lacks its explicit assignment")?;
-                        if assignment.node != subject.node
-                            || assignment.port != *name
-                            || reviewer
-                                .contract
-                                .inputs
-                                .get("assignment")
-                                .is_none_or(|p| p.artifact_type != TASK_REVIEW_ASSIGNMENT_V1)
-                            || graph.nodes.get(&subject.node).is_none_or(|n| {
-                                !matches!(
-                                    n.operator,
-                                    CompiledOperator::Primitive {
-                                        operator: TaskOperatorV1::ReviewBind {},
-                                        ..
-                                    }
-                                )
-                            })
-                            || reviewer
-                                .contract
-                                .outputs
-                                .get(&address.port)
-                                .is_none_or(|p| p.artifact_type != policy.result_type())
-                        {
-                            return Err("Reviewer must retain its own captured assignment and generation-two result contract".into());
-                        }
+                            .is_none_or(|p| p.artifact_type != TASK_REVIEW_ASSIGNMENT_V1)
+                        || graph.nodes.get(&subject.node).is_none_or(|n| {
+                            !matches!(
+                                n.operator,
+                                CompiledOperator::Primitive {
+                                    operator: TaskOperatorV1::ReviewBind {},
+                                    ..
+                                }
+                            )
+                        })
+                        || reviewer
+                            .contract
+                            .outputs
+                            .get(&address.port)
+                            .is_none_or(|p| p.artifact_type != RESULT_TYPE)
+                    {
+                        return Err("Reviewer must retain its own captured assignment and ReviewerResult@2 contract".into());
                     }
                 }
             }
@@ -394,7 +373,7 @@ impl ReviewTaskDomain {
             node.contract
                 .outputs
                 .values()
-                .any(|p| p.artifact_type == self.policy.result_type())
+                .any(|p| p.artifact_type == RESULT_TYPE)
         })
     }
     fn value<T: serde::de::DeserializeOwned>(
@@ -695,18 +674,15 @@ impl ReviewTaskDomain {
                 missing.insert(name.clone());
                 continue;
             }
-            let (id, stage): (_, serde_json::Value) =
-                self.value(cas, input, name, self.policy.result_type())?;
+            let (id, stage): (_, serde_json::Value) = self.value(cas, input, name, RESULT_TYPE)?;
             let (contract, stage) = crate::reviewer_stage_output(stage)?;
-            if contract != self.policy.result_contract() {
-                return Err("Review result changed its captured generation".into());
+            if contract != RESULT_CONTRACT {
+                return Err("Review result is not a ReviewerResult@2".into());
             }
             let artifact = envelope(cas, &id)?;
-            if self.policy.generation_two() {
-                let assignment = self.assignment(&ledger, &subject, name)?;
-                self.validate_stage(&stage, &assignment)?;
-                self.validate_result_assignment(cas, input, name, &artifact, &assignment)?;
-            }
+            let assignment = self.assignment(&ledger, &subject, name)?;
+            self.validate_stage(&stage, &assignment)?;
+            self.validate_result_assignment(cas, input, name, &artifact, &assignment)?;
             let Producer::Attempt {
                 run_id,
                 node_id,
@@ -793,15 +769,11 @@ impl ReviewTaskDomain {
                 input_artifacts: refs,
                 subject_snapshot_id: &subject.snapshot_id,
                 subject_id: &subject.subject_id,
-                result_contract: self.policy.result_contract(),
+                result_contract: RESULT_CONTRACT,
             })
             .collect();
-        let reduce = if self.policy.generation_two() {
-            review_store::prepare_canonical_task_review
-        } else {
-            review_store::prepare_canonical_review
-        };
-        let reduction = reduce(cas, &run_id, &ledger, &stages).map_err(|e| e.to_string())?;
+        let reduction = review_store::prepare_canonical_task_review(cas, &run_id, &ledger, &stages)
+            .map_err(|e| e.to_string())?;
         let (_, prior): (_, ReviewHistoryV1) =
             self.value(cas, input, "history", REVIEW_HISTORY_V1)?;
         let (prior_findings, prior_demands) = match prior {
@@ -1230,30 +1202,15 @@ impl TaskDomain for ReviewTaskDomain {
         }
         if self.reviewer(input) {
             let subject = self.current_subject(cas, input)?;
-            if self.policy.generation_two() {
-                self.current_assignment(cas, input, &subject)?;
-                let (_, mut manifest) = read_snapshot(cas, &subject.snapshot_id)?;
-                super::source::add_review_inputs(
-                    cas,
-                    input,
-                    review_sandbox::Mode::ReadOnly,
-                    &subject.snapshot_id,
-                    &mut manifest,
-                )?;
-            } else {
-                // This callback runs only at a new reservation. Frozen outputs/history still
-                // replay through the unchanged generation-one reducer.
-                let ledger = self.prior_ledger(cas, input, &subject, 0)?;
-                if ledger.finding_views().iter().any(|f| {
-                    !f.authority_diagnostic
-                        && !matches!(
-                            f.status,
-                            review_store::Status::Rejected | review_store::Status::Wontfix
-                        )
-                }) {
-                    return Err("Generation-one Review cannot dispatch with prior Findings; capture generation two assignments".into());
-                }
-            }
+            self.current_assignment(cas, input, &subject)?;
+            let (_, mut manifest) = read_snapshot(cas, &subject.snapshot_id)?;
+            super::source::add_review_inputs(
+                cas,
+                input,
+                review_sandbox::Mode::ReadOnly,
+                &subject.snapshot_id,
+                &mut manifest,
+            )?;
             if self.code.review_checks(cas, input)? != ReceiptOutcomeV1::Passed {
                 return Err("Reviewer cannot dispatch before current checks pass".into());
             }
@@ -1293,21 +1250,17 @@ impl TaskDomain for ReviewTaskDomain {
             for port in output.outputs.values() {
                 for id in &port.artifact_ids {
                     let artifact = envelope(cas, id)?;
-                    if artifact.artifact_type != self.policy.result_type()
+                    if artifact.artifact_type != RESULT_TYPE
                         || artifact.subject_snapshot_id.as_ref() != Some(&subject.snapshot_id)
                     {
                         return Err("Reviewer output has a stale type or Snapshot".into());
                     }
-                    if self.policy.generation_two() {
-                        let assignment = self.current_assignment(cas, input, &subject)?;
-                        let (contract, stage) = crate::reviewer_stage_output(artifact.payload)?;
-                        if contract != self.policy.result_contract() {
-                            return Err("Reviewer changed its captured result generation".into());
-                        }
-                        self.validate_stage(&stage, &assignment)?;
-                    } else {
-                        review_core::legacy::validate_reviewer_result(&artifact.payload)?;
+                    let assignment = self.current_assignment(cas, input, &subject)?;
+                    let (contract, stage) = crate::reviewer_stage_output(artifact.payload)?;
+                    if contract != RESULT_CONTRACT {
+                        return Err("Reviewer output is not a ReviewerResult@2".into());
                     }
+                    self.validate_stage(&stage, &assignment)?;
                 }
             }
             return Ok(());

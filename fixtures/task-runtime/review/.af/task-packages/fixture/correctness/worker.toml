@@ -6,7 +6,17 @@ version = "1.0.0"
 effects = ["read-source"]
 roles = ["review"]
 worker_input_type = "af/ReviewInput@1"
-worker_output_type = "review.kernel/ReviewerResult@1"
+worker_output_type = "review.kernel/ReviewerResult@2"
+
+[signature.contract.inputs.assignment]
+artifact_type = "af/TaskReviewAssignment@1"
+cardinality = "one"
+optional = false
+covers = []
+
+[signature.contract.inputs.assignment.affinity]
+kind = "same_as"
+input = "source"
 
 [signature.contract.inputs.checks]
 artifact_type = "af/TaskCheckReceipt@1"
@@ -37,7 +47,7 @@ covers = []
 kind = "unbound"
 
 [signature.contract.inputs.subject]
-artifact_type = "af/TaskReviewSubject@1"
+artifact_type = "af/TaskReviewSubject@2"
 cardinality = "one"
 optional = false
 covers = []
@@ -56,7 +66,7 @@ covers = []
 kind = "unbound"
 
 [signature.contract.outputs.result]
-artifact_type = "review.kernel/ReviewerResult@1"
+artifact_type = "review.kernel/ReviewerResult@2"
 cardinality = "one"
 optional = false
 covers = []
@@ -68,7 +78,7 @@ input = "source"
 [signature.evidence]
 
 [signature.retains]
-result = ["checks", "history", "source", "subject", "requirements"]
+result = ["assignment", "checks", "history", "source", "subject", "requirements"]
 
 [signature.attempt]
 tokens = 0

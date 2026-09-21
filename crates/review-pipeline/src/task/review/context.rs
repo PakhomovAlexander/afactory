@@ -83,13 +83,8 @@ impl ReviewTaskDomain {
         cas: &Cas,
         input: &TaskInvocationV1,
     ) -> Result<TaskReviewSubjectV1, String> {
-        if self.policy.generation_two() {
-            let (_, value) = self.value(cas, input, "subject", TASK_REVIEW_SUBJECT_V2)?;
-            expand_subject(cas, value)
-        } else {
-            self.value(cas, input, "subject", TASK_REVIEW_SUBJECT_V1)
-                .map(|(_, value)| value)
-        }
+        let (_, value) = self.value(cas, input, "subject", TASK_REVIEW_SUBJECT_V2)?;
+        expand_subject(cas, value)
     }
 
     pub(super) fn assignment(
@@ -134,19 +129,6 @@ impl ReviewTaskDomain {
     ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
         let bound = self.bind_subject(cas, input)?;
         let snapshot = Some(bound.snapshot_id.as_str());
-        if !self.policy.generation_two() {
-            return Ok(BTreeMap::from([(
-                "subject".into(),
-                self.put(
-                    cas,
-                    input,
-                    TASK_REVIEW_SUBJECT_V1,
-                    snapshot,
-                    &bound,
-                    vec![bound.subject_id.clone()],
-                )?,
-            )]));
-        }
         let compact = compact_subject(cas, &bound)?;
         let mut refs = vec![bound.subject_id.clone()];
         if let Some(scope) = &compact.change_scope {

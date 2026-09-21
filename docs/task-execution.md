@@ -55,7 +55,7 @@ expanded tree, Claude/Codex workflow and rc2 automation change.
 | Inspection and listing | [`task-inspection-v10`](../schemas/task-inspection-v10.json), [`task-list-entry-v2`](../schemas/task-list-entry-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json) |
 | Run diagnostics and delivery | [`task-run-report-v2`](../schemas/task-run-report-v2.json), [`task-diagnostic-v1`](../schemas/task-diagnostic-v1.json), [`task-delivery-record-v1`](../schemas/task-delivery-record-v1.json) |
 | Review accounting | [`review-report-v3`](../schemas/review-report-v3.json), [`review-report-v4`](../schemas/review-report-v4.json) |
-| Executable credential-free fixtures | `fixtures/task-runtime/` (`pagination`, `review`, `embedded-review`, `bounded-repair`) |
+| Executable credential-free fixtures | `fixtures/task-runtime/` (`pagination`, `review`, `review-v2`, `embedded-review`, `bounded-repair`) |
 | Compatibility anchors | `fixtures/synthetic/` |
 
 ## Walkthroughs

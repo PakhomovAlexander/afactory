@@ -146,6 +146,38 @@ fn stage() -> LegacyStageOutput {
     .unwrap()
 }
 
+/// Publish `output` as the `ReviewerResult@2` a Task reviewer Attempt returns.
+fn task_result(
+    cas: &Cas,
+    run_id: &str,
+    source: &str,
+    attempt_id: &str,
+    input_artifacts: &[String],
+    head: &str,
+    output: &LegacyStageOutput,
+) -> String {
+    let mut payload = serde_json::to_value(output).unwrap();
+    let object = payload.as_object_mut().unwrap();
+    let reports = object.remove("findings").unwrap();
+    object.insert("reports".into(), reports);
+    let dispositions = object.remove("disputes").unwrap();
+    assert_eq!(dispositions, serde_json::json!([]));
+    object.insert("dispositions".into(), dispositions);
+    cas.put_artifact(
+        review_core::contract::REVIEWER_RESULT_V2,
+        Producer::Attempt {
+            run_id: run_id.into(),
+            node_id: source.into(),
+            attempt_id: attempt_id.into(),
+        },
+        input_artifacts.to_vec(),
+        Some(head.into()),
+        payload,
+    )
+    .unwrap()
+    .0
+}
+
 fn apply_resolution(
     ledger: &mut review_store::Ledger,
     cas: &Cas,
@@ -207,25 +239,34 @@ fn task_and_campaign_use_identical_pure_canonical_reduction_without_another_stor
             why: "Large inputs must not allocate the full result".into(),
             suggested_method: "Measure allocation growth".into(),
         });
-    let result = cas
-        .put_json(&serde_json::to_value(&output).unwrap())
-        .unwrap();
     let input = cas.put(b"declared input").unwrap();
+    let attempt_id = "01aaaaaaaaaaaaaaaaaaaaaaaa";
+    // The Task reviewer's actual Attempt address equals the one Campaign ingestion derives.
+    let result = task_result(
+        &cas,
+        run_id,
+        "root.review.correctness",
+        attempt_id,
+        std::slice::from_ref(&input),
+        &authority.head,
+        &output,
+    );
     let stages = [CanonicalStage {
         source: "root.review.correctness",
         demand_requirement: review_core::DemandRequirement::Required,
         stage: &output,
-        attempt_id: "01aaaaaaaaaaaaaaaaaaaaaaaa",
+        attempt_id,
         result_artifact_id: &result,
         input_artifacts: std::slice::from_ref(&input),
         subject_snapshot_id: &authority.head,
         subject_id: &authority.subject,
-        result_contract: review_core::ReviewerResultContract::V1,
+        result_contract: review_core::ReviewerResultContract::V2,
     }];
     let mut task_ledger =
         review_store::Ledger::for_task_subject(&cas, &authority.subject, 1).unwrap();
     let before = store.len(run_id).unwrap();
-    let pure = review_store::prepare_canonical_review(&cas, run_id, &task_ledger, &stages).unwrap();
+    let pure =
+        review_store::prepare_canonical_task_review(&cas, run_id, &task_ledger, &stages).unwrap();
     assert_eq!(
         store.len(run_id).unwrap(),
         before,
@@ -239,7 +280,7 @@ fn task_and_campaign_use_identical_pure_canonical_reduction_without_another_stor
     assert_eq!(pure.reduction, historical);
     assert_eq!(pure.ledger.finding_views(), ingest.ledger().finding_views());
     assert_eq!(pure.ledger.demand_views(), ingest.ledger().demand_views());
-    assert!(review_store::prepare_canonical_review(&cas, run_id, &task_ledger, &[]).is_err());
+    assert!(review_store::prepare_canonical_task_review(&cas, run_id, &task_ledger, &[]).is_err());
     assert!(
         task_ledger
             .bind_task_subject(&cas, "sha256:missing", 2)
@@ -257,22 +298,29 @@ fn task_fix_projection_rejects_stale_views_and_reopens_on_a_changed_subject() {
     let run_id = "task-fix-projection";
     let authority = opened_round(&mut store, &cas, run_id);
     let output = stage();
-    let result = cas
-        .put_json(&serde_json::to_value(&output).unwrap())
-        .unwrap();
+    let attempt_id = "01aaaaaaaaaaaaaaaaaaaaaaaa";
+    let result = task_result(
+        &cas,
+        run_id,
+        "root.reviewers.correctness",
+        attempt_id,
+        &[],
+        &authority.head,
+        &output,
+    );
     let ledger = review_store::Ledger::for_task_subject(&cas, &authority.subject, 1).unwrap();
     let stages = [CanonicalStage {
         source: "correctness",
         demand_requirement: review_core::DemandRequirement::Required,
         stage: &output,
-        attempt_id: "01aaaaaaaaaaaaaaaaaaaaaaaa",
+        attempt_id,
         result_artifact_id: &result,
         input_artifacts: &[],
         subject_snapshot_id: &authority.head,
         subject_id: &authority.subject,
-        result_contract: review_core::ReviewerResultContract::V1,
+        result_contract: review_core::ReviewerResultContract::V2,
     }];
-    let mut ledger = review_store::prepare_canonical_review(&cas, run_id, &ledger, &stages)
+    let mut ledger = review_store::prepare_canonical_task_review(&cas, run_id, &ledger, &stages)
         .unwrap()
         .ledger;
     let original = ledger.finding_views()[0].clone();

@@ -81,6 +81,16 @@ or needs a documented hand edit.
   verdict protocol. Declare a `command` or `model` runner instead, which reads
   `af.worker-request/1` and replies with `af.worker-reply/1`. Worker context is always
   `af/TaskContext@1`; `af/TaskContext@2` is neither written nor read.
+- Task Review has one generation. A Task catalog whose `[review]` table omits `generation` now
+  captures `af.review-task-policy/2`, the same policy as `generation = 2`, instead of generation
+  one; any other value is still refused. Reviewer packages must use the generation-two ports: an
+  `assignment` input of type `af/TaskReviewAssignment@1`, a `subject` of type
+  `af/TaskReviewSubject@2`, and a `review.kernel/ReviewerResult@2` result that lists
+  `dispositions` (one per assigned prior Finding) instead of `disputes`. The Review pipeline wires
+  each reviewer's `assignment` from `review-bind`. A package with the old
+  `af/TaskReviewSubject@1` or `review.kernel/ReviewerResult@1` ports, or without an assignment, is
+  refused at planning, so update it together with its pin. The `af/TaskReviewSubject@1` contract
+  and its `task-review-subject-v1.json` schema are gone.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

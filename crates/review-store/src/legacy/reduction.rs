@@ -9,18 +9,7 @@ pub struct PreparedReviewReduction {
     pub events: Vec<NewEvent>,
 }
 
-pub fn prepare_canonical_review(
-    cas: &Cas,
-    run_id: &str,
-    ledger: &Ledger,
-    stages: &[CanonicalStage<'_>],
-) -> Result<PreparedReviewReduction, StoreError> {
-    validate_stages(ledger, stages)?;
-    let prepared = prepare_canonical_inputs(run_id, ledger, stages)?;
-    prepare_review_outputs(cas, run_id, ledger, &prepared)
-}
-
-/// Generation-two Task reduction keeps the selected flattened Worker address. Logical
+/// Task reduction keeps the selected flattened Worker address. Logical
 /// reviewer names remain finding/demand sources; they never manufacture an Attempt producer.
 pub fn prepare_canonical_task_review(
     cas: &Cas,

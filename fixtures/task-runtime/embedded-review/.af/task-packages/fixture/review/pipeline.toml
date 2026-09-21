@@ -87,7 +87,7 @@
 "worker" = "fixture/bugs"
 "role" = "review"
 "input_type" = "af/ReviewInput@1"
-"output_type" = "review.kernel/ReviewerResult@1"
+"output_type" = "review.kernel/ReviewerResult@2"
 "min_attempts" = 1
 "max_attempts" = 1
 "allow_local_replacement" = false
@@ -97,7 +97,7 @@
 "worker" = "fixture/correctness"
 "role" = "review"
 "input_type" = "af/ReviewInput@1"
-"output_type" = "review.kernel/ReviewerResult@1"
+"output_type" = "review.kernel/ReviewerResult@2"
 "min_attempts" = 1
 "max_attempts" = 1
 "allow_local_replacement" = false
@@ -145,6 +145,11 @@
 
 ["nodes"."inputs"]
 
+["nodes"."inputs"."assignment"]
+"kind" = "node"
+"node" = "bind"
+"port" = "bugs"
+
 ["nodes"."inputs"."checks"]
 "kind" = "node"
 "node" = "check"
@@ -179,6 +184,11 @@
 "slot" = "correctness"
 
 ["nodes"."inputs"]
+
+["nodes"."inputs"."assignment"]
+"kind" = "node"
+"node" = "bind"
+"port" = "correctness"
 
 ["nodes"."inputs"."checks"]
 "kind" = "node"

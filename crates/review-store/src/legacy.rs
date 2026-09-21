@@ -10,9 +10,7 @@
 //!   resolution per row, and claims nothing about what happened in between.
 
 mod reduction;
-pub use reduction::{
-    PreparedReviewReduction, prepare_canonical_review, prepare_canonical_task_review,
-};
+pub use reduction::{PreparedReviewReduction, prepare_canonical_task_review};
 
 use review_core::legacy::LegacyBenchmarkDemand;
 use review_core::{
