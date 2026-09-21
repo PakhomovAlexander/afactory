@@ -19,7 +19,8 @@ set -eu
 REPO="${AF_REPO:-PakhomovAlexander/afactory}"
 DATA="${XDG_DATA_HOME:-$HOME/.local/share}/af/versions"
 BIN="${XDG_BIN_HOME:-$HOME/.local/bin}"
-# The oldest supported release: the first that ships SHA256SUMS.minisig. Nothing older installs.
+# The oldest supported release: the first that ships SHA256SUMS.minisig. Nothing older installs,
+# not even a 0.8.0 release candidate — the same floor `af self` enforces.
 FLOOR="0.8.0"
 
 # crates/af/keys/release.pub — the key every release is signed with.
@@ -72,12 +73,16 @@ semver_max() {
     END { if (seen) print "v" a "." b "." c }'
 }
 
-# semver_lt A B: true when A < B (major.minor.patch, numeric; a pre-release suffix counts as 0).
+# semver_lt A B: true when A < B (major.minor.patch, numeric). As in semver, and as `af self`
+# orders them, a pre-release precedes its release: 0.8.0-rc.1 < 0.8.0.
 semver_lt() {
   awk -v x="$1" -v y="$2" 'BEGIN {
+    xp = index(x, "-"); yp = index(y, "-")
+    if (xp) x = substr(x, 1, xp - 1)
+    if (yp) y = substr(y, 1, yp - 1)
     split(x, a, "."); split(y, b, ".")
     for (i = 1; i <= 3; i++) { if (a[i] + 0 < b[i] + 0) exit 0; if (a[i] + 0 > b[i] + 0) exit 1 }
-    exit 1 }'
+    exit !(xp && !yp) }'
 }
 
 if [ -n "${AF_INSTALL_VERSION:-}" ]; then
