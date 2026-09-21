@@ -18,7 +18,6 @@ review-attempt = { path = "../review-attempt" }
 review-check = { path = "../review-check" }
 review-core = { path = "../review-core" }
 review-graph = { path = "../review-graph" }
-review-parallel = { path = "../review-parallel" }
 review-pipeline = { path = "../review-pipeline" }
 review-process = { path = "../review-process" }
 review-runner = { path = "../review-runner" }

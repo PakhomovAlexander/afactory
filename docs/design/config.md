@@ -28,12 +28,6 @@ the directory file that supplied it. The directory layer is recorded in
 [ADR-0044](../adr/0044-af-manages-itself-and-dispatches-to-the-pinned-release.md); branch-specific
 configuration is git-managed — the project layer on a branch is what that branch commits.
 
-**Trust gate.** Keys that can execute code or move money — `[env.*]`, `[tool.*]`, `[hooks]` —
-apply from the project layers only after `af trust` recorded the path and content hash in
-`$XDG_STATE_HOME/af/trust.toml` (mise, direnv, and Codex do the same). The project layers **may
-never** carry `auth`, a Store connection, or any provider secret reference; such keys are rejected
-with the file and line, not ignored.
-
 ## 2. `.af/af.toml` — the project
 
 Annotated sketch; every table is optional.
@@ -213,7 +207,6 @@ Adding an implementation of a kind is never a config change: it is a built-in ad
 - `[[array-of-tables]]` entities cannot be overridden by key → named tables only.
 - Deep nesting is TOML's weak spot → three levels, flat catalogs, dotted keys in overlays.
 - Rewriting loses comments unless `toml_edit` → `af config set`/`af lock` are the only writers.
-- Project config that executes code needs a trust gate → `af trust`, state-dir record.
 - Environments-as-tables with non-uniform inheritance (Wrangler, Netlify) → profiles are plain
   overlays with one rule: deep-merge, arrays replace.
 - Eager loading is the startup cost, not argument parsing → the loader is lazy; a command opens

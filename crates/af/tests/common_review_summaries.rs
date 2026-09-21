@@ -151,7 +151,7 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
                     state_flag,
                     "--pipeline",
                     ".af/pipelines/review.toml",
-                    "--authority",
+                    "--policy-rev",
                     "HEAD",
                     "--heavy",
                 ],
@@ -368,9 +368,8 @@ fn missing_common_task_refuses_without_reopening_legacy_execution() {
         state.to_str().unwrap(),
         "--pipeline",
         ".af/pipelines/review.toml",
-        "--authority",
+        "--policy-rev",
         "HEAD",
-        "--light",
         "--json",
     ];
     checked(invoke(&repo, &home, &args), 0);

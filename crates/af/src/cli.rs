@@ -3,8 +3,7 @@
 //!
 //! Help follows three rules. `af` alone shows the namespaces; `af <namespace>` shows only that
 //! namespace; `af <command> --help` says what the command does, what it never does, its options
-//! grouped by role, and examples. Every existing flag and `--json` shape is unchanged from the
-//! hand-written parser this replaced.
+//! grouped by role, and examples.
 
 use std::path::PathBuf;
 
@@ -32,7 +31,7 @@ Namespaces:
   config     show the effective configuration and where each value came from
   self       optimize the current project, or manage af installations
 
-`af help <topic>` explains config, layers, environment, exit-codes, json, self, and trust.";
+`af help <topic>` explains config, layers, environment, exit-codes, json, and self.";
 
 const AF_AFTER_HELP: &str = "\
 Exit codes:
@@ -83,7 +82,7 @@ A Campaign reviews one Subject (a diff or the working tree) against committed `.
 ledger; the remaining commands read or resolve that ledger. Flags given directly to `af review` \
 are shorthand for `af review run`.",
         after_long_help = "Examples:\n  af review plan --json\n  af review --uncommitted\n  af review run --campaign pr-42 --heavy\n  af review ledger --campaign pr-42\n  af review report --campaign pr-42 --format md",
-        override_usage = "af review <COMMAND>\n       af review [--light|--heavy] [RUN OPTIONS]   (shorthand for `af review run`)",
+        override_usage = "af review <COMMAND>\n       af review [--heavy] [RUN OPTIONS]   (shorthand for `af review run`)",
         args_conflicts_with_subcommands = true,
         subcommand_negates_reqs = true,
         arg_required_else_help = true
@@ -193,10 +192,10 @@ directory.",
         #[arg(value_enum)]
         shell: Shell,
     },
-    /// Explain a topic (config, layers, environment, exit-codes, json, self, trust) or a command
+    /// Explain a topic (config, layers, environment, exit-codes, json, self) or a command
     #[command(
         long_about = "Explain a topic or a command.\n\n\
-Topics: config, layers, environment, exit-codes, json, self, trust. Anything else is treated \
+Topics: config, layers, environment, exit-codes, json, self. Anything else is treated \
 as a command path, so `af help review run` equals `af review run --help`.",
         after_long_help = "Examples:\n  af help layers\n  af help exit-codes\n  af help review ledger"
     )]
@@ -221,10 +220,9 @@ pub(crate) struct ReviewNamespace {
 /// Selector, mode, budget, and output options shared by `plan`, `run`, `render`, and `provider
 /// doctor`.
 #[derive(Debug, Args, Clone)]
-#[command(group = ArgGroup::new("mode").args(["light", "heavy"]))]
 pub(crate) struct RunArgs {
     /// Versioned Review Task file, executed through the shared Task runtime
-    #[arg(long = "file", value_name = "FILE", help_heading = "Selector", conflicts_with_all = ["pipeline", "campaign", "base", "candidate", "focus", "node", "light", "heavy", "restart_round", "provider", "resume_provider", "provider_admission_tokens", "provider_admission_wall_ms", "git_timeout_secs"])]
+    #[arg(long = "file", value_name = "FILE", help_heading = "Selector", conflicts_with_all = ["pipeline", "campaign", "base", "candidate", "focus", "node", "heavy", "restart_round", "provider", "resume_provider", "provider_admission_tokens", "provider_admission_wall_ms", "git_timeout_secs"])]
     pub(crate) task_file: Option<PathBuf>,
     /// Explicit local Worker packages, slot replacements and Provider aliases
     #[arg(
@@ -253,20 +251,10 @@ pub(crate) struct RunArgs {
     #[arg(long, value_name = "NAME", help_heading = "Selector", add = ArgValueCompleter::new(complete_campaign))]
     pub(crate) campaign: Option<String>,
     /// Policy revision: the commit whose `.af/` governs this Campaign
-    #[arg(
-        long,
-        value_name = "REV",
-        help_heading = "Selector",
-        conflicts_with = "authority"
-    )]
+    #[arg(long, value_name = "REV", help_heading = "Selector")]
     pub(crate) policy_rev: Option<String>,
     /// Diff base revision
-    #[arg(
-        long,
-        value_name = "REV",
-        help_heading = "Selector",
-        conflicts_with = "authority"
-    )]
+    #[arg(long, value_name = "REV", help_heading = "Selector")]
     pub(crate) base: Option<String>,
     /// Candidate revision to review (default: HEAD)
     #[arg(
@@ -276,9 +264,6 @@ pub(crate) struct RunArgs {
         conflicts_with = "uncommitted"
     )]
     pub(crate) candidate: Option<String>,
-    /// Compatibility alias: one revision as both policy and diff base
-    #[arg(long, value_name = "REV", help_heading = "Selector")]
-    pub(crate) authority: Option<String>,
     /// Review the working tree (including unstaged changes) against HEAD
     #[arg(long, help_heading = "Selector")]
     pub(crate) uncommitted: bool,
@@ -288,10 +273,7 @@ pub(crate) struct RunArgs {
     /// `render`: the Worker node whose exact input to compose
     #[arg(long, value_name = "NODE", help_heading = "Selector")]
     pub(crate) node: Option<String>,
-    /// One bounded Round with the pipeline's light selection (default)
-    #[arg(long, help_heading = "Mode")]
-    pub(crate) light: bool,
-    /// The pipeline's complete convergence policy
+    /// The pipeline's complete convergence policy, instead of the default single light Round
     #[arg(long, help_heading = "Mode")]
     pub(crate) heavy: bool,
     /// Abandon the open Round and start a fresh one
@@ -359,7 +341,7 @@ Campaign ledger.\n\nEach reviewer runs in a private sandbox with an exact, role-
 a token budget reserved before dispatch; results are admitted in canonical order. The exit code \
 is the verdict: 0 pass, 3 fail, 4 incomplete.\n\nNever: mutates the repository, commits, pushes, \
 or contacts anything but the bound providers.",
-        override_usage = "af review run [--light|--heavy] [OPTIONS]",
+        override_usage = "af review run [--heavy] [OPTIONS]",
         after_long_help = "Examples:\n  af review run --uncommitted\n  af review run --campaign pr-42 --policy-rev main --base main --candidate HEAD\n  af review run --heavy --provider correctness=claude-code --json"
     )]
     Run(RunArgs),
@@ -368,7 +350,7 @@ or contacts anything but the bound providers.",
         long_about = "Resolve policy, pipeline, Workers, providers, and the Subject and print the \
 plan.\n\nToken-free and stateless: no sandbox, no model call, no Campaign directory. The plan is \
 exactly what `run` would admit, so it is the right pre-flight for agents and CI.",
-        override_usage = "af review plan [--light|--heavy] [OPTIONS]",
+        override_usage = "af review plan [--heavy] [OPTIONS]",
         after_long_help = "Examples:\n  af review plan\n  af review plan --uncommitted --json"
     )]
     Plan(RunArgs),
@@ -377,7 +359,7 @@ exactly what `run` would admit, so it is the right pre-flight for agents and CI.
         long_about = "Compose the exact input one Worker node would receive — the bytes, their \
 transport, and every artifact the role-scoped manifest names — without a sandbox, a model call, \
 or Campaign state. This is how a human audits what a Worker sees.",
-        override_usage = "af review render --node <NODE> [--light|--heavy] [OPTIONS]",
+        override_usage = "af review render --node <NODE> [--heavy] [OPTIONS]",
         after_long_help = "Examples:\n  af review render --node correctness\n  af review render --node correctness --uncommitted --json"
     )]
     Render(RunArgs),

@@ -100,9 +100,8 @@ fn killed_review_resumes_original_task_after_real_lease_expiry_with_one_bounded_
         state.to_str().unwrap(),
         "--pipeline",
         ".af/pipelines/review.toml",
-        "--authority",
+        "--policy-rev",
         "HEAD",
-        "--light",
     ];
     let mut original_cli = BoundedCli::spawn(directory.path(), "original", &repo, &home, &args);
     let started_deadline = Instant::now() + Duration::from_secs(12);

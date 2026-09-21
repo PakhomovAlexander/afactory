@@ -155,7 +155,6 @@ to={node="ledger",port="reports"}
         policy_rev: Some("HEAD".into()),
         base: None,
         candidate: None,
-        authority: None,
         uncommitted: false,
         restart_round: false,
         mode: CampaignMode::Light,

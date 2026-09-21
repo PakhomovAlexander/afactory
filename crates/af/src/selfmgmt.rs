@@ -57,8 +57,8 @@ pub(crate) struct Receipt {
     pub(crate) source: String,
     pub(crate) asset: String,
     pub(crate) sha256: String,
-    /// `lock` (matched the project lock's digest), `minisign` (a signed `SHA256SUMS`),
-    /// `sha256sums` (an unsigned one), or `sha256-sidecar` (releases before `SHA256SUMS`).
+    /// `lock` (matched the project lock's digest), `minisign` (a signed `SHA256SUMS`), or
+    /// `sha256sums` (an unsigned one).
     pub(crate) verified_by: String,
     pub(crate) installed_at: String,
 }

@@ -1,6 +1,8 @@
 # Default Campaigns to one-Round light review
 
-**Status:** accepted (2026-08-31)
+**Status:** accepted (2026-08-31); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the explicit `--light` flag. Light review stays
+the default, and `--heavy` is the only mode flag.
 
 M6.3 dogfood exposed a process failure as well as code defects. Four successive correctness
 Campaigns ran seven paid Terra/xhigh Attempts and spent 1,380,750 chargeable tokens. Each pass

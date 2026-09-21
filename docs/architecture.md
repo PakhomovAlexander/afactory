@@ -16,7 +16,7 @@ that no test enforces is a wish.
 schemas/     the language-neutral contracts (JSON Schema 2020-12)
 crates/
   review-core/   the Rust view of those contracts, plus the legacy importer
-  review-parallel/ configurable bounded executor shared by
+  review-parallel/ bounded executor shared by
                  filesystem-heavy infrastructure
   review-process/ bounded subprocess supervision shared by source capture,
                  reviewers, checks, and sandbox providers

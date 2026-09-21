@@ -92,6 +92,10 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   label-named Campaign directories.
 - [ADR-0036](0036-resolve-gate-caches-through-machine-local-bounded-policy.md): the permanent
   `RunReport@1`–`@4` readers and the permanence of pipeline format 1.
+- [ADR-0037](0037-default-campaigns-to-one-round-light-review.md): the explicit `--light` flag;
+  light review stays the default.
+- [ADR-0041](0041-make-review-selectors-explicit-and-refuse-empty-diffs.md): the compatibility
+  spelling `--authority REV`.
 - [ADR-0044](0044-af-manages-itself-and-dispatches-to-the-pinned-release.md): the `afactory/`
   configuration read-through and the `AFACTORY_*` rename refusals.
 - [ADR-0045](0045-one-release-train-and-a-pin-that-binds-bytes.md): the 0.7.1 `af_version` lock

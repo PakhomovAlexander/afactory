@@ -1129,8 +1129,7 @@ project's deterministic Gate command, and stop. Do not open a follow-up review C
 `--policy-rev` must name a trusted committed revision containing this `.af/` directory; `--base`
 independently names the revision against which the candidate is compared. The review command
 captures both immutably; uncommitted pull-request content cannot alter its Gate, Worker prompts,
-models, topology, budgets, or pins. Compatibility `--authority REV` expands visibly to both
-selectors, but explicit selectors are preferred.
+models, topology, budgets, or pins.
 
 ## Changing authority
 

@@ -35,6 +35,17 @@ pages only.
   `[worker.*]`. Worker pins live under `[workers]` and the release pin under `[af]`, as before.
   A Worker package's `reviewer.toml` must now declare `subjects`; an omitted list no longer means
   whole-tree only.
+- `af review run|plan|render`, the `af review` shorthand and `af provider doctor` no longer accept
+  `--authority REV` or `--light`; both are usage errors now. Write `--policy-rev REV`, adding
+  `--base REV` for a diff pipeline (a whole-tree pipeline still refuses `--base`), and drop
+  `--light`, which only restated the default. The `af/review-plan@1` document no longer carries
+  `selectors.compatibility_authority`, and the text plan drops its `compat` line.
+- Default Campaign state resolves only the opaque `c-<id>` directory under
+  `$XDG_STATE_HOME/af/review/campaigns/`; a directory named by the label (af 0.4 and earlier) is no
+  longer a fallback. `af review campaigns|gc --state-root` still list an explicit `--state`
+  directory named by its label.
+- Removed `af help trust` and its `af-trust.7` man page, which described an `af trust` command that
+  never shipped.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

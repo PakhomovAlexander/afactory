@@ -1,4 +1,5 @@
-//! `af review` - reviews from a definition file to a verdict, and the campaign loop.
+//! The `af` binary: it parses the command tree defined in `cli`, dispatches every namespace, and
+//! implements the `af review` Campaign loop itself.
 //!
 //! The review namespace's core subcommands:
 //!
@@ -9,12 +10,13 @@
 //!   run is a new round, and every reviewer receives the campaign's prior findings as a
 //!   labelled data artifact.
 //! - `ledger` prints a campaign's findings, one per line, machine-readably.
-//! - `resolve` records the operator's disposition of one finding (fixed, wontfix, ...) in the
-//!   campaign's ledger — the step between fixing and the round that verifies the fix.
+//! - `resolve` records the operator's non-fixed disposition of one finding (rejected or
+//!   wontfix-tracked) in the campaign's ledger. A finding becomes fixed only through
+//!   `attest-change` and a `verify-fix` against the current Subject.
 //! - `group` and `ungroup` append reversible adjudication between duplicate Findings without
 //!   erasing either identity, Report history, or verification obligation.
 //!
-//! Nothing here mutates any repository. A run reads a repo and writes its own state
+//! The review loop never mutates a repository. A run reads a repo and writes its own state
 //! directory; `resolve` writes only that state; publishing results anywhere is a human's
 //! explicit action.
 
@@ -66,8 +68,6 @@ struct Options {
     policy_rev: Option<String>,
     base: Option<String>,
     candidate: Option<String>,
-    /// Compatibility alias: expands to policy_rev + base for a new diff Campaign.
-    authority: Option<String>,
     uncommitted: bool,
     restart_round: bool,
     mode: CampaignMode,
@@ -83,8 +83,7 @@ struct Options {
 
 impl Options {
     /// Resolve state once for both execution and presentation. Relative paths use the process
-    /// working directory, preserving the CLI's historical meaning, and repository-contained
-    /// state is confined to the review tree's `runs` directory.
+    /// working directory, and state inside the repository is refused.
     fn resolved_state_dir(&self) -> Result<PathBuf, String> {
         let requested = match (&self.state, &self.campaign) {
             (Some(state), _) => state.clone(),
@@ -95,7 +94,7 @@ impl Options {
         if let Some(campaign) = &self.campaign
             && self.state.is_some()
         {
-            validate_campaign_for_explicit_state(campaign, &state)?;
+            validate_campaign_name(campaign)?;
         }
         let repository = std::fs::canonicalize(&self.repo)
             .map_err(|error| format!("opening repository {}: {error}", self.repo.display()))?;
@@ -139,33 +138,9 @@ fn campaign_id(campaign: &str) -> String {
 }
 
 fn campaign_state_beneath(root: &Path, campaign: &str) -> Result<PathBuf, String> {
-    validate_legacy_campaign_name(campaign)?;
+    validate_campaign_name(campaign)?;
     let root = resolve_filesystem_path(root)?;
-    let encoded = root.join(campaign_id(campaign));
-    let legacy = root.join(campaign);
-    let encoded_exists = encoded.exists();
-    let legacy_belongs_to_campaign =
-        legacy_campaign_state_matches(&legacy, campaign).map_err(|error| {
-            format!(
-                "legacy Campaign state {} blocks resolution of {campaign:?}: {error}",
-                legacy.display()
-            )
-        })?;
-    if encoded_exists && legacy_belongs_to_campaign {
-        return Err(format!(
-            "campaign {campaign:?} has both encoded and legacy state beneath {}; remove the ambiguity before continuing",
-            root.display()
-        ));
-    }
-    if !legacy_belongs_to_campaign {
-        validate_campaign_name(campaign)?;
-    }
-    let selected = if legacy_belongs_to_campaign {
-        legacy
-    } else {
-        encoded
-    };
-    let selected = resolve_filesystem_path(&selected)?;
+    let selected = resolve_filesystem_path(&root.join(campaign_id(campaign)))?;
     if !selected.starts_with(&root) {
         return Err(format!(
             "campaign state {} escapes configured review-state root {}",
@@ -186,7 +161,7 @@ fn default_local_state(repository: &Path) -> Result<PathBuf, String> {
 }
 
 fn validate_campaign_name(campaign: &str) -> Result<(), String> {
-    validate_legacy_campaign_name(campaign)?;
+    validate_campaign_component(campaign)?;
     if campaign.trim() != campaign
         || campaign
             .chars()
@@ -200,7 +175,7 @@ fn validate_campaign_name(campaign: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn validate_legacy_campaign_name(campaign: &str) -> Result<(), String> {
+fn validate_campaign_component(campaign: &str) -> Result<(), String> {
     let mut components = Path::new(campaign).components();
     if !matches!(components.next(), Some(std::path::Component::Normal(_)))
         || components.next().is_some()
@@ -216,52 +191,6 @@ fn is_campaign_id(value: &str) -> bool {
     value.len() == 66
         && value.starts_with("c-")
         && value[2..].bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
-fn campaign_run_ids(state: &Path) -> Result<Vec<String>, String> {
-    let database = state.join("events.sqlite");
-    if !database.is_file() {
-        return Ok(Vec::new());
-    }
-    EventStore::open_read_only(&database)
-        .map_err(|error| {
-            format!(
-                "reading Campaign event store {}: {error}",
-                database.display()
-            )
-        })?
-        .run_ids()
-        .map_err(|error| {
-            format!(
-                "reading Campaign event store {}: {error}",
-                database.display()
-            )
-        })
-        .map(|run_ids| {
-            run_ids
-                .into_iter()
-                .filter(|run_id| run_id.starts_with("campaign-"))
-                .collect()
-        })
-}
-
-fn legacy_campaign_state_matches(state: &Path, campaign: &str) -> Result<bool, String> {
-    Ok(campaign_run_ids(state)?.as_slice() == [campaign_run_id(campaign)])
-}
-
-fn validate_campaign_for_explicit_state(campaign: &str, state: &Path) -> Result<(), String> {
-    if let Err(validation_error) = validate_campaign_name(campaign) {
-        if campaign_run_ids(state)?
-            .iter()
-            .any(|run_id| run_id == &campaign_run_id(campaign))
-        {
-            validate_legacy_campaign_name(campaign)
-        } else {
-            Err(validation_error)
-        }
-    } else {
-        Ok(())
-    }
 }
 
 fn resolve_filesystem_path(path: &Path) -> Result<PathBuf, String> {
@@ -474,7 +403,7 @@ fn campaign_state(state: &Option<PathBuf>, campaign: &str) -> Result<PathBuf, St
     match state {
         Some(state) => {
             let state = resolve_filesystem_path(state)?;
-            validate_campaign_for_explicit_state(campaign, &state)?;
+            validate_campaign_name(campaign)?;
             Ok(state)
         }
         None => default_campaign_state(campaign),
@@ -597,7 +526,6 @@ fn run_options(args: cli::RunArgs, command: &str) -> Options {
         policy_rev: args.policy_rev,
         base: args.base,
         candidate: args.candidate,
-        authority: args.authority,
         uncommitted: args.uncommitted,
         restart_round: args.restart_round,
         node: args.node,
@@ -804,10 +732,7 @@ fn task_review_options(args: cli::RunArgs, plan_only: bool) -> task_execution::S
         source_bindings: None,
         repo: args.repo,
         state: args.state,
-        authority: args
-            .policy_rev
-            .or(args.authority)
-            .unwrap_or_else(|| "HEAD".into()),
+        authority: args.policy_rev.unwrap_or_else(|| "HEAD".into()),
         uncommitted: args.uncommitted,
         json: args.json,
         plan_only,
@@ -827,7 +752,6 @@ fn review_command(namespace: cli::ReviewNamespace) -> Result<i32, String> {
             if args.task_file.is_some() {
                 return task_execution::start_review(task_review_options(args, false));
             }
-            init_review_workers();
             let verdict = run(&run_options(args, "review run"))?;
             Ok(match verdict {
                 RunVerdict::Pass => 0,
@@ -1304,10 +1228,7 @@ fn main() {
                             timeout_secs,
                             json,
                         )
-                        .and_then(|options| {
-                            init_review_workers();
-                            task_execution::start_legacy(options, !execute)
-                        })
+                        .and_then(|options| task_execution::start_legacy(options, !execute))
                     }
                 }
                 cli::TaskCommand::Plan {
@@ -1648,15 +1569,6 @@ fn print_plan(options: &Options) -> Result<(), String> {
     let selectors = &plan["selectors"];
     let resolved = &plan["resolved"];
     println!("review plan (token-free; no Campaign state)");
-    if let Some(authority) = selectors["compatibility_authority"].as_str() {
-        if plan["subject"]["kind"].as_str() == Some("diff") {
-            println!(
-                "compat   --authority {authority} => --policy-rev {authority} --base {authority}"
-            );
-        } else {
-            println!("compat   --authority {authority} => --policy-rev {authority}");
-        }
-    }
     println!(
         "policy   {} => {}",
         selectors["policy_rev"].as_str().unwrap_or("?"),
@@ -1824,14 +1736,6 @@ fn run_progress(options: &Options, arguments: fmt::Arguments<'_>) {
     } else {
         println!("{arguments}");
     }
-}
-
-fn init_review_workers() {
-    let worker_limit = std::thread::available_parallelism()
-        .map(|workers| workers.get())
-        .unwrap_or(1);
-    review_parallel::init_worker_limit(worker_limit)
-        .expect("review worker executor is initialized once before execution");
 }
 
 fn open_campaign_store(state: &Path) -> Result<EventStore, String> {
@@ -2480,7 +2384,7 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
             .strip_prefix("campaign-")
             .expect("campaign run prefix was filtered")
             .to_string();
-        if let Err(reason) = validate_legacy_campaign_name(&label) {
+        if let Err(reason) = validate_campaign_component(&label) {
             problems.push(CampaignProblemView {
                 directory: directory_lossy,
                 reason,
@@ -2502,36 +2406,16 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
             problems.push(CampaignProblemView {
                 directory,
                 reason: format!(
-                    "campaign {label:?} state directory must be its opaque ID `{id}` or legacy label"
+                    "campaign {label:?} state directory must be its opaque ID `{id}` or its label"
                 ),
             });
             continue;
         }
-        if directory == label && root.join(&id).exists() {
+        if !seen.insert(id.clone()) {
             return Err(format!(
-                "campaign {label:?} has both encoded and legacy state beneath {}; remove the ambiguity before continuing",
+                "campaign {label:?} has state under both its opaque ID and its label beneath {}; remove the ambiguity before continuing",
                 root.display()
             ));
-        }
-        if directory == id {
-            match legacy_campaign_state_matches(&root.join(&label), &label) {
-                Ok(true) => {
-                    return Err(format!(
-                        "campaign {label:?} has both encoded and legacy state beneath {}; remove the ambiguity before continuing",
-                        root.display()
-                    ));
-                }
-                Ok(false) => {}
-                Err(reason) => {
-                    problems.push(CampaignProblemView {
-                        directory,
-                        reason: format!(
-                            "legacy sibling state for campaign {label:?} blocks direct resolution: {reason}"
-                        ),
-                    });
-                    continue;
-                }
-            }
         }
         let campaign = match read_campaign_view(
             &state,
@@ -2547,12 +2431,6 @@ fn enumerate_campaigns(root: &Path, with_sizes: bool) -> Result<CampaignEnumerat
                 continue;
             }
         };
-        if !seen.insert(id.clone()) {
-            return Err(format!(
-                "campaign {label:?} is present in both encoded and legacy state directories beneath {}",
-                root.display()
-            ));
-        }
         campaigns.push(campaign);
     }
     campaigns.sort_by(|left, right| {
@@ -4130,13 +4008,11 @@ fn resolve(options: &ResolveOptions) -> Result<(), String> {
     let outcome = match options.status.as_str() {
         "rejected" => review_core::FindingResolutionOutcome::Rejected,
         "wontfix-tracked" => review_core::FindingResolutionOutcome::WontfixTracked,
-        "fixed" => {
-            return Err(
-                "fixed requires `af review attest-change` followed by `af review verify-fix`"
-                    .into(),
-            );
+        other => {
+            return Err(format!(
+                "unsupported direct Resolution outcome `{other}` (use rejected or wontfix-tracked; a fix is proven with `af review attest-change` then `af review verify-fix`)"
+            ));
         }
-        other => return Err(format!("unsupported direct Resolution outcome `{other}`")),
     };
     let resolution_id = ingest
         .resolve_nonfixed(
@@ -5455,7 +5331,7 @@ mod option_tests {
     }
 
     #[test]
-    fn campaign_state_uses_an_opaque_contained_id_and_legacy_fallback() {
+    fn campaign_state_uses_an_opaque_contained_id() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("campaigns");
         std::fs::create_dir_all(&root).unwrap();
@@ -5468,23 +5344,20 @@ mod option_tests {
         assert_eq!(encoded.file_name().unwrap(), id.as_str());
         assert!(encoded.starts_with(std::fs::canonicalize(&root).unwrap()));
 
-        let legacy = root.join("heavy");
-        write_campaign_opening(&legacy, "heavy");
-        assert_eq!(
-            campaign_state_beneath(&root, "heavy").unwrap(),
-            std::fs::canonicalize(&legacy).unwrap()
-        );
+        // A directory named by the label is never a fallback for the default state root.
+        write_campaign_opening(&root.join("heavy"), "heavy");
+        assert_eq!(campaign_state_beneath(&root, "heavy").unwrap(), encoded);
 
-        std::fs::create_dir(&encoded).unwrap();
-        assert!(
-            campaign_state_beneath(&root, "heavy")
-                .unwrap_err()
-                .contains("both encoded and legacy")
-        );
+        // An explicit `--state ROOT/<label>` may name the same Campaign, so enumeration refuses
+        // one Campaign held under both names.
+        write_campaign_opening(&encoded, "heavy");
         let Err(error) = enumerate_campaigns(&root, false) else {
             panic!("ambiguous Campaign state was enumerated");
         };
-        assert!(error.contains("both encoded and legacy"));
+        assert!(
+            error.contains("both its opaque ID and its label"),
+            "{error}"
+        );
         assert!(
             campaign_state_beneath(&root, &id)
                 .unwrap_err()
@@ -5493,33 +5366,11 @@ mod option_tests {
     }
 
     #[test]
-    fn preexisting_legacy_labels_remain_readable_and_enumerable() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("campaigns");
-        std::fs::create_dir(&root).unwrap();
-        let legacy = root.join(" padded");
-        write_campaign_opening(&legacy, " padded");
-
-        assert_eq!(
-            campaign_state_beneath(&root, " padded").unwrap(),
-            std::fs::canonicalize(&legacy).unwrap()
-        );
-        assert_eq!(
-            super::campaign_state(&Some(legacy.clone()), " padded").unwrap(),
-            std::fs::canonicalize(&legacy).unwrap()
-        );
-        let enumeration = enumerate_campaigns(&root, false).unwrap();
-        assert_eq!(enumeration.campaigns.len(), 1);
-        assert_eq!(enumeration.campaigns[0].label, " padded");
-        assert!(enumeration.problems.is_empty());
-    }
-
-    #[test]
     fn campaign_enumeration_does_not_create_a_missing_cas() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("campaigns");
-        let state = root.join("legacy");
-        write_campaign_opening(&state, "legacy");
+        let state = root.join("missing-cas");
+        write_campaign_opening(&state, "missing-cas");
         std::fs::remove_dir_all(state.join("cas")).unwrap();
 
         let enumeration = enumerate_campaigns(&root, false).unwrap();
@@ -5544,31 +5395,6 @@ mod option_tests {
         assert_eq!(enumeration.campaigns[0].label, "good");
         assert_eq!(enumeration.problems.len(), 1);
         assert!(enumeration.problems[0].reason.contains("symlink"));
-    }
-
-    #[test]
-    fn unreadable_legacy_sibling_is_attributed_and_blocks_a_false_healthy_listing() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("campaigns");
-        std::fs::create_dir(&root).unwrap();
-        let encoded = root.join(campaign_id("healthy"));
-        write_campaign_opening(&encoded, "healthy");
-        let legacy = root.join("healthy");
-        std::fs::create_dir(&legacy).unwrap();
-        std::fs::write(legacy.join("events.sqlite"), b"not sqlite").unwrap();
-
-        let error = campaign_state_beneath(&root, "healthy").unwrap_err();
-        assert!(error.contains("legacy Campaign state"), "{error}");
-        assert!(error.contains("events.sqlite"), "{error}");
-
-        let enumeration = enumerate_campaigns(&root, false).unwrap();
-        assert!(enumeration.campaigns.is_empty());
-        assert!(
-            enumeration
-                .problems
-                .iter()
-                .any(|problem| problem.reason.contains("legacy sibling state"))
-        );
     }
 
     #[cfg(unix)]
@@ -5848,7 +5674,6 @@ mod option_tests {
             policy_rev: None,
             base: None,
             candidate: None,
-            authority: None,
             uncommitted: false,
             restart_round: false,
             mode: CampaignMode::Light,

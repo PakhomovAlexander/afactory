@@ -188,7 +188,6 @@ pub(super) fn resolve_plan(
     let policy_ref = options
         .policy_rev
         .as_deref()
-        .or(options.authority.as_deref())
         .ok_or("review plan requires `--policy-rev REV`")?;
     let capture = Capture::new(repo, cas);
     let policy = capture
@@ -213,7 +212,7 @@ pub(super) fn resolve_plan(
 
     // Base and candidate before the pipeline: routing decides the pipeline from the changed
     // paths, and sizing needs the exact Change Set.
-    let base_ref = options.base.as_deref().or(options.authority.as_deref());
+    let base_ref = options.base.as_deref();
     let (base, base_snapshot_id) = match base_ref {
         Some(base_ref) => {
             let base = if base_ref == policy_ref {
@@ -282,7 +281,6 @@ pub(super) fn resolve_plan(
         "edges": &pipeline.definition.edges,
     });
     let selectors = serde_json::json!({
-        "compatibility_authority": options.authority,
         "policy_rev": policy_ref,
         "base": base_ref,
         "candidate": candidate_selector,
@@ -831,15 +829,10 @@ fn open_new(
     run_id: &str,
     pipeline_path: &str,
 ) -> Result<OpenCampaign, String> {
-    let authority_ref = options
-        .policy_rev
-        .as_deref()
-        .or(options.authority.as_deref())
-        .ok_or(
-            "a new Campaign requires trusted invocation policy `--policy-rev REV`; \
-             compatibility `--authority REV` expands to policy and Base; continuation reuses \
-             stored authority and does not resolve the ref again",
-        )?;
+    let authority_ref = options.policy_rev.as_deref().ok_or(
+        "a new Campaign requires trusted invocation policy `--policy-rev REV`; continuation \
+         reuses stored authority and does not resolve the ref again",
+    )?;
     let snapshot = Capture::new(repo, cas)
         .committed(authority_ref)
         .map_err(|error| format!("capturing authority `{authority_ref}`: {error}"))?;
@@ -862,7 +855,7 @@ fn open_new(
 
     // Base before the pipeline: routing decides the pipeline from the changed paths, and the
     // oversized policy needs the exact Change Set, before anything is pinned.
-    let base_ref = options.base.as_deref().or(options.authority.as_deref());
+    let base_ref = options.base.as_deref();
     let base = match base_ref {
         Some(base_ref) if base_ref == authority_ref => Some(snapshot.clone()),
         Some(base_ref) => {
@@ -967,11 +960,7 @@ fn open_new(
         format_args!(
             "selectors policy={} base={} candidate={}",
             authority_ref,
-            options
-                .base
-                .as_deref()
-                .or(options.authority.as_deref())
-                .unwrap_or("-"),
+            options.base.as_deref().unwrap_or("-"),
             if options.uncommitted {
                 "worktree"
             } else {

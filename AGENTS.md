@@ -85,10 +85,10 @@ review corpora belong in consuming repositories, not here.
 - Admitted reviewer results may be shown as recorded, not gathered evidence when required sibling
   output is missing, but they never become a partial Ledger, satisfy Semantic Closure, or support
   convergence ([ADR-0034](docs/adr/0034-surface-partial-results-without-ledger-authority.md)).
-- New default Campaign state is addressed by a domain-separated opaque ID derived from its
-  validated label. State resolution must remain beneath the configured root; legacy label-named
-  directories stay readable, ambiguous dual layouts and symlinked enumeration fail closed
-  ([ADR-0035](docs/adr/0035-address-campaign-state-by-opaque-id.md)).
+- Default Campaign state is addressed by a domain-separated opaque ID derived from its validated
+  label, and resolution must remain beneath the configured root. Enumeration also lists an
+  explicit `--state` directory named by its label; one Campaign under both names and symlinked
+  enumeration fail closed ([ADR-0035](docs/adr/0035-address-campaign-state-by-opaque-id.md)).
 - Every milestone receives external `af review`, but the standard dogfood policy uses one
   high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
   or performance audits are explicit exceptions

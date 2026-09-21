@@ -15,11 +15,6 @@ pub(crate) const TOPICS: &[(&str, &str, &str)] = &[
         "Installing, updating, pinning, and removing af",
         SELF_TOPIC,
     ),
-    (
-        "trust",
-        "Which configuration may execute code, and when",
-        TRUST,
-    ),
 ];
 
 pub(crate) fn find(name: &str) -> Option<&'static (&'static str, &'static str, &'static str)> {
@@ -30,17 +25,19 @@ const CONFIG: &str = "\
 Everything a human writes is TOML; everything af writes goes to the Store, except `.af/af.lock`
 (machine-written TOML, committed, like Cargo.lock).
 
-The project file is `.af/af.toml` at the git toplevel. It names the project, the minimum `af`
-release it needs and its default pipelines; optional `[[routes]]` pick a pipeline by the changed
-paths. Worker packages live under `.af/workers/`, pinned in `.af/af.lock`; pipelines name them.
+The project file is `.af/af.toml` at the git toplevel. `version`, `[project]` `name` and
+`min_af`, and `[defaults]` `pipeline` are required: they name the project, the minimum `af`
+release it needs and its default review pipeline. Optional `[[routes]]` pick a pipeline by the
+changed paths. Worker packages live under `.af/workers/`, pinned in `.af/af.lock`; pipelines
+name them.
 
   version = 1
   [project]   name = \"myrepo\"      min_af = \"0.7\"
   [defaults]  pipeline = \"review\"  task_pipeline = \"implement\"
 
 The user file is `~/.config/af/config.toml` (XDG on macOS too). It holds what belongs to the
-person and the machine, never to the project: the `[self]` update policy, personal defaults,
-trust. Provider logins and cache policy stay in `providers.toml` and `caches.toml` beside it.
+person and the machine, never to the project: the `[self]` update policy. Provider logins and
+cache policy stay in `providers.toml` and `caches.toml` beside it.
 
 `af config show` prints the effective configuration; `--origin` names the file and line each
 value came from; `af config paths` lists every file a layer would read. See `af help layers`.";
@@ -57,9 +54,9 @@ Lowest to highest. Tables deep-merge, scalars last-wins, arrays replace.
   local       .af/af.local.toml beside it, gitignored — this checkout's overrides
   environment AF_<TABLE>__<KEY>, e.g. AF_SELF__AUTO_UPDATE=never
 
-A directory layer lets one `~/work/.af/af.toml` name a gateway provider for every checkout
-beneath it, and can carry `workers/` packages shared by the tree. Executable-bearing keys in
-directory and project layers are subject to trust (`af help trust`).
+A directory layer's `.af/af.toml` merges into `af config show` for every checkout beneath it.
+`[self]` is machine-only: a directory, project or local layer that carries it is reported and
+ignored.
 
 Branch-specific configuration needs no layer: `.af/` is versioned, so the project layer on a
 branch is whatever that branch commits. Each git worktree has its own `.af/` copy and its own
@@ -75,11 +72,11 @@ const ENVIRONMENT: &str = "\
   AF_CACHE_POLICY_FILE    absolute path of machine-local cache policy (default: ~/.config/af/caches.toml)
   AF_DISPATCHED_FROM      set by af when it execs a pinned version; never set it yourself
   XDG_CONFIG_HOME         config          (~/.config)
-  XDG_STATE_HOME          state, trust    (~/.local/state)
+  XDG_STATE_HOME          state           (~/.local/state)
   XDG_DATA_HOME           installed versions, receipts, man pages (~/.local/share)
   XDG_CACHE_HOME          caches, the release check (~/.cache)
   XDG_BIN_HOME            where the default `af` symlink lives (~/.local/bin)
-  NO_COLOR, CLICOLOR_FORCE, EDITOR, PAGER, CI    honoured as their conventions say
+  NO_COLOR, CLICOLOR_FORCE, EDITOR, CI    honoured as their conventions say
   HOME                    required; must be absolute";
 
 const EXIT_CODES: &str = "\
@@ -149,16 +146,3 @@ Commands
   af self setup-shell [--write] | uninstall [--purge]
   af self refuses to touch a binary it did not install (brew, cargo install, a launcher).
   remove and prune keep the default and every version a project seen on this machine pins.";
-
-const TRUST: &str = "\
-Keys that can execute code or move money — environments, tools, hooks — apply from the directory
-and project layers only after `af trust` has recorded the path and content hash of the file (the
-same gate mise, direnv, and Codex use). Until then such keys are reported and ignored, never
-silently applied.
-
-Directory and project layers may never carry an `auth` reference, a Store connection, or any
-provider secret reference; such keys are rejected with the file and line.
-
-This release reads no executable-bearing key from the configuration ladder — Workers, Gates, and
-tools still come from the committed `.af/` authority pinned in `af.lock` — so the gate has nothing
-to guard yet. `[trust] paths` in the user file is accepted and reported by `af config show`.";

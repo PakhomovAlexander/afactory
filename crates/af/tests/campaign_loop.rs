@@ -61,11 +61,8 @@ fn invoke_af(
     let mut actual = args.to_vec();
     if actual.first() == Some(&"run") {
         let mut authority = vec!["--pipeline", PIPELINE];
-        if !actual
-            .iter()
-            .any(|argument| matches!(*argument, "--authority" | "--policy-rev"))
-        {
-            authority.extend(["--authority", "HEAD"]);
+        if !actual.contains(&"--policy-rev") {
+            authority.extend(["--policy-rev", "HEAD"]);
         }
         if let Some(mode) = default_mode {
             authority.push(mode);
@@ -341,10 +338,10 @@ fn light_is_default_single_round_and_refuses_repeat_before_dispatch() {
 }
 
 #[test]
-fn explicit_light_reports_machine_readable_stop_guidance_and_modes_are_exclusive() {
+fn default_light_reports_machine_readable_stop_guidance() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, _) = fixture(dir.path());
-    let state = dir.path().join("explicit-light");
+    let state = dir.path().join("default-light");
     let state = state.to_string_lossy().into_owned();
 
     let (code, stdout, stderr) = af_light(
@@ -353,10 +350,9 @@ fn explicit_light_reports_machine_readable_stop_guidance_and_modes_are_exclusive
         &[
             "run",
             "--campaign",
-            "explicit-light",
+            "default-light",
             "--state",
             &state,
-            "--light",
             "--json",
         ],
     );
@@ -366,28 +362,10 @@ fn explicit_light_reports_machine_readable_stop_guidance_and_modes_are_exclusive
     assert_eq!(outcome["next_action"]["kind"], "fix_then_gate");
     assert_eq!(outcome["next_action"]["start_another_campaign"], false);
     assert!(stderr.contains("do not start another Campaign"));
-
-    let invalid_state = dir.path().join("invalid-mode");
-    let invalid_state = invalid_state.to_string_lossy().into_owned();
-    let (code, stdout, stderr) = af_light(
-        &repo,
-        &home,
-        &[
-            "run",
-            "--campaign",
-            "invalid-mode",
-            "--state",
-            &invalid_state,
-            "--light",
-            "--heavy",
-        ],
-    );
-    assert_eq!(code, 2, "{stdout}\n{stderr}");
-    assert!(stderr.contains("[--light|--heavy]"));
 }
 
 #[test]
-fn campaign_enumeration_reads_legacy_state_and_round_history() {
+fn campaign_enumeration_reads_label_named_explicit_state_and_round_history() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, _) = fixture(dir.path());
     let root = dir.path().join("campaigns");
@@ -492,7 +470,7 @@ fn final_local_review_uses_af_authority_and_one_json_result() {
     let (code, stdout, stderr) = af(
         &repo,
         &home,
-        &["--authority", "HEAD", "--state", &state, "--json"],
+        &["--policy-rev", "HEAD", "--state", &state, "--json"],
     );
 
     assert_eq!(code, 3, "{stderr}");
