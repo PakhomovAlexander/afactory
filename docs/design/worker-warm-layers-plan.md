@@ -147,7 +147,7 @@ ledger shows eight Findings fixed with notes pointing at the revised lines.
 fixtures), `review-config` (port validation, warm policy on reviewer nodes and `af.worker/1`
 notes ports), `review-pipeline` (Warm Set selection beside the existing `prior_findings` carry,
 Head Delta computation, rendering), `review-runner` (Notes parsed beside the flat Reviewer
-Result in the ADR-0038 pattern), `reviewctl` (report columns).
+Result in the ADR-0038 pattern), `af` (report columns).
 
 Introduce `review.kernel/WorkerNotes@1` and `af/WorkerNotes@1`, `review.kernel/HeadDelta@1`,
 and `review.kernel/WarmSet@1` with `WarmSetSelected@1` recorded before `AttemptReserved`. Notes

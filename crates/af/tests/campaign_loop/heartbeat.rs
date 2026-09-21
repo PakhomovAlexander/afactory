@@ -236,7 +236,7 @@ fn heartbeat_failure_cancels_native_group_and_new_writer_recovers_exact_usage_wi
     assert_eq!(execution.budget.begun_attempts(), 1);
     assert!(execution.budget.breached());
     drop(store);
-    let _ = reviewctl(
+    let _ = af(
         &repo,
         &home,
         &[

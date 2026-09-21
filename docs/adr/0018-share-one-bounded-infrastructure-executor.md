@@ -9,7 +9,7 @@ the permit was transferable while its re-entrant accounting was thread-local, an
 acquisition added a mutex and condition-variable operation to every filesystem syscall.
 
 We decided that filesystem-heavy infrastructure submits borrowed or owned work to one bounded,
-re-entrant executor in `review-parallel`. `reviewctl` initializes its worker count once from the
+re-entrant executor in `review-parallel`. The `af` CLI initializes its worker count once from the
 host's available parallelism before a review command starts; library embedders may initialize the
 same boundary before first use. Nested and concurrent phases share the executor's fixed worker
 threads, so scheduler concurrency cannot multiply the CPU worker budget. A joined-phase primitive

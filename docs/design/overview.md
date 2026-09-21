@@ -191,7 +191,7 @@ keeps the Review Kernel's artifact vocabulary under the `af/*` namespace.
 | (packages) | `af-worker` | worker packages, lock digests, instruction rendering, the Worker FSM, the worker protocol |
 | review-graph + review-attempt + `Kernel` | `af-engine` | the state-machine engine: Task/Pipeline FSM driver, scheduler, budgets, fencing, replay |
 | review-pipeline + `authority.rs` | `af-task` | Task kinds (`review`, `implement`): pipelines, reducers, Findings/Demands, convergence, verdicts |
-| reviewctl | `af` | clap CLI (`--json` everywhere), `af mcp serve`, `af hook`, `af connect`; the TUI moves to `af-tui`, a plugin |
+| af | `af` | clap CLI (`--json` everywhere), `af mcp serve`, `af hook`, `af connect`; the TUI moves to `af-tui`, a plugin |
 
 Eleven crates plus the plugin. The kernel's ADRs are re-homed under the new names where
 they still hold (most do: base-pinned authority, path-independent identity, silence is not a

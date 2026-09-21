@@ -32,10 +32,10 @@ build:
 	cargo build --release --locked --bin af
 
 pilot-check:
-	cargo test --locked -p reviewctl --test task_implement
+	cargo test --locked -p af --test task_implement
 
 # Plan every consumer fixture with the release binary — what the release workflow runs before a
-# release leaves draft. The same check runs inside `make check` through the reviewctl tests.
+# release leaves draft. The same check runs inside `make check` through the af crate's tests.
 consumer-check: build
 	fixtures/consumers/check.sh target/release/af
 

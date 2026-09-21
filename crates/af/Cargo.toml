@@ -1,6 +1,6 @@
 [package]
-name = "reviewctl"
-description = "Afactory's Review Kernel CLI"
+name = "af"
+description = "The af command: Afactory's CLI"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

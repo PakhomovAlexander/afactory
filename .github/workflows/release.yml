@@ -125,7 +125,7 @@ jobs:
           reported="$("$run" --version)"
           [[ "$reported" == "af ${tag#v}" ]] || { echo "built binary reports '$reported', expected 'af ${tag#v}'"; exit 1; }
           "$run" --version --json | tee version.json
-          grep -q '"release_key": "embedded"' version.json || { echo "this build embeds no release key (crates/reviewctl/keys/release.pub); a release must"; exit 1; }
+          grep -q '"release_key": "embedded"' version.json || { echo "this build embeds no release key (crates/af/keys/release.pub); a release must"; exit 1; }
           fixtures/consumers/check.sh "$run"
           # The archive: the binary at its root (what `af self` and install.sh expect), plus
           # completions and man pages rendered by that very binary so they cannot drift.
@@ -181,8 +181,8 @@ jobs:
           MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
         run: |
           set -euo pipefail
-          [[ -f crates/reviewctl/keys/release.pub ]] || { echo "crates/reviewctl/keys/release.pub is missing; see crates/reviewctl/keys/README.md"; exit 1; }
-          [[ -n "$MINISIGN_SECRET_KEY" ]] || { echo "the MINISIGN_SECRET_KEY secret is not set; see crates/reviewctl/keys/README.md"; exit 1; }
+          [[ -f crates/af/keys/release.pub ]] || { echo "crates/af/keys/release.pub is missing; see crates/af/keys/README.md"; exit 1; }
+          [[ -n "$MINISIGN_SECRET_KEY" ]] || { echo "the MINISIGN_SECRET_KEY secret is not set; see crates/af/keys/README.md"; exit 1; }
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends minisign
           (cd dist && sha256sum ./*.tar.gz) | sed 's| \./| |' > SHA256SUMS
@@ -191,7 +191,7 @@ jobs:
           printf '%s\n' "$MINISIGN_SECRET_KEY" > "$key"
           minisign -S -W -s "$key" -m SHA256SUMS -t "af ${{ needs.resolve.outputs.tag }}"
           rm -f "$key"
-          minisign -V -q -m SHA256SUMS -p crates/reviewctl/keys/release.pub
+          minisign -V -q -m SHA256SUMS -p crates/af/keys/release.pub
           cat SHA256SUMS
       - name: Release notes from CHANGELOG.md
         shell: bash

@@ -2663,11 +2663,6 @@ fn load_specs() -> (Vec<ProviderSpec>, Option<PathBuf>, Option<String>) {
 }
 
 fn registry_path() -> Result<Option<PathBuf>, String> {
-    if std::env::var_os("REVIEWCTL_PROVIDERS_FILE").is_some() {
-        return Err(
-            "REVIEWCTL_PROVIDERS_FILE was renamed — fix: export AF_PROVIDERS_FILE instead".into(),
-        );
-    }
     if let Some(path) = std::env::var_os("AF_PROVIDERS_FILE") {
         if path.is_empty() {
             return Err("AF_PROVIDERS_FILE is empty".to_string());

@@ -184,7 +184,7 @@ impl TerminalSession {
             0,
             0,
             width,
-            " REVIEWCTL / INTERACTIVE REVIEW ",
+            " AF / INTERACTIVE REVIEW ",
             Paint::Header,
         )?;
         paint(

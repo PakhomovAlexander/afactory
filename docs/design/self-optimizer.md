@@ -610,7 +610,7 @@ original configuration after adoption.
 
 Place domain contracts under `review-core/src/task/optimization`, configuration
 under `review-config/src/task`, and orchestration entry points in a separate
-`reviewctl/src/self_optimizer` module delegating to `task_execution`. History
+`af/src/self_optimizer` module delegating to `task_execution`. History
 adapters should have a dependency-neutral module/crate boundary with no Provider
 credentials or execution control. Generic child admission belongs in the common
 runtime, not in `selfmgmt.rs` or a special optimizer executor. The shipped Pipeline

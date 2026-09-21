@@ -60,7 +60,7 @@ only through the `gh` and `git` CLIs and through the reviewer CLIs themselves, e
 environment rules above. The workspace forbids `unsafe_code`.
 
 **Releases are signed.** Every release's `SHA256SUMS` is signed with minisign; the public key
-is committed at `crates/reviewctl/keys/release.pub` and embedded in the binary, and `af self`
+is committed at `crates/af/keys/release.pub` and embedded in the binary, and `af self`
 verifies the signature before trusting a checksum. `install.sh` verifies the signature when
 `minisign` is on `PATH` and the checksum otherwise.
 

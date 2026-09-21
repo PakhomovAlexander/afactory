@@ -38,7 +38,7 @@ The decision, in four parts that ship together:
    leaves an existing pin untouched. `af onboard --refresh-lock --af VERSION` runs the refresh
    under that release, which is how a pin moves forward.
 3. **Signed checksums, embedded key.** Every release from `0.8.0` on ships `SHA256SUMS.minisig`;
-   the public key is committed at `crates/reviewctl/keys/release.pub` and embedded at build time;
+   the public key is committed at `crates/af/keys/release.pub` and embedded at build time;
    the secret key lives only in an Actions secret. `af self` refuses a release from that era
    whose checksums are unsigned or do not verify, verifies older releases when they happen to
    carry a signature, and accepts their bare checksums otherwise. A build without the key
@@ -90,7 +90,7 @@ mirrors the hub under `.af/`, and the old layout survives only as a test fixture
 - A release is: `make release VERSION=X.Y.Z COMPAT="…"`, review the PR, merge. Nothing else.
 - Consumers pin bytes. The hub moves to `.af/` with `af onboard --migrate --apply`, pins
   `v0.8.0` through a receipted binary, and shrinks its launcher to bootstrap-only (hub ADR-0007).
-- The release key must exist before the first `0.8.0` cut (`crates/reviewctl/keys/README.md`);
+- The release key must exist before the first `0.8.0` cut (`crates/af/keys/README.md`);
   until then the train refuses to publish, by design.
 - The installer's own trust root is `gh` authentication over TLS plus the release checksums;
   it verifies the signature too only when `minisign` is on `PATH` and `AF_RELEASE_KEY` names the

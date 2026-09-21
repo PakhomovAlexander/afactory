@@ -24,7 +24,7 @@ FLOOR="0.7.1"
 # The first release that ships SHA256SUMS.minisig. Older releases verify by checksum only.
 SIGNED_FROM="0.8.0"
 
-# crates/reviewctl/keys/release.pub — the key every release from $SIGNED_FROM on is signed with.
+# crates/af/keys/release.pub — the key every release from $SIGNED_FROM on is signed with.
 RELEASE_PUB='untrusted comment: minisign public key 0FA9BDD8A1D67165
 RWRlcdah2L2pD6l9dkQHwwqt2PjfdxZTyuAZwArbnqaVkKPrkIGOmqAL'
 
@@ -32,7 +32,7 @@ case "$(uname -s):$(uname -m)" in
   Darwin:arm64) host="aarch64-apple-darwin" ;;
   Linux:x86_64) host="x86_64-unknown-linux-musl" ;;
   Linux:aarch64|Linux:arm64) host="aarch64-unknown-linux-musl" ;;
-  Darwin:x86_64) echo "af: no release is built for x86_64-apple-darwin — fix: build from source (cargo install --path crates/reviewctl --locked)" >&2; exit 1 ;;
+  Darwin:x86_64) echo "af: no release is built for x86_64-apple-darwin — fix: build from source (cargo install --path crates/af --locked)" >&2; exit 1 ;;
   *) echo "af: unsupported platform $(uname -s)/$(uname -m)" >&2; exit 1 ;;
 esac
 

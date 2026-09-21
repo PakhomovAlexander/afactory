@@ -35,7 +35,7 @@ fn git(repo: &Path, home: &Path, args: &[&str]) {
     );
 }
 
-fn invoke_reviewctl(
+fn invoke_af(
     repo: &Path,
     home: &Path,
     args: &[&str],
@@ -81,12 +81,12 @@ fn invoke_reviewctl(
 }
 
 /// Existing Campaign lifecycle tests exercise the explicit convergence workflow.
-fn reviewctl(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
-    invoke_reviewctl(repo, home, args, Some("--heavy"))
+fn af(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
+    invoke_af(repo, home, args, Some("--heavy"))
 }
 
-fn reviewctl_light(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
-    invoke_reviewctl(repo, home, args, None)
+fn af_light(repo: &Path, home: &Path, args: &[&str]) -> (i32, String, String) {
+    invoke_af(repo, home, args, None)
 }
 
 /// A pipeline whose one reviewer answers from the sandbox content: a finding while the
@@ -295,7 +295,7 @@ fn light_is_default_single_round_and_refuses_repeat_before_dispatch() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
 
-    let (code, stdout, stderr) = reviewctl_light(
+    let (code, stdout, stderr) = af_light(
         &repo,
         &home,
         &["run", "--campaign", "light", "--state", &state],
@@ -305,7 +305,7 @@ fn light_is_default_single_round_and_refuses_repeat_before_dispatch() {
     assert!(stdout.contains("fix the findings"), "{stdout}");
     assert!(stdout.contains("do not start another Campaign"), "{stdout}");
 
-    let (code, stdout, stderr) = reviewctl_light(
+    let (code, stdout, stderr) = af_light(
         &repo,
         &home,
         &["run", "--campaign", "light", "--state", &state],
@@ -314,7 +314,7 @@ fn light_is_default_single_round_and_refuses_repeat_before_dispatch() {
     assert!(stderr.contains("already completed its single review Round"));
     assert!(stderr.contains("deterministic project gate"));
 
-    let (code, report, stderr) = reviewctl(
+    let (code, report, stderr) = af(
         &repo,
         &home,
         &[
@@ -331,7 +331,7 @@ fn light_is_default_single_round_and_refuses_repeat_before_dispatch() {
     let report: serde_json::Value = serde_json::from_str(&report).unwrap();
     assert_eq!(report["runs_recorded"], 1);
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "light", "--state", &state],
@@ -347,7 +347,7 @@ fn explicit_light_reports_machine_readable_stop_guidance_and_modes_are_exclusive
     let state = dir.path().join("explicit-light");
     let state = state.to_string_lossy().into_owned();
 
-    let (code, stdout, stderr) = reviewctl_light(
+    let (code, stdout, stderr) = af_light(
         &repo,
         &home,
         &[
@@ -369,7 +369,7 @@ fn explicit_light_reports_machine_readable_stop_guidance_and_modes_are_exclusive
 
     let invalid_state = dir.path().join("invalid-mode");
     let invalid_state = invalid_state.to_string_lossy().into_owned();
-    let (code, stdout, stderr) = reviewctl_light(
+    let (code, stdout, stderr) = af_light(
         &repo,
         &home,
         &[
@@ -393,7 +393,7 @@ fn campaign_enumeration_reads_legacy_state_and_round_history() {
     let root = dir.path().join("campaigns");
     let state = root.join("loop").to_string_lossy().into_owned();
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "loop", "--state", &state],
@@ -401,7 +401,7 @@ fn campaign_enumeration_reads_legacy_state_and_round_history() {
     assert_eq!(code, 3, "round 1 must close as fail\n{stdout}\n{stderr}");
 
     let root = root.to_string_lossy().into_owned();
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["campaigns", "--state-root", &root, "--format", "json"],
@@ -431,7 +431,7 @@ fn campaign_enumeration_reads_legacy_state_and_round_history() {
         campaigns["campaigns"][0].get("state_bytes").is_none(),
         "sizes are opt-in: walking every state directory costs seconds on a large root"
     );
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &[
@@ -447,7 +447,7 @@ fn campaign_enumeration_reads_legacy_state_and_round_history() {
     let sized: serde_json::Value = serde_json::from_str(&stdout).unwrap();
     assert!(sized["campaigns"][0]["state_bytes"].as_u64().unwrap() > 0);
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["campaigns", "--state-root", &root, "--format", "text"],
@@ -489,7 +489,7 @@ fn campaign_enumeration_reads_legacy_state_and_round_history() {
 fn final_local_review_uses_af_authority_and_one_json_result() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["--authority", "HEAD", "--state", &state, "--json"],
@@ -540,7 +540,7 @@ fn required_demands_are_visible_in_run_ledger_and_json_output() {
     git(&repo, &home, &["add", "DEMAND"]);
     git(&repo, &home, &["commit", "-qm", "request evidence"]);
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "demand-human", "--state", &state],
@@ -550,7 +550,7 @@ fn required_demands_are_visible_in_run_ledger_and_json_output() {
         stdout.contains("demands  1 open/stale (required)"),
         "{stdout}"
     );
-    let (code, _, ledger_err) = reviewctl(
+    let (code, _, ledger_err) = af(
         &repo,
         &home,
         &["ledger", "--campaign", "demand-human", "--state", &state],
@@ -565,7 +565,7 @@ fn required_demands_are_visible_in_run_ledger_and_json_output() {
 
     let json_state = dir.path().join("json-state");
     let json_state = json_state.to_string_lossy().into_owned();
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &[
@@ -606,7 +606,7 @@ fn pipeline_policy_can_classify_reviewer_demands_as_advisory() {
     git(&repo, &home, &["add", "-A"]);
     git(&repo, &home, &["commit", "-qm", "classify advisory demand"]);
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "demand-advisory", "--state", &state],
@@ -626,7 +626,7 @@ fn waiver_remains_current_when_the_subject_advances() {
     git(&repo, &home, &["add", "-A"]);
     git(&repo, &home, &["commit", "-qm", "request evidence"]);
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &[
@@ -643,7 +643,7 @@ fn waiver_remains_current_when_the_subject_advances() {
     let demand_id = outcome["totals"]["open_or_stale_demand_ids"][0]
         .as_str()
         .unwrap();
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &[
@@ -668,7 +668,7 @@ fn waiver_remains_current_when_the_subject_advances() {
     std::fs::write(repo.join("src/main.rs"), "fn main() {}\n").unwrap();
     git(&repo, &home, &["add", "-A"]);
     git(&repo, &home, &["commit", "-qm", "advance subject"]);
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "demand-waiver", "--state", &state],
@@ -691,7 +691,7 @@ fn trusted_reuse_keeps_evidence_satisfaction_current_after_head_change() {
         &["commit", "-qm", "request reusable evidence"],
     );
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &[
@@ -712,7 +712,7 @@ fn trusted_reuse_keeps_evidence_satisfaction_current_after_head_change() {
     let evidence_path = dir.path().join("measurement.txt");
     std::fs::write(&evidence_path, b"bounded integration test passed\n").unwrap();
     let evidence_path = evidence_path.to_string_lossy().into_owned();
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &[
@@ -730,7 +730,7 @@ fn trusted_reuse_keeps_evidence_satisfaction_current_after_head_change() {
     );
     assert_eq!(code, 0, "{stdout}\n{stderr}");
     let evidence_id = stdout.split_whitespace().nth(1).unwrap().to_string();
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &[
@@ -758,7 +758,7 @@ fn trusted_reuse_keeps_evidence_satisfaction_current_after_head_change() {
     std::fs::write(repo.join("src/main.rs"), "fn main() {}\n").unwrap();
     git(&repo, &home, &["add", "-A"]);
     git(&repo, &home, &["commit", "-qm", "advance subject"]);
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "demand-reuse", "--state", &state],
@@ -779,7 +779,7 @@ fn canonical_campaign_refuses_a_pipeline_without_a_demand_set_output() {
     git(&repo, &home, &["add", "-A"]);
     git(&repo, &home, &["commit", "-qm", "remove demand output"]);
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "missing-demand", "--state", &state],
@@ -805,7 +805,7 @@ fn exact_prior_set_requires_and_persists_explicit_disposition() {
         &["commit", "-qm", "use explicit dispositions"],
     );
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "dispositions", "--state", &state],
@@ -817,7 +817,7 @@ fn exact_prior_set_requires_and_persists_explicit_disposition() {
 
     std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
     git(&repo, &home, &["commit", "-qam", "bound the loop"]);
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "dispositions", "--state", &state],
@@ -936,7 +936,7 @@ fn missing_disposition_coverage_makes_the_round_structurally_incomplete() {
         &["commit", "-qm", "use explicit dispositions"],
     );
 
-    let (code, ..) = reviewctl(
+    let (code, ..) = af(
         &repo,
         &home,
         &[
@@ -957,7 +957,7 @@ fn missing_disposition_coverage_makes_the_round_structurally_incomplete() {
         &["commit", "-qm", "omit required disposition"],
     );
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &[
@@ -1003,7 +1003,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     let (repo, home, state) = fixture(dir.path());
 
     // Round 1: the defect is found; the campaign must not converge.
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "loop", "--state", &state],
@@ -1013,7 +1013,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert!(stdout.contains("Unbounded loop"), "{stdout}");
 
     // The operator reads the ledger and takes the finding's key.
-    let (code, ledger_out, _) = reviewctl(
+    let (code, ledger_out, _) = af(
         &repo,
         &home,
         &["ledger", "--campaign", "loop", "--state", &state],
@@ -1026,7 +1026,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert!(row.contains("\tmajor\topen\t"), "{row}");
     let key = row.split('\t').next().unwrap().to_string();
 
-    let (code, long_out, long_err) = reviewctl(
+    let (code, long_out, long_err) = af(
         &repo,
         &home,
         &["ledger", "--campaign", "loop", "--state", &state, "--long"],
@@ -1035,7 +1035,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert!(long_out.contains("body: spins"), "{long_out}");
     assert!(long_out.contains("fix: bound it"), "{long_out}");
 
-    let (code, show_out, show_err) = reviewctl(
+    let (code, show_out, show_err) = af(
         &repo,
         &home,
         &["show", "--campaign", "loop", "--state", &state, &key],
@@ -1048,7 +1048,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert!(show_out.contains(r#""fix": "bound it""#), "{show_out}");
     assert!(show_out.contains("Reported"), "{show_out}");
 
-    let (code, report_out, report_err) = reviewctl(
+    let (code, report_out, report_err) = af(
         &repo,
         &home,
         &[
@@ -1070,7 +1070,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert!(report_out.contains("## Spend"), "{report_out}");
     assert!(report_out.contains("architecture"), "{report_out}");
 
-    let (code, report_json, report_err) = reviewctl(
+    let (code, report_json, report_err) = af(
         &repo,
         &home,
         &[
@@ -1110,7 +1110,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert!(report["wall_ms"].is_u64());
     assert!(report["findings_summary"]["open"].is_u64());
 
-    let (code, report_text, report_err) = reviewctl(
+    let (code, report_text, report_err) = af(
         &repo,
         &home,
         &[
@@ -1135,7 +1135,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     // attestation/verification path is covered by the canonical projection tests.
     std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
     git(&repo, &home, &["commit", "-qam", "bound the loop"]);
-    let (code, resolve_out, resolve_err) = reviewctl(
+    let (code, resolve_out, resolve_err) = af(
         &repo,
         &home,
         &[
@@ -1154,7 +1154,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     );
     assert_eq!(code, 0, "{resolve_out}\n{resolve_err}");
     assert!(resolve_out.contains("-> rejected"), "{resolve_out}");
-    let (code, duplicate_out, duplicate_err) = reviewctl(
+    let (code, duplicate_out, duplicate_err) = af(
         &repo,
         &home,
         &[
@@ -1175,7 +1175,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert_eq!(duplicate_out, resolve_out, "exact duplicate is idempotent");
 
     // Round 2: prior findings travel to the reviewer; the clean round converges.
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "loop", "--state", &state],
@@ -1186,7 +1186,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert!(stdout.contains("verdict  Pass"), "{stdout}");
 
     // The Ledger's final state remains the exact scoped operator decision.
-    let (_, ledger_out, ledger_err) = reviewctl(
+    let (_, ledger_out, ledger_err) = af(
         &repo,
         &home,
         &["ledger", "--campaign", "loop", "--state", &state],
@@ -1194,7 +1194,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     assert!(ledger_out.contains("\trejected\t"), "{ledger_out}");
     assert!(ledger_err.contains("0 open"), "{ledger_err}");
 
-    let (code, report_out, report_err) = reviewctl(
+    let (code, report_out, report_err) = af(
         &repo,
         &home,
         &["report", "--campaign", "loop", "--state", &state],
@@ -1220,13 +1220,13 @@ fn a_whole_tree_campaign_reaches_fixed_only_through_attestation_and_verification
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "verified-fix", "--state", &state],
     );
     assert_eq!(code, 3, "round 1 must find the defect\n{stdout}\n{stderr}");
-    let (_, ledger_out, _) = reviewctl(
+    let (_, ledger_out, _) = af(
         &repo,
         &home,
         &["ledger", "--campaign", "verified-fix", "--state", &state],
@@ -1236,7 +1236,7 @@ fn a_whole_tree_campaign_reaches_fixed_only_through_attestation_and_verification
     std::fs::write(repo.join("src/main.rs"), "fn main() { /* bounded */ }\n").unwrap();
     git(&repo, &home, &["commit", "-qam", "bound the loop"]);
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "verified-fix", "--state", &state],
@@ -1246,7 +1246,7 @@ fn a_whole_tree_campaign_reaches_fixed_only_through_attestation_and_verification
         "the clean reviewer result alone cannot fix the prior claim\n{stdout}\n{stderr}"
     );
 
-    let (code, attestation_out, attestation_err) = reviewctl(
+    let (code, attestation_out, attestation_err) = af(
         &repo,
         &home,
         &[
@@ -1272,7 +1272,7 @@ fn a_whole_tree_campaign_reaches_fixed_only_through_attestation_and_verification
         .and_then(|(_, tail)| tail.trim().strip_suffix(')'))
         .expect("attestation artifact ID");
 
-    let (code, verification_out, verification_err) = reviewctl(
+    let (code, verification_out, verification_err) = af(
         &repo,
         &home,
         &[
@@ -1293,7 +1293,7 @@ fn a_whole_tree_campaign_reaches_fixed_only_through_attestation_and_verification
     assert_eq!(code, 0, "{verification_out}\n{verification_err}");
     assert!(verification_out.contains("-> fixed"), "{verification_out}");
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "verified-fix", "--state", &state],
@@ -1305,7 +1305,7 @@ fn a_whole_tree_campaign_reaches_fixed_only_through_attestation_and_verification
     assert!(stdout.contains("round    3"), "{stdout}");
     assert!(stdout.contains("verdict  Pass"), "{stdout}");
 
-    let (_, ledger_out, ledger_err) = reviewctl(
+    let (_, ledger_out, ledger_err) = af(
         &repo,
         &home,
         &["ledger", "--campaign", "verified-fix", "--state", &state],
@@ -1318,19 +1318,19 @@ fn a_whole_tree_campaign_reaches_fixed_only_through_attestation_and_verification
 fn a_report_above_a_tracked_wontfix_ceiling_is_explicitly_challenged() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "wontfix-ceiling", "--state", &state],
     );
     assert_eq!(code, 3, "{stdout}\n{stderr}");
-    let (_, ledger_out, _) = reviewctl(
+    let (_, ledger_out, _) = af(
         &repo,
         &home,
         &["ledger", "--campaign", "wontfix-ceiling", "--state", &state],
     );
     let key = ledger_out.split('\t').next().unwrap().to_string();
-    let (code, policy_out, policy_err) = reviewctl(
+    let (code, policy_out, policy_err) = af(
         &repo,
         &home,
         &[
@@ -1346,7 +1346,7 @@ fn a_report_above_a_tracked_wontfix_ceiling_is_explicitly_challenged() {
         ],
     );
     assert_eq!(code, 0, "{policy_out}\n{policy_err}");
-    let (code, _, expired_err) = reviewctl(
+    let (code, _, expired_err) = af(
         &repo,
         &home,
         &[
@@ -1374,7 +1374,7 @@ fn a_report_above_a_tracked_wontfix_ceiling_is_explicitly_challenged() {
         expired_err.contains("persisted policy time 50"),
         "{expired_err}"
     );
-    let (code, resolve_out, resolve_err) = reviewctl(
+    let (code, resolve_out, resolve_err) = af(
         &repo,
         &home,
         &[
@@ -1403,7 +1403,7 @@ fn a_report_above_a_tracked_wontfix_ceiling_is_explicitly_challenged() {
     std::fs::write(repo.join("BLOCKER"), "escalate the stable occurrence\n").unwrap();
     git(&repo, &home, &["add", "BLOCKER"]);
     git(&repo, &home, &["commit", "-qm", "escalate finding"]);
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "wontfix-ceiling", "--state", &state],
@@ -1413,7 +1413,7 @@ fn a_report_above_a_tracked_wontfix_ceiling_is_explicitly_challenged() {
         "an above-ceiling claim must block\n{stdout}\n{stderr}"
     );
 
-    let (_, ledger_out, _) = reviewctl(
+    let (_, ledger_out, _) = af(
         &repo,
         &home,
         &["ledger", "--campaign", "wontfix-ceiling", "--state", &state],
@@ -1439,13 +1439,13 @@ fn a_direct_fixed_assertion_is_refused_and_the_claim_remains_blocking() {
     let dir = tempfile::tempdir().unwrap();
     let (repo, home, state) = fixture(dir.path());
 
-    let (code, ..) = reviewctl(
+    let (code, ..) = af(
         &repo,
         &home,
         &["run", "--campaign", "loop", "--state", &state],
     );
     assert_eq!(code, 3);
-    let (_, ledger_out, _) = reviewctl(
+    let (_, ledger_out, _) = af(
         &repo,
         &home,
         &["ledger", "--campaign", "loop", "--state", &state],
@@ -1453,7 +1453,7 @@ fn a_direct_fixed_assertion_is_refused_and_the_claim_remains_blocking() {
     let key = ledger_out.split('\t').next().unwrap().to_string();
 
     // A bare operator assertion cannot make the Finding fixed.
-    let (code, _, stderr) = reviewctl(
+    let (code, _, stderr) = af(
         &repo,
         &home,
         &[
@@ -1474,13 +1474,13 @@ fn a_direct_fixed_assertion_is_refused_and_the_claim_remains_blocking() {
     assert!(stderr.contains("attest-change"), "{stderr}");
 
     // Round 2 re-finds it: reopened, and the run must not pass.
-    let (code, stdout, _) = reviewctl(
+    let (code, stdout, _) = af(
         &repo,
         &home,
         &["run", "--campaign", "loop", "--state", &state],
     );
     assert_eq!(code, 3, "a hollow resolution must not converge\n{stdout}");
-    let (_, ledger_out, _) = reviewctl(
+    let (_, ledger_out, _) = af(
         &repo,
         &home,
         &["ledger", "--campaign", "loop", "--state", &state],
@@ -1499,7 +1499,7 @@ fn an_incomplete_run_does_not_burn_a_round() {
     std::fs::write(repo.join("FAIL"), b"x").unwrap();
     git(&repo, &home, &["add", "-A"]);
     git(&repo, &home, &["commit", "-qm", "force an incomplete run"]);
-    let (code, stdout, _) = reviewctl(
+    let (code, stdout, _) = af(
         &repo,
         &home,
         &["run", "--campaign", "loop", "--state", &state],
@@ -1513,7 +1513,7 @@ fn an_incomplete_run_does_not_burn_a_round() {
     // Removing the marker does not silently change an incomplete Round's immutable input.
     std::fs::remove_file(repo.join("FAIL")).unwrap();
     git(&repo, &home, &["commit", "-qam", "let the reviewer run"]);
-    let (code, stdout, _) = reviewctl(
+    let (code, stdout, _) = af(
         &repo,
         &home,
         &["run", "--campaign", "loop", "--state", &state],
@@ -1528,7 +1528,7 @@ fn an_incomplete_run_does_not_burn_a_round() {
     );
 
     // Explicit supersession captures the changed head under a new epoch of the same Round.
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &[
@@ -1550,7 +1550,7 @@ fn an_incomplete_run_does_not_burn_a_round() {
     );
 
     // Now that a round has closed, the next run advances.
-    let (_, stdout, _) = reviewctl(
+    let (_, stdout, _) = af(
         &repo,
         &home,
         &["run", "--campaign", "loop", "--state", &state],
@@ -1569,13 +1569,13 @@ fn a_declined_finding_is_not_sent_back_to_reviewers() {
     let (repo, home, state) = fixture(dir.path());
 
     // Round 1 finds the defect.
-    let (code, ..) = reviewctl(
+    let (code, ..) = af(
         &repo,
         &home,
         &["run", "--campaign", "loop", "--state", &state],
     );
     assert_eq!(code, 3);
-    let (_, ledger_out, _) = reviewctl(
+    let (_, ledger_out, _) = af(
         &repo,
         &home,
         &["ledger", "--campaign", "loop", "--state", &state],
@@ -1583,7 +1583,7 @@ fn a_declined_finding_is_not_sent_back_to_reviewers() {
     let key = ledger_out.split('\t').next().unwrap().to_string();
 
     // The operator rejects it (disagrees with the finding).
-    let (code, ..) = reviewctl(
+    let (code, ..) = af(
         &repo,
         &home,
         &[
@@ -1603,7 +1603,7 @@ fn a_declined_finding_is_not_sent_back_to_reviewers() {
     assert_eq!(code, 0);
 
     // Round 2: the only finding is declined, so nothing is carried back to the reviewers.
-    let (_, stdout, _) = reviewctl(
+    let (_, stdout, _) = af(
         &repo,
         &home,
         &["run", "--campaign", "loop", "--state", &state],
@@ -1754,7 +1754,7 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     let codex = home.join("codex");
     let provider_registry = home.join(".config/afactory/providers.toml");
 
-    let (code, plan_stdout, plan_stderr) = invoke_reviewctl(
+    let (code, plan_stdout, plan_stderr) = invoke_af(
         &repo,
         &home,
         &[
@@ -1787,7 +1787,7 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     assert_eq!(plan["external_effects"]["campaign_state"], false);
     assert_eq!(plan["providers"][0]["ready"], true);
 
-    let (code, empty_stdout, empty_stderr) = invoke_reviewctl(
+    let (code, empty_stdout, empty_stderr) = invoke_af(
         &repo,
         &home,
         &[
@@ -1808,7 +1808,7 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     let empty: serde_json::Value = serde_json::from_str(&empty_stdout).unwrap();
     assert_eq!(empty["subject"]["empty"], true);
 
-    let (code, empty_run_stdout, empty_run_stderr) = reviewctl(
+    let (code, empty_run_stdout, empty_run_stderr) = af(
         &repo,
         &home,
         &[
@@ -1833,7 +1833,7 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
         "{empty_run_stderr}"
     );
 
-    let (code, missing_stdout, missing_stderr) = reviewctl(
+    let (code, missing_stdout, missing_stderr) = af(
         &repo,
         &home,
         &[
@@ -1939,7 +1939,7 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     assert_eq!(doctor["gates_run"], false);
     assert_eq!(doctor["workers_dispatched"], false);
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &[
@@ -1983,7 +1983,7 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
     }
 
     std::fs::write(repo.join("dirty.txt"), b"not committed\n").unwrap();
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &[
@@ -2056,7 +2056,7 @@ fn gc_previews_then_removes_whole_campaign_directories() {
     let (repo, home, _) = fixture(dir.path());
     let root = dir.path().join("campaigns");
     let state = root.join("loop").to_string_lossy().into_owned();
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["run", "--campaign", "loop", "--state", &state],
@@ -2064,7 +2064,7 @@ fn gc_previews_then_removes_whole_campaign_directories() {
     assert_eq!(code, 3, "{stdout}\n{stderr}");
     let root = root.to_string_lossy().into_owned();
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["gc", "--state-root", &root, "--older-than", "0", "--json"],
@@ -2082,7 +2082,7 @@ fn gc_previews_then_removes_whole_campaign_directories() {
         "a preview removes nothing"
     );
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &[
@@ -2103,7 +2103,7 @@ fn gc_previews_then_removes_whole_campaign_directories() {
         "--keep protects the newest"
     );
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["gc", "--state-root", &root, "--older-than", "0", "--apply"],
@@ -2115,7 +2115,7 @@ fn gc_previews_then_removes_whole_campaign_directories() {
         "--apply removes the directory"
     );
 
-    let (code, stdout, stderr) = reviewctl(
+    let (code, stdout, stderr) = af(
         &repo,
         &home,
         &["campaigns", "--state-root", &root, "--format", "json"],

@@ -182,7 +182,7 @@ Sources: OpenHands SDK ([overview](https://docs.openhands.dev/sdk/arch/overview)
     binary SQLite file in git diffs when nothing changed. → informs the Store's embedded backend and identity rules; the design chose a kernel-level Store over files in the repo (D15/D16), so the git-side mechanics do not apply.
     ([Beads](https://virtuslab.com/blog/ai/beads-give-ai-memory), [hash IDs](https://github.com/gastownhall/beads/blob/main/docs/core-concepts/hash-ids.md), [git-appraise](https://github.com/google/git-appraise), [jj concurrency](https://docs.jj-vcs.dev/latest/technical/concurrency/), [SQLite in git](https://ongardie.net/blog/sqlite-in-git/))
 - **31.** *Startup is what you load, not how you parse.* clap parses in 1–2 ms; Cargo's context loads
-    config lazily; the hand-rolled parser in `reviewctl` buys nothing. → clap, lazy layers,
+    config lazily; a hand-rolled argv parser buys nothing. → clap, lazy layers,
     index opened only when needed.
     ([argparse-rosetta-rs](https://github.com/rosetta-rs/argparse-rosetta-rs), [sunshowers](https://rust-cli-recommendations.sunshowers.io/cli-parser.html))
 - **32.** *Executables on `PATH` are the extension model that survives.* `git-*`, `cargo-*`,
