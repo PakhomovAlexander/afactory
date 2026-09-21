@@ -2935,12 +2935,10 @@ fn context_path(path: &Path) -> PathBuf {
 }
 
 fn parse_registry(text: &str, path: &Path) -> Result<Vec<ProviderSpec>, String> {
-    let document: toml::Value = text
+    // A document parses as a Table; toml parses a bare `Value` as one inline value.
+    let root: toml::Table = text
         .parse()
         .map_err(|error| format!("provider registry {}: {error}", path.display()))?;
-    let root = document
-        .as_table()
-        .ok_or_else(|| format!("provider registry {} is not a table", path.display()))?;
     reject_unknown(
         root.keys().map(String::as_str),
         &["version", "providers"],
