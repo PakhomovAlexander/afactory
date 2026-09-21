@@ -1073,7 +1073,7 @@ fn authentication_ready(spec: &ProviderSpec) -> Result<bool, String> {
     }
     let program = resolve_program(spec.kind.command())
         .ok_or_else(|| format!("{} is not on PATH", spec.kind.command()))?;
-    let output = run_probe(&program, spec, &sanitized_path(), &AtomicBool::new(false))?;
+    let output = run_probe(&program, spec, &sanitized_path())?;
     let (status, _, detail) = match spec.kind {
         ProviderKind::Claude => parse_claude_status(output.status.success(), &output.stdout),
         ProviderKind::Codex => parse_codex_status(output.status.success(), &output.stdout),
@@ -3061,8 +3061,6 @@ fn safe_id(id: &str) -> Result<(), String> {
 }
 
 fn probe_provider(spec: ProviderSpec) -> ProviderStatus {
-    // Status probes run to completion; only Task identity checks cancel these shared probes.
-    let cancelled = &AtomicBool::new(false);
     if spec
         .auth_dir
         .as_ref()
@@ -3080,7 +3078,7 @@ fn probe_provider(spec: ProviderSpec) -> ProviderStatus {
         return unavailable_status(&spec, &format!("{} is not on PATH", spec.kind.command()));
     };
     let probe_path = sanitized_path();
-    let output = match run_probe(&program, &spec, &probe_path, cancelled) {
+    let output = match run_probe(&program, &spec, &probe_path) {
         Ok(output) => output,
         Err(error) => return unavailable_status(&spec, &error),
     };
@@ -3105,7 +3103,7 @@ fn probe_provider(spec: ProviderSpec) -> ProviderStatus {
         // Keep this sequential: only a fresh first-party subscription result authorizes opening
         // `/usage`. Speculatively starting the interactive probe would touch unsupported API-key
         // and third-party contexts merely to hide one provider-process startup.
-        match cached_claude_weekly_limits(&program, &spec, &probe_path, cancelled) {
+        match cached_claude_weekly_limits(&program, &spec, &probe_path) {
             Ok(claude_limits) => limits.extend(claude_limits),
             Err(error) => {
                 if !detail.is_empty() {
@@ -3116,7 +3114,7 @@ fn probe_provider(spec: ProviderSpec) -> ProviderStatus {
         }
     }
     if spec.kind == ProviderKind::Codex && status == "authenticated" && auth_type == "ChatGPT" {
-        match probe_codex_subscription(&program, &spec, &probe_path, cancelled) {
+        match probe_codex_subscription(&program, &spec, &probe_path) {
             Ok(snapshot) => {
                 subscription = snapshot.subscription;
                 limits = snapshot.limits;
@@ -3236,7 +3234,6 @@ fn cached_claude_weekly_limits(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
-    cancelled: &AtomicBool,
 ) -> Result<Vec<ProviderLimit>, String> {
     let key = ClaudeUsageCacheKey {
         program: program.to_path_buf(),
@@ -3252,7 +3249,7 @@ fn cached_claude_weekly_limits(
     {
         return Ok(cached.limits.clone());
     }
-    let limits = probe_claude_weekly_limits(program, spec, probe_path, cancelled)?;
+    let limits = probe_claude_weekly_limits(program, spec, probe_path)?;
     if let Ok(mut cache) = cache.lock() {
         cache.retain(|_, cached| cached.captured_at.elapsed() < CLAUDE_USAGE_CACHE_TTL);
         if cache.len() < MAX_PROVIDERS || cache.contains_key(&key) {
@@ -3273,7 +3270,6 @@ fn cached_claude_weekly_limits(
     _program: &Path,
     _spec: &ProviderSpec,
     _probe_path: &std::ffi::OsStr,
-    _cancelled: &AtomicBool,
 ) -> Result<Vec<ProviderLimit>, String> {
     Err("Claude usage probes require a Unix pseudo-terminal".to_string())
 }
@@ -3283,7 +3279,6 @@ fn probe_claude_weekly_limits(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
-    cancelled: &AtomicBool,
 ) -> Result<Vec<ProviderLimit>, String> {
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
@@ -3394,9 +3389,6 @@ fn probe_claude_weekly_limits(
             Ok(None) => {}
             Err(error) => break Err(format!("Claude usage probe failed: {error}")),
         }
-        if cancelled.load(Ordering::Acquire) {
-            break Err("provider status refresh cancelled".to_string());
-        }
         if Instant::now() >= deadline {
             break Err(format!(
                 "Claude usage probe timed out after {} seconds",
@@ -3413,7 +3405,7 @@ fn probe_claude_weekly_limits(
     drop(receiver);
     drop(recycle_sender);
     // A descendant that escaped the process group may retain the PTY slave. Never let that turn
-    // cancellation or shutdown into an unbounded join.
+    // into an unbounded join.
     match reader_done_receiver.recv_timeout(Duration::from_millis(250)) {
         Ok(()) => {
             let _ = reader_thread.join();
@@ -3431,7 +3423,6 @@ fn probe_claude_weekly_limits(
     _program: &Path,
     _spec: &ProviderSpec,
     _probe_path: &std::ffi::OsStr,
-    _cancelled: &AtomicBool,
 ) -> Result<Vec<ProviderLimit>, String> {
     Err("Claude usage probes require a Unix pseudo-terminal".to_string())
 }
@@ -3591,26 +3582,16 @@ fn probe_codex_subscription(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
-    cancelled: &AtomicBool,
 ) -> Result<SubscriptionSnapshot, String> {
-    parse_codex_subscription_response(&probe_codex_request(
+    // Status probes run to completion; only Task identity checks cancel the shared request.
+    parse_codex_subscription_response(&probe_codex_request_before(
         program,
         spec,
         probe_path,
-        cancelled,
+        &AtomicBool::new(false),
         &serde_json::json!({"method":"account/rateLimits/read","id":2}),
+        None,
     )?)
-}
-
-#[cfg(unix)]
-fn probe_codex_request(
-    program: &Path,
-    spec: &ProviderSpec,
-    probe_path: &std::ffi::OsStr,
-    cancelled: &AtomicBool,
-    request: &serde_json::Value,
-) -> Result<serde_json::Value, String> {
-    probe_codex_request_before(program, spec, probe_path, cancelled, request, None)
 }
 
 #[cfg(unix)]
@@ -3712,7 +3693,6 @@ fn probe_codex_subscription(
     _program: &Path,
     _spec: &ProviderSpec,
     _probe_path: &std::ffi::OsStr,
-    _cancelled: &AtomicBool,
 ) -> Result<SubscriptionSnapshot, String> {
     Err("provider probes require Unix process-group isolation".to_string())
 }
@@ -4235,9 +4215,8 @@ fn perform_preflight(
 ) -> Result<u64, ProviderFailure> {
     let program = PathBuf::from(&reviewer.program);
     if !structural_probes.contains(&spec.id) {
-        let cancelled = AtomicBool::new(false);
         let probe_path = sanitized_path();
-        let probe = run_probe(&program, spec, &probe_path, &cancelled)
+        let probe = run_probe(&program, spec, &probe_path)
             .map_err(|error| classify_failure(&error, "structural_probe", 0))?;
         let authenticated = match spec.kind {
             ProviderKind::Claude => parse_claude_status(probe.status.success(), &probe.stdout).0,
@@ -4886,14 +4865,14 @@ pub fn format_window(minutes: u64) -> String {
     }
 }
 
+// Status probes run to completion; only Task identity checks cancel the shared probe.
 #[cfg(unix)]
 fn run_probe(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
-    cancelled: &AtomicBool,
 ) -> Result<ProbeOutput, String> {
-    run_probe_before(program, spec, probe_path, cancelled, None)
+    run_probe_before(program, spec, probe_path, &AtomicBool::new(false), None)
 }
 
 #[cfg(unix)]
@@ -4996,8 +4975,8 @@ fn run_probe_before(
     Ok(ProbeOutput { status, stdout })
 }
 
-// The optional limit is the original native Attempt deadline. Historical inventory probes retain
-// their own timeout and cancellation behavior; a Task recheck never receives a fresh wall budget.
+// The optional limit is the original native Attempt deadline. Status probes keep their own
+// timeout; a Task recheck never receives a fresh wall budget.
 fn check_task_probe_control(
     deadline: Option<Instant>,
     cancelled: &AtomicBool,
@@ -5047,7 +5026,6 @@ fn run_probe(
     _program: &Path,
     _spec: &ProviderSpec,
     _probe_path: &std::ffi::OsStr,
-    _cancelled: &AtomicBool,
 ) -> Result<ProbeOutput, String> {
     Err("provider probes require Unix process-group isolation".to_string())
 }
@@ -6288,9 +6266,7 @@ auth_dir = "{}"
         };
 
         let probe_path = sanitized_path();
-        let limits =
-            probe_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
-                .unwrap();
+        let limits = probe_claude_weekly_limits(&program, &spec, &probe_path).unwrap();
         assert_eq!(limits.len(), 1);
         assert_eq!(limits[0].used_percent, 42);
         assert_eq!(limits[0].resets_at, None);
@@ -6321,12 +6297,8 @@ auth_dir = "{}"
         };
         let probe_path = sanitized_path();
 
-        let first =
-            cached_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
-                .unwrap();
-        let second =
-            cached_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
-                .unwrap();
+        let first = cached_claude_weekly_limits(&program, &spec, &probe_path).unwrap();
+        let second = cached_claude_weekly_limits(&program, &spec, &probe_path).unwrap();
 
         assert_eq!(first[0].used_percent, 42);
         assert_eq!(second[0].used_percent, 42);
@@ -6401,9 +6373,7 @@ auth_dir = "{}"
         };
 
         let probe_path = sanitized_path();
-        let Err(error) =
-            probe_codex_subscription(&program, &spec, &probe_path, &AtomicBool::new(false))
-        else {
+        let Err(error) = probe_codex_subscription(&program, &spec, &probe_path) else {
             panic!("early app-server exit unexpectedly returned subscription data");
         };
         assert!(error.contains("exited without a rate-limit response"));
