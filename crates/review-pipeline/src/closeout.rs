@@ -23,16 +23,16 @@
 //! The Task host folds a recorded confirmation into the Ledger but does not dispatch one yet.
 //! The rules below are kept as the base for that port (ADR-0110).
 
-use review_core::{LegacyStageOutput, Severity};
+use review_core::{ReviewerStageOutput, Severity};
 
 /// Whether this result, on its own, leaves the Round clean at the pinned severity gate.
 ///
 /// Deliberately one-sided: the confirmation is skipped only when the warm result *certainly*
 /// blocks, because skipping it wrongly is what would let convergence close on a warm result
 /// alone. A warm result that merely corroborates a prior claim still gets its cold Attempt.
-pub fn would_close_clean(output: &LegacyStageOutput, gate: Severity) -> bool {
+pub fn would_close_clean(output: &ReviewerStageOutput, gate: Severity) -> bool {
     output
-        .findings
+        .reports
         .iter()
         .all(|finding| finding.severity.rank() < gate.rank())
 }
@@ -57,13 +57,13 @@ pub fn bounded_reason(error: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use review_core::legacy::LegacyFinding;
+    use review_core::reviewer_result::ReviewerReport;
 
-    fn output(severities: &[Severity]) -> LegacyStageOutput {
-        LegacyStageOutput {
-            findings: severities
+    fn output(severities: &[Severity]) -> ReviewerStageOutput {
+        ReviewerStageOutput {
+            reports: severities
                 .iter()
-                .map(|severity| LegacyFinding {
+                .map(|severity| ReviewerReport {
                     severity: *severity,
                     file: "src/lib.rs".into(),
                     line: None,
@@ -76,7 +76,7 @@ mod tests {
                 })
                 .collect(),
             benchmark_demands: Vec::new(),
-            disputes: Vec::new(),
+            dispositions: Vec::new(),
         }
     }
 

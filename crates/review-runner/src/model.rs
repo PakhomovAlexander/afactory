@@ -26,8 +26,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use review_core::{
-    Command, LegacyStageOutput, MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES,
-    ReviewerResultContract,
+    Command, MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES, ReviewerResultContract,
+    ReviewerStageOutput,
 };
 use review_store::Cas;
 
@@ -80,15 +80,15 @@ impl std::error::Error for RunnerError {}
 pub const RESULT_CONTRACT_V2: &str = "\n\n## Output contract\n\n\
 Your FINAL message must be exactly one JSON object and nothing else - no prose before or \
 after, no markdown fence. Shape:\n\
-{\"findings\":[{\"severity\":\"blocker\"|\"major\"|\"minor\",\"file\":string,\"line\":positive-integer|null,\
+{\"reports\":[{\"severity\":\"blocker\"|\"major\"|\"minor\",\"file\":string,\"line\":positive-integer|null,\
 \"title\":string,\"body\":string,\"fix\":string,\"confidence\":number}],\
 \"benchmark_demands\":[{\"claim\":string,\"why\":string,\"suggested_method\":string}],\
 \"dispositions\":[{\"finding_id\":string,\"position\":\"corroborate\"|\"not_reproduced\"|\"dispute\",\"reason\":string}],\
 \"proposal\":{\"patch\":string,\"report_indexes\":[non-negative-integer],\"finding_ids\":[string],\
 \"evidence_ids\":[string],\"paths\":[string],\"description\":string,\"auto_apply_nominated\":boolean}|absent}\n\
 Return exactly one disposition for every assigned prior Finding and no others. Omission is \
-incomplete work, not evidence that a Finding disappeared. An empty findings list is valid. Every \
-finding needs a concrete fix. Use exactly these fields and no others - an extra field is discarded, \
+incomplete work, not evidence that a Finding disappeared. An empty reports list is valid. Every \
+report needs a concrete fix. Use exactly these fields and no others - an extra field is discarded, \
 a missing required result field fails the answer. A proposal is optional, but when present it is \
 one atomic patch and must equal the complete final sandbox diff; name at least one same-result \
 report index or assigned Finding ID. Every non-empty `file` must be a canonical repository-relative \
@@ -159,31 +159,15 @@ pub fn extract_result(text: &str) -> &str {
 /// schema-strict parse refused a six-dollar answer over it. Unknown fields are dropped;
 /// missing or malformed *required* fields still fail, because inventing content is where
 /// tolerance would become fabrication.
-pub fn parse_reviewer_result(text: &str) -> Result<LegacyStageOutput, String> {
+pub fn parse_reviewer_result(text: &str) -> Result<ReviewerStageOutput, String> {
     let mut value: serde_json::Value =
         serde_json::from_str(extract_result(text)).map_err(|e| e.to_string())?;
     normalize(&mut value);
-    let object = value
-        .as_object_mut()
-        .ok_or_else(|| "ReviewerResult@2 is not an object".to_string())?;
-    let mut dispositions = object
-        .remove("dispositions")
-        .ok_or_else(|| "ReviewerResult@2 has no dispositions array".to_string())?;
-    if let Some(dispositions) = dispositions.as_array_mut() {
-        for disposition in dispositions {
-            if let Some(disposition) = disposition.as_object_mut()
-                && let Some(finding_id) = disposition.remove("finding_id")
-            {
-                disposition.insert("fp".into(), finding_id);
-            }
-        }
-    }
-    object.insert("disputes".into(), dispositions);
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
 /// One optional code change declaration transported beside an otherwise unchanged Reviewer
-/// Result. It is intentionally not part of `LegacyStageOutput`: the kernel validates it against
+/// Result. It is intentionally not part of `ReviewerStageOutput`: the kernel validates it against
 /// the sealed sandbox and publishes a separate `PatchProposal@1` only after canonical reduction.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -227,7 +211,7 @@ pub struct ReviewerNoteHint {
 }
 
 /// One optional Worker Notes declaration transported beside the flat Reviewer Result, in the
-/// ADR-0038 pattern: extracted before normalization and never part of `LegacyStageOutput`.
+/// ADR-0038 pattern: extracted before normalization and never part of `ReviewerStageOutput`.
 /// The kernel binds it to the Attempt, bounds it by policy and records the outcome; the
 /// declaration itself carries no authority and is never a disposition.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -271,10 +255,17 @@ fn normalize(value: &mut serde_json::Value) {
             }
         }
     }
-    keep(value, &["findings", "benchmark_demands", "dispositions"]);
+    // A model or a hand-written command reviewer that names the array `findings` means
+    // `reports`: the shapes are identical, and refusing would discard a paid answer.
+    if let Some(object) = value.as_object_mut()
+        && let Some(reports) = object.remove("findings")
+    {
+        object.entry("reports").or_insert(reports);
+    }
+    keep(value, &["reports", "benchmark_demands", "dispositions"]);
     keep_each(
         value,
-        "findings",
+        "reports",
         &[
             "severity",
             "file",
@@ -300,19 +291,46 @@ mod tests {
     use super::{parse_proposal_declaration, parse_reviewer_result};
 
     #[test]
-    fn extra_fields_are_dropped_and_the_findings_survive() {
+    fn a_findings_keyed_answer_is_read_as_reports() {
+        // Hand-written command reviewers and older model answers name the array `findings`.
+        // The shape is identical, so the key is normalized instead of refusing a paid answer.
+        let answer = r#"{"findings":[
+  {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
+],"benchmark_demands":[],"dispositions":[]}"#;
+        let output = parse_reviewer_result(answer).unwrap();
+        assert_eq!(output.reports.len(), 1);
+        assert_eq!(output.reports[0].title, "T");
+    }
+
+    #[test]
+    fn a_disposition_position_outside_the_contract_is_refused() {
+        let answer = r#"{"reports":[],"benchmark_demands":[],
+"dispositions":[{"finding_id":"f1","position":"agree","reason":"why"}]}"#;
+        assert!(parse_reviewer_result(answer).is_err());
+        let accepted = r#"{"reports":[],"benchmark_demands":[],
+"dispositions":[{"finding_id":"f1","position":"corroborate","reason":"why"}]}"#;
+        let output = parse_reviewer_result(accepted).unwrap();
+        assert_eq!(output.dispositions[0].finding_id, "f1");
+        assert_eq!(
+            output.dispositions[0].position,
+            review_core::FindingDispositionPosition::Corroborate
+        );
+    }
+
+    #[test]
+    fn extra_fields_are_dropped_and_the_reports_survive() {
         // A model that still answers with a verdict or summary is tolerated: both are dropped.
         let answer = r#"Verified against the scheduler first.
 
 ```json
-{"verdict":"block","summary":"prose","findings":[
+{"verdict":"block","summary":"prose","reports":[
   {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F",
    "confidence":0.8,"failure_scenario":"a story the contract never asked for"}
 ],"benchmark_demands":[],"dispositions":[],"reviewer_notes":"extra"}
 ```"#;
         let output = parse_reviewer_result(answer).unwrap();
-        assert_eq!(output.findings.len(), 1);
-        assert_eq!(output.findings[0].title, "T");
+        assert_eq!(output.reports.len(), 1);
+        assert_eq!(output.reports[0].title, "T");
     }
 
     #[test]
@@ -328,13 +346,13 @@ mod tests {
 ",
         ] {
             let answer = format!(
-                r#"{prefix}{{"findings":[
+                r#"{prefix}{{"reports":[
   {{"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F",
    "confidence":0.8}}
 ],"benchmark_demands":[],"dispositions":[]}}"#
             );
             let output = parse_reviewer_result(&answer).unwrap();
-            assert_eq!(output.findings.len(), 1);
+            assert_eq!(output.reports.len(), 1);
         }
     }
 
@@ -347,37 +365,37 @@ mod tests {
     fn a_fenced_block_still_wins_over_a_bare_object() {
         // The fence is the model's explicit marker; a stray bare object earlier in the
         // prose must not preempt it.
-        let answer = r#"Draft: {"findings":[],"benchmark_demands":[],"dispositions":[]}
+        let answer = r#"Draft: {"reports":[],"benchmark_demands":[],"dispositions":[]}
 
 ```json
-{"findings":[
+{"reports":[
   {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
 ],"benchmark_demands":[],"dispositions":[]}
 ```"#;
         let output = parse_reviewer_result(answer).unwrap();
-        assert_eq!(output.findings.len(), 1, "the fenced result governs");
+        assert_eq!(output.reports.len(), 1, "the fenced result governs");
     }
 
     #[test]
     fn a_missing_required_field_still_fails() {
         // (`fix` is deliberately not the probe: the flat result allows a null fix at parse
-        // time and ledger ingest is what enforces it, as `ImportReason::MissingFix`.)
-        let answer = r#"{"findings":[
+        // time and ledger ingest is what enforces it, as `ReportAdmissionReason::MissingFix`.)
+        let answer = r#"{"reports":[
   {"file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
 ],"benchmark_demands":[],"dispositions":[]}"#;
         assert!(
             parse_reviewer_result(answer).is_err(),
-            "a finding without a severity must not be normalized into one"
+            "a report without a severity must not be normalized into one"
         );
     }
 
     #[test]
     fn proposal_transport_is_extracted_but_not_part_of_the_result() {
-        let answer = r#"{"findings":[
+        let answer = r#"{"reports":[
   {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
 ],"benchmark_demands":[],"dispositions":[],"proposal":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\n","report_indexes":[0],"finding_ids":[],"evidence_ids":[],"paths":["src/lib.rs"],"description":"fix T","auto_apply_nominated":false}}"#;
         let output = parse_reviewer_result(answer).unwrap();
-        assert_eq!(output.findings.len(), 1);
+        assert_eq!(output.reports.len(), 1);
         let proposal = parse_proposal_declaration(answer).unwrap().unwrap();
         assert_eq!(proposal.report_indexes, vec![0]);
         assert_eq!(proposal.paths, vec!["src/lib.rs"]);
@@ -385,22 +403,22 @@ mod tests {
 
     #[test]
     fn more_than_one_proposal_cannot_fit_the_transport_shape() {
-        let answer = r#"{"findings":[],"benchmark_demands":[],"dispositions":[],"proposal":[]}"#;
+        let answer = r#"{"reports":[],"benchmark_demands":[],"dispositions":[],"proposal":[]}"#;
         assert!(parse_proposal_declaration(answer).is_err());
     }
 
     #[test]
     fn notes_transport_is_extracted_beside_the_flat_result() {
         use super::parse_notes_declaration;
-        let answer = r#"{"findings":[],"benchmark_demands":[],"dispositions":[],"notes":{"inspected":["src/lib.rs"],"model_of_change":"one cap","open_questions":[],"hints":[{"path":"src/lib.rs","note":"cap read once"}]}}"#;
+        let answer = r#"{"reports":[],"benchmark_demands":[],"dispositions":[],"notes":{"inspected":["src/lib.rs"],"model_of_change":"one cap","open_questions":[],"hints":[{"path":"src/lib.rs","note":"cap read once"}]}}"#;
         let output = parse_reviewer_result(answer).unwrap();
-        assert!(output.findings.is_empty());
+        assert!(output.reports.is_empty());
         let notes = parse_notes_declaration(answer).unwrap().unwrap();
         assert_eq!(notes.inspected, vec!["src/lib.rs"]);
         assert_eq!(notes.hints[0].note, "cap read once");
-        let silent = r#"{"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
+        let silent = r#"{"reports":[],"benchmark_demands":[],"dispositions":[]}"#;
         assert_eq!(parse_notes_declaration(silent).unwrap(), None);
-        let malformed = r#"{"findings":[],"benchmark_demands":[],"dispositions":[],"notes":{"verdict":"block"}}"#;
+        let malformed = r#"{"reports":[],"benchmark_demands":[],"dispositions":[],"notes":{"verdict":"block"}}"#;
         assert!(parse_notes_declaration(malformed).is_err());
     }
 }

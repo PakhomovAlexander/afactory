@@ -808,11 +808,11 @@ fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
         .ok_or("Invalid public payload schema")?;
     // The flat report shape is inlined, so the Worker schema carries no `$defs` of its own.
     // `$defs` is the last key, so removing it first leaves the remaining key order unchanged.
-    let legacy_report = object
+    let flat_report = object
         .get("$defs")
-        .and_then(|defs| defs.get("legacyReport"))
+        .and_then(|defs| defs.get("report"))
         .cloned();
-    if legacy_report.is_some() {
+    if flat_report.is_some() {
         object.remove("$defs");
     }
     object.remove("$id");
@@ -824,7 +824,7 @@ fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
     fn localize(
         value: &mut Value,
         digest: &Value,
-        legacy_report: Option<&Value>,
+        flat_report: Option<&Value>,
     ) -> Result<(), String> {
         match value {
             Value::Object(object) => {
@@ -833,8 +833,8 @@ fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
                         *value = digest.clone();
                         return Ok(());
                     }
-                    if reference == "#/$defs/legacyReport"
-                        && let Some(report) = legacy_report
+                    if reference == "#/$defs/report"
+                        && let Some(report) = flat_report
                     {
                         *value = report.clone();
                         return Ok(());
@@ -844,12 +844,12 @@ fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
                     }
                 }
                 for value in object.values_mut() {
-                    localize(value, digest, legacy_report)?;
+                    localize(value, digest, flat_report)?;
                 }
             }
             Value::Array(values) => {
                 for value in values {
-                    localize(value, digest, legacy_report)?;
+                    localize(value, digest, flat_report)?;
                 }
             }
             _ => (),
@@ -859,7 +859,7 @@ fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
     localize(
         &mut value,
         &contracts["$defs"]["digest"],
-        legacy_report.as_ref(),
+        flat_report.as_ref(),
     )?;
     Ok(value)
 }

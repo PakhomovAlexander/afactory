@@ -12,19 +12,19 @@ mod support;
 
 use std::path::Path;
 
-use review_core::LegacyStageOutput;
+use review_core::ReviewerStageOutput;
 use review_store::{Cas, EventStore, Finding, Ingest, Ledger, LedgerProjection, NewEvent, Status};
 use support::{add_flat_results, opened_round};
 
-fn stage(json: &str) -> LegacyStageOutput {
+fn stage(json: &str) -> ReviewerStageOutput {
     serde_json::from_str(json).unwrap()
 }
 
-fn one_finding(severity: &str, file: &str, title: &str) -> LegacyStageOutput {
+fn one_finding(severity: &str, file: &str, title: &str) -> ReviewerStageOutput {
     stage(&format!(
-        r#"{{"findings":[{{"severity":"{severity}","file":"{file}","line":7,
+        r#"{{"reports":[{{"severity":"{severity}","file":"{file}","line":7,
                           "title":"{title}","body":"b","fix":"f","confidence":0.9}}],
-            "benchmark_demands":[],"disputes":[]}}"#
+            "benchmark_demands":[],"dispositions":[]}}"#
     ))
 }
 
@@ -45,7 +45,7 @@ fn key_of(ledger: &Ledger, title: &str) -> String {
 }
 
 /// Admit one reviewer result under a freshly opened Round of `run_id`.
-fn ingest_one(store: &mut EventStore, cas: &Cas, run_id: &str, output: &LegacyStageOutput) {
+fn ingest_one(store: &mut EventStore, cas: &Cas, run_id: &str, output: &ReviewerStageOutput) {
     let round = opened_round(store, cas, run_id);
     let mut ingest = Ingest::new(store, cas, run_id)
         .unwrap()
@@ -70,14 +70,14 @@ fn build_run(dir: &Path) -> Snapshot {
         .unwrap()
         .under_round(&round.round_event_id);
     let cross = stage(
-        r#"{"findings":[
+        r#"{"reports":[
               {"severity":"blocker","file":"src/queue.rs","line":3,"title":"Queue grows without bound",
                "body":"b","fix":"f","confidence":0.8},
               {"severity":"minor","file":"src/lib.rs","line":1,"title":"Misleading comment",
                "body":"b","fix":"f","confidence":0.5}],
             "benchmark_demands":[{"claim":"Enqueue stays O(1)","why":"the queue is on the hot path",
                                   "suggested_method":"time 10^6 enqueues"}],
-            "disputes":[]}"#,
+            "dispositions":[]}"#,
     );
     add_flat_results(
         &mut ingest,
@@ -98,10 +98,10 @@ fn build_run(dir: &Path) -> Snapshot {
     let retry = key_of(ingest.ledger(), "Retry loop can spin forever");
     let queue = key_of(ingest.ledger(), "Queue grows without bound");
     let positions = stage(&format!(
-        r#"{{"findings":[],"benchmark_demands":[],
-            "disputes":[
-              {{"fp":"{retry}","position":"corroborate","reason":"reproduced"}},
-              {{"fp":"{queue}","position":"dispute","reason":"the producer is bounded"}}]}}"#
+        r#"{{"reports":[],"benchmark_demands":[],
+            "dispositions":[
+              {{"finding_id":"{retry}","position":"corroborate","reason":"reproduced"}},
+              {{"finding_id":"{queue}","position":"dispute","reason":"the producer is bounded"}}]}}"#
     ));
     add_flat_results(
         &mut ingest,

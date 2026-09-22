@@ -1633,7 +1633,7 @@ fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
 }
 
 fn prior_location(file: &str, line: Option<i64>) -> (serde_json::Value, serde_json::Value, bool) {
-    if file == review_core::legacy::CHANGE_WIDE_SENTINEL {
+    if file == review_core::reviewer_result::CHANGE_WIDE_SENTINEL {
         return (serde_json::Value::Null, serde_json::Value::Null, false);
     }
     if review_core::is_valid_repo_path(file) {
@@ -1854,7 +1854,7 @@ mod tests {
             (serde_json::Value::Null, serde_json::Value::Null, true)
         );
         assert_eq!(
-            super::prior_location(review_core::legacy::CHANGE_WIDE_SENTINEL, Some(7)),
+            super::prior_location(review_core::reviewer_result::CHANGE_WIDE_SENTINEL, Some(7)),
             (serde_json::Value::Null, serde_json::Value::Null, false)
         );
     }

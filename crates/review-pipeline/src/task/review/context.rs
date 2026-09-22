@@ -185,7 +185,7 @@ impl ReviewTaskDomain {
 
     pub(super) fn validate_stage(
         &self,
-        stage: &review_core::LegacyStageOutput,
+        stage: &review_core::ReviewerStageOutput,
         assignment: &TaskReviewAssignmentV1,
     ) -> Result<(), String> {
         let ids = assignment

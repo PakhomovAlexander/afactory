@@ -1,15 +1,15 @@
 mod support;
 
 use review_core::{
-    EventType, FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1,
-    LegacyStageOutput, Producer, RoundStartedPayloadV1, RunEvent, SubjectV1,
+    EventType, FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1, Producer,
+    ReviewerStageOutput, RoundStartedPayloadV1, RunEvent, SubjectV1,
 };
 use review_store::{CanonicalStage, Cas, EventStore, Ingest, LedgerProjection, NewEvent};
 use support::opened_round;
 
-fn stage() -> LegacyStageOutput {
+fn stage() -> ReviewerStageOutput {
     serde_json::from_value(serde_json::json!({
-        "findings": [{
+        "reports": [{
             "severity": "major",
             "file": "src/lib.rs",
             "line": 7,
@@ -19,7 +19,7 @@ fn stage() -> LegacyStageOutput {
             "confidence": 0.9
         }],
         "benchmark_demands": [],
-        "disputes": []
+        "dispositions": []
     }))
     .unwrap()
 }
@@ -32,15 +32,10 @@ fn task_result(
     attempt_id: &str,
     input_artifacts: &[String],
     head: &str,
-    output: &LegacyStageOutput,
+    output: &ReviewerStageOutput,
 ) -> String {
-    let mut payload = serde_json::to_value(output).unwrap();
-    let object = payload.as_object_mut().unwrap();
-    let reports = object.remove("findings").unwrap();
-    object.insert("reports".into(), reports);
-    let dispositions = object.remove("disputes").unwrap();
-    assert_eq!(dispositions, serde_json::json!([]));
-    object.insert("dispositions".into(), dispositions);
+    let payload = serde_json::to_value(output).unwrap();
+    assert_eq!(payload["dispositions"], serde_json::json!([]));
     cas.put_artifact(
         review_core::contract::REVIEWER_RESULT_V2,
         Producer::Attempt {
@@ -112,7 +107,7 @@ fn task_and_campaign_use_identical_pure_canonical_reduction_without_another_stor
     let mut output = stage();
     output
         .benchmark_demands
-        .push(review_core::legacy::LegacyBenchmarkDemand {
+        .push(review_core::reviewer_result::BenchmarkDemand {
             claim: "Pagination remains bounded".into(),
             why: "Large inputs must not allocate the full result".into(),
             suggested_method: "Measure allocation growth".into(),
@@ -665,7 +660,7 @@ fn grouping_is_reversible_and_preserves_each_report_obligation() {
             &cas,
         )
         .unwrap();
-    let mut lower_report = stage().findings.remove(0).into_report(0).unwrap();
+    let mut lower_report = stage().reports.remove(0).into_report(0).unwrap();
     lower_report.severity = review_core::Severity::Minor;
     lower_report.body = "lower-severity evidence from a different Subject".into();
     let (lower_record, _) = cas
@@ -799,18 +794,18 @@ fn canonical_confirmation_becomes_current_corroborating_evidence() {
         }])
         .unwrap();
     let key = ingest.ledger().findings()[0].key.clone();
-    let confirmation: LegacyStageOutput = serde_json::from_value(serde_json::json!({
-        "findings": [],
+    let confirmation: ReviewerStageOutput = serde_json::from_value(serde_json::json!({
+        "reports": [],
         "benchmark_demands": [],
-        "disputes": [{
-            "fp": key,
+        "dispositions": [{
+            "finding_id": key,
             "position": "corroborate",
             "reason": "verified against the current snapshot"
         }]
     }))
     .unwrap();
     fn confirm<'a>(
-        stage: &'a LegacyStageOutput,
+        stage: &'a ReviewerStageOutput,
         result: &'a str,
         authority: &'a support::Authority,
     ) -> CanonicalStage<'a> {
@@ -829,7 +824,7 @@ fn canonical_confirmation_becomes_current_corroborating_evidence() {
     // A disposition must name a Finding it was assigned; a mistyped canonical ID carries no
     // safe authority, so the whole reduction is refused rather than attached anywhere.
     let mut mistyped = confirmation.clone();
-    mistyped.disputes[0].fp = "sha256:mistyped-prior-finding".into();
+    mistyped.dispositions[0].finding_id = "sha256:mistyped-prior-finding".into();
     let refused = ingest
         .add_canonical_stage_outputs(&[confirm(&mistyped, &result_b, &authority)])
         .unwrap_err();
@@ -891,11 +886,11 @@ fn canonical_confirmation_replay_reuses_the_exact_corroborating_report() {
         }])
         .unwrap();
     let key = ingest.ledger().findings()[0].key.clone();
-    let confirmation: LegacyStageOutput = serde_json::from_value(serde_json::json!({
-        "findings": [],
+    let confirmation: ReviewerStageOutput = serde_json::from_value(serde_json::json!({
+        "reports": [],
         "benchmark_demands": [],
-        "disputes": [{
-            "fp": key,
+        "dispositions": [{
+            "finding_id": key,
             "position": "corroborate",
             "reason": "verified against the current snapshot"
         }]
@@ -999,14 +994,14 @@ fn explicit_dispositions_are_immutable_and_only_disputes_contest() {
         .put_json(&serde_json::json!({"wire": "dispositions"}))
         .unwrap();
     let mut seed = stage();
-    seed.findings.push({
-        let mut finding = seed.findings[0].clone();
+    seed.reports.push({
+        let mut finding = seed.reports[0].clone();
         finding.file = "src/drop.rs".into();
         finding.title = "Drop candidate".into();
         finding
     });
-    seed.findings.push({
-        let mut finding = seed.findings[0].clone();
+    seed.reports.push({
+        let mut finding = seed.reports[0].clone();
         finding.file = "src/dispute.rs".into();
         finding.title = "Dispute candidate".into();
         finding
@@ -1050,13 +1045,13 @@ fn explicit_dispositions_are_immutable_and_only_disputes_contest() {
         ingest.ledger().get(&ids[0]).unwrap().status,
         review_store::Status::Fixed
     );
-    let dispositions: LegacyStageOutput = serde_json::from_value(serde_json::json!({
-        "findings": [],
+    let dispositions: ReviewerStageOutput = serde_json::from_value(serde_json::json!({
+        "reports": [],
         "benchmark_demands": [],
-        "disputes": [
-            {"fp": ids[0], "position": "corroborate", "reason": "reproduced"},
-            {"fp": ids[1], "position": "not_reproduced", "reason": "branch removed"},
-            {"fp": ids[2], "position": "dispute", "reason": "branch unreachable"}
+        "dispositions": [
+            {"finding_id": ids[0], "position": "corroborate", "reason": "reproduced"},
+            {"finding_id": ids[1], "position": "not_reproduced", "reason": "branch removed"},
+            {"finding_id": ids[2], "position": "dispute", "reason": "branch unreachable"}
         ]
     }))
     .unwrap();
@@ -1447,11 +1442,11 @@ fn fixed_requires_current_attestation_and_verification_and_resolutions_can_expir
 // only through the strict gate: every finding must satisfy FindingReport@1, and one violation
 // refuses every result at that barrier, so a blocking Finding cannot degrade into an empty pass.
 
-fn flat_stage(findings: serde_json::Value, disputes: serde_json::Value) -> LegacyStageOutput {
+fn flat_stage(reports: serde_json::Value, dispositions: serde_json::Value) -> ReviewerStageOutput {
     serde_json::from_value(serde_json::json!({
-        "findings": findings,
+        "reports": reports,
         "benchmark_demands": [],
-        "disputes": disputes,
+        "dispositions": dispositions,
     }))
     .unwrap()
 }
@@ -1651,7 +1646,7 @@ fn a_dispute_disposition_contests_the_prior_claim() {
 
     let refutation = flat_stage(
         serde_json::json!([]),
-        serde_json::json!([{"fp": key, "position": "dispute", "reason": "not reproducible"}]),
+        serde_json::json!([{"finding_id": key, "position": "dispute", "reason": "not reproducible"}]),
     );
     support::add_flat_results(
         &mut ingest,

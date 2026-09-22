@@ -49,26 +49,9 @@ pub fn prepare_canonical_task_review(
 // Compare the existing typed stage semantics after strict wire validation. Canonical JSON
 // stores 1.0 as 1, and the contract permits omitted nullable report fields. Neither changes
 // the selected result or authorizes changing its producer, references, or actual field values.
-fn selected_task_stage(payload: &serde_json::Value) -> Result<LegacyStageOutput, StoreError> {
+fn selected_task_stage(payload: &serde_json::Value) -> Result<ReviewerStageOutput, StoreError> {
     review_core::validate_reviewer_result_v2(payload).map_err(StoreError::Conflict)?;
-    let mut decoded = payload.clone();
-    let object = decoded
-        .as_object_mut()
-        .expect("validated result is an object");
-    let reports = object.remove("reports").expect("validated result reports");
-    object.insert("findings".into(), reports);
-    let mut dispositions = object
-        .remove("dispositions")
-        .expect("validated result dispositions");
-    for entry in dispositions.as_array_mut().expect("validated dispositions") {
-        let entry = entry.as_object_mut().expect("validated disposition");
-        let id = entry
-            .remove("finding_id")
-            .expect("validated disposition ID");
-        entry.insert("fp".into(), id);
-    }
-    object.insert("disputes".into(), dispositions);
-    Ok(serde_json::from_value(decoded)?)
+    Ok(serde_json::from_value(payload.clone())?)
 }
 
 fn validate_stages(ledger: &Ledger, stages: &[CanonicalStage<'_>]) -> Result<(), StoreError> {
@@ -107,7 +90,7 @@ pub(super) fn prepare_canonical_inputs(
     for stage in stages {
         let reports = stage
             .stage
-            .findings
+            .reports
             .iter()
             .cloned()
             .enumerate()
@@ -130,7 +113,7 @@ pub(super) fn prepare_canonical_inputs(
             demand_requirement: stage.demand_requirement,
             reports,
             demands: stage.stage.benchmark_demands.clone(),
-            disputes: stage.stage.disputes.clone(),
+            dispositions: stage.stage.dispositions.clone(),
             provenance: ReportProvenance {
                 producer: Producer::Attempt {
                     run_id: run_id.to_owned(),
@@ -222,11 +205,11 @@ pub(super) fn prepare_review_outputs(
             demand_input_artifact_ids.push(record_id);
         }
         let mut reports = stage.reports.clone();
-        for dispute in &stage.disputes {
-            if dispute.position.trim() != "corroborate" {
+        for disposition in &stage.dispositions {
+            if disposition.position != FindingDispositionPosition::Corroborate {
                 continue;
             }
-            let key = dispute.fp.trim();
+            let key = disposition.finding_id.as_str();
             let Some(finding) = ledger.get(key) else {
                 // Every disposition names an assigned Finding; the disposition pass below
                 // refuses one that does not.
@@ -289,7 +272,7 @@ pub(super) fn prepare_review_outputs(
                 continue;
             };
             let fix = finding.fix.clone();
-            let locations = if finding.identity_file == review_core::legacy::CHANGE_WIDE_SENTINEL {
+            let locations = if finding.identity_file == CHANGE_WIDE_SENTINEL {
                 Vec::new()
             } else if review_core::is_valid_repo_path(&finding.identity_file) {
                 let line = match finding.identity_line.map(u32::try_from).transpose() {
@@ -320,7 +303,7 @@ pub(super) fn prepare_review_outputs(
                         kind: review_core::finding::ClaimTargetKind::Finding,
                         id: key.to_string(),
                     },
-                    reason: Some(dispute.reason.clone()),
+                    reason: Some(disposition.reason.clone()),
                 }],
             });
         }
@@ -437,27 +420,17 @@ pub(super) fn prepare_review_outputs(
             }
         }
 
-        for disposition in &stage.disputes {
-            let finding_id = disposition.fp.trim();
+        for disposition in &stage.dispositions {
+            let finding_id = disposition.finding_id.as_str();
             if ledger.get(finding_id).is_none() {
                 return Err(StoreError::Conflict(format!(
                     "{source} disposition names Finding `{finding_id}` outside its assigned prior Finding Set"
                 )));
             }
-            let position = match disposition.position.trim() {
-                "corroborate" => FindingDispositionPosition::Corroborate,
-                "not_reproduced" => FindingDispositionPosition::NotReproduced,
-                "dispute" => FindingDispositionPosition::Dispute,
-                _ => {
-                    return Err(StoreError::Conflict(format!(
-                        "{source} disposition has an invalid position"
-                    )));
-                }
-            };
             let payload = FindingDispositionV1 {
                 finding_id: finding_id.to_string(),
                 source: source.to_string(),
-                position,
+                position: disposition.position,
                 reason: disposition.reason.clone(),
                 round,
                 subject_id: provenance.subject_id.clone(),
@@ -475,7 +448,7 @@ pub(super) fn prepare_review_outputs(
             relation_ids.push(envelope.artifact_id);
             input_artifact_ids.push(record_id.clone());
 
-            if position != FindingDispositionPosition::Dispute {
+            if disposition.position != FindingDispositionPosition::Dispute {
                 continue;
             }
             let contestable = matches!(
@@ -532,8 +505,8 @@ mod task_selected_stage_tests {
             .unwrap()
             .remove("confidence");
         let omitted = selected_task_stage(&payload).unwrap();
-        assert_eq!(omitted.findings[0].confidence, None);
-        assert_eq!(omitted.findings[0].line, None);
+        assert_eq!(omitted.reports[0].confidence, None);
+        assert_eq!(omitted.reports[0].line, None);
         payload["reports"][0]["confidence"] = json!(null);
         payload["reports"][0]["line"] = json!(null);
         assert_eq!(selected_task_stage(&payload).unwrap(), omitted);

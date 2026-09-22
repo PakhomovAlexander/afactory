@@ -9,7 +9,7 @@
   "properties": {
     "reports": {
       "type": "array",
-      "items": { "$ref": "#/$defs/legacyReport" }
+      "items": { "$ref": "#/$defs/report" }
     },
     "benchmark_demands": {
       "type": "array",
@@ -39,7 +39,7 @@
     }
   },
   "$defs": {
-    "legacyReport": {
+    "report": {
       "type": "object",
       "additionalProperties": false,
       "required": ["severity", "file", "title", "body", "fix"],

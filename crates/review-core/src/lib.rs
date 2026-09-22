@@ -30,10 +30,10 @@ pub mod grouping;
 pub mod hex;
 pub mod integration;
 pub mod json;
-pub mod legacy;
 pub mod patch;
 pub mod path;
 pub mod resolution;
+pub mod reviewer_result;
 pub mod session;
 pub mod slice;
 pub mod snapshot;
@@ -106,10 +106,6 @@ pub use integration::{
     IntegrationPlanV1, IntegrationPreparedPayloadV1,
 };
 pub use json::{NumericDomainError, admit};
-pub use legacy::{
-    LegacyImportError, LegacyStageOutput, ReviewerResultContract, ReviewerResultRejection,
-    validate_reviewer_result_v2, validate_reviewer_result_v2_classified,
-};
 pub use patch::{
     ClaimRef, ClaimRefKind, PatchProposal, ProposalAcceptedPayloadV1, ProposalCandidateV1,
     ProposalPreparedPayloadV1, ProposalRefusalReasonV1, ProposalRefusedPayloadV1,
@@ -118,6 +114,10 @@ pub use path::{contains_report_path, decode_path, encode_path, is_valid_repo_pat
 pub use resolution::{
     ChangeAttestationV1, ChangedRegionV1, FindingResolutionOutcome, FindingResolutionV1,
     FixVerificationV1, PolicyTimeV1, ResolutionChallengeKind, ResolutionChallengeV1,
+};
+pub use reviewer_result::{
+    ReportAdmissionError, ReviewerResultContract, ReviewerResultRejection, ReviewerStageOutput,
+    validate_reviewer_result_v2, validate_reviewer_result_v2_classified,
 };
 pub use slice::{
     CloseoutPolicyV1, RecordedSetPayloadV1, ReviewSliceV1, SemanticClosureV1,

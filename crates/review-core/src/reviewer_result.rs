@@ -1,8 +1,10 @@
-//! The flat reviewer result a model answers with, and its per-finding bridge to
-//! [`FindingReport`].
+//! `ReviewerResult@2`: the flat result one reviewer Attempt returns, and its per-report bridge
+//! to [`FindingReport`].
 //!
-//! [`LegacyFinding::into_report`] admits one flat finding only if it satisfies the stricter
-//! typed contract:
+//! The Rust types spell the wire shape exactly — `reports`, `benchmark_demands` and
+//! `dispositions` — so a parsed result serializes straight back to the durable artifact with no
+//! renaming step in between. [`ReviewerReport::into_report`] admits one flat report only if it
+//! also satisfies the stricter typed contract:
 //!
 //! - `fix` parses as nullable but is required. A claim with no proposed remedy is one a triager
 //!   cannot act on.
@@ -12,6 +14,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::disposition::FindingDispositionPosition;
 use crate::finding::{FindingReport, Location, Severity};
 
 /// The path-field sentinel for a change-wide finding.
@@ -19,7 +22,7 @@ pub const CHANGE_WIDE_SENTINEL: &str = "(change-wide)";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LegacyFinding {
+pub struct ReviewerReport {
     pub severity: Severity,
     pub file: String,
     pub line: Option<i64>,
@@ -35,30 +38,29 @@ pub struct LegacyFinding {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LegacyBenchmarkDemand {
+pub struct BenchmarkDemand {
     pub claim: String,
     pub why: String,
     pub suggested_method: String,
 }
 
-/// A reviewer's position on a prior Finding it was given, named by its canonical Finding ID: a
-/// `ReviewerResult@2` disposition's `finding_id`.
+/// A reviewer's position on one prior Finding it was assigned, named by that Finding's
+/// canonical ID.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LegacyDispute {
-    /// The Finding the disposition is about. Result decoding moves a `ReviewerResult@2`
-    /// disposition's `finding_id` into this slot.
-    pub fp: String,
-    pub position: String,
+pub struct ReviewerDisposition {
+    pub finding_id: String,
+    pub position: FindingDispositionPosition,
     pub reason: String,
 }
 
+/// One reviewer Attempt's complete result, in the `ReviewerResult@2` wire shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct LegacyStageOutput {
-    pub findings: Vec<LegacyFinding>,
-    pub benchmark_demands: Vec<LegacyBenchmarkDemand>,
-    pub disputes: Vec<LegacyDispute>,
+pub struct ReviewerStageOutput {
+    pub reports: Vec<ReviewerReport>,
+    pub benchmark_demands: Vec<BenchmarkDemand>,
+    pub dispositions: Vec<ReviewerDisposition>,
 }
 
 /// The result wire contract a reviewer node declares. The runner keeps one tolerant internal
@@ -203,18 +205,22 @@ fn validate_reports_and_demands(value: &serde_json::Value) -> Result<(), Reviewe
         .iter()
         .enumerate()
     {
-        let legacy: LegacyFinding = serde::Deserialize::deserialize(report)
+        let parsed: ReviewerReport = serde::Deserialize::deserialize(report)
             .map_err(|_| ReviewerResultRejection::ReportPayload)?;
-        legacy.validate(index).map_err(|error| match error.reason {
-            ImportReason::MissingFix => ReviewerResultRejection::MissingFix,
-            ImportReason::EmptyTitle => ReviewerResultRejection::EmptyTitle,
-            ImportReason::EmptyBody => ReviewerResultRejection::EmptyBody,
-            ImportReason::InvalidPath => ReviewerResultRejection::NoncanonicalReportPath,
-            ImportReason::InvalidLine => ReviewerResultRejection::InvalidLine,
-            ImportReason::ConfidenceOutOfRange => ReviewerResultRejection::ConfidenceOutOfRange,
-            ImportReason::InvalidRuleId => ReviewerResultRejection::InvalidRuleId,
-            ImportReason::EmptyOccurrenceKey => ReviewerResultRejection::EmptyOccurrenceKey,
-            ImportReason::ReportContract => ReviewerResultRejection::ReportPayload,
+        parsed.validate(index).map_err(|error| match error.reason {
+            ReportAdmissionReason::MissingFix => ReviewerResultRejection::MissingFix,
+            ReportAdmissionReason::EmptyTitle => ReviewerResultRejection::EmptyTitle,
+            ReportAdmissionReason::EmptyBody => ReviewerResultRejection::EmptyBody,
+            ReportAdmissionReason::InvalidPath => ReviewerResultRejection::NoncanonicalReportPath,
+            ReportAdmissionReason::InvalidLine => ReviewerResultRejection::InvalidLine,
+            ReportAdmissionReason::ConfidenceOutOfRange => {
+                ReviewerResultRejection::ConfidenceOutOfRange
+            }
+            ReportAdmissionReason::InvalidRuleId => ReviewerResultRejection::InvalidRuleId,
+            ReportAdmissionReason::EmptyOccurrenceKey => {
+                ReviewerResultRejection::EmptyOccurrenceKey
+            }
+            ReportAdmissionReason::ReportContract => ReviewerResultRejection::ReportPayload,
         })?;
     }
     for demand in value["benchmark_demands"]
@@ -252,15 +258,15 @@ fn exact_reviewer_keys(
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LegacyImportError {
-    /// Index of the offending finding within the stage output.
+pub struct ReportAdmissionError {
+    /// Index of the offending report within the reviewer result.
     pub index: usize,
-    pub reason: ImportReason,
+    pub reason: ReportAdmissionReason,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ImportReason {
-    /// The legacy schema allowed a null fix; the contract requires a remedy.
+pub enum ReportAdmissionReason {
+    /// The wire shape allows a null fix; the contract requires a remedy.
     MissingFix,
     EmptyTitle,
     EmptyBody,
@@ -272,80 +278,84 @@ pub enum ImportReason {
     ConfidenceOutOfRange,
     InvalidRuleId,
     EmptyOccurrenceKey,
-    /// A future FindingReport invariant not represented by this compatibility shape.
+    /// A `FindingReport@1` invariant the flat result shape cannot express.
     ReportContract,
 }
 
-impl std::fmt::Display for LegacyImportError {
+impl std::fmt::Display for ReportAdmissionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let what = match self.reason {
-            ImportReason::MissingFix => "no fix: FindingReport@1 requires a proposed remedy",
-            ImportReason::EmptyTitle => "empty title",
-            ImportReason::EmptyBody => "empty body",
-            ImportReason::InvalidPath => "file is not a canonical repository-relative path",
-            ImportReason::InvalidLine => "line is not a positive 32-bit number",
-            ImportReason::ConfidenceOutOfRange => "confidence outside 0.0..=1.0",
-            ImportReason::InvalidRuleId => "rule_id is not a namespaced versioned rule",
-            ImportReason::EmptyOccurrenceKey => "occurrence_key is empty",
-            ImportReason::ReportContract => "finding violates the FindingReport@1 contract",
+            ReportAdmissionReason::MissingFix => {
+                "no fix: FindingReport@1 requires a proposed remedy"
+            }
+            ReportAdmissionReason::EmptyTitle => "empty title",
+            ReportAdmissionReason::EmptyBody => "empty body",
+            ReportAdmissionReason::InvalidPath => {
+                "file is not a canonical repository-relative path"
+            }
+            ReportAdmissionReason::InvalidLine => "line is not a positive 32-bit number",
+            ReportAdmissionReason::ConfidenceOutOfRange => "confidence outside 0.0..=1.0",
+            ReportAdmissionReason::InvalidRuleId => "rule_id is not a namespaced versioned rule",
+            ReportAdmissionReason::EmptyOccurrenceKey => "occurrence_key is empty",
+            ReportAdmissionReason::ReportContract => "report violates the FindingReport@1 contract",
         };
-        write!(f, "finding {}: {what}", self.index)
+        write!(f, "report {}: {what}", self.index)
     }
 }
 
-impl std::error::Error for LegacyImportError {}
+impl std::error::Error for ReportAdmissionError {}
 
-impl LegacyFinding {
-    /// Validate one legacy-shaped report without cloning or converting its owned text.
-    pub fn validate(&self, index: usize) -> Result<(), LegacyImportError> {
-        let err = |reason| LegacyImportError { index, reason };
+impl ReviewerReport {
+    /// Validate one flat report without cloning or converting its owned text.
+    pub fn validate(&self, index: usize) -> Result<(), ReportAdmissionError> {
+        let err = |reason| ReportAdmissionError { index, reason };
         if self.fix.as_deref().is_none_or(|fix| fix.trim().is_empty()) {
-            return Err(err(ImportReason::MissingFix));
+            return Err(err(ReportAdmissionReason::MissingFix));
         }
         if self.title.trim().is_empty() {
-            return Err(err(ImportReason::EmptyTitle));
+            return Err(err(ReportAdmissionReason::EmptyTitle));
         }
         if self.body.trim().is_empty() {
-            return Err(err(ImportReason::EmptyBody));
+            return Err(err(ReportAdmissionReason::EmptyBody));
         }
         if self
             .confidence
             .is_some_and(|confidence| !(0.0..=1.0).contains(&confidence))
         {
-            return Err(err(ImportReason::ConfidenceOutOfRange));
+            return Err(err(ReportAdmissionReason::ConfidenceOutOfRange));
         }
         if self
             .rule_id
             .as_deref()
             .is_some_and(|rule| !crate::finding::valid_rule_id(rule))
         {
-            return Err(err(ImportReason::InvalidRuleId));
+            return Err(err(ReportAdmissionReason::InvalidRuleId));
         }
         if self.occurrence_key.as_deref().is_some_and(str::is_empty) {
-            return Err(err(ImportReason::EmptyOccurrenceKey));
+            return Err(err(ReportAdmissionReason::EmptyOccurrenceKey));
         }
         let line = self
             .line
-            .map(|line| u32::try_from(line).map_err(|_| err(ImportReason::InvalidLine)))
+            .map(|line| u32::try_from(line).map_err(|_| err(ReportAdmissionReason::InvalidLine)))
             .transpose()?;
         if line == Some(0) {
-            return Err(err(ImportReason::InvalidLine));
+            return Err(err(ReportAdmissionReason::InvalidLine));
         }
         let path = self.file.as_str();
         if path.is_empty() || path == CHANGE_WIDE_SENTINEL {
             if line.is_some() {
-                return Err(err(ImportReason::InvalidLine));
+                return Err(err(ReportAdmissionReason::InvalidLine));
             }
         } else if !crate::is_valid_repo_path(path) {
-            return Err(err(ImportReason::InvalidPath));
+            return Err(err(ReportAdmissionReason::InvalidPath));
         }
         Ok(())
     }
 
-    /// Validate one flat finding against the `FindingReport@1` contract and convert it.
-    /// Every ledger ingest calls this per finding, so the contract governs what a run produces.
-    pub fn into_report(self, index: usize) -> Result<FindingReport, LegacyImportError> {
-        let err = |reason| LegacyImportError { index, reason };
+    /// Validate one flat report against the `FindingReport@1` contract and convert it.
+    /// Every ledger ingest calls this per report, so the contract governs what a run produces.
+    pub fn into_report(self, index: usize) -> Result<FindingReport, ReportAdmissionError> {
+        let err = |reason| ReportAdmissionError { index, reason };
 
         self.validate(index)?;
 
@@ -355,7 +365,7 @@ impl LegacyFinding {
 
         let line = match self.line {
             None => None,
-            Some(n) => Some(u32::try_from(n).map_err(|_| err(ImportReason::InvalidLine))?),
+            Some(n) => Some(u32::try_from(n).map_err(|_| err(ReportAdmissionReason::InvalidLine))?),
         };
 
         let path = self.file.as_str();
@@ -383,7 +393,7 @@ impl LegacyFinding {
         };
         report
             .validate()
-            .map_err(|_| err(ImportReason::ReportContract))?;
+            .map_err(|_| err(ReportAdmissionReason::ReportContract))?;
         Ok(report)
     }
 }
@@ -392,8 +402,8 @@ impl LegacyFinding {
 mod tests {
     use super::*;
 
-    fn finding() -> LegacyFinding {
-        LegacyFinding {
+    fn report() -> ReviewerReport {
+        ReviewerReport {
             severity: Severity::Major,
             file: "src/a.rs".into(),
             line: Some(12),
@@ -408,16 +418,16 @@ mod tests {
 
     #[test]
     fn maps_path_and_line_to_one_location() {
-        let report = finding().into_report(0).unwrap();
+        let report = report().into_report(0).unwrap();
         assert_eq!(report.locations, vec![Location::at("src/a.rs", 12)]);
     }
 
     #[test]
     fn change_wide_sentinel_becomes_no_location() {
-        let report = LegacyFinding {
+        let report = ReviewerReport {
             file: CHANGE_WIDE_SENTINEL.into(),
             line: None,
-            ..finding()
+            ..report()
         }
         .into_report(0)
         .unwrap();
@@ -426,24 +436,39 @@ mod tests {
 
     #[test]
     fn a_null_fix_is_refused() {
-        let err = LegacyFinding {
+        let err = ReviewerReport {
             fix: None,
-            ..finding()
+            ..report()
         }
         .into_report(3)
         .unwrap_err();
-        assert_eq!(err.reason, ImportReason::MissingFix);
+        assert_eq!(err.reason, ReportAdmissionReason::MissingFix);
         assert_eq!(err.index, 3);
     }
 
     #[test]
     fn whitespace_only_claim_content_is_not_admissible() {
         for (title, body, fix, expected) in [
-            ("   ", "body", Some("fix"), ImportReason::EmptyTitle),
-            ("title", "\n\t", Some("fix"), ImportReason::EmptyBody),
-            ("title", "body", Some("  "), ImportReason::MissingFix),
+            (
+                "   ",
+                "body",
+                Some("fix"),
+                ReportAdmissionReason::EmptyTitle,
+            ),
+            (
+                "title",
+                "\n\t",
+                Some("fix"),
+                ReportAdmissionReason::EmptyBody,
+            ),
+            (
+                "title",
+                "body",
+                Some("  "),
+                ReportAdmissionReason::MissingFix,
+            ),
         ] {
-            let mut candidate = finding();
+            let mut candidate = report();
             candidate.title = title.into();
             candidate.body = body.into();
             candidate.fix = fix.map(str::to_string);
@@ -485,13 +510,13 @@ mod tests {
         validate_reviewer_result_v2_classified(&result("test.rules/loop-safety@1", "main-loop"))
             .unwrap();
 
-        let mut malformed = finding();
+        let mut malformed = report();
         malformed.rule_id = Some("test.rules/loop_safety@1".into());
         assert_eq!(
             malformed.into_report(4).unwrap_err(),
-            LegacyImportError {
+            ReportAdmissionError {
                 index: 4,
-                reason: ImportReason::InvalidRuleId,
+                reason: ReportAdmissionReason::InvalidRuleId,
             }
         );
     }

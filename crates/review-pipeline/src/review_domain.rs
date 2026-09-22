@@ -890,7 +890,7 @@ impl<'a> ReviewDomainState<'a> {
     /// record still says the Round has no cold confirmation.
     fn cold_closeout_results(
         &self,
-        results: &[(String, String, LegacyStageOutput)],
+        results: &[(String, String, ReviewerStageOutput)],
     ) -> Result<Vec<FoldedColdCloseout>, String> {
         let delivered: BTreeSet<(&str, &str)> = results
             .iter()
@@ -954,7 +954,7 @@ impl<'a> ReviewDomainState<'a> {
     ) -> Result<ReviewLedgerOutputs, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
-        let mut results: Vec<(String, String, LegacyStageOutput)> = Vec::new();
+        let mut results: Vec<(String, String, ReviewerStageOutput)> = Vec::new();
         let mut dynamic_sets: Vec<(String, String, SliceSetV1, ShardSetV1)> = Vec::new();
         let mut direct_sources_used = BTreeSet::new();
         let mut load = |node: &str, id: &str, value: serde_json::Value| -> Result<(), String> {

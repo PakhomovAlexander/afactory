@@ -72,7 +72,7 @@ zero claims.
 the event store, when each event's payload is defined; enumerating it from prose now would make
 the schema claim a completeness it does not have.
 
-A `ReviewerResult@2` reviewer answers with flat findings; each one is converted to
+A `ReviewerResult@2` reviewer answers with flat `reports`; each one is converted to
 `FindingReport@1` on its own and must satisfy it before any ingest admits it. `fix` is required,
 because a claim with no proposed remedy is one a triager cannot act on. An empty `file`, or the
 literal `(change-wide)` sentinel, is a change-wide claim and becomes an empty location list,

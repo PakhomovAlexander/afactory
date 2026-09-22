@@ -11,6 +11,7 @@ use std::{
     sync::Arc,
 };
 
+use review_core::reviewer_result::CHANGE_WIDE_SENTINEL;
 use review_core::{
     ArtifactEnvelope, CANONICAL_FINDING_IDENTITY_POLICY, CampaignManifestV1,
     CampaignOpenedPayloadV1, ChangeAttestationV1, DemandSetEntryV1, DemandStatus, DemandV1,
@@ -194,7 +195,7 @@ pub struct Finding {
     pub severity: Severity,
     pub last_seen_round: u32,
     pub source: String,
-    /// The adopted Report's lowest location path: `(change-wide)` when it has none, empty for an
+    /// The adopted Report's lowest location path: the change-wide sentinel when it has none, empty for an
     /// unreadable-authority placeholder. Stable even when Scope selects another location for
     /// presentation from a multi-location Report.
     pub identity_file: String,
@@ -2324,7 +2325,7 @@ impl ReportLocation {
 impl ReportProjection {
     fn identity_location(&self) -> (String, Option<i64>) {
         match &self.location {
-            ReportLocation::ChangeWide => ("(change-wide)".to_string(), None),
+            ReportLocation::ChangeWide => (CHANGE_WIDE_SENTINEL.to_string(), None),
             ReportLocation::Paths(locations) => locations
                 .iter()
                 .min_by(|left, right| left.path.as_bytes().cmp(right.path.as_bytes()))
@@ -2378,7 +2379,7 @@ impl ReportProjection {
                 ReportLocation::Paths(locations),
             ),
             None => (
-                "(change-wide)".to_string(),
+                CHANGE_WIDE_SENTINEL.to_string(),
                 None,
                 ReportLocation::ChangeWide,
             ),

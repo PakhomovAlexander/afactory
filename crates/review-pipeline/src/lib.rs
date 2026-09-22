@@ -41,14 +41,14 @@ use review_core::{
     CampaignManifestV1, CampaignOpenedPayloadV1, Capture as SnapshotCapture, EventType,
     IntegrationCandidateV1, IntegrationCheckV1, IntegrationChecksCompletedPayloadV1,
     IntegrationChecksV1, IntegrationCommittedPayloadV1, IntegrationConflictPayloadV1,
-    IntegrationPlanV1, LegacyStageOutput, MissingNodeV2, NodeOutputReceiptPayloadV1,
-    PortArtifactsV1, Producer, ProposalAcceptedPayloadV1, ProposalCandidateV1,
-    RecordedSetPayloadV1, ReviewerResultContract, ReviewerResultRejection, RoundStartedPayloadV1,
-    RunCacheFailureReasonV5, RunCacheFailureV5, RunCacheKindV5, RunCacheMaterializationV5,
-    RunCacheSnapshotV5, RunExecutionBindingV4, RunExecutionProviderV4, RunFailureReasonV3,
-    RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2, RunSandboxModeV4, RunSuppressionReasonV2,
-    RunVerdictV3, ShardOutcomeV1, ShardSetV1, SliceSetAcceptedPayloadV1, SliceSetV1,
-    SnapshotAffinity, SourceSnapshot, SubjectV1, run_report_closes_round,
+    IntegrationPlanV1, MissingNodeV2, NodeOutputReceiptPayloadV1, PortArtifactsV1, Producer,
+    ProposalAcceptedPayloadV1, ProposalCandidateV1, RecordedSetPayloadV1, ReviewerResultContract,
+    ReviewerResultRejection, ReviewerStageOutput, RoundStartedPayloadV1, RunCacheFailureReasonV5,
+    RunCacheFailureV5, RunCacheKindV5, RunCacheMaterializationV5, RunCacheSnapshotV5,
+    RunExecutionBindingV4, RunExecutionProviderV4, RunFailureReasonV3, RunIsolationV4,
+    RunNodeOutcomeV2, RunNodeReportV2, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV3,
+    ShardOutcomeV1, ShardSetV1, SliceSetAcceptedPayloadV1, SliceSetV1, SnapshotAffinity,
+    SourceSnapshot, SubjectV1, run_report_closes_round,
 };
 use review_graph::{
     ArtifactMap, Node, NodeFailureClass, NodeKind, NodeOutcome, PortContract, RunReport,
@@ -638,51 +638,15 @@ fn persisted_verdict(
 }
 
 fn reviewer_result_value(
-    stage: &LegacyStageOutput,
+    stage: &ReviewerStageOutput,
     assigned_finding_ids: &[String],
 ) -> Result<serde_json::Value, ReviewerResultRejection> {
-    let mut object =
-        match serde_json::to_value(stage).map_err(|_| ReviewerResultRejection::ReportPayload)? {
-            serde_json::Value::Object(object) => object,
-            _ => return Err(ReviewerResultRejection::NotObject),
-        };
-    let reports = object
-        .remove("findings")
-        .ok_or(ReviewerResultRejection::UnexpectedFields)?;
-    object.insert("reports".into(), reports);
-    let mut dispositions = object
-        .remove("disputes")
-        .ok_or(ReviewerResultRejection::MalformedDisposition)?;
-    for entry in dispositions
-        .as_array_mut()
-        .ok_or(ReviewerResultRejection::MalformedDisposition)?
-    {
-        let entry = entry
-            .as_object_mut()
-            .ok_or(ReviewerResultRejection::MalformedDisposition)?;
-        let finding_id = entry
-            .remove("fp")
-            .ok_or(ReviewerResultRejection::InvalidDisposition)?;
-        entry.insert("finding_id".into(), finding_id);
-        if !matches!(
-            entry.get("position").and_then(serde_json::Value::as_str),
-            Some("corroborate" | "not_reproduced" | "dispute")
-        ) {
-            return Err(ReviewerResultRejection::InvalidDisposition);
-        }
-    }
-    object.insert("dispositions".into(), dispositions);
-    let value = serde_json::Value::Object(object);
+    let value = serde_json::to_value(stage).map_err(|_| ReviewerResultRejection::ReportPayload)?;
     review_core::validate_reviewer_result_v2_classified(&value)?;
     let expected: BTreeSet<_> = assigned_finding_ids.iter().map(String::as_str).collect();
-    let dispositions = value["dispositions"]
-        .as_array()
-        .expect("ReviewerResult@2 validator checked dispositions");
     let mut actual = BTreeSet::new();
-    for disposition in dispositions {
-        let finding_id = disposition["finding_id"]
-            .as_str()
-            .expect("ReviewerResult@2 validator checked finding_id");
+    for disposition in &stage.dispositions {
+        let finding_id = disposition.finding_id.as_str();
         if !actual.insert(finding_id) {
             return Err(ReviewerResultRejection::DuplicateDisposition);
         }
@@ -696,33 +660,9 @@ fn reviewer_result_value(
     Ok(value)
 }
 
-fn reviewer_stage_output(value: serde_json::Value) -> Result<LegacyStageOutput, String> {
+fn reviewer_stage_output(value: serde_json::Value) -> Result<ReviewerStageOutput, String> {
     review_core::validate_reviewer_result_v2(&value)?;
-    let mut object = match value {
-        serde_json::Value::Object(object) => object,
-        _ => return Err("ReviewerResult is not an object".into()),
-    };
-    let reports = object
-        .remove("reports")
-        .ok_or("ReviewerResult has no reports array")?;
-    object.insert("findings".into(), reports);
-    let mut dispositions = object
-        .remove("dispositions")
-        .ok_or("ReviewerResult@2 has no dispositions array")?;
-    for disposition in dispositions
-        .as_array_mut()
-        .ok_or("ReviewerResult@2 dispositions is not an array")?
-    {
-        let disposition = disposition
-            .as_object_mut()
-            .ok_or("ReviewerResult@2 disposition is not an object")?;
-        let finding_id = disposition
-            .remove("finding_id")
-            .ok_or("ReviewerResult@2 disposition has no finding_id")?;
-        disposition.insert("fp".into(), finding_id);
-    }
-    object.insert("disputes".into(), dispositions);
-    serde_json::from_value(serde_json::Value::Object(object)).map_err(|error| error.to_string())
+    serde_json::from_value(value).map_err(|error| error.to_string())
 }
 
 fn canonical_reduction_round(ledger_round: u32, authority_round: u32) -> Result<u32, String> {
@@ -740,7 +680,7 @@ fn finding_set_entries(ledger: &review_store::Ledger) -> Vec<review_core::Findin
         .iter()
         .map(|finding| {
             let (file, line, location_unrecorded) =
-                if finding.identity_file == review_core::legacy::CHANGE_WIDE_SENTINEL {
+                if finding.identity_file == review_core::reviewer_result::CHANGE_WIDE_SENTINEL {
                     (None, None, false)
                 } else if review_core::is_valid_repo_path(&finding.identity_file) {
                     (
@@ -1308,7 +1248,7 @@ outputs = [{ name = "set", type = "review.kernel/FindingSet@1", cardinality = "o
     }
 
     #[test]
-    fn flat_reviewer_reports_reach_the_legacy_reducer() {
+    fn flat_reviewer_reports_reach_the_canonical_reducer() {
         let output = reviewer_stage_output(serde_json::json!({
             "reports": [{
                 "severity": "major",
@@ -1327,10 +1267,13 @@ outputs = [{ name = "set", type = "review.kernel/FindingSet@1", cardinality = "o
             }]
         }))
         .unwrap();
-        assert_eq!(output.findings.len(), 1);
-        assert_eq!(output.findings[0].file, "src/a.rs");
-        assert_eq!(output.disputes[0].fp, "prior");
-        assert_eq!(output.disputes[0].position, "dispute");
+        assert_eq!(output.reports.len(), 1);
+        assert_eq!(output.reports[0].file, "src/a.rs");
+        assert_eq!(output.dispositions[0].finding_id, "prior");
+        assert_eq!(
+            output.dispositions[0].position,
+            review_core::FindingDispositionPosition::Dispute
+        );
         let retired = reviewer_stage_output(serde_json::json!({
             "reports": [],
             "benchmark_demands": [],
@@ -1341,14 +1284,14 @@ outputs = [{ name = "set", type = "review.kernel/FindingSet@1", cardinality = "o
 
     #[test]
     fn reviewer_result_v2_requires_exact_disposition_coverage() {
-        let stage = |ids: &[&str]| LegacyStageOutput {
-            findings: Vec::new(),
+        let stage = |ids: &[&str]| ReviewerStageOutput {
+            reports: Vec::new(),
             benchmark_demands: Vec::new(),
-            disputes: ids
+            dispositions: ids
                 .iter()
-                .map(|id| review_core::legacy::LegacyDispute {
-                    fp: (*id).into(),
-                    position: "not_reproduced".into(),
+                .map(|id| review_core::reviewer_result::ReviewerDisposition {
+                    finding_id: (*id).into(),
+                    position: review_core::FindingDispositionPosition::NotReproduced,
                     reason: "the current Subject no longer reaches the failing branch".into(),
                 })
                 .collect(),

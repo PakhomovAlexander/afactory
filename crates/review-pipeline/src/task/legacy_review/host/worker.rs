@@ -401,7 +401,7 @@ impl LegacyReviewTaskHost<'_, '_> {
                     notes_max_bytes: self.domain.notes_max_bytes(&node.id),
                     head_manifest: &self.domain.snapshot,
                     assigned_finding_ids: &assigned,
-                    report_count: parsed.findings.len(),
+                    report_count: parsed.reports.len(),
                     cost_tokens: usage.chargeable_tokens.get(),
                     usage,
                     raw_artifact: &raw,

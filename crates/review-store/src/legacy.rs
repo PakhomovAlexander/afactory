@@ -8,11 +8,11 @@
 mod reduction;
 pub use reduction::{PreparedReviewReduction, prepare_canonical_task_review};
 
-use review_core::legacy::LegacyBenchmarkDemand;
+use review_core::reviewer_result::{BenchmarkDemand, CHANGE_WIDE_SENTINEL};
 use review_core::{
     CANONICAL_FINDING_IDENTITY_POLICY, EventType, FindingDispositionPosition, FindingDispositionV1,
     FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1, FindingReport,
-    LegacyStageOutput, Producer, RunEvent, Severity,
+    Producer, ReviewerStageOutput, RunEvent, Severity,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -40,7 +40,7 @@ pub struct Ingest<'a> {
 pub struct CanonicalStage<'a> {
     pub source: &'a str,
     pub demand_requirement: review_core::DemandRequirement,
-    pub stage: &'a LegacyStageOutput,
+    pub stage: &'a ReviewerStageOutput,
     pub attempt_id: &'a str,
     pub result_artifact_id: &'a str,
     pub input_artifacts: &'a [String],
@@ -77,8 +77,8 @@ struct PreparedStage {
     source: String,
     demand_requirement: review_core::DemandRequirement,
     reports: Vec<FindingReport>,
-    demands: Vec<LegacyBenchmarkDemand>,
-    disputes: Vec<review_core::legacy::LegacyDispute>,
+    demands: Vec<BenchmarkDemand>,
+    dispositions: Vec<review_core::reviewer_result::ReviewerDisposition>,
     provenance: ReportProvenance,
 }
 
@@ -169,12 +169,12 @@ impl<'a> Ingest<'a> {
 
     /// Bridge selected flat results into typed, provenance-carrying Report artifacts and reduce
     /// them with the canonical path-independent identity policy. Every finding must satisfy
-    /// `FindingReport@1` ([`LegacyFinding::into_report`]), and one violation refuses the complete
+    /// `FindingReport@1` ([`ReviewerReport::into_report`]), and one violation refuses the complete
     /// set, so a blocking Finding cannot degrade into an empty pass. Validation or storage
     /// failure leaves the event log untouched, so a retry cannot inherit half a reduction and
     /// duplicate the reviewers that were committed first.
     ///
-    /// [`LegacyFinding::into_report`]: review_core::legacy::LegacyFinding::into_report
+    /// [`ReviewerReport::into_report`]: review_core::reviewer_result::ReviewerReport::into_report
     pub fn add_canonical_stage_outputs(
         &mut self,
         stages: &[CanonicalStage<'_>],
@@ -782,7 +782,7 @@ pub fn canonical_finding_id(report_id: &str) -> String {
 }
 
 /// A reviewer re-stating the exact same obligation keeps one Demand identity across Rounds.
-pub fn canonical_demand_id(source: &str, demand: &LegacyBenchmarkDemand) -> String {
+pub fn canonical_demand_id(source: &str, demand: &BenchmarkDemand) -> String {
     let mut hasher = Sha256::new();
     hasher.update(b"review.kernel/demand-id/v1\0");
     for field in [

@@ -375,6 +375,11 @@ or needs a documented hand edit.
   `review-report-v4.json` describes that case. `review-report-v3.json` is deleted. A script, skill
   or hub check that matches `af/review-outcome@2`, `af/review-report@1` or `af/review-report@3`,
   or validates against a deleted schema, must switch to the single version.
+- The reviewer output contract a model Worker is prompted with now names its report array
+  `reports`, the key the stored `ReviewerResult@2` artifact and every Worker package schema
+  already used, instead of `findings`. An answer that still says `findings` is read as `reports`,
+  so hand-written command reviewers keep working, but the prompt bytes changed: reviewer Attempt
+  context IDs differ from those an earlier release computed for the same node.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

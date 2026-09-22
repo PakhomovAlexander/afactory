@@ -4,7 +4,7 @@
 
 use review_core::{
     AuthorityFileV1, CANONICAL_FINDING_IDENTITY_POLICY, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, EventType, LegacyStageOutput, Producer, RoundStartedPayloadV1,
+    CampaignOpenedPayloadV1, EventType, Producer, ReviewerStageOutput, RoundStartedPayloadV1,
     SubjectKind, SubjectV1,
 };
 use review_store::{
@@ -151,7 +151,7 @@ pub fn add_flat_results(
     cas: &Cas,
     run_id: &str,
     round: &Authority,
-    results: &[(&str, &str, &LegacyStageOutput)],
+    results: &[(&str, &str, &ReviewerStageOutput)],
 ) -> Result<CanonicalReduction, StoreError> {
     let result_ids: Vec<String> = results
         .iter()
