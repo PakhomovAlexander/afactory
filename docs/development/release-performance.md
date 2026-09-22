@@ -43,7 +43,7 @@ by Release, which the README badge now follows.
 processes per test; host CPU count alone is not a suitable concurrency bound.
 CI retains Cargo as its default. The opt-in `make check TEST_RUNNER=nextest` runs:
 formatting, Clippy, all ordinary unit/integration tests, separate Cargo doctests,
-and synthetic fixture validation. The pinned, checksum-verified nextest binary
+and the `release-check` resolution tests. The pinned, checksum-verified nextest binary
 uses four test slots across binaries, no automatic retries and no fail-fast hiding
 later results. Real-time optimizer integration tests reserve all slots. Container
 probes remain a separate required Linux job and execute the existing ignored tests.

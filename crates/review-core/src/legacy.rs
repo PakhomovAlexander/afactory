@@ -49,15 +49,13 @@ pub struct LegacyBenchmarkDemand {
     pub suggested_method: String,
 }
 
-/// A reviewer's position on an existing claim, keyed by the legacy 12-hex fingerprint. These
-/// become explicit `corroborates`/`disputes` relations once Findings have canonical IDs; the
-/// fingerprint alone cannot name one, which is the whole reason the new model keeps relations
-/// explicit.
+/// A reviewer's position on a claim it was given: the 12-hex path/title key under the legacy
+/// Finding identity policy, or a canonical Finding ID from a `ReviewerResult@2` disposition.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LegacyDispute {
-    /// The claim the disposition is about. The v1 contract spells it `claim_id`; the runner moves
-    /// a `ReviewerResult@2` disposition's `finding_id` into `fp`. Both reach the same slot.
+    /// The claim the disposition is about. The v1 contract spells it `claim_id`; result decoding
+    /// moves a `ReviewerResult@2` disposition's `finding_id` into `fp`. Both reach the same slot.
     #[serde(alias = "claim_id")]
     pub fp: String,
     pub position: String,
