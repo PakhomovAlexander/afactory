@@ -64,11 +64,11 @@ failed or suppressed execution to produce an incomplete receipt; they do not per
 a required reviewer from the definition. No authoritative partial Finding or Demand Set is
 published. A failed reducer itself leaves the public obligation missing.
 
-The domain reuses the historical canonical reducer and Finding projection. Immutable prior
-Rounds rebuild that same Ledger without creating another Campaign executor, database, or
-Attempt allowance. Review history preserves the original closed Round and exact canonical
-views; a failed gather leaves the previous history intact. Final admission recomputes the
-receipt against its recorded Task, plan, policy and selected inputs.
+The domain reuses the canonical reducer and Finding projection. Immutable prior Rounds rebuild
+that same Ledger without a second database or Attempt allowance. Review history preserves the
+original closed Round and exact canonical views; a failed gather leaves the previous history
+intact. Final admission recomputes the receipt against its recorded Task, plan, policy and
+selected inputs.
 
 | Review output | Generic Review Task acceptance | CLI exit |
 |---|---|---|

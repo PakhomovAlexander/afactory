@@ -1,7 +1,7 @@
 # AGENTS.md
 
 This repository is **Afactory**: the `af` CLI, a multi-agent coding factory whose first capability
-is the deterministic Review Kernel behind `af review`, and whose current increment adds
+is the deterministic Review Kernel behind `af review`, and whose Task runtime runs
 implementation Tasks behind `af task`. Reviewers and implementers only ever mutate a sandbox; the
 kernel integrates; humans publish.
 

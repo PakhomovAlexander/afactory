@@ -450,9 +450,5 @@ could honor — the Round is only known to be closing after its results are redu
   `.af/pipelines/review.toml`) while the kernel captured only a whole-tree Snapshot, so it named
   something structurally unavailable. Resolved: the
   umbrella term is **Subject**, and "the change" is legitimate only under a `diff` Subject.
-- **Review Target** — the original design used it for the immutable base/candidate/change-set
-  tuple, while a later draft used it for mutable branch/PR/base-ref labels. Resolved: retire the
-  overloaded term; **Subject** is the immutable reviewed object and **Review Selector** names the
-  mutable resolution inputs.
 - **Report vs Finding** — used interchangeably in prose. Resolved above: a Report is one
   attempt's immutable claim, a Finding is the triage identity many Reports attach to.

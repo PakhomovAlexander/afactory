@@ -11,9 +11,11 @@ against a pinned Snapshot and folds what they return into a findings ledger with
 implementers only ever mutate a sandbox and return typed artifacts; only the kernel integrates;
 publishing to a branch or pull request stays an explicit human action.
 
-**Status:** pre-1.0. The 0.8.x line is usable and released; the `.af/` authority format and the
-persisted artifact types may still change before 1.0, and every change that affects committed
-`.af/` policy is announced in [`CHANGELOG.md`](CHANGELOG.md) under *Authority compatibility*.
+**Status:** general availability. Compatibility obligations start at 1.0: from the first 1.0
+release on, every change that affects committed `.af/` policy or a persisted artifact type is
+announced in [`CHANGELOG.md`](CHANGELOG.md) under *Authority compatibility*, with the hand edit
+or `af onboard --refresh-lock` it needs. State written by a pre-1.0 release is not read
+([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)).
 
 ## Install
 
@@ -166,7 +168,7 @@ workspace-wide. See [`CONTRIBUTING.md`](CONTRIBUTING.md) before opening a pull r
 
 ## Releasing
 
-`make release VERSION=0.9.0 COMPAT="…"` bumps the workspace version, writes the `CHANGELOG.md`
+`make release VERSION=1.0.0 COMPAT="…"` bumps the workspace version, writes the `CHANGELOG.md`
 section, and opens the release pull request. Merging it tags the commit, runs `make check` on Linux
 and macOS, builds every target, signs `SHA256SUMS`, and publishes the release.
 

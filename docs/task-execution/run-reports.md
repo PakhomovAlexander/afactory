@@ -53,7 +53,7 @@ The report lists all nodes in compiled order. A completed entry must name its ac
 Task output. A report for one activated post-Round Integration phase also carries its
 `phase_id` and has exactly one executed or failed node. A diagnostic retains at most 65,536
 Unicode characters and marks truncation.
-Historical Tasks without reports remain readable; no reports are invented during inspection.
+A Task without reports remains readable; no reports are invented during inspection.
 The contracts are [TaskRunReport@2](../../schemas/task-run-report-v2.json) and
-[TaskDiagnostic@1](../../schemas/task-diagnostic-v1.json), with the authority and compatibility
+[TaskDiagnostic@1](../../schemas/task-diagnostic-v1.json), with the authority and recovery
 decision in [ADR-0065](../adr/0065-persist-task-run-diagnostics-and-recover-domain-publication.md).

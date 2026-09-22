@@ -2,14 +2,15 @@
 
 ## Supported versions
 
-Only the latest `0.x` minor line receives security fixes. A fix ships as a patch release on
-that line (`0.N.1`, `0.N.2`, …); older minors are not patched, and `af self update` moves an
-installation forward.
+Only the latest `1.x` minor line receives security fixes. A fix ships as a patch release on
+that line (`1.N.1`, `1.N.2`, …); older minors are not patched, and `af self update` moves an
+installation forward. Pre-GA `0.x` releases are unsupported.
 
 | Version                    | Supported |
 | -------------------------- | --------- |
-| latest `0.x` minor         | yes       |
-| earlier `0.x` minors       | no        |
+| latest `1.x` minor         | yes       |
+| earlier `1.x` minors       | no        |
+| `0.x` (pre-GA)             | no        |
 
 ## Reporting a vulnerability
 

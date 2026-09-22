@@ -106,8 +106,7 @@ inference or its input delivery.
 The adapter disables native nonessential traffic and terminal-title generation through owned
 environment settings. Static client evidence supports the automatic title path; it does not
 prove suppression of every internal call. Personal authentication grants remain unchanged.
-An absent breakdown retains the previous native format; old settled receipts are unchanged.
-The legacy Review envelope remains a separate follow-up. See
+An absent breakdown retains the plain native usage format. See
 [ADR-0102](../adr/0102-account-for-every-reported-claude-task-model.md).
 
 The native adapter's controlled invocation boundary can stop an owned process group and retain

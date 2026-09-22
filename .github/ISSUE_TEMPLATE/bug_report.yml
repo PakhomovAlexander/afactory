@@ -15,7 +15,7 @@ body:
     attributes:
       label: af version
       description: The output of `af self status` (or `af --version --json` for a source build).
-      placeholder: "af 0.8.0 · target aarch64-apple-darwin · key: embedded"
+      placeholder: "af 1.0.0 · target aarch64-apple-darwin · key: embedded"
     validations:
       required: true
   - type: input

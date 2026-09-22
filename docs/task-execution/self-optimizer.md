@@ -41,7 +41,7 @@ attest_project = true
 and `missing_fields`; unknown fields are rejected. The native adapters never read this shape.
 
 `af` reads only the `af/task-inspection` receipts that `af task show --json` prints (see
-[Historical native receipts](#historical-native-receipts)); any other line is refused. `codex` and
+[Native `af` receipts](#native-af-receipts)); any other line is refused. `codex` and
 `claude` consume their declared native JSONL shapes. Every native parser selects only
 project/session identities, timestamps, model/effort labels, exact usage counters, lifecycle,
 cache receipts and outcome authority. Message text, tool payloads, headers, environment values,
@@ -193,7 +193,7 @@ The `--experiment` checkpoint returns `inconclusive` with
 `comparison_ready_finalization_missing`. It is useful for inspecting the common child lifecycle.
 For a deliverable candidate, use the controlled configuration Pipeline below.
 
-### Historical native receipts
+### Native `af` receipts
 
 The `af` adapter reads the public `af/task-inspection@11` receipt that `af task show --json`
 prints and refuses any other inspection version. The receipt carries measured Attempt walls and
@@ -210,8 +210,8 @@ toolchain or internal-hit evidence remains unknown.
 Queue intervals come from exact reservation/start transitions; approval and user-wait intervals
 come only from recorded planning/wait/resume transitions. AF does not infer provider-internal
 phases from those host clocks.
-A declared source must name the exact `execution_id` from `task_id`. Older receipts
-do not attest a project, so the source must explicitly set `attest_project = true`;
+A declared source must name the exact `execution_id` from `task_id`. A receipt
+does not attest a project, so the source must explicitly set `attest_project = true`;
 reports retain `project_identity_attested` as a provenance limitation. A receipt
 with a conflicting project or Task identity is refused. Cumulative usage updates
 are merged per Attempt and reconciled against the receipt total, never summed as
