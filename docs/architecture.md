@@ -595,6 +595,6 @@ Campaign exists.
 How long an attempt took, and what its Provider reported per token kind, is recorded in a
 **sidecar** table beside the event stream (`attempt_wall` in the same `events.sqlite`). Nothing in
 identity, replay, the Ledger, or convergence reads it — the stream stays byte-for-byte
-deterministic — while `af review report`, `campaigns`, and `ledger` do, so a person can see the
-wall-clock of every Round and the usage of every Attempt. An absent row means not recorded, never
-zero.
+deterministic — while `af review report`, `campaigns`, and `ledger` do: all three show the
+Campaign's wall-clock, and `af review report` also shows each Task Attempt's wall-clock and
+Provider usage. An absent row means not recorded, never zero.

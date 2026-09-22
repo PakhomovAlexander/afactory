@@ -849,6 +849,35 @@ fn a_campaign_without_a_task_keeps_the_review_report_1_label() {
     assert!(value.get("spend").is_none());
 }
 
+/// RunReport@3-@5 carry a plain `u64` spend, which the Round row reports as `reported_tokens`
+/// rather than as a Task cumulative charge.
+#[test]
+fn a_numeric_run_report_spend_is_shown_as_reported_tokens() {
+    let event = review_core::RunEvent {
+        event_type: review_core::EventType::RunReportV3,
+        payload: serde_json::to_value(review_core::RunReportPayloadV3 {
+            outcomes: vec![review_core::RunNodeReportV2 {
+                node: "reviewer".into(),
+                outcome: review_core::RunNodeOutcomeV2::Completed {
+                    output_artifacts: vec![],
+                },
+            }],
+            blocked_gates: vec![],
+            verdict: review_core::RunVerdictV3::Pass,
+            spent_tokens: Some(9),
+        })
+        .unwrap(),
+        ..event()
+    };
+    let rows = crate::report_rounds(&[&event], &BTreeMap::new()).unwrap();
+    assert_eq!(rows[0].tokens_label(), "reported tokens 9");
+    assert_eq!(rows[0].tokens_cell(), "9");
+    assert_eq!(
+        serde_json::to_value(&rows[0]).unwrap(),
+        json!({"run":1, "verdict":"pass", "reported_tokens":9})
+    );
+}
+
 #[test]
 fn retired_attempt_classification_uses_its_original_plan_after_replacement() {
     let mut f = Fixture::new();
