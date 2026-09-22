@@ -11,6 +11,9 @@
 //! - JSON payloads live in the I-JSON numeric domain ([`json::admit`]) before they are hashed,
 //!   so a value cannot change meaning between producer and consumer.
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("af supports Linux and macOS only");
+
 pub mod broker;
 pub mod build_cache;
 pub mod cache;

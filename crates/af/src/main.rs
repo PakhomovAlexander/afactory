@@ -38,9 +38,6 @@ use review_source_git::Repo;
 use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status, Verdict};
 use sha2::{Digest, Sha256};
 
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
-compile_error!("af supports Linux and macOS only");
-
 mod authority;
 mod caches;
 mod cli;

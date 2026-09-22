@@ -1,5 +1,8 @@
 //! One bounded subprocess boundary shared by reviewers, checks, and sandbox providers.
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("af supports Linux and macOS only");
+
 use std::io::{Read, Write};
 use std::process::{ExitStatus, Stdio};
 use std::time::{Duration, Instant};

@@ -12,9 +12,11 @@ installs it on the first `cargo` invocation, so there is nothing to choose. Edit
 workspace version in `Cargo.toml`. The container probes need Docker; nothing else needs a
 daemon.
 
-`af` supports Linux and macOS only, and a `compile_error!` in `crates/af/src/main.rs` refuses
-every other target. Write unix code directly: do not add `#[cfg(unix)]` gates or
-`#[cfg(not(unix))]` fallbacks. Where Linux and macOS differ, split on `target_os`.
+`af` supports Linux and macOS only. A `compile_error!` at the root of `review-core` and
+`review-process` refuses every other target: every crate with platform-specific code is one of
+them or depends on `review-core`, so the guard fails the build before any unix-only call does.
+Write unix code directly: do not add `#[cfg(unix)]` gates or `#[cfg(not(unix))]` fallbacks.
+Where Linux and macOS differ, split on `target_os`.
 
 ## Before every pull request
 
