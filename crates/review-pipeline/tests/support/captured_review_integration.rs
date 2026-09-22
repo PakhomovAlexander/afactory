@@ -168,6 +168,26 @@ pub(super) fn admit_integration(
     LegacyReviewPlanCompiler,
     review_store::store::task::TaskLease,
 ) {
+    admit_integration_with_source(
+        cas,
+        store,
+        definition,
+        max_rounds,
+        BTreeMap::from([("value.txt".into(), b"before\n".to_vec())]),
+    )
+}
+
+/// The same admission over an explicit ordinary source tree.
+pub(super) fn admit_integration_with_source(
+    cas: &Cas,
+    store: &mut EventStore,
+    definition: &str,
+    max_rounds: u32,
+    source: BTreeMap<String, Vec<u8>>,
+) -> (
+    LegacyReviewPlanCompiler,
+    review_store::store::task::TaskLease,
+) {
     let round = captured_fixture::open_round_authority_with_source(
         cas,
         store,
@@ -178,7 +198,7 @@ pub(super) fn admit_integration(
             max_rounds,
             gate: "major".into(),
         },
-        BTreeMap::from([("value.txt".into(), b"before\n".to_vec())]),
+        source,
     );
     let mut settings = settings();
     settings.mode = "heavy".into();

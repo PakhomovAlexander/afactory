@@ -451,13 +451,29 @@ resume render mode; `review-runner-claude` implements the pinned store layout, t
 and the no-follow deletion; `review-pipeline` owns the protocol, the gates, the recovery sweep,
 the Cold Closeout rules and the Ledger fold of a recorded confirmation; `review-config` owns `warm.session`, `warm.session_max_age_secs` and
 `convergence.cold_closeout` with their load-time refusals. Exit evidence lived in
-`review-pipeline/tests/session_snapshot.rs` (capture and forked resume across two Rounds, recovery
-of a capture interrupted between its phases with no orphan and no ambient transcript, cache-read
-tokens recorded separately from input tokens, a confirmation dispatched only on a would-be-clean
-result, and a retry meeting the protected reservation). That suite drove only the pre-Task
-Kernel executor and was removed for GA; its scenarios are the acceptance list for porting the
-layer to the Task host, and `review-pipeline/tests/task_legacy_review/host/warm.rs` covers what
-the Task host does today (`host_unsupported`, Notes carried). The layer's own evidence remains in
+`review-pipeline/tests/session_snapshot.rs`. That suite drove only the pre-Task Kernel executor
+and was removed for GA; it is recoverable with
+`git show 0b9431b:crates/review-pipeline/tests/session_snapshot.rs` (or, if history was
+rewritten, from the parent of the commit that
+`git log --diff-filter=D -- crates/review-pipeline/tests/session_snapshot.rs` names). Its
+scenarios are the acceptance list for porting the layer to the Task host:
+
+- a session captured at seal and resumed forked in the next Round, with cache-read tokens
+  recorded separately from input tokens;
+- recovery that finishes a cleanup interrupted between the two capture phases without a
+  Provider call, leaving no orphan and no ambient transcript;
+- a host that does not run the protocol falling back to Notes alone;
+- a Cold Closeout confirmation dispatched only for a would-be-clean warm result, a retry that
+  cannot consume the confirmation's protected reservation, a blocking sibling that spares the
+  Round its confirmation, and a confirmation that cannot answer leaving the Round incomplete;
+- warm and cold results folding as two stages of one reviewer;
+- a failed Attempt taking its transcript with it;
+- a session dropped when the Round cannot say what moved (an over-bound Head Delta);
+- a transcript carrying a credential never filed.
+
+`review-pipeline/tests/task_legacy_review/host/warm.rs` covers what the Task host does today
+(`host_unsupported`, Notes carried, an over-bound Head Delta dropped at selection). The layer's
+own evidence remains in
 `review-runner-claude/tests/session.rs` (the pinned flags, the bounded capture, the idempotent
 deletion, a symlinked project directory that is never followed),
 `review-runner/tests/session_render.rs` (the delta prompt and its manifest),

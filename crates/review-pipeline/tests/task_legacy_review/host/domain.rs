@@ -367,7 +367,18 @@ fn gathered_reviewers_reduce_into_one_canonical_ledger_in_source_order() {
             .latest_round_started("review")
             .unwrap()
             .unwrap();
-        for receipt in events_of(&shared, EventType::NodeOutputReceiptV1) {
+        let receipts = events_of(&shared, EventType::NodeOutputReceiptV1);
+        let mut receipted: Vec<_> = receipts
+            .iter()
+            .map(|receipt| receipt.node_id.as_deref().unwrap())
+            .collect();
+        receipted.sort_unstable();
+        assert_eq!(
+            receipted,
+            ["architecture", "gate", "gather", "ledger", "performance"],
+            "one receipt per completed node"
+        );
+        for receipt in receipts {
             let selected: Vec<&str> = receipt.payload["outputs"]
                 .as_array()
                 .unwrap()
@@ -386,6 +397,77 @@ fn gathered_reviewers_reduce_into_one_canonical_ledger_in_source_order() {
             assert!(receipt.correlation_id.is_some());
         }
     }
+}
+
+/// Two independent Task-hosted runs of the same review, in separate stores, publish the same
+/// Finding Set rows, Finding identity included: none of it depends on the store, clock or
+/// process.
+#[test]
+fn two_independent_runs_of_the_same_review_agree() {
+    let rows = || {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+        let architecture = answering(
+            "cat src/main.rs >/dev/null",
+            &requesting(vec![
+                finding("major", "Unbounded loop", Some("main-loop")),
+                finding("minor", "Loop has no comment", None),
+            ]),
+        );
+        let performance = answering(
+            "cat src/main.rs >/dev/null",
+            &requesting(vec![finding(
+                "blocker",
+                "Unbounded loop",
+                Some("main-loop"),
+            )]),
+        );
+        let (compiler, lease) = admit_source(
+            &cas,
+            &mut store,
+            &gated_review(&architecture, &performance, None),
+            source(),
+            &["architecture", "performance"],
+            false,
+        );
+        let shared = SharedEventStore::new(&mut store);
+        let conclusion = hosted(
+            &cas,
+            &shared,
+            &compiler,
+            &lease,
+            |h| h,
+            |host, _, report| {
+                assert!(report.complete(), "{report:?}");
+                host.publish_recorded_round_conclusion(&cas).unwrap()
+            },
+        );
+        let set: review_core::FindingSetV1 = serde_json::from_value(
+            cas.get_artifact(&completed(&conclusion.report, "ledger")["findings"][0])
+                .unwrap()
+                .payload,
+        )
+        .unwrap();
+        set.findings
+            .into_iter()
+            .map(|finding| {
+                (
+                    finding.finding_id,
+                    finding.title,
+                    finding.severity,
+                    finding.source,
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let first = rows();
+    assert_eq!(
+        first.len(),
+        2,
+        "one occurrence and one plain claim: {first:?}"
+    );
+    assert_eq!(first, rows());
 }
 
 fn run_report(
@@ -514,7 +596,8 @@ fn cached_review(check: &str) -> String {
 
 /// The Gate's check sees the offline, bounded Cargo cache it was given. Its receipt is durable
 /// before the Gate Decision, a resumed host replays it without resolving machine-local cache
-/// policy again, and the Round conclusion reports exactly that receipt.
+/// policy again, and the Round conclusion reports exactly that receipt: publication re-verifies
+/// the Cache Manifest it references, and the Store refuses a conclusion naming any other.
 #[test]
 fn a_cargo_cache_is_offline_bounded_and_replayed_into_the_round_conclusion() {
     let directory = tempfile::tempdir().unwrap();
@@ -543,6 +626,19 @@ fn a_cargo_cache_is_offline_bounded_and_replayed_into_the_round_conclusion() {
         |_, _, report| assert!(report.complete(), "{report:?}"),
     );
     std::fs::remove_dir_all(&cache_root).unwrap();
+    let manifest_id =
+        events_of(&shared, EventType::CacheSnapshotMaterializedV1)[0].payload["source_digest"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    let hex = manifest_id.strip_prefix("sha256:").unwrap();
+    let manifest_path = directory
+        .path()
+        .join("cas/objects")
+        .join(&hex[..2])
+        .join(&hex[2..]);
+    let manifest_bytes = std::fs::read(&manifest_path).unwrap();
+    let backup = directory.path().join("before-conclusion.sqlite");
     hosted(
         &cas,
         &shared,
@@ -555,6 +651,12 @@ fn a_cargo_cache_is_offline_bounded_and_replayed_into_the_round_conclusion() {
         },
         |host, _, report| {
             assert!(report.complete(), "{report:?}");
+            // The conclusion re-verifies every Cache Manifest it newly references.
+            std::fs::write(&manifest_path, b"corrupt before the Round conclusion").unwrap();
+            let error = host.publish_recorded_round_conclusion(&cas).unwrap_err();
+            assert!(error.contains("failed verification"), "{error}");
+            std::fs::write(&manifest_path, &manifest_bytes).unwrap();
+            snapshot_store(directory.path(), &backup);
             host.assemble_recorded_result(&cas).unwrap();
         },
     );
@@ -590,10 +692,116 @@ fn a_cargo_cache_is_offline_bounded_and_replayed_into_the_round_conclusion() {
     };
     assert_eq!(cache_snapshots, vec![receipt]);
     assert!(cache_failures.is_empty());
+
+    // The Store admits only the durable materialization facts: a well-formed conclusion that
+    // names another Cache Manifest for the same Gate cache is refused.
+    let forged = forged_cache_manifest(&cas);
+    let error = refuse_forged_conclusion(
+        &cas,
+        &backup,
+        &compiler,
+        &lease,
+        &event,
+        |execution, refs| {
+            let review_core::RunReportExecutionV6::Cached {
+                cache_snapshots, ..
+            } = execution
+            else {
+                unreachable!()
+            };
+            cache_snapshots[0] = review_core::RunCacheSnapshotV5 {
+                source_digest: forged.clone(),
+                bytes: 0,
+                files: 1,
+                ..cache_snapshots[0].clone()
+            };
+            refs.push(forged.clone());
+        },
+    );
+    assert!(
+        error.contains("Cache Snapshots differ from the durable materialization facts"),
+        "{error}"
+    );
+}
+
+/// Copy the Campaign store at `root` to `backup`, as it is now.
+fn snapshot_store(root: &std::path::Path, backup: &std::path::Path) {
+    rusqlite::Connection::open(root.join("events.sqlite"))
+        .unwrap()
+        .execute("VACUUM INTO ?1", [backup.to_str().unwrap()])
+        .unwrap();
+}
+
+/// A valid Cargo Cache Manifest that no Gate materialized.
+fn forged_cache_manifest(cas: &Cas) -> String {
+    let manifest = review_core::CacheManifestV1 {
+        kind: review_core::RunCacheKindV5::Cargo,
+        path_encoding: review_core::CachePathEncodingV1::PercentV2,
+        entries: vec![review_core::CacheManifestEntryV1 {
+            path: "registry/cache/forged.crate".into(),
+            content: cas.put(b"").unwrap(),
+            size: 0,
+        }],
+    };
+    cas.put_json(&serde_json::to_value(manifest).unwrap())
+        .unwrap()
+}
+
+/// Publish `forge`d execution facts of the recorded Round conclusion `honest` through the
+/// trusted Task entry point, on `backup`: the Campaign store as it was before that conclusion
+/// was published. Returns the refusal and checks that nothing was appended.
+fn refuse_forged_conclusion(
+    cas: &Cas,
+    backup: &std::path::Path,
+    compiler: &LegacyReviewPlanCompiler,
+    lease: &TaskLease,
+    honest: &review_core::RunEvent,
+    forge: impl FnOnce(&mut review_core::RunReportExecutionV6, &mut Vec<String>),
+) -> String {
+    let mut store = EventStore::open(backup).unwrap();
+    let shared = SharedEventStore::new(&mut store);
+    let host = LegacyReviewTaskHost::new(
+        cas,
+        shared.clone(),
+        compiler,
+        lease.clone(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority::for_legacy_review(compiler, &host, &NoTaskDeveloper);
+    let mut payload: review_core::RunReportPayloadV6 =
+        serde_json::from_value(honest.payload.clone()).unwrap();
+    let mut refs = honest.artifact_refs.clone();
+    forge(&mut payload.execution, &mut refs);
+    let report_id = payload.task_accounting.task_report_id.clone();
+    let mut event = review_store::NewEvent::new(
+        EventType::RunReportV6,
+        serde_json::to_value(payload).unwrap(),
+    )
+    .caused_by(honest.causation_id.clone().unwrap())
+    .correlating(honest.correlation_id.clone().unwrap())
+    .referencing(refs);
+    event.occurred_at = honest.occurred_at.clone();
+    let before = shared.lock().unwrap().replay("review").unwrap();
+    assert!(
+        !before
+            .iter()
+            .any(|e| e.event_type == EventType::RunReportV6),
+        "the backup predates the honest conclusion"
+    );
+    let error = shared
+        .lock()
+        .unwrap()
+        .publish_task_review_report(cas, lease, &report_id, event, &authority)
+        .unwrap_err()
+        .to_string();
+    assert_eq!(shared.lock().unwrap().replay("review").unwrap(), before);
+    error
 }
 
 /// Every resolver failure fails the Gate with its own public reason, and neither the Gate
-/// outcome nor the Campaign log carries the operator-only host detail.
+/// outcome nor the Campaign log carries the operator-only host detail. The Store refuses a
+/// conclusion that trades the settled failure for a Cache Snapshot no Gate materialized.
 #[test]
 fn cache_failures_keep_their_reason_and_never_record_the_host_detail() {
     use review_core::RunCacheFailureReasonV5 as Reason;
@@ -634,8 +842,9 @@ fn cache_failures_keep_their_reason_and_never_record_the_host_detail() {
             "cache materialization failed",
         ),
     ];
-    for (kind, reason, public) in cases {
+    for (index, (kind, reason, public)) in cases.into_iter().enumerate() {
         let directory = tempfile::tempdir().unwrap();
+        let backup = directory.path().join("before-conclusion.sqlite");
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
         let (compiler, lease) = admit_source(
@@ -659,6 +868,7 @@ fn cache_failures_keep_their_reason_and_never_record_the_host_detail() {
             },
             |host, _, report| {
                 assert!(!report.complete());
+                snapshot_store(directory.path(), &backup);
                 let conclusion = host.publish_recorded_round_conclusion(&cas).unwrap();
                 let Some(NodeOutcome::Failed { error, .. }) = conclusion.report.outcome("gate")
                 else {
@@ -674,7 +884,7 @@ fn cache_failures_keep_their_reason_and_never_record_the_host_detail() {
                 .unwrap()
                 .contains("/tmp/operator-only")
         );
-        let (_, report) = run_report(&shared);
+        let (event, report) = run_report(&shared);
         let review_core::RunReportExecutionV6::Cached {
             cache_snapshots,
             cache_failures,
@@ -687,6 +897,41 @@ fn cache_failures_keep_their_reason_and_never_record_the_host_detail() {
         assert_eq!(cache_failures.len(), 1);
         assert_eq!(cache_failures[0].reason, reason, "{kind:?}");
         assert!(events_of(&shared, EventType::TaskReviewResultSelectedV1).is_empty());
+        if index > 0 {
+            continue;
+        }
+        let forged = forged_cache_manifest(&cas);
+        let error = refuse_forged_conclusion(
+            &cas,
+            &backup,
+            &compiler,
+            &lease,
+            &event,
+            |execution, refs| {
+                let review_core::RunReportExecutionV6::Cached {
+                    cache_snapshots,
+                    cache_failures,
+                    ..
+                } = execution
+                else {
+                    unreachable!()
+                };
+                cache_failures.clear();
+                cache_snapshots.push(review_core::RunCacheSnapshotV5 {
+                    node: "gate".into(),
+                    kind: review_core::RunCacheKindV5::Cargo,
+                    source_digest: forged.clone(),
+                    bytes: 0,
+                    files: 1,
+                    materialization: review_core::RunCacheMaterializationV5::Copy,
+                });
+                refs.push(forged.clone());
+            },
+        );
+        assert!(
+            error.contains("differs from its settled Gate cache failures"),
+            "{error}"
+        );
     }
 }
 
@@ -1223,24 +1468,33 @@ fn a_declaration_unequal_to_the_sealed_diff_is_refused_and_absent() {
 
 /// An answer that cannot be admitted is refused before selection and only that reviewer
 /// retries. The retry learns the typed failure class, never the reviewer's own bytes: a
-/// report outside FindingReport path admission and an unparseable answer alike.
+/// report outside FindingReport path admission, an unparseable answer and invalid
+/// non-Finding metadata alike.
 #[test]
 fn an_unadmissible_answer_is_refused_before_selection_and_only_that_reviewer_retries() {
-    for malformed in [false, true] {
+    let bad_path = requesting(vec![serde_json::json!({
+        "severity": "major", "file": "./src/main.rs", "line": 1, "title": "bad path",
+        "body": "body", "fix": "fix", "confidence": 0.9,
+    })])
+    .to_string();
+    // A Benchmark Demand with an empty claim is refused before selection like a bad Finding.
+    let bad_metadata = serde_json::json!({
+        "verdict": "approve", "summary": null, "findings": [], "disputes": [],
+        "benchmark_demands": [{
+            "claim": "", "why": "reason", "suggested_method": "measure the fixture loop",
+        }],
+    })
+    .to_string();
+    for (first, echoed) in [
+        (bad_path, "./src/main.rs"),
+        ("{not a ReviewerResult".to_owned(), "not a ReviewerResult"),
+        (bad_metadata, "measure the fixture loop"),
+    ] {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
         let inputs = directory.path().join("inputs");
         std::fs::create_dir(&inputs).unwrap();
-        let first = if malformed {
-            "{not a ReviewerResult".to_owned()
-        } else {
-            requesting(vec![serde_json::json!({
-                "severity": "major", "file": "./src/main.rs", "line": 1, "title": "bad path",
-                "body": "body", "fix": "fix", "confidence": 0.9,
-            })])
-            .to_string()
-        };
         let script = format!(
             "n=$(ls '{dir}' | wc -l | tr -d ' '); n=$((n + 1)); cat > '{dir}/'$n.json; \
              if test $n = 1; then printf '%s' '{first}'; else printf '%s' '{APPROVE}'; fi",
@@ -1300,7 +1554,7 @@ fn an_unadmissible_answer_is_refused_before_selection_and_only_that_reviewer_ret
         );
         let retry = retry.to_string();
         assert!(
-            !retry.contains("./src/main.rs") && !retry.contains("not a ReviewerResult"),
+            !retry.contains(echoed),
             "durable retry feedback must not echo reviewer-controlled bytes: {retry}"
         );
     }

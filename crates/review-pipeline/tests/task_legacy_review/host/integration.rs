@@ -6,7 +6,7 @@ use review_source_git::{Entry, EntryKind, Manifest, manifest_diff};
 
 #[path = "../../support/captured_review_integration.rs"]
 mod fixture;
-use fixture::{admit_integration, definition};
+use fixture::{admit_integration, admit_integration_with_source, definition};
 
 #[test]
 fn empty_integration_is_durable_without_an_attempt_and_preserves_original_acceptance() {
@@ -1073,4 +1073,199 @@ fn a_prepared_integration_must_be_the_deterministic_proposal_composition() {
             .iter()
             .any(|event| event.event_type == EventType::IntegrationPreparedV1)
     );
+}
+
+/// Two Scatter slices each propose a disjoint edit. Selection orders both and finds no
+/// overlap, one prepared Integration composes both patches into one derived Manifest, its
+/// post-apply check sees both edits together, and the one commit promotes both Proposals with
+/// one attestation each.
+#[test]
+fn disjoint_proposals_compose_into_one_checked_integration() {
+    const LEFT: &[u8] = b"pub const LEFT: u8 = 1;\n";
+    const RIGHT: &[u8] = b"pub const RIGHT: u8 = 1;\n";
+    const LEFT_FIXED: &[u8] = b"pub const LEFT: u8 = 2;\n";
+    const RIGHT_FIXED: &[u8] = b"pub const RIGHT: u8 = 2;\n";
+    let dir = tempfile::tempdir().unwrap();
+    let calls = dir.path().join("calls");
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+    let manifest = |left: &[u8], right: &[u8]| {
+        Manifest::new(
+            [("left.rs", left), ("right.rs", right)]
+                .into_iter()
+                .map(|(path, bytes)| Entry {
+                    path: path.into(),
+                    kind: EntryKind::File,
+                    content: cas.put(bytes).unwrap(),
+                    size: bytes.len() as u64,
+                })
+                .collect(),
+        )
+        .unwrap()
+    };
+    let original = manifest(LEFT, RIGHT);
+    // Each slice edits only its own file and declares exactly that sealed diff.
+    let reply = |path: &str, fixed: &Manifest| {
+        let patch = String::from_utf8(
+            manifest_diff(&original, fixed, &cas)
+                .unwrap()
+                .patch()
+                .into(),
+        )
+        .unwrap();
+        serde_json::json!({"verdict":"request-changes","summary":null,"findings":[{"severity":"minor","file":path,"line":1,"title":"constant can be corrected","body":"the fixture expects two","fix":"set the constant to two","confidence":1.0}],"benchmark_demands":[],"dispositions":[],
+            "proposal":{"patch":patch,"report_indexes":[0],"paths":[path],"description":"set the fixture constant to two","auto_apply_nominated":true}})
+        .to_string()
+        .replace('\'', "'\\''")
+    };
+    // The whole-tree Subject also holds the two `.af/` authority files, which sort first, so
+    // three paths per slice put `left.rs` in the first slice and `right.rs` alone in the second.
+    let shard = format!(
+        "input=$(cat); case \"$input\" in *'#slice:1:'*) printf 'pub const LEFT: u8 = 2;\\n' > left.rs; printf '%s' '{}' ;; *) printf 'pub const RIGHT: u8 = 2;\\n' > right.rs; printf '%s' '{}' ;; esac",
+        reply("left.rs", &manifest(LEFT_FIXED, RIGHT)),
+        reply("right.rs", &manifest(LEFT, RIGHT_FIXED)),
+    );
+    let clean = "cat >/dev/null; printf '%s' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[]}'";
+    // The Gate runs the same check on the original head, where it passes without a record.
+    let composed = format!(
+        "if test \"$(cat left.rs)\" = 'pub const LEFT: u8 = 2;'; then test \"$(cat right.rs)\" = 'pub const RIGHT: u8 = 2;' || exit 9; printf x >> '{}'; fi",
+        calls.display()
+    );
+    let runner = |script: &str| {
+        format!(
+            "runner={{program=\"/bin/sh\",args=[{{value=\"-c\"}},{{value={}}}]}}",
+            serde_json::to_string(script).unwrap()
+        )
+    };
+    let definition = include_str!("../../../../review-config/tests/fixtures/dynamic-v5.toml")
+        .replace(
+            "[budgets]\nunit = \"tokens\"\nattempt = 100\nfan_out = 200\nrun = 400\n",
+            "",
+        )
+        .replace("max_paths_per_slice = 1", "max_paths_per_slice = 3")
+        .replacen("runner = { program = \"/bin/true\" }", &runner(&shard), 1)
+        .replacen(
+            "execution = { credential_mode = \"credential_free\" }",
+            "execution={credential_mode=\"credential_free\",auto_apply=true}",
+            1,
+        )
+        .replace("runner = { program = \"/bin/true\" }", &runner(clean))
+        + &format!(
+            "\n[integration]\npost_apply_checks=[\"composed\"]\n[[checks]]\nname=\"composed\"\nprogram=\"/bin/sh\"\nargs=[{{value=\"-c\"}},{{value={}}}]\n",
+            serde_json::to_string(&composed).unwrap()
+        );
+    let (compiler, lease) = admit_integration_with_source(
+        &cas,
+        &mut store,
+        &definition,
+        3,
+        BTreeMap::from([
+            ("left.rs".into(), LEFT.to_vec()),
+            ("right.rs".into(), RIGHT.to_vec()),
+        ]),
+    );
+    let shared = SharedEventStore::new(&mut store);
+    let host = LegacyReviewTaskHost::new(
+        &cas,
+        shared.clone(),
+        &compiler,
+        lease.clone(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+    let runtime =
+        TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host).unwrap();
+    let report = runtime.execute().unwrap();
+    assert!(report.complete(), "{report:?}");
+    let conclusion = host.publish_recorded_round_conclusion(&cas).unwrap();
+    assert_eq!(conclusion.verdict, review_pipeline::RunVerdict::Pass);
+    assert!(
+        !calls.exists(),
+        "the Gate's run of the check records nothing"
+    );
+    let phase = host.select_recorded_integration(&cas).unwrap().unwrap();
+    let TaskReviewIntegrationSelectionV1::Prepared {
+        integration_plan_id,
+        derived_snapshot_id,
+    } = phase.phase().selection.clone()
+    else {
+        panic!("disjoint Proposals were not prepared: {:?}", phase.phase())
+    };
+    assert!(phase.requires_checks());
+    let plan: review_core::IntegrationPlanV1 =
+        serde_json::from_value(cas.get_json(&integration_plan_id).unwrap()).unwrap();
+    let mut paths: Vec<_> = plan
+        .candidates
+        .iter()
+        .map(|candidate| candidate.paths.clone())
+        .collect();
+    paths.sort();
+    assert_eq!(paths, [["left.rs"], ["right.rs"]]);
+    let derived: review_core::SourceSnapshot =
+        serde_json::from_value(cas.get_json(&derived_snapshot_id).unwrap()).unwrap();
+    assert!(derived.is_derived());
+    let derived: Manifest = serde_json::from_value(
+        cas.get_json(derived.artifact_manifest.as_deref().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    for (path, bytes) in [("left.rs", LEFT_FIXED), ("right.rs", RIGHT_FIXED)] {
+        assert_eq!(
+            derived.get(path).unwrap().content,
+            cas.put(bytes).unwrap(),
+            "the derived Manifest carries the {path} edit"
+        );
+    }
+
+    let phase_runtime = TaskRuntime::with_review_integration(
+        shared.clone(),
+        &cas,
+        lease.clone(),
+        &authority,
+        &host,
+        &phase,
+    )
+    .unwrap();
+    let (id, report) = phase_runtime.execute_review_integration(&phase).unwrap();
+    assert!(report.complete(), "{report:?}");
+    assert_eq!(
+        std::fs::read(&calls).unwrap(),
+        b"x",
+        "the post-apply check ran once, on both edits together"
+    );
+    let phase = host.finish_recorded_integration(&cas, &phase, &id).unwrap();
+    assert!(phase.finished());
+    let committed_id = phase.integration_committed_event_id().unwrap();
+    let events = shared.lock().unwrap().replay("review").unwrap();
+    let count = |event_type| {
+        events
+            .iter()
+            .filter(|event| event.event_type == event_type)
+            .count()
+    };
+    assert_eq!(count(EventType::IntegrationPreparedV1), 1);
+    assert_eq!(count(EventType::IntegrationCommittedV1), 1);
+    assert_eq!(count(EventType::ChangeAttestedV1), 2);
+    let committed: review_core::IntegrationCommittedPayloadV1 = serde_json::from_value(
+        events
+            .iter()
+            .find(|event| event.event_id == committed_id)
+            .unwrap()
+            .payload
+            .clone(),
+    )
+    .unwrap();
+    assert_eq!(committed.proposal_ids.len(), 2);
+    assert_eq!(committed.attestation_ids.len(), 2);
+    assert_eq!(committed.derived_snapshot_id, derived_snapshot_id);
+    let mut promoted = committed.proposal_ids.clone();
+    promoted.sort();
+    let mut planned: Vec<_> = plan
+        .candidates
+        .iter()
+        .map(|candidate| candidate.proposal_id.clone())
+        .collect();
+    planned.sort();
+    assert_eq!(promoted, planned);
 }

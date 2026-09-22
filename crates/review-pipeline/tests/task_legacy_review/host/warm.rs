@@ -320,11 +320,12 @@ fn mark(delta: &HeadDeltaV1, path: &str) -> HeadDeltaMarkV1 {
         .mark
 }
 
-/// Round one's selected Attempt leaves Notes; its failed sibling leaves nothing. Round two
-/// on a new head receives those Notes, a Head Delta against Round one's head and the open
-/// prior Findings through its wired port, from one Warm Set recorded before its first
-/// Attempt, so a retry renders the same warm bytes. The Task host runs no session protocol,
-/// so the session layer is dropped with that reason and the Attempt runs on Notes.
+/// Round one's selected Attempt leaves Notes; its refused sibling answered with Notes too, and
+/// they are never recorded. Round two on a new head receives the selected Notes, a Head Delta
+/// against Round one's head and the open prior Findings through its wired port, from one Warm
+/// Set recorded before its first Attempt is reserved, so a retry renders the same warm bytes.
+/// The Task host runs no session protocol, so the session layer is dropped with that reason
+/// and the Attempt runs on Notes.
 #[test]
 fn notes_head_delta_and_prior_findings_carry_from_the_selected_attempt_to_the_next_round() {
     let directory = tempfile::tempdir().unwrap();
@@ -345,11 +346,21 @@ fn notes_head_delta_and_prior_findings_carry_from_the_selected_attempt_to_the_ne
     first["notes"] = notes.clone();
     let mut second: serde_json::Value = serde_json::from_str(super::domain::APPROVE).unwrap();
     second["notes"] = notes;
-    // Every Attempt records the input it received; the first Attempt of each Round fails.
+    // A Finding path outside FindingReport admission: refused before selection, Notes and all.
+    let mut refused = requesting(vec![serde_json::json!({
+        "severity": "major", "file": "./a.rs", "line": 1, "title": "refused path",
+        "body": "body", "fix": "fix", "confidence": 0.9,
+    })]);
+    refused["notes"] = serde_json::json!({
+        "inspected": ["a.rs"], "model_of_change": "notes of a refused answer",
+        "open_questions": [], "hints": [],
+    });
+    // Every Attempt records the input it received; the first Attempt of each Round is refused.
     let script = format!(
         "n=$(ls '{dir}' | wc -l | tr -d ' '); n=$((n + 1)); cat > '{dir}/'$n.json; \
-         case $n in 1|3) exit 1 ;; 2) printf '%s' '{first}' ;; *) printf '%s' '{second}' ;; esac",
+         case $n in 1|3) printf '%s' '{refused}' ;; 2) printf '%s' '{first}' ;; *) printf '%s' '{second}' ;; esac",
         dir = inputs.display(),
+        refused = refused.to_string().replace('\'', "'\\''"),
         first = first.to_string().replace('\'', "'\\''"),
         second = second.to_string().replace('\'', "'\\''"),
     );
@@ -377,16 +388,31 @@ fn notes_head_delta_and_prior_findings_carry_from_the_selected_attempt_to_the_ne
             continue_on_head(&cas, &shared, &compiler, host, &lease, &head_two)
         },
     );
-    hosted(
+    let round_two_attempts = hosted(
         &cas,
         &shared,
         &successor,
         &lease,
         |h| h,
-        |host, _, report| {
+        |host, runtime, report| {
             assert!(report.complete(), "{report:?}");
             host.publish_recorded_round_conclusion(&cas).unwrap();
+            let state = runtime.projection().unwrap();
+            let plan = state.plan_id.clone().unwrap();
+            state
+                .execution
+                .unwrap()
+                .attempt_accounting()
+                .into_iter()
+                .filter(|attempt| attempt.plan_id == plan)
+                .map(|attempt| attempt.attempt_id)
+                .collect::<std::collections::BTreeSet<_>>()
         },
+    );
+    assert_eq!(
+        round_two_attempts.len(),
+        2,
+        "the refused Attempt and its retry"
     );
     let seen: Vec<serde_json::Value> = (1..=4)
         .map(|n| {
@@ -417,6 +443,13 @@ fn notes_head_delta_and_prior_findings_carry_from_the_selected_attempt_to_the_ne
     assert_eq!(
         recorded[0].attempt_id.as_deref(),
         Some(selected_one.as_str())
+    );
+    assert!(
+        seen[1]["refused_attempts"]
+            .as_array()
+            .is_some_and(|refused| refused.len() == 1),
+        "the Notes-carrying first answer was refused, not lost: {}",
+        seen[1]
     );
     let recorded: WorkerNotesRecordedPayloadV1 =
         serde_json::from_value(recorded[0].payload.clone()).unwrap();
@@ -465,6 +498,46 @@ fn notes_head_delta_and_prior_findings_carry_from_the_selected_attempt_to_the_ne
         invocation.sequence < selections[0].sequence,
         "the Warm Set is recorded when the invocation is published"
     );
+    // The Campaign and Task streams share one append-only table, whose rowid is the global
+    // append order: the Warm Set is durable before the Round's first Attempt is reserved.
+    let task_run = review_store::store::task::task_run_id(lease.task_id()).unwrap();
+    let first_reservation = shared
+        .lock()
+        .unwrap()
+        .replay(&task_run)
+        .unwrap()
+        .into_iter()
+        .find(|event| {
+            let Ok(transition) = review_store::store::task::read_task_transition(event) else {
+                return false;
+            };
+            let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
+                transition.change
+            else {
+                return false;
+            };
+            matches!(
+                review_store::store::task::execution::read_execution_record(&cas, &record_id)
+                    .map(|recorded| recorded.record),
+                Ok(review_core::task::execution::TaskExecutionRecordV1::Reserved { attempt_id, .. })
+                    if round_two_attempts.contains(&attempt_id)
+            )
+        })
+        .expect("Round two reserved its first Attempt");
+    let appended = |event_id: &str| -> i64 {
+        rusqlite::Connection::open(directory.path().join("events.sqlite"))
+            .unwrap()
+            .query_row(
+                "SELECT rowid FROM events WHERE event_id = ?1",
+                [event_id],
+                |row| row.get(0),
+            )
+            .unwrap()
+    };
+    assert!(
+        appended(&selections[0].event_id) < appended(&first_reservation.event_id),
+        "the Warm Set is recorded before the Round's first Attempt is reserved"
+    );
     let (selection, set) = warm_set(&cas, &selections[0]);
     assert_eq!(
         selection.source_attempt_id.as_deref(),
@@ -509,6 +582,108 @@ fn notes_head_delta_and_prior_findings_carry_from_the_selected_attempt_to_the_ne
             "{name} is missing from {entries:?}"
         );
     }
+}
+
+/// When the Round cannot say what moved within the Head Delta bound, selection drops the
+/// layer and records why: the Warm Set carries Notes alone and the Attempt runs on them, with
+/// no Head Delta rendered or stored.
+#[test]
+fn an_over_bound_head_delta_is_dropped_at_selection_and_the_attempt_runs_on_notes() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let inputs = directory.path().join("inputs");
+    std::fs::create_dir(&inputs).unwrap();
+    let mut answer: serde_json::Value = serde_json::from_str(super::domain::APPROVE).unwrap();
+    answer["notes"] = serde_json::json!({
+        "inspected": ["src"], "model_of_change": "every file changes between the heads",
+        "open_questions": [], "hints": [],
+    });
+    let script = format!(
+        "n=$(ls '{dir}' | wc -l | tr -d ' '); cat > '{dir}/'$((n + 1)).json; printf '%s' '{}'",
+        answer.to_string().replace('\'', "'\\''"),
+        dir = inputs.display(),
+    );
+    let definition = WARM_REVIEW.replace("REVIEWER", &runner(&script));
+    // Two heads that differ in every one of many long paths, so the canonical Head Delta of
+    // the change exceeds its bound.
+    let head = |content: &[u8]| -> BTreeMap<String, Vec<u8>> {
+        (0..1_400)
+            .map(|index| {
+                (
+                    format!("src/{}/f{index:04}.rs", "deep".repeat(40)),
+                    content.to_vec(),
+                )
+            })
+            .collect()
+    };
+    let (compiler, lease) = admit_source(
+        &cas,
+        &mut store,
+        &definition,
+        head(b"one\n"),
+        &["reviewer"],
+        true,
+    );
+    let shared = SharedEventStore::new(&mut store);
+    let round_one = round_event(&shared);
+    let (successor, round_two) = hosted(
+        &cas,
+        &shared,
+        &compiler,
+        &lease,
+        |h| h,
+        |host, _, report| {
+            assert!(report.complete(), "{report:?}");
+            continue_on_head(&cas, &shared, &compiler, host, &lease, &head(b"two\n"))
+        },
+    );
+    hosted(
+        &cas,
+        &shared,
+        &successor,
+        &lease,
+        |h| h,
+        |_, _, report| assert!(report.complete(), "{report:?}"),
+    );
+
+    let (selected_one, _) = selected_attempt(&shared, &round_one, "reviewer");
+    let selections: Vec<_> = events_of(&shared, EventType::WarmSetSelectedV1)
+        .into_iter()
+        .filter(|event| event.causation_id.as_deref() == Some(round_two.as_str()))
+        .collect();
+    assert_eq!(selections.len(), 1);
+    let (selection, set) = warm_set(&cas, &selections[0]);
+    assert_eq!(
+        set.head_delta_dropped,
+        Some(review_core::HeadDeltaDropReasonV1::OverBound)
+    );
+    assert_eq!(set.head_delta_artifact_id, None);
+    assert!(set.notes_artifact_id.is_some());
+    assert_eq!(selection.layers, [WarmLayerV1::Notes]);
+    assert_eq!(
+        selection.source_attempt_id.as_deref(),
+        Some(selected_one.as_str())
+    );
+    let input: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(inputs.join("2.json")).unwrap()).unwrap();
+    assert_eq!(
+        input["notes"]["model_of_change"],
+        "every file changes between the heads"
+    );
+    assert!(
+        input.get("head_delta").is_none(),
+        "the Attempt runs on Notes alone"
+    );
+    let (_, selected_two) = selected_attempt(&shared, &round_two, "reviewer");
+    let entries = manifest_entries(&cas, &selected_two);
+    assert!(entries.iter().any(|entry| entry["name"] == "warm_notes"));
+    assert!(
+        !entries
+            .iter()
+            .any(|entry| entry["name"] == "warm_head_delta"),
+        "{entries:?}"
+    );
 }
 
 const COLD_REVIEW: &str = r#"

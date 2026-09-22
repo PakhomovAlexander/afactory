@@ -339,7 +339,7 @@ common Task runtime — real sandboxes, real check and reviewer processes. The o
 reviewers' *judgement*, which is a `command` runner emitting fixed findings: the one thing a test
 cannot supply honestly, and the one thing the kernel deliberately knows nothing about.
 
-Three properties, end to end:
+Four properties, end to end:
 
 - **A full review lands in the ledger.** Two reviewers report the same occurrence at different
   severities; the ledger holds one finding with both reports attached, at the higher severity,
@@ -349,6 +349,8 @@ Three properties, end to end:
   begins, and the ledger is empty. A change that does not build produces no reviewer artifacts.
 - **A reopened host replays, it does not re-run.** A second host on the same Task selects the
   same recorded outputs, and the Gate's execution binding and cache receipts stay recorded once.
+- **Two runs of the same review agree.** Two independent runs in separate stores publish the
+  same Finding Set rows, Finding identity included.
 
 ## Defining a pipeline
 
