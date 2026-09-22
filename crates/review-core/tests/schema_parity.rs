@@ -1539,6 +1539,16 @@ fn run_event_schema_and_rust_vocabulary_are_identical() {
         );
     }
     assert!(serde_json::from_str::<EventType>("\"Unknown@1\"").is_err());
+    // A type only another release wrote, such as the pre-Task executor's Attempt events, names
+    // the way forward instead of only the unknown type.
+    assert_eq!(
+        "AttemptDispatched@1"
+            .parse::<EventType>()
+            .unwrap_err()
+            .to_string(),
+        "unknown review-kernel event type: AttemptDispatched@1; this log was written by another \
+         af release; start a new Campaign or Task"
+    );
 }
 
 #[test]

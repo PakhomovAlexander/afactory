@@ -307,7 +307,12 @@ pub struct UnknownEventType(pub String);
 
 impl std::fmt::Display for UnknownEventType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "unknown review-kernel event type: {}", self.0)
+        write!(
+            f,
+            "unknown review-kernel event type: {}; this log was written by another af release; \
+             start a new Campaign or Task",
+            self.0
+        )
     }
 }
 
