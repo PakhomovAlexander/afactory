@@ -483,7 +483,7 @@ impl Ledger {
     /// Apply already-admitted Task evidence to an in-memory projection. The Task domain must
     /// first recompute the assessment, prove current checks and the independent selected Attempt.
     /// This method additionally checks exact receipt bytes and current views before any mutation.
-    /// It emits no Campaign event and creates no legacy resolution or discovery Round.
+    /// It emits no Campaign event and creates no Campaign Resolution or discovery Round.
     pub fn project_task_fixes(
         &mut self,
         cas: &Cas,

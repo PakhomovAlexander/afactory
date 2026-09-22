@@ -67,7 +67,7 @@ negative requirements verdict; every verifier retains the requirements it consum
 **Task Review Continuation**:
 Exact independently verified repair evidence projected into the next admitted discovery Round.
 It retains the original Round and claim identities, grants no complete-Review coverage and does
-not create legacy Resolution authority. Later discovery can reopen a previously fixed claim.
+not create Campaign Resolution authority. Later discovery can reopen a previously fixed claim.
 
 **Captured Issue Source**:
 An exact read-only observation of ticket fields, with raw source, per-field value and normalized
@@ -110,7 +110,7 @@ by integrating a validated patch into S0) and cannot carry this relation.
 
 **Proposal Base**:
 The exact head Snapshot from which a reviewer's sandbox and Proposal patch were derived, encoded
-by the legacy field name `base_snapshot_id` in `PatchProposal@1`.
+carried by the `base_snapshot_id` field of `PatchProposal@1`.
 _Avoid_: **Base** — for a diff Subject, Base is the comparison Snapshot and Proposal Base is the
 current head.
 

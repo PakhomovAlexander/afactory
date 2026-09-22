@@ -284,7 +284,7 @@ fn task_fix_projection_rejects_stale_views_and_reopens_on_a_changed_subject() {
     assert!(ledger.project_task_fixes(&cas, &assessment).is_err());
     assert!(
         ledger.resolution(&original.key).is_none(),
-        "Task receipts cannot impersonate legacy resolutions"
+        "Task receipts cannot impersonate Campaign Resolutions"
     );
 }
 

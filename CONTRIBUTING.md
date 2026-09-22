@@ -66,7 +66,7 @@ for the shape. Reference the ADR from the PR and from the CHANGELOG line.
 Imperative subject, under about 72 characters, describing the change rather than the activity.
 The history mixes conventional prefixes with a scope (`fix(task): preserve validated Review
 result number semantics`, `docs(task): record integrated fixes`, `perf(task): …`, `test: …`)
-and plain imperative subjects (`Record Task retry and legacy context changes in a new ADR`).
+and plain imperative subjects (`Record Task retry output admission in a new ADR`).
 Either is fine; the prefixes are used but not required. Domain terms keep their capitalisation
 (`Task`, `Review`, `Snapshot`, `Gate`) as in `CONTEXT.md`.
 

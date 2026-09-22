@@ -170,7 +170,7 @@ fn a_definition_loads_into_a_plan_with_bindings() {
     assert_eq!(
         loaded.demand_requirements()["architecture"],
         review_core::DemandRequirement::Required,
-        "old pinned pipelines retain the permanent required default"
+        "a pipeline that omits `demands` classifies every Demand as required"
     );
     assert_eq!(loaded.convergence().max_rounds, 3);
     assert_eq!(loaded.convergence().gate, review_core::Severity::Major);

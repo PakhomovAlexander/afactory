@@ -159,9 +159,8 @@ impl From<NodeKindSpec> for NodeKind {
 pub struct NodeSpec {
     pub id: String,
     pub kind: NodeKindSpec,
-    /// Pipeline-owned classification for benchmark Demands emitted by this reviewer. `None`
-    /// permanently retains the pre-M4 required default for pinned authority created before the
-    /// field existed.
+    /// Pipeline-owned classification for benchmark Demands emitted by this reviewer. Absent
+    /// means Required: a pipeline that omits the field classifies every Demand as required.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub demands: Option<review_core::DemandRequirement>,
     #[serde(default)]
