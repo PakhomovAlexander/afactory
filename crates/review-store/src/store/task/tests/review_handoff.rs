@@ -1,7 +1,7 @@
 use super::*;
 use crate::store::task::review_handoff::*;
+use review_core::task::campaign_review::*;
 use review_core::task::execution::*;
-use review_core::task::review_compat::*;
 use review_core::task::review_handoff::*;
 use review_graph::task::CompiledTask;
 
@@ -67,7 +67,7 @@ impl TaskAuthority for HandoffAuthority<'_> {
         Ok(())
     }
 }
-fn fixture(generated: bool) -> (Fixture, LegacyReviewRoundV1) {
+fn fixture(generated: bool) -> (Fixture, CampaignReviewRoundV1) {
     let (mut f, round) = review::round::round_fixture();
     let mut graph: CompiledTask =
         payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
@@ -158,7 +158,7 @@ fn settle(
         )
         .unwrap();
 }
-fn successor(f: &Fixture, old: &LegacyReviewRoundV1) -> (String, TaskReviewHandoffV1) {
+fn successor(f: &Fixture, old: &CampaignReviewRoundV1) -> (String, TaskReviewHandoffV1) {
     let event = f
         .store
         .latest_round_started(&old.campaign_id)
@@ -173,7 +173,7 @@ fn successor(f: &Fixture, old: &LegacyReviewRoundV1) -> (String, TaskReviewHando
     let id = f
         .cas
         .put_artifact(
-            LEGACY_REVIEW_ROUND_V1,
+            CAMPAIGN_REVIEW_ROUND_V1,
             producer(),
             round
                 .artifact_refs()
@@ -507,8 +507,12 @@ fn review_handoff_compares_task_and_successor_round_inside_the_append_transactio
                 .take_task_lease(&f.cas, lease.task_id(), "other-writer", 1_000_000)
                 .unwrap();
         } else {
-            let next_round: LegacyReviewRoundV1 =
-                payload(&f.cas, &handoff.successor_round_id, LEGACY_REVIEW_ROUND_V1).unwrap();
+            let next_round: CampaignReviewRoundV1 = payload(
+                &f.cas,
+                &handoff.successor_round_id,
+                CAMPAIGN_REVIEW_ROUND_V1,
+            )
+            .unwrap();
             review::round::supersede(&f, &next_round);
         }
         let before = f.store.replay(&run).unwrap();

@@ -3,8 +3,8 @@
 use super::*;
 use review_core::task::usage::{DecimalU64, DecimalU128};
 use review_graph::NodeOutcome;
+use review_pipeline::task::campaign_review::host::CampaignReviewTaskHost;
 use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
-use review_pipeline::task::legacy_review::host::LegacyReviewTaskHost;
 use review_pipeline::task::{TaskProviderAdmissionReport, TaskRuntime};
 use review_store::store::task::TaskProjection;
 use serde_json::{Value, json};
@@ -27,14 +27,14 @@ pub(crate) fn run(
             Some(&cancellation),
             || {
                 let captured = &session.captured;
-                let host = LegacyReviewTaskHost::new(
+                let host = CampaignReviewTaskHost::new(
                     cas,
                     shared.clone(),
                     &captured.compiler,
                     session.lease.clone(),
                     model_bindings(&captured.plan, &captured.captured, &captured.workers)?,
                 )?;
-                let authority = CapturedTaskAuthority::for_legacy_review(
+                let authority = CapturedTaskAuthority::for_campaign_review(
                     &captured.compiler,
                     &host,
                     &NoTaskDeveloper,

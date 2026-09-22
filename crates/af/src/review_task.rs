@@ -8,9 +8,13 @@ use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_core::task::{EXECUTION_PLAN_V1, TASK_REVISION_V1, TaskRevisionV1};
 use review_graph::NodeKind;
 use review_graph::task::{Address, CompiledOperator, OperatorAttemptCost, ReviewOperation};
+use review_pipeline::task::campaign_review::plan::{
+    CampaignReviewPlanCompiler, ReviewPlanSettings,
+};
+use review_pipeline::task::campaign_review::{
+    CapturedCampaignReviewRound, CapturedReviewCompilation,
+};
 use review_pipeline::task::host::TaskModelBinding;
-use review_pipeline::task::legacy_review::plan::{LegacyReviewPlanCompiler, ReviewPlanSettings};
-use review_pipeline::task::legacy_review::{CapturedLegacyReviewRound, CapturedReviewCompilation};
 use review_runner::task::WorkerModelAdapter;
 use review_store::{Cas, EventStore};
 
@@ -139,7 +143,7 @@ fn public_outputs(loaded: &review_config::Loaded) -> Result<BTreeMap<String, Add
 }
 
 struct CapturedReviewTask {
-    compiler: LegacyReviewPlanCompiler,
+    compiler: CampaignReviewPlanCompiler,
     revision: TaskRevisionV1,
     revision_id: String,
     plan: ExecutionPlanV1,
@@ -157,7 +161,7 @@ fn capture_new(
     engine_id: String,
     now_unix_ms: u64,
 ) -> Result<CapturedReviewTask, String> {
-    let round = CapturedLegacyReviewRound::load(
+    let round = CapturedCampaignReviewRound::load(
         cas,
         store,
         &prepared.run_id,
@@ -169,7 +173,7 @@ fn capture_new(
     )
     .map_err(|e| e.to_string())?;
     let workers = local_workers(options, &prepared.loaded)?;
-    let resources = review_config::task::legacy_review::resources::ReviewResourcePolicy {
+    let resources = review_config::task::campaign_review::resources::ReviewResourcePolicy {
         uncapped_attempt_tokens: UNCAPPED_ATTEMPT_TOKENS,
     };
     let provider_admission = initial_provider_admission(options);
@@ -193,7 +197,7 @@ fn capture_new(
         provider_admission,
         allowed_effects: BTreeSet::new(),
     };
-    let compiler = LegacyReviewPlanCompiler::capture(cas, round, engine_id, settings)?;
+    let compiler = CampaignReviewPlanCompiler::capture(cas, round, engine_id, settings)?;
     let revision = compiler.prepare_revision(cas, task_id, limits)?;
     let mut refs = BTreeSet::from([
         revision.authority.policy_id.clone(),
@@ -448,7 +452,7 @@ fn open_captured(
     captured: &CapturedReviewTask,
 ) -> Result<review_store::store::task::TaskLease, String> {
     use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
-    let authority = CapturedTaskAuthority::for_legacy_review(
+    let authority = CapturedTaskAuthority::for_campaign_review(
         &captured.compiler,
         &AdmissionOnly,
         &NoTaskDeveloper,
@@ -493,8 +497,8 @@ fn execute_current(
     lease: &review_store::store::task::TaskLease,
 ) -> Result<RoundExecution, String> {
     use review_pipeline::task::TaskRuntime;
+    use review_pipeline::task::campaign_review::host::CampaignReviewTaskHost;
     use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper};
-    use review_pipeline::task::legacy_review::host::LegacyReviewTaskHost;
     let campaign = &captured.compiler.round().binding().campaign_id;
     let round = captured.compiler.round().authority().round_event_id();
     let closed = store
@@ -515,7 +519,7 @@ fn execute_current(
         lease,
         Some(&cancellation),
         || {
-            let host = LegacyReviewTaskHost::new(
+            let host = CampaignReviewTaskHost::new(
                 cas,
                 shared.clone(),
                 &captured.compiler,
@@ -532,7 +536,7 @@ fn execute_current(
             } else {
                 host
             };
-            let authority = CapturedTaskAuthority::for_legacy_review(
+            let authority = CapturedTaskAuthority::for_campaign_review(
                 &captured.compiler,
                 &host,
                 &NoTaskDeveloper,

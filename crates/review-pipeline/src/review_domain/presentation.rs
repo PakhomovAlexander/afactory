@@ -3,7 +3,7 @@
 
 use super::*;
 use review_core::RunEvent;
-use review_core::task::review_compat::*;
+use review_core::task::campaign_review::*;
 
 impl ReviewDomainState<'_> {
     pub(crate) fn selected_attempt_evidence(&self) -> Result<Vec<crate::AttemptEvidence>, String> {

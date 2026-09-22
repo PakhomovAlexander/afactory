@@ -332,7 +332,7 @@ pub struct CapturedTaskAuthority<'a> {
 
 enum CapturedCompiler<'a> {
     Task(Box<review_config::task::catalog::CapturedTaskPlanValidator<'a>>),
-    Review(&'a super::legacy_review::plan::LegacyReviewPlanCompiler),
+    Review(&'a super::campaign_review::plan::CampaignReviewPlanCompiler),
 }
 
 impl<'a> CapturedTaskAuthority<'a> {
@@ -350,8 +350,8 @@ impl<'a> CapturedTaskAuthority<'a> {
         }
     }
 
-    pub fn for_legacy_review(
-        compiler: &'a super::legacy_review::plan::LegacyReviewPlanCompiler,
+    pub fn for_campaign_review(
+        compiler: &'a super::campaign_review::plan::CampaignReviewPlanCompiler,
         domain: &'a dyn TaskDomain,
         developer: &'a dyn TaskDeveloper,
     ) -> Self {

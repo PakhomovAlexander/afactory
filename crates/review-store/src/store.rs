@@ -2031,7 +2031,7 @@ fn validate_campaign_transition(
                                     })?
                                     .outputs
                             };
-                            let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
+                            let selected: review_core::task::campaign_review::TaskReviewResultSelectedV1 =
                                 serde_json::from_value(event.payload.clone())?;
                             let result: review_core::ArtifactEnvelope = serde_json::from_value(
                                 cas.get_json(&selected.result_envelope_id)
@@ -3588,7 +3588,7 @@ fn selected_attempt_result(
             "{event_type} has no unique Task Review selection"
         )));
     };
-    let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
+    let selected: review_core::task::campaign_review::TaskReviewResultSelectedV1 =
         serde_json::from_str(raw)?;
     selected.validate().map_err(StoreError::Conflict)?;
     Ok(selected.result_artifact_id)

@@ -87,7 +87,7 @@ pub enum CompiledOperator {
     ProviderAdmission {
         bindings: BTreeSet<String>,
     },
-    /// Installed compatibility frontend only. A reusable Pipeline cannot invent canonical
+    /// Installed Campaign Review frontend only. A reusable Pipeline cannot invent canonical
     /// Review operations or make these declarations through TaskOperatorV1.
     ReviewDomain {
         review_node: String,

@@ -80,5 +80,5 @@ Completing a Review Task means producing its required review evidence. The separ
 conclusion still governs whether the reviewed change passes. `af task run` retains these
 Review exit codes on replay, and inspection includes the typed Round receipts.
 
-See [Review compatibility](review-compatibility.md) for the shared runtime boundary and
+See [Campaign Review](campaign-review.md) for the shared runtime boundary and
 [bounded repair](bounded-repair.md) for current-Snapshot repair operators.

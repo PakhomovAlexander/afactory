@@ -35,7 +35,7 @@ release:
 review-kernel-container-probes:
 	cargo test --locked -p review-sandbox --test container_probes -- --ignored
 	cargo test --locked -p review-sandbox container::tests::a_timed_out_container_is_removed_before_execution_returns -- --ignored --exact
-	cargo test --locked -p review-pipeline --test task_legacy_review host::domain::a_container_gate_executes_on_the_task_host -- --ignored --exact
+	cargo test --locked -p review-pipeline --test task_campaign_review host::domain::a_container_gate_executes_on_the_task_host -- --ignored --exact
 
 # Exercise release selection and tag races against disposable local Git remotes.
 release-check:

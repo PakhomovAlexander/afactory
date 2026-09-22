@@ -1,7 +1,7 @@
 //! Reviewer business output checks. These helpers prepare immutable artifacts and domain
 //! facts; the execution owner must select the real Attempt before publishing those facts.
 
-use review_core::task::review_compat::*;
+use review_core::task::campaign_review::*;
 use review_core::task::usage::TaskTokenUsageV3;
 use review_core::{MAX_CHANGE_SET_BYTES, ProposalCandidateV1, ProposalRefusalReasonV1};
 use review_runner::{ReviewerNotesDeclaration, ReviewerProposalDeclaration};

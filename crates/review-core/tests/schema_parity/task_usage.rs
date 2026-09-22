@@ -156,7 +156,7 @@ fn cumulative_records_reject_invalid_decimal_encodings() {
 
 #[test]
 fn task_review_provenance_keeps_the_wide_charge_and_unknown_usage() {
-    use review_core::task::review_compat::TaskReviewAttemptProvenanceV2;
+    use review_core::task::campaign_review::TaskReviewAttemptProvenanceV2;
     let id = format!("sha256:{}", "a".repeat(64));
     let schema = "task-review-attempt-provenance-v2.json";
     for charge in [

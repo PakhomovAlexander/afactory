@@ -59,7 +59,7 @@ Integration and graph identities. The public runtime tests preserve retry and bi
 For the serial measurement fixtures:
 
 ```sh
-cargo +1.88.0 test --offline --locked -p review-pipeline --test task_legacy_review plan:: -- --nocapture --test-threads=1
+cargo +1.88.0 test --offline --locked -p review-pipeline --test task_campaign_review plan:: -- --nocapture --test-threads=1
 cargo +1.88.0 test --offline --locked -p review-store --lib store::task::tests::review_handoff::review_handoff_retains_original_budget_late_charge_and_exact_reopen_without_autoapproval -- --exact --nocapture --test-threads=1
 ```
 

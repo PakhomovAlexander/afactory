@@ -218,7 +218,7 @@ The pipeline's gather node is that barrier. It runs only once every reviewer has
 `ReviewDomainState::run_gather` (`crates/review-pipeline/src/review_domain.rs`) flushes the
 buffered reviewer events in node order; Ledger reduction then ingests the gathered results sorted
 by reviewer node ID. The Task-host domain suite
-(`crates/review-pipeline/tests/task_legacy_review/host/domain.rs`) checks the outcome: a Finding
+(`crates/review-pipeline/tests/task_campaign_review/host/domain.rs`) checks the outcome: a Finding
 that two reviewers report lists its sources in canonical order, not completion order.
 
 ### Seeing exactly what a Worker receives
@@ -341,7 +341,7 @@ been wrong.
                            └───────────────┴──> gather ──> ledger ──> convergence
 ```
 
-The Task-host suites (`crates/review-pipeline/tests/task_legacy_review/host/`) run it through the
+The Task-host suites (`crates/review-pipeline/tests/task_campaign_review/host/`) run it through the
 common Task runtime — real sandboxes, real check and reviewer processes. The only stub is the
 reviewers' *judgement*, which is a `command` runner emitting fixed findings: the one thing a test
 cannot supply honestly, and the one thing the kernel deliberately knows nothing about.

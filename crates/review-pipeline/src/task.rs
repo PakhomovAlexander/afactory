@@ -1,13 +1,13 @@
 //! One Task dispatcher over the existing graph scheduler and common Store. Domain handlers
 //! supply typed operations; they do not schedule children or create their own Attempt budgets.
 
+pub mod campaign_review;
 pub mod code;
 pub(crate) mod control;
 pub mod document;
 pub mod host;
 mod integration;
 pub mod lease;
-pub mod legacy_review;
 pub mod optimization;
 pub mod optimization_configuration;
 pub mod optimization_producers;

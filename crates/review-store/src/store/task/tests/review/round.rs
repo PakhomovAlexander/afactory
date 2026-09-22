@@ -1,12 +1,12 @@
 use super::*;
 use crate::store::task::review_round::ReviewRoundFence;
 
-pub(in crate::store::task::tests) fn round_fixture() -> (Fixture, LegacyReviewRoundV1) {
+pub(in crate::store::task::tests) fn round_fixture() -> (Fixture, CampaignReviewRoundV1) {
     round_fixture_with_source(false)
 }
 pub(in crate::store::task::tests) fn round_fixture_with_source(
     real_source: bool,
-) -> (Fixture, LegacyReviewRoundV1) {
+) -> (Fixture, CampaignReviewRoundV1) {
     let mut f = Fixture::new(false).with_execution_graph();
     let context = super::canonical_context_with_source(
         &mut f,
@@ -17,7 +17,7 @@ pub(in crate::store::task::tests) fn round_fixture_with_source(
     );
     let subject: review_core::SubjectV1 =
         serde_json::from_value(f.cas.get_json(&context.subject_id).unwrap()).unwrap();
-    let round = LegacyReviewRoundV1 {
+    let round = CampaignReviewRoundV1 {
         campaign_id: context.campaign_id,
         round_event_id: context.round_event_id,
         campaign_manifest_id: context.campaign_manifest_id,
@@ -29,7 +29,7 @@ pub(in crate::store::task::tests) fn round_fixture_with_source(
     let id = f
         .cas
         .put_artifact(
-            LEGACY_REVIEW_ROUND_V1,
+            CAMPAIGN_REVIEW_ROUND_V1,
             producer(),
             round
                 .artifact_refs()
@@ -43,7 +43,7 @@ pub(in crate::store::task::tests) fn round_fixture_with_source(
         .0;
     let input = task::ArtifactInputV1 {
         artifact_ids: vec![id],
-        artifact_type: LEGACY_REVIEW_ROUND_V1.into(),
+        artifact_type: CAMPAIGN_REVIEW_ROUND_V1.into(),
         cardinality: PortCardinality::One,
         snapshot_id: Some(round.head_snapshot_id.clone()),
     };
@@ -73,7 +73,7 @@ pub(in crate::store::task::tests) fn round_fixture_with_source(
         .insert(
             "round".into(),
             task::pipeline::PipelinePortV1 {
-                artifact_type: LEGACY_REVIEW_ROUND_V1.into(),
+                artifact_type: CAMPAIGN_REVIEW_ROUND_V1.into(),
                 cardinality: PortCardinality::One,
                 optional: false,
                 affinity: task::pipeline::PortAffinityV1::Unbound {},
@@ -108,7 +108,7 @@ pub(in crate::store::task::tests) fn round_fixture_with_source(
     (f, round)
 }
 
-pub(in crate::store::task::tests) fn supersede(f: &Fixture, round: &LegacyReviewRoundV1) {
+pub(in crate::store::task::tests) fn supersede(f: &Fixture, round: &CampaignReviewRoundV1) {
     let mut other = EventStore::open(&f.path).unwrap();
     let old = other
         .latest_round_started(&round.campaign_id)
@@ -151,7 +151,7 @@ pub(in crate::store::task::tests) fn supersede(f: &Fixture, round: &LegacyReview
 /// below the Task publication entry point, whose own authority checks are tested elsewhere.
 fn record_round_report(
     store: &mut EventStore,
-    round: &LegacyReviewRoundV1,
+    round: &CampaignReviewRoundV1,
     verdict: review_core::RunVerdictV3,
     error: &str,
 ) {
@@ -384,7 +384,7 @@ fn captured_review_round_rejects_forged_subject_and_missing_round_before_task_op
         let id = f
             .cas
             .put_artifact(
-                LEGACY_REVIEW_ROUND_V1,
+                CAMPAIGN_REVIEW_ROUND_V1,
                 producer(),
                 round
                     .artifact_refs()

@@ -301,6 +301,17 @@ together with the adapter. Three of its decisions describe every Task and stay i
   reported usage, and arithmetic overflow saturates the reported counter rather than discarding
   the overrun or panicking. Raw stdout and stderr stay available when CAS storage succeeds.
 
+Under clause 4, the Rust vocabulary for Campaign Review follows the domain rather than the
+persisted strings. `LegacyReviewTaskHost`, `LegacyReviewPlanCompiler`, `CapturedLegacyReviewRound`
+and `LegacyReviewRoundV1`/`LegacyReviewGateOutcomeV1`, the modules `task::legacy_review` and
+`task::review_compat`, and `CapturedTaskAuthority::for_legacy_review` — named in ADR-0069,
+ADR-0070, ADR-0077, ADR-0081 and ADR-0083 — are now `CampaignReview*`, `task::campaign_review`
+and `for_campaign_review`. The reviewer result types they carry are `ReviewerStageOutput`,
+`ReviewerReport` and `ReviewerDisposition` in `review_core::reviewer_result`, and the
+Findings Ledger writer is `review_store::ingest`. The persisted `af/LegacyReview*` type strings,
+the `review/legacy` Task kind, the `af/legacy-review` roots and the `legacy-review-*` schema IDs
+are unchanged.
+
 ## Considered options
 
 - **Keep every reader permanently (ADR-0002).** Rejected: GA would ship, and test forever, readers

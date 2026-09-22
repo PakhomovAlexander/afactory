@@ -641,7 +641,7 @@ pub fn validate_event_payload(
 ) -> Result<(), String> {
     match event_type {
         EventType::TaskReviewResultSelectedV1 => serde_json::from_value::<
-            crate::task::review_compat::TaskReviewResultSelectedV1,
+            crate::task::campaign_review::TaskReviewResultSelectedV1,
         >(payload.clone())
         .map_err(|e| e.to_string())?
         .validate(),

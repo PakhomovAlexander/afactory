@@ -2,9 +2,13 @@
 use super::captured_fixture;
 use review_core::EventType;
 use review_core::task::TaskRevisionV1;
+use review_pipeline::task::campaign_review::plan::{
+    CampaignReviewPlanCompiler, ReviewPlanSettings,
+};
+use review_pipeline::task::campaign_review::{
+    CapturedCampaignReviewRound, host::CampaignReviewTaskHost,
+};
 use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
-use review_pipeline::task::legacy_review::plan::{LegacyReviewPlanCompiler, ReviewPlanSettings};
-use review_pipeline::task::legacy_review::{CapturedLegacyReviewRound, host::LegacyReviewTaskHost};
 use review_pipeline::task::{TaskOperatorHost, TaskRuntime, TaskWorkOutput};
 use review_source_git::{Entry, EntryKind, Manifest, manifest_diff};
 use review_store::{Cas, EventStore, NewEvent, SharedEventStore};
@@ -24,7 +28,7 @@ fn limits() -> review_core::task::TaskLimitsV1 {
 fn settings() -> ReviewPlanSettings {
     ReviewPlanSettings {
         mode: "heavy".into(),
-        resources: review_config::task::legacy_review::resources::ReviewResourcePolicy {
+        resources: review_config::task::campaign_review::resources::ReviewResourcePolicy {
             uncapped_attempt_tokens: 1,
         },
         outputs: BTreeMap::from([(
@@ -162,7 +166,7 @@ pub(super) fn admit_integration(
     definition: &str,
     max_rounds: u32,
 ) -> (
-    LegacyReviewPlanCompiler,
+    CampaignReviewPlanCompiler,
     review_store::store::task::TaskLease,
 ) {
     admit_integration_with_source(
@@ -182,7 +186,7 @@ pub(super) fn admit_integration_with_source(
     max_rounds: u32,
     source: BTreeMap<String, Vec<u8>>,
 ) -> (
-    LegacyReviewPlanCompiler,
+    CampaignReviewPlanCompiler,
     review_store::store::task::TaskLease,
 ) {
     let round = captured_fixture::open_round_authority_with_source(
@@ -209,9 +213,9 @@ pub(super) fn admit_integration_with_source(
             review_core::task::plan::WorkerExecutionV1::Command {},
         ),
     ]);
-    let compiler = LegacyReviewPlanCompiler::capture(
+    let compiler = CampaignReviewPlanCompiler::capture(
         cas,
-        CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap(),
+        CapturedCampaignReviewRound::load(cas, store, "review", &round).unwrap(),
         cas.put(b"Integration host fixture").unwrap(),
         settings,
     )
@@ -225,7 +229,7 @@ pub(super) fn admit_integration_with_source(
     let (plan, _) = compiler.compile(cas, &revision).unwrap();
     let plan_id = artifact(cas, review_core::task::EXECUTION_PLAN_V1, &plan);
     let authority =
-        CapturedTaskAuthority::for_legacy_review(&compiler, &PlanOnly, &NoTaskDeveloper);
+        CapturedTaskAuthority::for_campaign_review(&compiler, &PlanOnly, &NoTaskDeveloper);
     let lease = store.open_task(cas, &revision, "developer", 60000).unwrap();
     store
         .propose_task_plan(cas, &lease, &plan_id, &authority)
@@ -279,7 +283,7 @@ pub fn run_integration_handoff_with(
             .unwrap()
     };
     let shared = SharedEventStore::new(&mut store);
-    let host = LegacyReviewTaskHost::new(
+    let host = CampaignReviewTaskHost::new(
         &cas,
         shared.clone(),
         &compiler,
@@ -287,7 +291,7 @@ pub fn run_integration_handoff_with(
         BTreeMap::new(),
     )
     .unwrap();
-    let authority = CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+    let authority = CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
     let runtime =
         TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host).unwrap();
     let report = runtime.execute().unwrap();
@@ -376,16 +380,16 @@ pub fn run_integration_handoff_with(
     let preview = locked
         .preview_task_review_round(&cas, &lease, &permit, &proposed, &authority)
         .unwrap();
-    let successor = LegacyReviewPlanCompiler::reopen(
+    let successor = CampaignReviewPlanCompiler::reopen(
         &cas,
-        CapturedLegacyReviewRound::from_prospective(&cas, &preview).unwrap(),
+        CapturedCampaignReviewRound::from_prospective(&cas, &preview).unwrap(),
         &before.revision.provenance.adapter_id,
         compiler.policy_id(),
     )
     .unwrap();
     let prospective = successor.round().binding();
     assert!(
-        CapturedLegacyReviewRound::load(
+        CapturedCampaignReviewRound::load(
             &cas,
             &locked,
             &prospective.campaign_id,
@@ -460,7 +464,7 @@ pub fn run_integration_handoff_with(
     assert_eq!(refreshed.history(), preview.history());
     assert_eq!(refreshed.prepare_handoff(&cas, &plan_id).unwrap(), handoff);
     let next_authority =
-        CapturedTaskAuthority::for_legacy_review(&successor, &host, &NoTaskDeveloper);
+        CapturedTaskAuthority::for_campaign_review(&successor, &host, &NoTaskDeveloper);
     let before_publish_task = shared
         .lock()
         .unwrap()
@@ -490,9 +494,9 @@ pub fn run_integration_handoff_with(
             .unwrap(),
         before_publish_task
     );
-    let durable_successor = LegacyReviewPlanCompiler::reopen(
+    let durable_successor = CampaignReviewPlanCompiler::reopen(
         &cas,
-        CapturedLegacyReviewRound::load(&cas, &shared.lock().unwrap(), "review", &round_id)
+        CapturedCampaignReviewRound::load(&cas, &shared.lock().unwrap(), "review", &round_id)
             .unwrap(),
         &before.revision.provenance.adapter_id,
         compiler.policy_id(),
@@ -503,9 +507,9 @@ pub fn run_integration_handoff_with(
     // Task handoff. Its predecessor compiler/host must hydrate historical roots without
     // inventing another Source capture, currentness permit or budget.
     let mut recovered_store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
-    let recovered_compiler = LegacyReviewPlanCompiler::reopen(
+    let recovered_compiler = CampaignReviewPlanCompiler::reopen(
         &cas,
-        CapturedLegacyReviewRound::load_recorded(
+        CapturedCampaignReviewRound::load_recorded(
             &cas,
             &recovered_store,
             "review",
@@ -517,7 +521,7 @@ pub fn run_integration_handoff_with(
     )
     .unwrap();
     let recovered_shared = SharedEventStore::new(&mut recovered_store);
-    let recovered_host = LegacyReviewTaskHost::new(
+    let recovered_host = CampaignReviewTaskHost::new(
         &cas,
         recovered_shared.clone(),
         &recovered_compiler,
@@ -525,7 +529,7 @@ pub fn run_integration_handoff_with(
         BTreeMap::new(),
     )
     .unwrap();
-    let next_authority = CapturedTaskAuthority::for_legacy_review(
+    let next_authority = CapturedTaskAuthority::for_campaign_review(
         &durable_successor,
         &recovered_host,
         &NoTaskDeveloper,
@@ -545,7 +549,7 @@ pub fn run_integration_handoff_with(
         .unwrap()
         .admit_task_plan(&cas, &lease, &next_authority)
         .unwrap();
-    let next_host = LegacyReviewTaskHost::new(
+    let next_host = CampaignReviewTaskHost::new(
         &cas,
         shared.clone(),
         &successor,
@@ -554,7 +558,7 @@ pub fn run_integration_handoff_with(
     )
     .unwrap();
     let next_authority =
-        CapturedTaskAuthority::for_legacy_review(&successor, &next_host, &NoTaskDeveloper);
+        CapturedTaskAuthority::for_campaign_review(&successor, &next_host, &NoTaskDeveloper);
     let runtime = TaskRuntime::with_store(
         shared.clone(),
         &cas,

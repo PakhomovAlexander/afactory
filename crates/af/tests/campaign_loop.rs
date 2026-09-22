@@ -892,9 +892,9 @@ fn exact_prior_set_requires_and_persists_explicit_disposition() {
                 && event.node_id.as_deref() == Some("correctness")
         })
         .expect("Round 2 common Reviewer selection");
-    let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
+    let selected: review_core::task::campaign_review::TaskReviewResultSelectedV1 =
         serde_json::from_value(selected.payload.clone()).unwrap();
-    let context: review_core::task::review_compat::TaskReviewContextV1 =
+    let context: review_core::task::campaign_review::TaskReviewContextV1 =
         serde_json::from_value(cas.get_artifact(&selected.context_id).unwrap().payload).unwrap();
     assert_eq!(
         context.invocation_event_id, invocation_event_id,

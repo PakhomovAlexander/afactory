@@ -226,7 +226,7 @@ fn open_round(cas: &Cas, store: &mut EventStore) -> (String, String) {
         json!({"round":1, "epoch":1, "campaign_manifest_id":manifest_id, "subject_id":subject_id,
             "prior_finding_set_id":prior, "prior_demand_set_id":demand_genesis}))
         .caused_by(opened.event_id).referencing(vec![head.clone(), manifest_id.clone(), subject_id.clone(), prior, demand_genesis])).unwrap();
-    let round = LegacyReviewRoundV1 {
+    let round = CampaignReviewRoundV1 {
         campaign_id: run,
         round_event_id: started.event_id,
         campaign_manifest_id: manifest_id,
@@ -237,7 +237,7 @@ fn open_round(cas: &Cas, store: &mut EventStore) -> (String, String) {
     };
     let wrapper = cas
         .put_artifact(
-            LEGACY_REVIEW_ROUND_V1,
+            CAMPAIGN_REVIEW_ROUND_V1,
             review_core::Producer::KernelOperation {
                 run_id: "accounting-fixture".into(),
                 node_id: None,
@@ -288,7 +288,7 @@ impl Fixture {
             "round".into(),
             ArtifactInputV1 {
                 artifact_ids: vec![round],
-                artifact_type: LEGACY_REVIEW_ROUND_V1.into(),
+                artifact_type: CAMPAIGN_REVIEW_ROUND_V1.into(),
                 cardinality: review_core::PortCardinality::One,
                 snapshot_id: Some(head),
             },
@@ -310,7 +310,7 @@ impl Fixture {
         ))
         .unwrap();
         let mut round_port = pipeline.contract.inputs["requirements"].clone();
-        round_port.artifact_type = LEGACY_REVIEW_ROUND_V1.into();
+        round_port.artifact_type = CAMPAIGN_REVIEW_ROUND_V1.into();
         pipeline.contract.inputs.insert("round".into(), round_port);
         let mut probe = pipeline.nodes[0].clone();
         probe.id = "probe".into();
@@ -951,7 +951,7 @@ fn bound_context_size_reads_referenced_and_inline_manifests() {
     let manifest_id = cas.put_json(&manifest).unwrap();
     let review_context = put(
         &cas,
-        review_core::task::review_compat::TASK_REVIEW_CONTEXT_V1,
+        review_core::task::campaign_review::TASK_REVIEW_CONTEXT_V1,
         json!({"context_manifest_id": manifest_id, "review_node": "correctness"}),
     );
     assert_eq!(

@@ -1,6 +1,6 @@
 //! Publish the already sealed Review fold under both original log prefixes.
 use super::*;
-use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
+use review_core::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignReviewRoundV1};
 
 impl EventStore {
     /// A canonical ShardSet projects an exact sealed parent output. This cannot dispatch work
@@ -87,14 +87,14 @@ fn sealed_review_shards(
         .revision
         .inputs
         .values()
-        .find(|input| input.artifact_type == LEGACY_REVIEW_ROUND_V1)
+        .find(|input| input.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
         .ok_or_else(|| conflict("Owned ShardSet lacks a captured Review Round"))?;
     let [round_id] = input.artifact_ids.as_slice() else {
         return Err(conflict(
             "Owned ShardSet has ambiguous Review Round authority",
         ));
     };
-    let round: LegacyReviewRoundV1 = payload(cas, round_id, LEGACY_REVIEW_ROUND_V1)?;
+    let round: CampaignReviewRoundV1 = payload(cas, round_id, CAMPAIGN_REVIEW_ROUND_V1)?;
     round.validate().map_err(conflict)?;
     let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
         cas.get_json(&round.campaign_manifest_id)

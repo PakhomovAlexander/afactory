@@ -1,5 +1,5 @@
-//! Load Review definitions only from captured Campaign authority. The legacy CLI and
-//! Task compatibility compiler share these package, policy and Snapshot reachability checks.
+//! Load Review definitions only from captured Campaign authority. The Campaign Review
+//! compiler and the Task planner share these package, policy and Snapshot reachability checks.
 
 use crate::{
     Definition, Loaded,

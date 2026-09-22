@@ -134,7 +134,7 @@ fn prepare_handoff(
     let id = f
         .cas
         .put_artifact(
-            review_core::task::review_compat::LEGACY_REVIEW_ROUND_V1,
+            review_core::task::campaign_review::CAMPAIGN_REVIEW_ROUND_V1,
             producer(),
             round
                 .artifact_refs()

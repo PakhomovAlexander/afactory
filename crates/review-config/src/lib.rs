@@ -1359,7 +1359,7 @@ impl Loaded {
         &self.plan.order
     }
 
-    /// Borrow the validated topology for installed compatibility compilation. This does not
+    /// Borrow the validated topology for installed Campaign Review compilation. This does not
     /// dispatch it, expose mutable authority, or bypass captured package/manifest admission.
     pub fn planned(&self) -> &review_graph::Planned {
         &self.plan

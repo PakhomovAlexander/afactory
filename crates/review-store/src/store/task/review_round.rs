@@ -2,15 +2,15 @@
 //! Compare the Review epoch under the same SQLite writer lock as new Task dispatch records.
 //! Evidence retention (settlement, late usage, release and diagnostics) remains possible.
 
+use review_core::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignReviewRoundV1};
 use review_core::task::execution::TaskExecutionRecordV1;
-use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
 use review_core::{CampaignManifestV1, PortCardinality, SubjectV1};
 
 use super::*;
 use rusqlite::OptionalExtension;
 
 pub(super) struct ReviewRoundFence {
-    binding: LegacyReviewRoundV1,
+    binding: CampaignReviewRoundV1,
     closed_report: Option<String>,
 }
 
@@ -19,7 +19,7 @@ impl ReviewRoundFence {
         let mut roots = task
             .inputs
             .values()
-            .filter(|input| input.artifact_type == LEGACY_REVIEW_ROUND_V1);
+            .filter(|input| input.artifact_type == CAMPAIGN_REVIEW_ROUND_V1);
         let Some(input) = roots.next() else {
             return Ok(None);
         };
@@ -29,8 +29,8 @@ impl ReviewRoundFence {
         {
             return Err(conflict("Task requires one exact captured Review Round"));
         }
-        let wrapper = envelope(cas, &input.artifact_ids[0], LEGACY_REVIEW_ROUND_V1)?;
-        let binding: LegacyReviewRoundV1 = serde_json::from_value(wrapper.payload)?;
+        let wrapper = envelope(cas, &input.artifact_ids[0], CAMPAIGN_REVIEW_ROUND_V1)?;
+        let binding: CampaignReviewRoundV1 = serde_json::from_value(wrapper.payload)?;
         binding.validate().map_err(conflict)?;
         if wrapper.input_artifacts != binding.artifact_refs()
             || wrapper.subject_snapshot_id.as_deref() != Some(&binding.head_snapshot_id)

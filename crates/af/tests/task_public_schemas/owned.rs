@@ -4,12 +4,12 @@ use review_core::task::execution::{TASK_EXECUTION_RECORD_V5, TaskInvocationV1, T
 use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_core::task::{TaskLimitsV1, TaskResultV1, TaskRevisionV1, VerificationReserveV1};
 use review_graph::task::{Address, OperatorAttemptCost};
-use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
-use review_pipeline::task::legacy_review::{
-    CapturedLegacyReviewRound,
-    host::LegacyReviewTaskHost,
-    plan::{LegacyReviewPlanCompiler, ReviewPlanSettings},
+use review_pipeline::task::campaign_review::{
+    CapturedCampaignReviewRound,
+    host::CampaignReviewTaskHost,
+    plan::{CampaignReviewPlanCompiler, ReviewPlanSettings},
 };
+use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
 use review_pipeline::task::{TaskOperatorHost, TaskRuntime, TaskWorkOutput};
 use review_store::store::task::execution::PreparedTaskAttempt;
 use review_store::{Cas, EventStore, SharedEventStore};
@@ -155,7 +155,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
     let round = captured_fixture::open_round_authority(&cas, &mut store, &definition, None);
     let settings = ReviewPlanSettings {
         mode: "light".into(),
-        resources: review_config::task::legacy_review::resources::ReviewResourcePolicy {
+        resources: review_config::task::campaign_review::resources::ReviewResourcePolicy {
             uncapped_attempt_tokens: 1,
         },
         outputs: BTreeMap::from([(
@@ -175,9 +175,9 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         },
         allowed_effects: Default::default(),
     };
-    let compiler = LegacyReviewPlanCompiler::capture(
+    let compiler = CampaignReviewPlanCompiler::capture(
         &cas,
-        CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
+        CapturedCampaignReviewRound::load(&cas, &store, "review", &round).unwrap(),
         cas.put(b"owned public inspection fixture").unwrap(),
         settings,
     )
@@ -202,7 +202,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
     let (plan, _) = compiler.compile(&cas, &revision).unwrap();
     let plan_id = artifact(&cas, review_core::task::EXECUTION_PLAN_V1, &plan);
     let authority =
-        CapturedTaskAuthority::for_legacy_review(&compiler, &AdmissionOnly, &NoTaskDeveloper);
+        CapturedTaskAuthority::for_campaign_review(&compiler, &AdmissionOnly, &NoTaskDeveloper);
     let lease = store.open_task(&cas, &revision, "fixture", 60_000).unwrap();
     store
         .propose_task_plan(&cas, &lease, &plan_id, &authority)
@@ -210,7 +210,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
     store.admit_task_plan(&cas, &lease, &authority).unwrap();
     let (set_id, set, parent_output, shards, expected_attempts, before) = {
         let shared = SharedEventStore::new(&mut store);
-        let host = LegacyReviewTaskHost::new(
+        let host = CampaignReviewTaskHost::new(
             &cas,
             shared.clone(),
             &compiler,
@@ -219,7 +219,7 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         )
         .unwrap();
         let authority =
-            CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+            CapturedTaskAuthority::for_campaign_review(&compiler, &host, &NoTaskDeveloper);
         let runtime =
             TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host)
                 .unwrap();

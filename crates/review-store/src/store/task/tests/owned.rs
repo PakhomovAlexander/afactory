@@ -946,7 +946,7 @@ fn owned_registration_handoff_preserves_original_attempt_scopes_and_historical_r
 
 #[test]
 fn owned_canonical_receipt_is_fenced_by_parent_seal_but_recorded_selection_replays() {
-    use review_core::task::review_compat::*;
+    use review_core::task::campaign_review::*;
     for receipt_before_seal in [false, true] {
         let mut f = fixture(false, None);
         let mut graph: CompiledTask =

@@ -1,6 +1,6 @@
 //! Captured Review Round succession retains one Task and its original accounting authority.
 use super::*;
-use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
+use review_core::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignReviewRoundV1};
 use review_core::task::review_handoff::*;
 use review_graph::task::CompiledTask;
 
@@ -74,18 +74,18 @@ fn round(
     cas: &Cas,
     revision: &TaskRevisionV1,
     id: &str,
-) -> Result<LegacyReviewRoundV1, StoreError> {
+) -> Result<CampaignReviewRoundV1, StoreError> {
     super::review_round::ReviewRoundFence::capture(cas, revision)?
         .ok_or_else(|| conflict("Review handoff lacks captured Round authority"))?;
     let input = revision
         .inputs
         .values()
-        .find(|input| input.artifact_type == LEGACY_REVIEW_ROUND_V1)
+        .find(|input| input.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
         .expect("checked Round");
     if input.artifact_ids != [id] {
         return Err(conflict("Review handoff changed its exact Round root"));
     }
-    payload(cas, id, LEGACY_REVIEW_ROUND_V1)
+    payload(cas, id, CAMPAIGN_REVIEW_ROUND_V1)
 }
 
 pub(super) fn validate_revisions(
@@ -95,8 +95,8 @@ pub(super) fn validate_revisions(
     (
         TaskRevisionV1,
         TaskRevisionV1,
-        LegacyReviewRoundV1,
-        LegacyReviewRoundV1,
+        CampaignReviewRoundV1,
+        CampaignReviewRoundV1,
     ),
     StoreError,
 > {
@@ -313,7 +313,7 @@ pub(super) fn validate_evidence_with_replays(
 pub(super) fn selected_prior_sets(
     cas: &Cas,
     predecessor_plan_id: &str,
-    round: &LegacyReviewRoundV1,
+    round: &CampaignReviewRoundV1,
     report: &task::report::TaskRunReportV1,
 ) -> Result<(String, String), StoreError> {
     let plan: ExecutionPlanV1 = payload(cas, predecessor_plan_id, task::EXECUTION_PLAN_V1)?;

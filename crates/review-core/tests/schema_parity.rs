@@ -2217,7 +2217,7 @@ fn source_refresh_event_requires_exactly_one_plan_or_unresolved_reason() {
 
 #[test]
 fn task_review_metadata_retains_typed_canonical_results_and_closed_proposal_dispositions() {
-    use review_core::task::review_compat::*;
+    use review_core::task::campaign_review::*;
     let id = format!("sha256:{}", "a".repeat(64));
     let contract = review_core::ReviewerResultContract::V2;
     for proposal in [
@@ -2268,7 +2268,7 @@ fn task_review_metadata_retains_typed_canonical_results_and_closed_proposal_disp
 
 #[test]
 fn task_review_gate_facts_preserve_closed_failed_attempt_observations() {
-    use review_core::task::review_compat::TaskReviewGateFactsV1;
+    use review_core::task::campaign_review::TaskReviewGateFactsV1;
     let valid = json!({
         "round_event_id":"a".repeat(26), "review_node":"gate",
         "attempt_id":"b".repeat(26), "cache_failures":[{
@@ -2310,7 +2310,7 @@ fn task_review_gate_facts_preserve_closed_failed_attempt_observations() {
 
 #[test]
 fn task_review_context_and_selection_require_exact_closed_execution_identities() {
-    use review_core::task::review_compat::*;
+    use review_core::task::campaign_review::*;
     let id = format!("sha256:{}", "a".repeat(64));
     let context = json!({
         "campaign_id":"review-task", "round_event_id":"a".repeat(26),
@@ -2377,8 +2377,8 @@ fn task_review_context_and_selection_require_exact_closed_execution_identities()
 }
 
 #[test]
-fn legacy_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
-    use review_core::task::review_compat::{LegacyReviewGateOutcomeV1, LegacyReviewRoundV1};
+fn campaign_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
+    use review_core::task::campaign_review::{CampaignReviewGateOutcomeV1, CampaignReviewRoundV1};
     let id = format!("sha256:{}", "a".repeat(64));
     let round = json!({
         "campaign_id": "review-ticket", "round_event_id": "a".repeat(26),
@@ -2388,14 +2388,14 @@ fn legacy_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
     let gate = json!({"round_event_id": "a".repeat(26), "review_node": "gate",
         "gate_decision_id": id, "outcome": "passed"});
     assert_valid("legacy-review-round-v1.json", &round);
-    let parsed = serde_json::from_value::<LegacyReviewRoundV1>(round.clone()).unwrap();
+    let parsed = serde_json::from_value::<CampaignReviewRoundV1>(round.clone()).unwrap();
     parsed.validate().unwrap();
     assert_eq!(serde_json::to_value(parsed).unwrap(), round);
     for outcome in ["passed", "failed"] {
         let mut value = gate.clone();
         value["outcome"] = json!(outcome);
         assert_valid("legacy-review-gate-outcome-v1.json", &value);
-        let parsed = serde_json::from_value::<LegacyReviewGateOutcomeV1>(value.clone()).unwrap();
+        let parsed = serde_json::from_value::<CampaignReviewGateOutcomeV1>(value.clone()).unwrap();
         parsed.validate().unwrap();
         assert_eq!(serde_json::to_value(parsed).unwrap(), value);
     }
@@ -2411,7 +2411,7 @@ fn legacy_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
         value[field] = replacement;
         assert!(!validator("legacy-review-round-v1.json").is_valid(&value));
         assert!(
-            serde_json::from_value::<LegacyReviewRoundV1>(value)
+            serde_json::from_value::<CampaignReviewRoundV1>(value)
                 .map_err(|e| e.to_string())
                 .and_then(|v| v.validate())
                 .is_err()
@@ -2428,7 +2428,7 @@ fn legacy_review_round_input_and_gate_outcome_have_closed_distinct_contracts() {
         value[field] = replacement;
         assert!(!validator("legacy-review-gate-outcome-v1.json").is_valid(&value));
         assert!(
-            serde_json::from_value::<LegacyReviewGateOutcomeV1>(value)
+            serde_json::from_value::<CampaignReviewGateOutcomeV1>(value)
                 .map_err(|e| e.to_string())
                 .and_then(|v| v.validate())
                 .is_err()

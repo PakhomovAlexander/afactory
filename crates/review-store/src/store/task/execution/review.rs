@@ -1,7 +1,7 @@
 //! A canonical Review selection projects the common Task ledger; it never owns an Attempt.
 
 use super::*;
-use review_core::task::review_compat::*;
+use review_core::task::campaign_review::*;
 use rusqlite::{OptionalExtension, params};
 
 /// The Task prefix and Review prefix are compared under the same SQLite writer lock.
@@ -175,10 +175,10 @@ impl EventStore {
             .revision
             .inputs
             .values()
-            .find(|input| input.artifact_type == LEGACY_REVIEW_ROUND_V1)
+            .find(|input| input.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
             .ok_or_else(|| conflict("Review conclusion has no captured Round"))?;
-        let round: LegacyReviewRoundV1 =
-            payload(cas, &input.artifact_ids[0], LEGACY_REVIEW_ROUND_V1)?;
+        let round: CampaignReviewRoundV1 =
+            payload(cas, &input.artifact_ids[0], CAMPAIGN_REVIEW_ROUND_V1)?;
         if !event.event_type.is_run_report()
             || event.node_id.is_some()
             || event.attempt_id.is_some()
@@ -549,14 +549,14 @@ pub(in crate::store) fn validate_proposal(
 fn validate_report_gate_failures(
     cas: &Cas,
     state: &TaskProjection,
-    round: &LegacyReviewRoundV1,
+    round: &CampaignReviewRoundV1,
     report: &review_core::RunReportPayloadV6,
 ) -> Result<(), StoreError> {
     let execution = state
         .execution
         .as_ref()
         .ok_or_else(|| conflict("Review Task has no execution"))?;
-    let mut plans = BTreeMap::<String, (LegacyReviewRoundV1, CompiledTask)>::new();
+    let mut plans = BTreeMap::<String, (CampaignReviewRoundV1, CompiledTask)>::new();
     let mut failures = BTreeMap::new();
     for attempt in execution.attempt_accounting() {
         let attempt_id = &attempt.attempt_id;
@@ -571,13 +571,13 @@ fn validate_report_gate_failures(
             let Some(input) = plan
                 .inputs
                 .values()
-                .find(|input| input.artifact_type == LEGACY_REVIEW_ROUND_V1)
+                .find(|input| input.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
             else {
                 // Earlier preparation work has no Review Gate authority.
                 continue;
             };
-            let captured: LegacyReviewRoundV1 =
-                payload(cas, &input.artifact_ids[0], LEGACY_REVIEW_ROUND_V1)?;
+            let captured: CampaignReviewRoundV1 =
+                payload(cas, &input.artifact_ids[0], CAMPAIGN_REVIEW_ROUND_V1)?;
             captured.validate().map_err(conflict)?;
             let graph: CompiledTask = payload(cas, &plan.compiled_graph_id, "af/CompiledTask@1")?;
             plans.insert(attempt.plan_id.clone(), (captured, graph));

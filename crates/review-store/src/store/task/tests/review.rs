@@ -1,7 +1,7 @@
 use super::*;
 pub(super) mod round;
+use review_core::task::campaign_review::*;
 use review_core::task::execution::*;
-use review_core::task::review_compat::*;
 use review_core::{PortArtifactsV1, PortCardinality, ReviewerResultContract, SnapshotAffinity};
 
 fn fixture() -> Fixture {

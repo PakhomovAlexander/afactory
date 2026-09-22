@@ -3,9 +3,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use review_core::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignReviewRoundV1};
 use review_core::task::execution::TaskAttemptResultV1;
 use review_core::task::plan::ExecutionPlanV1;
-use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
 use review_core::task::usage::{DecimalU64, DecimalU128, TaskTokenUsageV3};
 use review_core::task::{ArtifactInputV1, EXECUTION_PLAN_V1};
 use review_graph::task::{CompiledOperator, CompiledTask, ReviewOperation};
@@ -115,7 +115,7 @@ fn task_summary(task: &TaskAccountingView) -> String {
 
 struct RecordedPlan {
     graph: CompiledTask,
-    round: Option<LegacyReviewRoundV1>,
+    round: Option<CampaignReviewRoundV1>,
 }
 
 fn artifact<T: serde::de::DeserializeOwned>(cas: &Cas, id: &str, kind: &str) -> Result<T, String> {
@@ -129,17 +129,18 @@ fn artifact<T: serde::de::DeserializeOwned>(cas: &Cas, id: &str, kind: &str) -> 
 fn captured_round(
     cas: &Cas,
     inputs: &BTreeMap<String, ArtifactInputV1>,
-) -> Result<Option<LegacyReviewRoundV1>, String> {
+) -> Result<Option<CampaignReviewRoundV1>, String> {
     let mut rounds = inputs
         .values()
-        .filter(|input| input.artifact_type == LEGACY_REVIEW_ROUND_V1);
+        .filter(|input| input.artifact_type == CAMPAIGN_REVIEW_ROUND_V1);
     let Some(input) = rounds.next() else {
         return Ok(None);
     };
     if rounds.next().is_some() || input.artifact_ids.len() != 1 {
         return Err("Task accounting requires one exact captured Review Round".into());
     }
-    let round: LegacyReviewRoundV1 = artifact(cas, &input.artifact_ids[0], LEGACY_REVIEW_ROUND_V1)?;
+    let round: CampaignReviewRoundV1 =
+        artifact(cas, &input.artifact_ids[0], CAMPAIGN_REVIEW_ROUND_V1)?;
     round.validate()?;
     Ok(Some(round))
 }
@@ -164,7 +165,7 @@ pub(super) fn read(
                 referenced.insert(report.task_accounting.task_id);
             }
             review_core::EventType::TaskReviewResultSelectedV1 => {
-                let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
+                let selected: review_core::task::campaign_review::TaskReviewResultSelectedV1 =
                     serde_json::from_value(event.payload.clone())
                         .map_err(|error| error.to_string())?;
                 referenced.insert(selected.task_id);
@@ -336,7 +337,7 @@ pub(super) fn read(
 }
 
 /// `WarmSetSelected@1` layers by (Round, epoch, review node), read from the Campaign log so a
-/// Task-backed review Attempt reports its warm layers exactly as a legacy one does.
+/// Task-backed review Attempt reports its warm layers exactly as any other Attempt does.
 type WarmSelections = BTreeMap<(u32, u32, String), Vec<String>>;
 
 /// `WorkspaceRebased@1` by (Round, epoch, review node): what preparing the node's Warm

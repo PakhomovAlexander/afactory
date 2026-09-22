@@ -6,9 +6,9 @@ use serde_json::{Value, json};
 
 use crate::ConfigError;
 
+pub mod campaign_review;
 pub mod catalog;
 pub mod kind;
-pub mod legacy_review;
 pub mod selection;
 pub mod shared;
 

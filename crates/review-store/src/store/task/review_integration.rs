@@ -1,7 +1,7 @@
 //! One captured post-Round sequence, on the original Task ledger and two checked log prefixes.
 use super::*;
+use review_core::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignReviewRoundV1};
 use review_core::task::report::{TaskNodeOutcomeV1, TaskRunReportV1};
-use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
 use review_core::task::review_integration::*;
 use review_graph::task::{CompiledReviewIntegrationV1, CompiledTask};
 
@@ -67,7 +67,7 @@ impl RegisteredTaskReviewIntegration {
 }
 #[derive(Debug, Clone)]
 pub struct TaskReviewIntegrationEvidence {
-    pub round: LegacyReviewRoundV1,
+    pub round: CampaignReviewRoundV1,
     pub closing_report: RunEvent,
     pub events: Vec<RunEvent>,
     pub finding_set_id: String,
@@ -152,7 +152,7 @@ fn captured(
     )?;
     let sequence: TaskReviewCheckSequencePolicyV1 = serde_json::from_value(frame.payload)?;
     sequence.validate().map_err(conflict)?;
-    let round: LegacyReviewRoundV1 = payload(cas, &phase.round_id, LEGACY_REVIEW_ROUND_V1)?;
+    let round: CampaignReviewRoundV1 = payload(cas, &phase.round_id, CAMPAIGN_REVIEW_ROUND_V1)?;
     round.validate().map_err(conflict)?;
     let manifest: review_core::CampaignManifestV1 = serde_json::from_value(
         cas.get_json(&round.campaign_manifest_id)
@@ -160,7 +160,7 @@ fn captured(
     )?;
     manifest.validate().map_err(conflict)?;
     if !state.revision.inputs.values().any(|i| {
-        i.artifact_type == LEGACY_REVIEW_ROUND_V1 && i.artifact_ids == [phase.round_id.clone()]
+        i.artifact_type == CAMPAIGN_REVIEW_ROUND_V1 && i.artifact_ids == [phase.round_id.clone()]
     }) || frame.input_artifacts != sequence.artifact_refs()
         || frame.subject_snapshot_id.is_some()
         || sequence.authority_policy_id != plan.authority.policy_id
@@ -195,7 +195,7 @@ impl EventStore {
         phase: &TaskReviewIntegrationPhaseV1,
         replays: &mut ReviewReplays,
     ) -> Result<TaskReviewIntegrationEvidence, StoreError> {
-        let round: LegacyReviewRoundV1 = payload(cas, &phase.round_id, LEGACY_REVIEW_ROUND_V1)?;
+        let round: CampaignReviewRoundV1 = payload(cas, &phase.round_id, CAMPAIGN_REVIEW_ROUND_V1)?;
         round.validate().map_err(conflict)?;
         let events = replays.read(self, &round.campaign_id)?;
         let closing = events
@@ -1229,12 +1229,12 @@ pub(in crate::store) fn canonical_task_integration_views(
     let input = revision
         .inputs
         .values()
-        .find(|i| i.artifact_type == LEGACY_REVIEW_ROUND_V1)
+        .find(|i| i.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
         .ok_or_else(|| conflict("Task Integration report lacks captured Round"))?;
     let [id] = input.artifact_ids.as_slice() else {
         return Err(conflict("Task Integration has ambiguous Round authority"));
     };
-    let round: LegacyReviewRoundV1 = payload(cas, id, LEGACY_REVIEW_ROUND_V1)?;
+    let round: CampaignReviewRoundV1 = payload(cas, id, CAMPAIGN_REVIEW_ROUND_V1)?;
     let task_report = super::report::round_report(cas, &report.task_accounting.task_report_id)?;
     super::review_handoff::selected_prior_sets(
         cas,
@@ -1248,7 +1248,7 @@ pub(super) fn validate_handoff(
     cas: &Cas,
     handoff: &task::review_handoff::TaskReviewHandoffV1,
     event: &RunEvent,
-    next: &LegacyReviewRoundV1,
+    next: &CampaignReviewRoundV1,
     next_started: &review_core::RoundStartedPayloadV1,
     replays: &mut ReviewReplays,
 ) -> Result<(), StoreError> {

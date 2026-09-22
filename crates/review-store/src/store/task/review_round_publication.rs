@@ -1,7 +1,7 @@
 //! Prepare Review Round data outside a transaction, then publish it under both original
 //! Task and Review prefixes. This permit never starts an Attempt or changes the Task budget.
 use super::*;
-use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
+use review_core::task::campaign_review::{CAMPAIGN_REVIEW_ROUND_V1, CampaignReviewRoundV1};
 use review_core::task::review_handoff::{TaskReviewHandoffEvidenceV1, TaskReviewHandoffV1};
 use review_core::{RoundStartedPayloadV1, RunFailureReasonV3, RunReportPayloadV6, RunVerdictV3};
 
@@ -14,7 +14,7 @@ pub struct TaskReviewRoundPublication {
     epoch: u64,
     task_sequence: u64,
     review_sequence: u64,
-    predecessor: LegacyReviewRoundV1,
+    predecessor: CampaignReviewRoundV1,
     next_round: u32,
     next_epoch: u32,
     prior_finding_set_id: String,
@@ -53,7 +53,7 @@ impl TaskReviewRoundPreview {
             let input = task
                 .inputs
                 .values()
-                .find(|input| input.artifact_type == LEGACY_REVIEW_ROUND_V1)
+                .find(|input| input.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
                 .ok_or_else(|| conflict("Review successor has no captured Round input"))?;
             let [id] = input.artifact_ids.as_slice() else {
                 return Err(conflict("Review successor has ambiguous Round input"));
@@ -89,7 +89,7 @@ impl TaskReviewRoundPublication {
     pub fn next_review_sequence(&self) -> u64 {
         self.review_sequence
     }
-    pub fn predecessor(&self) -> &LegacyReviewRoundV1 {
+    pub fn predecessor(&self) -> &CampaignReviewRoundV1 {
         &self.predecessor
     }
     pub fn next_round(&self) -> u32 {
@@ -162,10 +162,10 @@ impl EventStore {
             .revision
             .inputs
             .values()
-            .find(|v| v.artifact_type == LEGACY_REVIEW_ROUND_V1)
+            .find(|v| v.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
             .expect("checked");
-        let predecessor: LegacyReviewRoundV1 =
-            payload(cas, &input.artifact_ids[0], LEGACY_REVIEW_ROUND_V1)?;
+        let predecessor: CampaignReviewRoundV1 =
+            payload(cas, &input.artifact_ids[0], CAMPAIGN_REVIEW_ROUND_V1)?;
         let events = self.replay(&predecessor.campaign_id)?;
         let event = events
             .iter()

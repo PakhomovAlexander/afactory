@@ -564,15 +564,15 @@ impl EventStore {
         cas: &Cas,
         state: &TaskProjection,
     ) -> Result<Option<(String, u64)>, StoreError> {
-        use review_core::task::review_compat::*;
+        use review_core::task::campaign_review::*;
         state
             .revision
             .inputs
             .values()
-            .find(|port| port.artifact_type == LEGACY_REVIEW_ROUND_V1)
+            .find(|port| port.artifact_type == CAMPAIGN_REVIEW_ROUND_V1)
             .map(|port| {
-                let round: LegacyReviewRoundV1 =
-                    payload(cas, &port.artifact_ids[0], LEGACY_REVIEW_ROUND_V1)?;
+                let round: CampaignReviewRoundV1 =
+                    payload(cas, &port.artifact_ids[0], CAMPAIGN_REVIEW_ROUND_V1)?;
                 Ok((round.campaign_id.clone(), self.len(&round.campaign_id)?))
             })
             .transpose()
@@ -709,7 +709,7 @@ impl EventStore {
                 "Owned Review selection differs from common selected output",
             ));
         }
-        let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
+        let selected: review_core::task::campaign_review::TaskReviewResultSelectedV1 =
             serde_json::from_value(expected.payload)?;
         let row: Option<String> = self.conn.query_row("SELECT payload FROM events WHERE run_id=?1 AND causation_id=?2 AND node_id=?3 AND attempt_id=?4 AND type='NodeOutputReceipt@1'", params![context.campaign_id,context.round_event_id,context.review_node,context.attempt_id], |row| row.get(0)).optional()?;
         let Some(row) = row else { return Ok(None) };
@@ -901,7 +901,7 @@ pub(in crate::store) fn check_canonical_child_receipt(
     node: &str,
     attempt: &str,
 ) -> Result<(), StoreError> {
-    use review_core::task::review_compat::*;
+    use review_core::task::campaign_review::*;
     use rusqlite::{OptionalExtension, params};
     let selection:Option<String> = connection.query_row(
         "SELECT payload FROM events WHERE run_id=?1 AND causation_id=?2 AND node_id=?3 AND attempt_id=?4 AND type='TaskReviewResultSelected@1'",

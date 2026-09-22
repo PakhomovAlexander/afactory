@@ -238,7 +238,7 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
         let plan: review_core::task::plan::ExecutionPlanV1 =
             serde_json::from_value(cas.get_artifact(&attempt.plan_id).unwrap().payload).unwrap();
         let round_id = &plan.inputs["round"].artifact_ids[0];
-        let round: review_core::task::review_compat::LegacyReviewRoundV1 =
+        let round: review_core::task::campaign_review::CampaignReviewRoundV1 =
             serde_json::from_value(cas.get_artifact(round_id).unwrap().payload).unwrap();
         let end = row.started_unix_ms.checked_add(row.elapsed_ms).unwrap();
         spans

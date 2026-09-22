@@ -79,7 +79,7 @@ Start with the Task-file walkthrough, then follow the composition pages in order
 - [Run reports](task-execution/run-reports.md) — scheduler diagnostics and domain publication recovery.
 - [Self-optimizer economics](task-execution/self-optimizer.md) — declared history capture, exact project economics and the report-only M1 Pipeline.
 - [Review report inspection](task-execution/review-report-inspection.md) — exact current Task accounting beside immutable report snapshots.
-- [Review compatibility](task-execution/review-compatibility.md) — the operations extracted from the legacy Review executor and the versioned CLI boundaries.
+- [Campaign Review](task-execution/campaign-review.md) — how `af review run` maps onto the common Task runtime, and the CLI boundaries.
 - [Increment structure](task-execution/pr-sequence.md) — how the packages map to walkthroughs and decisions.
 
 The operator-facing guide for the `implement` Task and local delivery is

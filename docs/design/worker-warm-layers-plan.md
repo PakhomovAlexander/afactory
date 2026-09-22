@@ -292,7 +292,7 @@ selection before any dispatch, and at every capture and clone. Exit evidence liv
 `review-sandbox/tests/build_cache.rs` (closed layout, symlink and FIFO refusals, fixed modes,
 removal before seal), `review-config/tests/definition.rs` (declaration and safe-policy
 refusals), `review-core/tests/schema_parity.rs` (contracts) and
-`review-pipeline/tests/task_legacy_review/host/warm.rs` (a TDD reviewer reusing the Gate build
+`review-pipeline/tests/task_campaign_review/host/warm.rs` (a TDD reviewer reusing the Gate build
 on the Task host with a sealed diff byte-identical to a cold run, and a recorded symlink
 refusal). No
 cold-versus-warm dogfood comparison exists yet: the package was implemented without a live
@@ -402,7 +402,7 @@ verified template. Exit evidence lives in `review-source-git` unit tests (rebase
 to a full materialization across modify, add, delete, type changes and pruned directories),
 `review-sandbox/tests/workspace.rs` (full, rebased, reused; tampering, a removed marker and a
 contradicted manifest each fail closed with their reason),
-`review-pipeline/tests/task_legacy_review/host/warm.rs` (a heavy Task rebases on its second Round
+`review-pipeline/tests/task_campaign_review/host/warm.rs` (a heavy Task rebases on its second Round
 and reuses on an unchanged third, a tampered or unrecorded template is rebuilt with its reason and
 still serves the right tree, a pipeline without the policy creates no root) and
 `review-core/tests/schema_parity.rs`. The implementer Attempt of Task
@@ -471,7 +471,7 @@ scenarios are the acceptance list for porting the layer to the Task host:
 - a session dropped when the Round cannot say what moved (an over-bound Head Delta);
 - a transcript carrying a credential never filed.
 
-`review-pipeline/tests/task_legacy_review/host/warm.rs` covers what the Task host does today
+`review-pipeline/tests/task_campaign_review/host/warm.rs` covers what the Task host does today
 (`host_unsupported`, Notes carried, an over-bound Head Delta dropped at selection). The layer's
 own evidence remains in
 `review-runner-claude/tests/session.rs` (the pinned flags, the bounded capture, the idempotent
