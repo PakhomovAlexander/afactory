@@ -1502,6 +1502,8 @@ fn run_event_schema_and_rust_vocabulary_are_identical() {
             event_type.as_str().parse::<EventType>().unwrap(),
             event_type
         );
+        let (name, version) = event_type.typed();
+        assert_eq!(format!("{name}@{version}"), event_type.as_str());
     }
     assert!(serde_json::from_str::<EventType>("\"Unknown@1\"").is_err());
     // A type only another release wrote, such as the pre-Task executor's Attempt events, names

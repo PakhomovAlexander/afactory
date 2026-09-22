@@ -210,7 +210,7 @@ impl EventType {
 
     pub const fn typed(self) -> (&'static str, u32) {
         match self {
-            Self::TaskTransitionV5 => ("TaskTransition", 1),
+            Self::TaskTransitionV5 => ("TaskTransition", 5),
             Self::TaskReviewResultSelectedV1 => ("TaskReviewResultSelected", 1),
             Self::CheckCompletedV1 => ("CheckCompleted", 1),
             Self::CampaignOpenedV1 => ("CampaignOpened", 1),

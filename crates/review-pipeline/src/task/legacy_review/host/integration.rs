@@ -12,6 +12,23 @@ use review_store::store::task::review_integration::{
     capture_task_review_integration, read_task_review_integration,
 };
 
+/// The Integration phase report named by an artifact id. A run report only reports one phase
+/// when it names one, so the phase is checked here rather than inferred from the artifact type:
+/// a Round report carries the whole original graph and never stands in for this one.
+fn phase_report(cas: &Cas, id: &str) -> Result<TaskRunReportV1, String> {
+    let value = cas.get_artifact(id).map_err(|e| e.to_string())?;
+    if value.artifact_type != TASK_RUN_REPORT_V2 {
+        return Err("Integration requires its phase report".into());
+    }
+    let report: TaskRunReportV1 =
+        serde_json::from_value(value.payload).map_err(|e| e.to_string())?;
+    report.validate()?;
+    if report.phase_id.is_none() {
+        return Err("Integration requires its phase report".into());
+    }
+    Ok(report)
+}
+
 impl LegacyReviewTaskHost<'_, '_> {
     pub(super) fn is_integration(&self, input: &TaskInvocationV1) -> bool {
         input.plan_id == self.plan_id
@@ -376,16 +393,7 @@ impl LegacyReviewTaskHost<'_, '_> {
             }
             return Ok(active);
         }
-        let value = cas.get_artifact(report_id).map_err(|e| e.to_string())?;
-        if value.artifact_type != TASK_RUN_REPORT_V2 {
-            return Err("Integration requires its phase report".into());
-        }
-        let report: TaskRunReportV1 =
-            serde_json::from_value(value.payload).map_err(|e| e.to_string())?;
-        report.validate()?;
-        if report.phase_id.is_none() {
-            return Err("Integration requires its phase report".into());
-        }
+        let report = phase_report(cas, report_id)?;
         let mut events = Vec::new();
         if let TaskNodeOutcomeV1::Completed { output_id } = &report.nodes[0].outcome {
             let output: TaskOutputV1 = serde_json::from_value(
@@ -589,9 +597,7 @@ impl LegacyReviewTaskHost<'_, '_> {
         }
         if let Some(id) = phase.report_id() {
             result.evidence.insert(id.into());
-            let report: TaskRunReportV1 =
-                serde_json::from_value(cas.get_artifact(id).map_err(|e| e.to_string())?.payload)
-                    .map_err(|e| e.to_string())?;
+            let report = phase_report(cas, id)?;
             match &report.nodes[0].outcome {
                 TaskNodeOutcomeV1::Completed { output_id } => {
                     result.evidence.insert(output_id.clone());
