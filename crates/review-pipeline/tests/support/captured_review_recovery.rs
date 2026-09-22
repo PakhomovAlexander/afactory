@@ -304,10 +304,10 @@ impl review_pipeline::task::TaskOperatorHost for LostPublication<'_> {
         &self,
         cas: &Cas,
         input: &review_core::task::execution::TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
+        definition: &review_graph::task::CompiledNode,
         attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        self.inner.prepare_context(cas, input, _definition, attempt)
+        self.inner.prepare_context(cas, input, definition, attempt)
     }
     fn execute(
         &self,

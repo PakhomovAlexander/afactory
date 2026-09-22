@@ -80,6 +80,29 @@ fn review_outcome_wide_counters_and_authority_are_closed() {
         *invalid.pointer_mut(path).unwrap() = replacement;
         assert_invalid("review-outcome-v3.json", &invalid, path);
     }
+    // `decimalU64` lost its dedicated schema when task-token-usage-v1.json went, so the whole
+    // non-canonical matrix is kept on two fields that still carry the pattern.
+    for noncanonical in [
+        json!(0),
+        json!(null),
+        json!(""),
+        json!("00"),
+        json!("01"),
+        json!("-1"),
+        json!("1e2"),
+        json!("\u{661}"),
+        json!("18446744073709551616"),
+    ] {
+        for path in [
+            "/totals/open_required_demands",
+            "/totals/selected_attempts/count",
+            "/attempts/0/context_manifest/rendered_bytes",
+        ] {
+            let mut invalid = value.clone();
+            *invalid.pointer_mut(path).unwrap() = noncanonical.clone();
+            assert_invalid("review-outcome-v3.json", &invalid, path);
+        }
+    }
     for (path, key) in [
         ("", "ambient_authority"),
         ("/task", "replacement_budget"),

@@ -341,7 +341,7 @@ impl<'a> ReviewDomainState<'a> {
         }
         let (sandbox, container, require_unchanged) = match self.gate_execution.as_ref() {
             None => {
-                // Frozen pipeline v1/v2 semantics. Those Campaigns captured no Gate Execution
+                // Pipeline format v2 semantics. Those Campaigns captured no Gate Execution
                 // Binding, so replay retains the old local/read-only behavior exactly.
                 (self.sandbox(Mode::ReadOnly)?, None, true)
             }
@@ -685,7 +685,7 @@ impl<'a> ReviewDomainState<'a> {
         }
         let sealed = sandbox.seal().map_err(|e| e.to_string())?;
         if require_unchanged && !sealed.unchanged() {
-            // Frozen v1/v2 behavior: those Gates promised read-only execution. V3 deliberately
+            // Format v2 behavior: those Gates promised read-only execution. V3 deliberately
             // permits writes in this one disposable clone; reviewer clones still start from the
             // pristine template, so Gate mutations cannot become Subject content.
             let paths = sealed.mutations.paths();
@@ -1035,11 +1035,13 @@ impl<'a> ReviewDomainState<'a> {
                     dynamic_sets.push((scatter_node, input.clone(), slice_set, shard_set));
                     continue;
                 }
-                // A direct ReviewerResult@2 carries all three of its keys; a gather manifest
-                // is keyed by reviewer node instead.
+                // A gather manifest is keyed by reviewer node, so any of the three
+                // ReviewerResult@2 keys means a direct result. A partial result then reaches the
+                // ReviewerResult@2 validator and is refused, instead of being read as a manifest
+                // whose empty arrays load nothing.
                 if ["reports", "benchmark_demands", "dispositions"]
                     .iter()
-                    .all(|key| value.get(key).is_some())
+                    .any(|key| value.get(key).is_some())
                 {
                     let upstream = self
                         .input_bindings
@@ -1949,11 +1951,9 @@ impl<'a> ReviewDomainState<'a> {
     }
 }
 
-/// One raw Generation algorithm for both legacy execution and the typed Task codec adapter.
-pub(crate) fn generation_outputs(
-    authority: &RoundAuthority,
-    node: &Node,
-) -> Result<ArtifactMap, String> {
+/// The raw Generation outputs a Task-hosted Review Round emits: the exact prior `FindingSet@1`
+/// and, for a diff Subject, its `ChangeSet@1`.
+fn generation_outputs(authority: &RoundAuthority, node: &Node) -> Result<ArtifactMap, String> {
     let mut outputs = ArtifactMap::new();
     for port in &node.outputs {
         let artifacts = if is_generation_finding_set_output(port) {

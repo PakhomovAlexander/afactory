@@ -133,15 +133,16 @@ impl FindingReport {
         {
             return Err("FindingReport@1 claim identifiers must be non-empty".into());
         }
-        if self.locations.iter().any(|location| {
+        if let Some(location) = self.locations.iter().find(|location| {
             !crate::is_valid_repo_path(&location.path)
                 || location.line == Some(0)
                 || location.end_line == Some(0)
         }) {
-            return Err(
-                "FindingReport@1 locations must use canonical repository-relative paths and positive lines"
-                    .into(),
-            );
+            return Err(format!(
+                "FindingReport@1 locations must use canonical repository-relative paths and \
+                 positive lines, got `{}`",
+                location.path
+            ));
         }
         Ok(())
     }

@@ -1,9 +1,10 @@
 # ADR-0088: Retain native billing completeness with Task usage
 
 Date: 2026-09-12
-Status: Accepted (2026-09-23); superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
-Broker floor among the charges an incomplete bill must carry, and the legacy Review host among the
-callers that forward the observation. GA has no Broker and no second Review host.
+Status: Accepted (2026-09-23); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the Broker floor among the charges an incomplete
+bill must carry, and the legacy Review host among the callers that forward the observation. GA has
+no Broker and no second Review host.
 
 ## Context
 

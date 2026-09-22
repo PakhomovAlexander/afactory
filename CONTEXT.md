@@ -109,7 +109,7 @@ _Avoid_: "parent" — `parent_snapshot_id` already means patch-integration linea
 by integrating a validated patch into S0) and cannot carry this relation.
 
 **Proposal Base**:
-The exact head Snapshot from which a reviewer's sandbox and Proposal patch were derived, encoded
+The exact head Snapshot from which a reviewer's sandbox and Proposal patch were derived,
 carried by the `base_snapshot_id` field of `PatchProposal@1`.
 _Avoid_: **Base** — for a diff Subject, Base is the comparison Snapshot and Proposal Base is the
 current head.

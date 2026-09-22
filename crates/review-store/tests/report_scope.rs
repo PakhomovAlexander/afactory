@@ -274,21 +274,24 @@ fn invalid_reports_are_unreadable_authority() {
             "confidence": 0.9
         })
     };
-    for (key, report, enveloped) in [
+    for (key, report, enveloped, offending_path) in [
         (
             "empty-fix",
             typed(serde_json::json!([{"path": "src/a.rs", "line": 1}]), ""),
             true,
+            None,
         ),
         (
             "zero-line",
             typed(serde_json::json!([{"path": "src/a.rs", "line": 0}]), "fix"),
             true,
+            Some("src/a.rs"),
         ),
         (
             "noncanonical-path",
             typed(serde_json::json!([{"path": "./src/a.rs"}]), "fix"),
             true,
+            Some("./src/a.rs"),
         ),
         (
             "one-noncanonical-location",
@@ -300,6 +303,7 @@ fn invalid_reports_are_unreadable_authority() {
                 "fix",
             ),
             true,
+            Some("./src/in.rs"),
         ),
         (
             "flat-shape",
@@ -313,11 +317,13 @@ fn invalid_reports_are_unreadable_authority() {
                 "confidence": 0.9
             }),
             true,
+            None,
         ),
         (
             "unenveloped",
             typed(serde_json::json!([{"path": "src/a.rs", "line": 1}]), "fix"),
             false,
+            None,
         ),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -355,6 +361,10 @@ fn invalid_reports_are_unreadable_authority() {
             ScopeAuthorityKind::Report,
             "{key}"
         );
+        if let Some(path) = offending_path {
+            let reason = &ledger.scope_authority_failures()[0].reason;
+            assert!(reason.contains(path), "{key}: {reason}");
+        }
         let summary = convergence(&ledger, Severity::Major);
         assert_eq!(summary.open_blocking, 0, "{key}");
         assert_eq!(summary.new_recent, 0, "{key}");

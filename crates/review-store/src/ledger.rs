@@ -195,9 +195,10 @@ pub struct Finding {
     pub severity: Severity,
     pub last_seen_round: u32,
     pub source: String,
-    /// The adopted Report's lowest location path: the change-wide sentinel when it has none, empty for an
-    /// unreadable-authority placeholder. Stable even when Scope selects another location for
-    /// presentation from a multi-location Report.
+    /// The adopted Report's identity location: its lowest location path, the change-wide sentinel
+    /// when it has no location, or its first recorded path when its location is unrecorded (empty
+    /// for an unreadable-authority placeholder). Stable even when Scope selects another location
+    /// for presentation from a multi-location Report.
     pub identity_file: String,
     /// Line paired with `identity_file`, from the same canonical identity location.
     #[serde(default)]
@@ -221,8 +222,9 @@ pub struct Finding {
     pub convergence_scope: Option<ReportScope>,
     /// Highest active non-out claim severity. `None` means active claims are wholly out.
     pub convergence_severity: Option<Severity>,
-    /// The Round in which this Finding last counted as convergence news under Report Scope.
-    /// `None` while every active claim is out of Scope.
+    /// The Round in which a claim not out of Scope last counted as convergence news; `None` until
+    /// one does. Convergence also requires a current `convergence_severity`, so a stale Round never
+    /// counts by itself.
     pub scoped_news_round: Option<u32>,
     /// Every report, in arrival order, duplicates included.
     pub reports: Vec<AttachedReport>,

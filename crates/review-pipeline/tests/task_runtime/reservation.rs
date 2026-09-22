@@ -96,13 +96,13 @@ impl TaskDomain for IdentityHost {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
-        _definition: &review_graph::task::CompiledNode,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         if input.node == "root.inputs" {
             assert_eq!(output.outputs, task.inputs);
             return Ok(());
         }
-        DocumentDomain.validate_output(cas, task, plan, input, output, _definition)
+        DocumentDomain.validate_output(cas, task, plan, input, output, definition)
     }
     fn validate_result(
         &self,

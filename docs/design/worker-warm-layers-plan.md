@@ -319,8 +319,8 @@ Findings that reduce to six defects, all fixed before verification:
   `TaskRuntimeEvidence@1` after its raw reply.
 - **Wrapper stripped the environment.** The production provider wrapper implemented only the
   controlled call without an environment, so the trait default refused the sandbox environment
-  and every model reviewer would have run cold. The wrapper now has one invocation path that rechecks
-  identity and forwards the environment.
+  and every model reviewer would have run cold. The wrapper now has one invocation path
+  that rechecks identity and forwards the environment.
 - **`WarmSetSelected@1` widened in place.** Rejected as a defect: the event was introduced by P1
   on this same unreleased branch, no released kernel has written it, and ADR-0107 now states
   that its vocabulary stays open until the release that first ships it.

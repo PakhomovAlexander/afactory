@@ -232,23 +232,23 @@ fn one_attempt_retains_aggregate_charge_above_u64_through_failure_and_reopen() {
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
-            _definition: &review_graph::task::CompiledNode,
+            definition: &review_graph::task::CompiledNode,
             attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
-            self.inner.prepare_context(cas, input, _definition, attempt)
+            self.inner.prepare_context(cas, input, definition, attempt)
         }
         fn execute(
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
-            _definition: &review_graph::task::CompiledNode,
+            definition: &review_graph::task::CompiledNode,
             attempt: Option<&PreparedTaskAttempt>,
-            _cancellation: Option<&std::sync::atomic::AtomicBool>,
+            cancellation: Option<&std::sync::atomic::AtomicBool>,
         ) -> TaskWorkOutput {
             self.calls.fetch_add(1, Ordering::SeqCst);
             let mut result = self
                 .inner
-                .execute(cas, input, _definition, attempt, _cancellation);
+                .execute(cas, input, definition, attempt, cancellation);
             result.usage = Some(review_core::task::usage::TaskTokenUsageV3 {
                 input_tokens: Some((u128::from(u64::MAX) + 17).into()),
                 chargeable_tokens: (u128::from(u64::MAX) + 17).into(),

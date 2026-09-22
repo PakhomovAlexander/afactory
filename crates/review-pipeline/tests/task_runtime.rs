@@ -1208,7 +1208,7 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
-            _definition: &review_graph::task::CompiledNode,
+            definition: &review_graph::task::CompiledNode,
             attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
             {
@@ -1219,16 +1219,16 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
                     .unwrap();
                 assert_eq!(state.plan_id.as_deref(), Some(input.plan_id.as_str()));
             }
-            self.inner.prepare_context(cas, input, _definition, attempt)
+            self.inner.prepare_context(cas, input, definition, attempt)
         }
 
         fn execute(
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
-            _definition: &review_graph::task::CompiledNode,
+            definition: &review_graph::task::CompiledNode,
             attempt: Option<&PreparedTaskAttempt>,
-            _cancellation: Option<&std::sync::atomic::AtomicBool>,
+            cancellation: Option<&std::sync::atomic::AtomicBool>,
         ) -> TaskWorkOutput {
             let attempt = attempt.expect("the fixture invokes one Worker");
             {
@@ -1254,7 +1254,7 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
             }
             self.calls.fetch_add(1, Ordering::SeqCst);
             self.inner
-                .execute(cas, input, _definition, Some(attempt), _cancellation)
+                .execute(cas, input, definition, Some(attempt), cancellation)
         }
     }
 

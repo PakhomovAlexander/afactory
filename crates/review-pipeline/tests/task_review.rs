@@ -646,17 +646,60 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
             return;
         }
         if matches!(case, "large" | "mutated" | "collision") {
+            let expected = match case {
+                "large" | "mutated" => 4,
+                _ => 0,
+            };
             let read = std::fs::read_to_string(reads).unwrap_or_default();
             assert_eq!(
                 read.lines()
                     .filter(|line| line.starts_with("read exact patch bytes:"))
                     .count(),
-                match case {
-                    "large" => 4,
-                    "mutated" => 4,
-                    _ => 0,
-                },
+                expected,
                 "bounded native retrieval evidence: {report:?}"
+            );
+            // The file proves the Worker read the exact bytes; it cannot prove the reading
+            // Attempt's reply was stored durably. The same count of reviewer Attempts must also
+            // reach a Settled record that retains its raw reply.
+            let reader =
+                EventStore::open_read_only(directory.path().join("events.sqlite")).unwrap();
+            let mut settled = 0;
+            for event in reader
+                .replay(&review_store::store::task::task_run_id(&task.task_id).unwrap())
+                .unwrap()
+            {
+                let Ok(transition) = review_store::store::task::read_task_transition(&event) else {
+                    continue;
+                };
+                let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
+                    transition.change
+                else {
+                    continue;
+                };
+                let record =
+                    review_store::store::task::execution::read_execution_record(&cas, &record_id)
+                        .unwrap()
+                        .record;
+                if let review_core::task::execution::TaskExecutionRecordV1::Settled {
+                    raw_artifact_ids,
+                    ..
+                } = record
+                    && raw_artifact_ids.iter().any(|id| {
+                        cas.get_json(id).is_ok_and(|raw| {
+                            ["reports", "benchmark_demands", "dispositions"]
+                                .iter()
+                                .all(|key| {
+                                    raw.pointer(&format!("/outputs/result/0/{key}")).is_some()
+                                })
+                        })
+                    })
+                {
+                    settled += 1;
+                }
+            }
+            assert_eq!(
+                settled, expected,
+                "durable reviewer settlements: {report:?}"
             );
         }
         if two_rounds {

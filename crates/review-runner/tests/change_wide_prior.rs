@@ -1,12 +1,9 @@
 use review_runner::ReviewerInputs;
 use review_runner::model::RESULT_CONTRACT_V2;
 
-/// The prompt section a model adapter appends for `inputs`.
-fn render(inputs: &ReviewerInputs) -> Result<String, String> {
-    let mut prompt = String::new();
-    inputs.render_into(&mut prompt)?;
-    Ok(prompt)
-}
+#[path = "support/render.rs"]
+mod render_support;
+use render_support::render;
 
 #[test]
 fn prompt_states_the_change_wide_encoding_used_by_prior_rows() {

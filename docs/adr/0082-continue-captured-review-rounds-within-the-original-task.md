@@ -1,11 +1,11 @@
 # ADR-0082: Continue captured Review Rounds within the original Task
 
 Date: 2026-09-12
-Status: Accepted (2026-09-23); superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): earlier
-`TaskTransition` and `TaskReviewHandoff` generations and inspection@6. A continuation is an
-ordinary change of `TaskTransition@5`, the only transition, a handoff is `TaskReviewHandoff@2`,
-the only handoff, and handoffs are an optional section of
-`af/task-inspection@11`, the only inspection.
+Status: Accepted (2026-09-23); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): earlier `TaskTransition` and `TaskReviewHandoff`
+generations and `af/task-inspection@6`. A continuation is an ordinary change of
+`TaskTransition@5`, the only transition, a handoff is `TaskReviewHandoff@2`, the only handoff, and
+handoffs are an optional section of `af/task-inspection@11`, the only inspection.
 
 ## Context
 

@@ -595,6 +595,11 @@ impl CampaignReviewTaskHost<'_, '_> {
 
     /// The context bytes for an operation that carries no Attempt authority: every pure Review
     /// operation, whose identity is its durable invocation, and the Provider capability probe.
+    ///
+    /// Public only for `tests/task_campaign_review/host/native.rs`'s
+    /// `provider_admission_renders_only_its_fixed_context_and_refuses_changed_identity`, which
+    /// cannot construct a `ReservedTaskAttempt`; not part of the crate's stable surface.
+    #[doc(hidden)]
     pub fn unreserved_context(
         &self,
         input: &TaskInvocationV1,

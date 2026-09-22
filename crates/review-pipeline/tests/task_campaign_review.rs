@@ -43,7 +43,6 @@ to = { node = "ledger", port = "reports" }
 "#;
 
 /// The reviewer's typed output line in [`PIPELINE`], for tests that rebind the reviewer node.
-#[allow(dead_code)]
 const REVIEWER_OUTPUTS: &str = r#"outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#;
 
 #[test]

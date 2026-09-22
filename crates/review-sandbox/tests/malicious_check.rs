@@ -1,11 +1,11 @@
 //! The containment probes, to the extent this provider can discharge them.
 //!
-//! Which of them are open is recorded in `docs/security/containment-probes.md`. The case assumes
-//! a check that does its job *and* attacks. Five probes: host marker, canonical
+//! Which of them are open is recorded in `docs/security/containment-probes.md`. The recorded
+//! scenario assumes a check that does its job *and* attacks. Five probes: host marker, canonical
 //! checkout, credentials, undeclared network, argument injection. `trusted_local` can genuinely
 //! answer three of them. It cannot answer the other two, and this file says which rather than
-//! narrowing the case until it passes — a green test that has quietly redefined the threat is
-//! worse than a missing one.
+//! narrowing the scenario until it passes — a green test that has quietly redefined the threat
+//! is worse than a missing one.
 
 use review_check::{Arg, CheckDefinition, CheckRunner, CheckStatus, Command, GateDecision};
 use review_sandbox::{Isolation, Mode, Policy, PolicyError, Sandbox, admit};

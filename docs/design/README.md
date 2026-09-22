@@ -8,8 +8,10 @@ and an ADR disagree, the ADR wins. Shared vocabulary is defined in
 
 - [`worker-warm-layers.md`](worker-warm-layers.md) — splitting a Worker Attempt into carried
   layers (Notes, workspace, caches, session) so later Rounds do not pay the cold start again.
-  Packages P1–P4 are accepted as ADR-0107 through ADR-0110; the session layer is being ported to
-  the Task host.
+  Packages P1–P4 are accepted as
+  [ADR-0107 *Carry Worker Notes*](../adr/0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md)
+  through [ADR-0110](../adr/0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md);
+  the session layer is being ported to the Task host.
 - [`worker-warm-layers-plan.md`](worker-warm-layers-plan.md) — the package sequence for that
   design, and the Findings each package had to prove. The Task files under `.af/tasks/warm-layers/`
   name it as their plan.

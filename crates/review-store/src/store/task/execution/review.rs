@@ -772,7 +772,7 @@ pub(super) fn selected_review_event(
                 return Err(conflict("Duplicate Review result port"));
             }
         } else {
-            return Err(conflict("Undeclared compatibility Review output type"));
+            return Err(conflict("Undeclared Review output type"));
         }
     }
     let (result_envelope_id, result_type) =

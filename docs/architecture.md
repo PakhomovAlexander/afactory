@@ -42,6 +42,7 @@ crates/
   review-source-task/ read-only capture of external issue sources into typed data
   af/            the `af` binary: onboarding, review, task, provider and self-management
 fixtures/
+  self-optimizer/ the credential-free Worker catalog and native examples the optimizer uses
   task-contracts/ the additive Task contract corpus
   task-runtime/  Task runtime scenarios (review, embedded review, bounded repair)
 ```
@@ -94,7 +95,9 @@ Four layers, strictly one-directional — `canonical` -> `cas` -> `store` -> `le
   corruption.
 - **`store`** — SQLite in WAL mode, one writer, a dense per-run sequence that is the ordering
   authority (never `occurred_at`). It **refuses** an event referencing an artifact the CAS does
-  not already hold, which turns a class of crash corruption into an immediate error.
+  not already hold, which turns a class of crash corruption into an immediate error. SQLite is
+  what backs it today, not part of its interface: the interface stays backend-agnostic, and which
+  database backs a later shared, consensus-based coordinator is deliberately undecided.
 - **`ledger`** — the projection. `rebuild` is its only constructor, so hand-edited state has no
   way in.
 
@@ -456,9 +459,9 @@ mapping is an error, never an implicit read of `~/.cargo`; `max_files` counts di
 files so directory-only trees are bounded. Durable cache failures are typed and path-free;
 machine-local operator detail is emitted only to stderr.
 
-**Format note.** Pipeline definitions are TOML, like every other human-authored file. The reason
-is dependency risk: `serde_yaml` is archived and its forks are uneven, while `toml` is the
-ecosystem default for Rust tooling configuration. The loader is serde types, so another syntax
+**Format note.** Pipeline definitions are TOML. The reason is dependency risk: `serde_yaml` is
+archived and its forks are uneven, while `toml` is the ecosystem default for Rust tooling
+configuration. The loader is serde types, so another syntax
 would be a different `from_str`, not a different model. Recorded rather than quietly done.
 
 ## Routing by changed paths

@@ -9,20 +9,20 @@ impl TaskOperatorHost for CheckedText {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
+        definition: &review_graph::task::CompiledNode,
         attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        DocumentDomain.prepare_context(cas, input, _definition, attempt)
+        DocumentDomain.prepare_context(cas, input, definition, attempt)
     }
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
+        definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
-        _cancellation: Option<&std::sync::atomic::AtomicBool>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
-        DocumentDomain.execute(cas, input, _definition, attempt, _cancellation)
+        DocumentDomain.execute(cas, input, definition, attempt, cancellation)
     }
 }
 impl TaskDomain for CheckedText {
@@ -42,9 +42,9 @@ impl TaskDomain for CheckedText {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
-        _definition: &review_graph::task::CompiledNode,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
-        DocumentDomain.validate_output(cas, task, plan, input, output, _definition)?;
+        DocumentDomain.validate_output(cas, task, plan, input, output, definition)?;
         for value in output.outputs.values() {
             for id in &value.artifact_ids {
                 if cas.get_json(id).map_err(|e| e.to_string())?["payload"]["text"]
@@ -209,21 +209,21 @@ impl TaskOperatorHost for FeedbackFailure<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
+        definition: &review_graph::task::CompiledNode,
         attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        self.0.prepare_context(cas, input, _definition, attempt)
+        self.0.prepare_context(cas, input, definition, attempt)
     }
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
+        definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
-        _cancellation: Option<&std::sync::atomic::AtomicBool>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         self.0
-            .execute(cas, input, _definition, attempt, _cancellation)
+            .execute(cas, input, definition, attempt, cancellation)
     }
     fn output_rejection_feedback(
         &self,

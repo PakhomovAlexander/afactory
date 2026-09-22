@@ -6,9 +6,9 @@ passed.
 [`non-goals.md`](../non-goals.md) relies on it for the claim that the open probes are recorded
 as open rather than claimed covered.
 
-It discharges *"Every executable node uses a safe Execution Binding; a malicious check/helper
-cannot touch a host marker, credentials, the canonical checkout, or undeclared network"* and
-*"Safe bindings expose no reusable credential bytes."*
+The probes below discharge *"Every executable node uses a safe Execution Binding; a malicious
+check/helper cannot touch a host marker, credentials, the canonical checkout, or undeclared
+network"* and *"Safe bindings expose no reusable credential bytes."*
 
 ## Setup
 
@@ -55,8 +55,8 @@ against `ContainerProvider` with a live daemon: one bind (the sandbox), `--netwo
 inherited environment, image pinned by manifest digest. The
 `make review-kernel-container-probes` target and dedicated CI job run them and the live v3 Gate
 route, including a timeout probe that asserts the daemon-owned container is gone before execution
-returns; they are `#[ignore]`d in the ordinary test run. This worktree has not produced that CI
-evidence yet, and its local host has no usable daemon. Where the target is invoked, a missing
+returns; they are `#[ignore]`d in the ordinary test run. The `container-probes` job has not yet
+produced green evidence for this branch. Where the target is invoked, a missing
 daemon is a hard failure, never a skip — an unrun probe must not look like a passed one.
 
 | Probe | State | Why |
@@ -91,8 +91,8 @@ ignored live pipeline control and lower-level probes use `CheckRunner::run_with`
 must turn that wiring into live evidence before Gate routing is called discharged. Open here, by
 name — one item:
 
-- **Live Gate routing.** The target and CI job exist, but this candidate has not run them on a
-  usable daemon yet. A green `container-probes` job closes this item.
+- **Live Gate routing.** The target and CI job exist, but no green run of them is recorded for
+  this branch. A green `container-probes` job closes this item.
 
 **Do not weaken this case as the wiring lands.** Marking the live-routing row satisfied on the
 strength of the provider probes would be exactly the quiet redefinition this file warns about.

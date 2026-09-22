@@ -1099,6 +1099,25 @@ fn finding_report_rejects_what_the_design_forbids() {
         &bad_confidence,
         "confidence is 0..=1",
     );
+
+    let mut disputes = base.clone();
+    disputes["relations"] = json!([{"kind": "disputes", "target": {"kind": "finding", "id": "x"}}]);
+    assert_invalid(
+        "finding-report-v1.json",
+        &disputes,
+        "corroborates is the only relation a report may claim",
+    );
+    assert!(serde_json::from_value::<FindingReport>(disputes).is_err());
+
+    let mut report_target = base.clone();
+    report_target["relations"] =
+        json!([{"kind": "corroborates", "target": {"kind": "report", "id": "x"}}]);
+    assert_invalid(
+        "finding-report-v1.json",
+        &report_target,
+        "a relation targets a finding, never another report",
+    );
+    assert!(serde_json::from_value::<FindingReport>(report_target).is_err());
 }
 
 #[test]

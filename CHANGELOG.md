@@ -8,7 +8,11 @@ or needs a documented hand edit.
 
 This file starts at the first GA release. The pre-GA `0.x` releases are described on their
 [GitHub release pages](https://github.com/PakhomovAlexander/afactory/releases), and git history
-keeps their sections.
+keeps their sections. In short: `0.7.0` and `0.7.1` reviewed from a `.review/` directory;
+`0.8.0` moved project authority to `.af/` and made a project pin the `af` release it runs; the
+`0.9.0` release candidates brought the common Task runtime, Task files and the Worker warm
+layers. `0.9.0-rc.5` was tagged but never published — its macOS check leg failed before the
+publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-GA release.
 
 ## [Unreleased]
 
@@ -146,7 +150,8 @@ keeps their sections.
 - Source Manifests have one path spelling. The `path_encoding` field (`legacy_v1` or
   `percent_v2`) is gone: every path is spelled the way capture already spelled new trees, so a
   path that starts or ends with whitespace, or holds a space together with a `%` or non-UTF-8
-  bytes, is percent-escaped (` notes.md` is `%20notes.md`, `a%b c` is `a%25b%20c`). That now
+  bytes, is percent-escaped (a leading space, as in `" notes.md"`, is percent-escaped to
+  `%20notes.md`, and `a%b c` becomes `a%25b%20c`). That now
   includes a file a reviewer or Worker creates during a run, which a sandbox seal, warm workspace
   scan or Task delivery spelled literally when the baseline was an ordinary tree. A Snapshot's
   content digest hashes the stored spelling, so ordinary trees keep their digests, but a tree
@@ -156,9 +161,9 @@ keeps their sections.
   Windows and the BSDs, now stops with a compile error. It no longer compiles fallbacks that
   skipped read-only sandboxes, process-group kills, symlinks or executable bits. The release
   targets and `install.sh` are unchanged.
-- `af review report` no longer has a `spend` section: the JSON of every report label,
-  `af/review-report@1`, `@3` and `@4`, drops the `spend` array (the `@3` and `@4` schemas no
-  longer list it), text output drops its `Spend:` block, and Markdown drops its `## Spend` table
+- `af review report` no longer has a `spend` section: the JSON of `af/review-report@4` drops the
+  `spend` array (the schema no longer lists it), text output drops its `Spend:` block, and
+  Markdown drops its `## Spend` table
   and `### Attempts` list. They described only Attempts of the pre-Task executor, so for a Round
   a Task hosts they were empty or held a zero-token placeholder row; `task_accounting` reports
   those Rounds' Attempts, usage, wall-clock and caps. `RunReport@1` and `RunReport@2` events
@@ -248,7 +253,8 @@ keeps their sections.
   Report that uses them no longer decodes.
 - Review pipeline format 1 is gone. A pipeline that declares `version = 1`, the format without
   `[subject]` whose untyped `findings`, `prior_findings` and `change_set` ports were typed by their
-  names, is refused as an unsupported version; formats 2 through 5 are unchanged. Declare
+  names, is refused as an unsupported version; formats 2 through 5 still load (see the typed-port
+  entry below). Declare
   `version = 2` with `[subject]` and typed `FindingSet@1` or `ChangeSet@1` ports instead. A
   Campaign whose manifest pinned a format 1 pipeline can no longer be resumed or continued.
 - Campaign review has one reviewer contract, `review.kernel/ReviewerResult@2`. A pipeline is
@@ -384,6 +390,13 @@ keeps their sections.
   already used, instead of `findings`. An answer that still says `findings` is read as `reports`,
   so hand-written command reviewers keep working, but the prompt bytes changed: reviewer Attempt
   context IDs differ from those an earlier release computed for the same node.
+- This file starts at the first GA release: the `0.7.0`–`0.9.0-rc.6` sections are out of it and
+  stay on the GitHub release pages and in git history. `README.md` and `SECURITY.md` now state
+  the GA policy — compatibility obligations start at 1.0, and only the latest `1.x` minor line
+  receives security fixes.
+
+### Changes
+
 - The internal delivery records are out of `docs/`: the `P00`–`P14` package checklist, the product
   backlog, the release-timing and validation-cost measurement records, the self-optimizer plan and
   review record, and the pre-implementation design notes the shipped architecture was ported from
@@ -391,7 +404,3 @@ keeps their sections.
   Git history keeps them. The engineering values are now [`docs/values.md`](docs/values.md), and
   `docs/design/` keeps only the two designs still in flight, warm layers and the self-optimizer.
   `CONTRIBUTING.md` now documents the opt-in `make check TEST_RUNNER=nextest` runner.
-- This file starts at the first GA release: the `0.7.0`–`0.9.0-rc.6` sections are out of it and
-  stay on the GitHub release pages and in git history. `README.md` and `SECURITY.md` now state
-  the GA policy — compatibility obligations start at 1.0, and only the latest `1.x` minor line
-  receives security fixes.

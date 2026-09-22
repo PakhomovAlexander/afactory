@@ -2,6 +2,8 @@ use serde_json::{Value, json};
 use std::io::Write;
 use std::path::Path;
 use std::process::Command;
+#[path = "support/schemas.rs"]
+mod schemas;
 #[path = "support/task_cli.rs"]
 mod task_cli;
 
@@ -30,40 +32,10 @@ fn af(repo: &Path, state: &Path, extra: &[&str]) -> Value {
 /// Checks actual `af task` JSON against the one published inspection schema.
 fn valid_inspection(value: &Value) {
     static SCHEMA: std::sync::OnceLock<jsonschema::Validator> = std::sync::OnceLock::new();
-    let schema = SCHEMA.get_or_init(|| {
-        let directory = std::env::var_os("AF_WORKSPACE_ROOT")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
-            .join("schemas");
-        let mut registry = jsonschema::Registry::new();
-        for entry in std::fs::read_dir(&directory).unwrap() {
-            let path = entry.unwrap().path();
-            if path.extension().and_then(|e| e.to_str()) != Some("json") {
-                continue;
-            }
-            let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-            let Some(id) = value["$id"].as_str().map(str::to_owned) else {
-                continue;
-            };
-            registry = registry
-                .add(id, jsonschema::Resource::from_contents(value))
-                .unwrap();
-        }
-        let root: Value = serde_json::from_slice(
-            &std::fs::read(directory.join("task-inspection-v11.json")).unwrap(),
-        )
-        .unwrap();
-        let registry = registry.prepare().unwrap();
-        jsonschema::options()
-            .with_registry(&registry)
-            .build(&root)
-            .unwrap()
-    });
-    let errors: Vec<_> = schema
-        .iter_errors(value)
-        .map(|e| format!("{} at {}", e, e.instance_path()))
-        .collect();
-    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    schemas::valid(
+        SCHEMA.get_or_init(|| schemas::validator("task-inspection-v11.json")),
+        value,
+    );
 }
 
 fn install_optimizer_catalog(repo: &Path) {

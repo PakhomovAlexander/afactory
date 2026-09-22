@@ -8,7 +8,8 @@ One decision per file, numbered in order of acceptance as `NNNN-kebab-case-title
 once accepted**. Each opens with a status line carrying the status and date, states the context,
 lists the considered options with the reasons each was rejected, records the decision, and ends
 with its consequences. A changed decision is a new ADR that names what it supersedes. A partially
-superseded ADR keeps its body as it was and gains a note on its status line linking the new ADR; a
+superseded ADR keeps its body as it was and gains a note on its status line linking the new ADR,
+and that status line may be restated when the new ADR spends the transition wording it carried; a
 fully superseded ADR is deleted with its index entry, and git history keeps it. Links to a deleted
 ADR, or to an internal record deleted at GA, are rewritten to point at the superseding ADR or to
 plain text; this is the only edit allowed in another accepted ADR's body
@@ -16,13 +17,15 @@ plain text; this is the only edit allowed in another accepted ADR's body
 
 A number is never reissued: a deleted record leaves its number empty, and the index simply skips
 it. Two records were accepted on the same day under the number 0107 — the warm-layer ADR and the
-release-validation ADR listed beside it. Both keep the number they were accepted under, because
-renumbering either one would rewrite links inside other accepted ADRs, and 0107 is not issued
-again.
+release-validation ADR listed beside it. Both keep the number they were accepted under, for
+different reasons: the release-validation record keeps its number by owner decision, and the
+warm-layer record keeps its because renumbering it would rewrite links inside the accepted
+ADR-0108, ADR-0109 and ADR-0110 and in a shipped release section. 0107 is not issued again.
 
-To propose one, take the next free number, write it in that shape, add it to the index below, and
-open a pull request; it becomes binding when the pull request merges with the status `accepted`.
-Record the options you rejected and why — that is the part future readers need.
+To propose one, take the next number after the highest in the index below, write it in that
+shape, add it to the index, and open a pull request; it becomes binding when the pull request
+merges with the status `accepted`. Record the options you rejected and why — that is the part
+future readers need.
 
 ## Index
 

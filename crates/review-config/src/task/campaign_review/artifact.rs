@@ -188,7 +188,7 @@ mod tests {
         let codec = ReviewArtifactCodec::Flat {
             artifact_type: contract::CHANGE_SET_V1.into(),
         };
-        let payload = json!({"prior_findings": []});
+        let payload = json!({"raw": []});
         let raw = cas.put_json(&payload).unwrap();
         for references in [vec![], vec![raw.clone(), raw.clone()]] {
             let (id, _) = cas

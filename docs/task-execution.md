@@ -42,8 +42,9 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   refuses instead of falling back, and a Campaign that holds pre-Task executor history (af < 0.9)
   is refused ([ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md),
   [ADR-0113](adr/0113-ga-reads-only-what-ga-writes.md)).
-- Provider admission is a paid, captured node inside the Task's own limits; catalog V2 requires
-  an explicit admission cost, and native identity is rechecked before every private send
+- Provider admission is a paid, captured node inside the Task's own limits; a catalog may
+  declare an explicit admission cost, and an omitted one means the fixed 4,096-token, 45-second
+  allowance, and native identity is rechecked before every private send
   ([ADR-0090](adr/0090-recheck-native-task-provider-identity-before-private-invocation.md),
   [ADR-0091](adr/0091-capture-explicit-task-provider-admission-costs.md)).
 
@@ -77,7 +78,7 @@ Start with the Task-file walkthrough, then follow the composition pages in order
 - [Issues](task-execution/issues.md) — read-only local/Jira requirement capture and explicit revision refresh.
 - [Documents](task-execution/document.md) — document Tasks with captured sources, content checks and independent acceptance.
 - [Run reports](task-execution/run-reports.md) — scheduler diagnostics and domain publication recovery.
-- [Self-optimizer economics](task-execution/self-optimizer.md) — declared history capture, exact project economics and the report-only M1 Pipeline.
+- [Self-optimizer economics](task-execution/self-optimizer.md) — declared history capture, exact project economics, the bounded candidate experiment and the light optimizer path.
 - [Review report inspection](task-execution/review-report-inspection.md) — exact current Task accounting beside immutable report snapshots.
 - [Campaign Review](task-execution/campaign-review.md) — how `af review run` maps onto the common Task runtime, and the CLI boundaries.
 

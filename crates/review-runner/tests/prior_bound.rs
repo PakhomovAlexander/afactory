@@ -3,12 +3,9 @@ use std::collections::BTreeMap;
 use review_core::{ChangeSetV1, SubjectV1};
 use review_runner::{MAX_CHANGE_SET_BYTES, ReviewerInputArtifact, ReviewerInputs};
 
-/// The prompt section a model adapter appends for `inputs`.
-fn render(inputs: &ReviewerInputs) -> Result<String, String> {
-    let mut prompt = String::new();
-    inputs.render_into(&mut prompt)?;
-    Ok(prompt)
-}
+#[path = "support/render.rs"]
+mod render_support;
+use render_support::render;
 
 fn inputs_with_change_set(change_set: serde_json::Value) -> Result<ReviewerInputs, String> {
     let encoded = review_store::canonical::canonicalize(&change_set).unwrap();

@@ -524,7 +524,8 @@ fn canonical_prior_finding_set_id_from_events(
         }
         let id = ids.pop().expect("exactly one canonical Finding Set output");
         let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
-            cas.get_json(&id).map_err(|error| error.to_string())?,
+            cas.get_json(&id)
+                .map_err(|error| format!("prior ledger output {id} is unreadable: {error}"))?,
         )
         .map_err(|error| format!("prior Finding Set {id} is not an artifact envelope: {error}"))?;
         review_store::validate_envelope(&envelope).map_err(|error| error.to_string())?;
@@ -1115,6 +1116,123 @@ outputs = [{ name = "set", type = "review.kernel/FindingSet@1", cardinality = "o
         );
     }
 
+    /// The typed FindingSet@1 branch fails closed on an unreadable prior Ledger output instead
+    /// of falling back to genesis lineage.
+    #[test]
+    fn canonical_lineage_refuses_an_unreadable_ledger_finding_set() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let genesis = cas.put(b"genesis").unwrap();
+        let pipeline_id = cas
+            .put(
+                br#"version = 2
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+outputs = [{ name = "set", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+"#,
+            )
+            .unwrap();
+        let campaign_manifest_id = format!("sha256:{}", "a".repeat(64));
+        let campaign = CampaignManifestV1 {
+            authority_snapshot_id: genesis.clone(),
+            subject_kind: review_core::SubjectKind::WholeTree,
+            base_snapshot_id: None,
+            pipeline: review_core::AuthorityFileV1 {
+                path: "review.toml".into(),
+                artifact_id: pipeline_id,
+            },
+            reviewer_lock: review_core::AuthorityFileV1 {
+                path: "review.lock".into(),
+                artifact_id: genesis.clone(),
+            },
+            reviewers: Vec::new(),
+            execution_policy_ids: vec![genesis.clone()],
+            project_policy_ids: Vec::new(),
+            convergence: review_core::CampaignConvergenceV1 {
+                clean_rounds: 1,
+                max_rounds: 2,
+                gate: "major".into(),
+            },
+            reviewer_timeout_seconds: 60,
+            check_timeout_seconds: 3600,
+            git_timeout_seconds: 300,
+            budgets: None,
+            focus: None,
+            finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
+            finding_genesis_id: genesis.clone(),
+            demand_genesis_id: genesis,
+        };
+        let round = review_core::RunEvent {
+            event_id: "round-1".into(),
+            run_id: "run".into(),
+            sequence: 0,
+            event_type: EventType::RoundStartedV1,
+            occurred_at: "2026-08-26T00:00:00Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: serde_json::to_value(RoundStartedPayloadV1 {
+                round: 1,
+                epoch: 1,
+                campaign_manifest_id: campaign_manifest_id.clone(),
+                subject_id: format!("sha256:{}", "b".repeat(64)),
+                prior_finding_set_id: format!("sha256:{}", "c".repeat(64)),
+                prior_demand_set_id: format!("sha256:{}", "d".repeat(64)),
+            })
+            .unwrap(),
+        };
+        let unreadable_set_id = format!("sha256:{}", "f".repeat(64));
+        let hex = unreadable_set_id.strip_prefix("sha256:").unwrap();
+        let object = directory
+            .path()
+            .join("objects")
+            .join(&hex[..2])
+            .join(&hex[2..]);
+        std::fs::create_dir_all(object.parent().unwrap()).unwrap();
+        std::fs::write(object, b"corrupt").unwrap();
+        let receipt = review_core::RunEvent {
+            event_id: "receipt-1".into(),
+            run_id: "run".into(),
+            sequence: 1,
+            event_type: EventType::NodeOutputReceiptV1,
+            occurred_at: "2026-08-26T00:00:01Z".into(),
+            node_id: Some("ledger".into()),
+            attempt_id: None,
+            causation_id: Some(round.event_id.clone()),
+            correlation_id: None,
+            artifact_refs: vec![unreadable_set_id.clone()],
+            payload: serde_json::to_value(NodeOutputReceiptPayloadV1 {
+                node: "ledger".into(),
+                outputs: vec![PortArtifactsV1 {
+                    port: "set".into(),
+                    artifact_type: review_core::contract::FINDING_SET_V1.into(),
+                    cardinality: review_core::PortCardinality::One,
+                    optional: false,
+                    snapshot_affinity: SnapshotAffinity::Any,
+                    artifact_ids: vec![unreadable_set_id],
+                    subject_snapshot_id: None,
+                }],
+            })
+            .unwrap(),
+        };
+        let terminal = exhausted_report(2, &round.event_id, "ledger", "campaign exhausted");
+
+        let error = canonical_prior_finding_set_id_from_events(
+            &cas,
+            &[round, receipt, terminal],
+            3,
+            2,
+            &campaign_manifest_id,
+            &campaign,
+        )
+        .unwrap_err();
+        assert!(error.contains("prior ledger output"), "{error}");
+        assert!(error.contains("unreadable"), "{error}");
+    }
+
     #[test]
     fn unreadable_report_locations_are_omitted_from_finding_sets() {
         let directory = tempfile::tempdir().unwrap();
@@ -1280,6 +1398,13 @@ outputs = [{ name = "set", type = "review.kernel/FindingSet@1", cardinality = "o
             "disputes": []
         }));
         assert!(retired.is_err(), "a ReviewerResult@1 answer is refused");
+        // The canonical reducer routes any object carrying one of the three keys here rather
+        // than reading it as a gather manifest, so a partial result is refused loudly.
+        let partial = reviewer_stage_output(serde_json::json!({
+            "reports": [],
+            "benchmark_demands": []
+        }));
+        assert!(partial.is_err(), "a partial ReviewerResult@2 is refused");
     }
 
     #[test]
@@ -1299,15 +1424,15 @@ outputs = [{ name = "set", type = "review.kernel/FindingSet@1", cardinality = "o
         let assigned = vec!["finding:a".to_string(), "finding:b".to_string()];
 
         assert_eq!(
-            reviewer_result_value(&stage(&["finding:a"]), &assigned,).unwrap_err(),
+            reviewer_result_value(&stage(&["finding:a"]), &assigned).unwrap_err(),
             ReviewerResultRejection::MissingDispositionCoverage
         );
         assert_eq!(
-            reviewer_result_value(&stage(&["finding:a", "finding:a"]), &assigned,).unwrap_err(),
+            reviewer_result_value(&stage(&["finding:a", "finding:a"]), &assigned).unwrap_err(),
             ReviewerResultRejection::DuplicateDisposition
         );
         assert_eq!(
-            reviewer_result_value(&stage(&["finding:a", "finding:outside"]), &assigned,)
+            reviewer_result_value(&stage(&["finding:a", "finding:outside"]), &assigned)
                 .unwrap_err(),
             ReviewerResultRejection::UnassignedDisposition
         );

@@ -1,6 +1,6 @@
 # Project economics and the light optimizer
 
-`af self optimize` is the M1 project-economics entry point. Unlike binary-management `self`
+`af self optimize` is the project-economics entry point. Unlike binary-management `self`
 commands it dispatches through the repository's `.af/af.lock`, then performs a token-free stable
 prefix capture and previews a normal common-runtime Task plan. Run the exact captured plan with
 `af task run TASK_ID --confirm-plan PLAN_ID`, or use `--execute` for explicit automation.
@@ -196,10 +196,11 @@ For a deliverable candidate, use the controlled configuration Pipeline below.
 ### Native `af` receipts
 
 The `af` adapter reads the public `af/task-inspection@11` receipt that `af task show --json`
-prints and refuses any other inspection version. The receipt carries measured Attempt walls and
-`af/TaskRuntimeEvidence@1` sidecars emitted by the common Task runtime, retains prepared, decided
-and registered experimental closures, and projects later immutable Task evidence beside an
-adoption observation without treating it as causal proof. Experimental child Attempts remain
+prints and refuses any other inspection version. Each of the receipt's sections appears only
+when the Task recorded it: measured Attempt walls with the `af/TaskRuntimeEvidence@1` sidecars
+the common Task runtime emitted, the prepared, decided and registered experimental closures, and
+later immutable Task evidence beside an adoption observation, which is never read as causal
+proof. Experimental child Attempts remain
 ordinary execution records, so cumulative usage-observed and settled charges are reconciled by
 Attempt identity and each baseline, candidate, failed arm, retry and admission is counted once.
 Shared Code Task and captured Review checks retain host-observed check spans. Captured Review

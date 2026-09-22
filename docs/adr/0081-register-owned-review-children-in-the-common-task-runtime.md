@@ -7,7 +7,9 @@ self-optimizer M1–M3 implementation. Superseded in part by
 and the Review Task policy generations before `LegacyReviewTaskPolicy@4` that compiled without
 owned children. The owned lifecycle is ordinary `af/TaskExecutionRecord@5` data, the only
 execution record. `LegacyReviewTaskPolicy@4`, the only generation, always installs this capture,
-and owned child sets are an optional section of `af/task-inspection@11`, the only inspection.
+and owned child sets are an optional section of `af/task-inspection@11`, the only inspection. GA
+has no Broker, so the Broker authority carried from the original captured Scatter slot, and
+Broker-only inspections, are gone with it.
 
 ## Context
 

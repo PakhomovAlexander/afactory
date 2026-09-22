@@ -435,8 +435,9 @@ impl ModelWorkerReturn {
     }
 }
 
-/// Validates the captured context and the returned output around one model call. Model
-/// Workers receive no sandbox-local environment.
+/// Validates the captured context and the returned output around one model call. This path
+/// gives model Workers no sandbox-local environment; a Review Task reviewer is dispatched
+/// through the Campaign Review host instead, which forwards its Build Cache location.
 #[allow(clippy::too_many_arguments)]
 pub fn invoke_model(
     cas: &Cas,

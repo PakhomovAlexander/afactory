@@ -3515,18 +3515,19 @@ fn latest_round_evidence(
         let receipt: review_core::NodeOutputReceiptPayloadV1 =
             serde_json::from_value(receipt.payload.clone()).map_err(|error| error.to_string())?;
         let mut count = None;
+        // Every Ledger port is typed, so the Finding Set is selected by its port's declared type
+        // and never by sniffing a sibling DemandSet@1 artifact's content.
         for artifact_id in receipt
             .outputs
             .iter()
+            .filter(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
             .flat_map(|port| port.artifact_ids.iter())
         {
             let value = cas
                 .get_json(artifact_id)
                 .map_err(|error| error.to_string())?;
-            let Ok(envelope) = serde_json::from_value::<review_core::ArtifactEnvelope>(value)
-            else {
-                continue;
-            };
+            let envelope: review_core::ArtifactEnvelope =
+                serde_json::from_value(value).map_err(|error| error.to_string())?;
             if envelope.artifact_type != review_core::contract::FINDING_SET_V1 {
                 continue;
             }

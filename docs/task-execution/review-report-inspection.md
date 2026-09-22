@@ -10,9 +10,9 @@ does not create events, receipts or missing artifacts.
 
 Each Task entry reports current cumulative `chargeable_tokens`, outstanding `reserved_tokens`,
 and started Attempt counts. Token totals and per-Attempt cumulative charges are canonical
-u128 decimal strings. Attempt counts and original
-reservation caps remain canonical u64 decimal strings. Native usage components are exact u128
-counters accumulated across native turns. Sequence numbers and wall-clock fields are JSON numbers.
+u128 decimal strings. Attempt counts and original reservation caps remain canonical u64 decimal
+strings. Native usage components are exact u128 counters accumulated across native turns.
+Sequence numbers and wall-clock fields are JSON numbers.
 
 Counts include failed, abandoned and fenced work, and exclude reservations released before
 starting. The three categories add up to the common budget's started Attempt count. A Provider

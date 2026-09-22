@@ -21,48 +21,17 @@ mod integration;
 mod owned;
 #[path = "task_public_schemas/recording.rs"]
 mod recording;
+#[path = "support/schemas.rs"]
+mod schemas;
 #[path = "support/task_cli.rs"]
 mod task_cli;
+
+use schemas::{valid, validator};
 
 fn workspace() -> PathBuf {
     std::env::var_os("AF_WORKSPACE_ROOT")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
-}
-
-fn validator(name: &str) -> jsonschema::Validator {
-    let directory = workspace().join("schemas");
-    let mut registry = jsonschema::Registry::new();
-    for entry in std::fs::read_dir(&directory).unwrap() {
-        let path = entry.unwrap().path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
-        }
-        let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
-        let Some(id) = value["$id"].as_str().map(str::to_owned) else {
-            continue;
-        };
-        registry = registry
-            .add(id, jsonschema::Resource::from_contents(value))
-            .unwrap();
-    }
-    let value: Value =
-        serde_json::from_slice(&std::fs::read(directory.join(name)).unwrap()).unwrap();
-    {
-        let registry = registry.prepare().unwrap();
-        jsonschema::options()
-            .with_registry(&registry)
-            .build(&value)
-            .unwrap()
-    }
-}
-
-fn valid(schema: &jsonschema::Validator, value: &Value) {
-    let errors: Vec<_> = schema
-        .iter_errors(value)
-        .map(|e| format!("{} at {}", e, e.instance_path()))
-        .collect();
-    assert!(errors.is_empty(), "{}", errors.join("\n"));
 }
 
 fn cli(repo: &Path, state: &Path, args: &[&str]) -> Output {
@@ -436,11 +405,43 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
     value["execution_records"] = json!([{"artifact_id":digest,"artifact_type":"af/TaskExecutionRecord@5","record":wide,"diagnostic":{"schema":"af.task-diagnostic/1","error":"opaque"}}]);
     value["chargeable_tokens"] = json!(u128::MAX.to_string());
     valid(&inspection_schema, &value);
+    let mut opaque = value.clone();
+    opaque["execution_records"][0]["diagnostic"] = json!(["opaque"]);
+    assert!(
+        !inspection_schema.is_valid(&opaque),
+        "a Failed settlement's diagnostic is an object"
+    );
     value["execution_records"][0]["artifact_type"] = json!("af/TaskExecutionRecord@3");
     assert!(
         !inspection_schema.is_valid(&value),
         "one closed execution record type"
     );
+    let mut scoped = finished.clone();
+    let other = scoped["execution_records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .position(|entry| {
+            !matches!(
+                entry["record"]["kind"].as_str(),
+                Some("settled" | "usage_observed")
+            )
+        })
+        .expect("a record that is not a settlement");
+    scoped["execution_records"][other]["diagnostic"] =
+        json!({"schema": "af.task-diagnostic/1", "error": "opaque"});
+    assert!(
+        !inspection_schema.is_valid(&scoped),
+        "only a settlement carries a diagnostic"
+    );
+    for section in ["attempt_walls", "runtime_observations"] {
+        let mut value = finished.clone();
+        value.as_object_mut().unwrap().remove(section);
+        assert!(
+            !inspection_schema.is_valid(&value),
+            "measured walls and their runtime sidecars appear together: {section}"
+        );
+    }
     for charge in [
         json!(7),
         json!("01"),

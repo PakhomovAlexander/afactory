@@ -40,14 +40,14 @@ not double-charge. The original settlement bytes and exact replay comparison are
 readiness and business calls retain separate captured policies and reservations in that same
 Task budget ([ADR-0091](../adr/0091-capture-explicit-task-provider-admission-costs.md)).
 
-## Installed cutover
+## Compiled Review topology
 
-The installed frontend now compiles the captured topology into an explicit public Task
-contract, typed per-edge lanes and inherited Gate conditions. Flat JSON is adapted through
-explicit codecs; existing envelopes keep their original identities and historical Snapshots.
+The installed frontend compiles the captured topology into an explicit public Task contract,
+typed per-edge lanes and inherited Gate conditions. Flat JSON is adapted through explicit
+codecs; envelopes within a Campaign keep their identities and captured Snapshots across Rounds.
 `af/LegacyReviewRound@1` binds input capture to the exact current Campaign Round. Generation and
-capture reopen without creating execution events. The compiler and operation host now exercise
-common plan admission and execution, including the installed CLI cutover
+capture reopen without creating execution events. The compiler and operation host exercise
+common plan admission and execution
 ([ADR-0069](../adr/0069-compile-captured-review-ports-with-explicit-artifact-codecs.md)).
 
 ```text
@@ -140,8 +140,9 @@ Recorded-plan recompilation reads existing root wrappers and refuses their absen
 producer, changed Round or changed head; it does not recreate missing CAS objects. Historical
 Round reconstruction is separate from the active-epoch check used for dispatch. A Ledger's
 `FindingSet@1` output carries the canonical Finding Set envelope, and every Ledger node also
-publishes its `finding_set` and `demand_set` companions. A Scatter's slices answer `ReviewerResult@2`, like every
-reviewer, so a Scatter must inherit Generation's exact Finding Set input.
+publishes its `finding_set` and `demand_set` companions. A Scatter's slices answer
+`ReviewerResult@2`, like every reviewer, so a Scatter must inherit Generation's exact Finding Set
+input.
 
 ## Common operation host
 

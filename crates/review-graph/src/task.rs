@@ -569,7 +569,8 @@ impl CompiledTask {
     }
 
     /// The existing graph planner remains the authority for DAG topology. Task lineage and
-    /// named evidence were proven separately; legacy SameSubject cannot represent S0 -> S1.
+    /// named evidence were proven separately; a same-Subject affinity cannot represent
+    /// S0 -> S1.
     pub fn scheduler_plan(&self) -> Result<Planned, String> {
         let mut pipeline = Pipeline::default();
         for (id, node) in &self.nodes {

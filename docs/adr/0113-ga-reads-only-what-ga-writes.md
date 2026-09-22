@@ -58,9 +58,9 @@ GA reads only what GA writes. Compatibility obligations start at the GA release.
    a collapsed contract may also change in place under its number instead of taking a new
    version: it may drop a field nothing reads, require one every writer sets, or change what an
    omitted value means. `ReviewerResult@2`, for example, no longer has the reviewer `verdict` and
-   `summary` that no decision, projection or display read. This replaces ADR-0002's bump rule, and ADR-0021's new-version rule for
-   reviewer results, for pre-GA contracts only. From GA on, both rules apply unchanged to every
-   contract GA ships.
+   `summary` that no decision, projection or display read. This replaces ADR-0002's bump rule,
+   and ADR-0021's new-version rule for reviewer results, for pre-GA contracts only. From GA on,
+   both rules apply unchanged to every contract GA ships.
 4. **Persisted names keep their spelling.** This decision retires readers, not names.
    `review.kernel/*` and `af/*` type strings, schema IDs and established Review Kernel terms stay
    as they are, and the AGENTS.md rule against renaming them stands: a rename would change content
@@ -72,11 +72,12 @@ GA reads only what GA writes. Compatibility obligations start at the GA release.
    activated or dispatched to, and a binary that embeds the release key refuses every release whose
    `SHA256SUMS` signature is missing or does not verify. The pre-rename `afactory/` configuration
    directory is not read, and `AFACTORY_*` variables have no meaning.
-6. **Superseded ADRs.** An accepted ADR's body stays immutable. A partially superseded ADR keeps its
-   body and gains a status-line note that links the ADR superseding it. A fully superseded ADR is
-   deleted together with its index entry, and git history keeps it. Links to a deleted ADR are
-   rewritten to point at the superseding ADR, or to plain text; this is the only edit allowed in
-   another accepted ADR's body.
+6. **Superseded ADRs.** An accepted ADR's body stays immutable. A partially superseded ADR keeps
+   its body and gains a status-line note that links the ADR superseding it; a status line may
+   also be restated when the superseding ADR spends the transition wording it carried. A fully
+   superseded ADR is deleted together with its index entry, and git history keeps it. Links to a
+   deleted ADR are rewritten to point at the superseding ADR, or to plain text; this is the only
+   edit allowed in another accepted ADR's body.
 7. **The Task-runtime cutover is finished, and its transition text is spent.** Every Campaign and
    every Task runs on the common runtime; clause 1 removes the last reason to keep a second
    executor. The ADRs that recorded the move, one increment at a time, keep their decisions and
@@ -157,11 +158,12 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0048](0048-compile-task-ports-and-fence-developer-plan-decisions.md): the legacy-link
   obligation, the additive transition generations it started, and the scheduler's own Gate
   suppression, which only the pre-Task Review executor used. Every Task lifecycle change is one
-  ordinary `TaskTransition@5` event. A Review Gate is a Task condition, so a node it blocks is suppressed as an unselected
-  branch, and no report records a `gate_blocked` suppression.
+  ordinary `TaskTransition@5` event. A Review Gate is a Task condition, so a node it blocks is
+  suppressed as an unselected branch, and no report records a `gate_blocked` suppression.
 - [ADR-0049](0049-run-task-workers-through-shared-durable-attempts.md): retained legacy
   implementation Stores, the common Store's read-only links to legacy histories, the historical
-  delivery fixture, and the fixed command implementation entry point with its ADR-0051 migration.
+  delivery fixture, the fixed command implementation entry point with its ADR-0051 migration, and
+  its *Compatibility and remaining work* section.
 - [ADR-0057](0057-export-portable-task-definitions-without-execution-authority.md): readability of
   previously captured locks.
 - [ADR-0062](0062-refresh-issue-revisions-without-resetting-execution-authority.md): the original
@@ -178,7 +180,9 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   selection from `AttemptAdmitted@1`, and its *Compatibility and remaining integration* section.
 - [ADR-0068](0068-retain-inflight-task-usage-in-the-common-budget.md): usage observations and
   settlements encoded with numeric charges. Every execution record is
-  `af/TaskExecutionRecord@5`, and its charges are canonical decimal text.
+  `af/TaskExecutionRecord@5`, and its charges are canonical decimal text. Its Broker receipts are
+  gone with the Broker, and the broker-to-common-Task receipt adapter it left to the Review
+  cutover is never built.
 - [ADR-0069](0069-compile-captured-review-ports-with-explicit-artifact-codecs.md): the
   compatibility types that pipeline format 1 shorthand Generation outputs received by port name,
   the types opaque shorthand Gate, Gather and Ledger ports received by node kind, and the pending
@@ -212,11 +216,12 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   and inspection generations, and the Review Task policy generations before
   `LegacyReviewTaskPolicy@4` that compiled without owned children, and the specialist review,
   legacy CLI cutover and performance pilot its consequences recorded as pending. The owned
-  lifecycle is ordinary `af/TaskExecutionRecord@5` data.
+  lifecycle is ordinary `af/TaskExecutionRecord@5` data. Its Broker authority, carried from the
+  original captured Scatter slot, and its Broker-only inspections are gone with the Broker.
 - [ADR-0082](0082-continue-captured-review-rounds-within-the-original-task.md): earlier
-  `TaskTransition` and `TaskReviewHandoff` generations, and inspection@6. A continuation is an
-  ordinary change of `TaskTransition@5`, and a handoff is `af/TaskReviewHandoff@2`. Its
-  pending-cutover paragraph and frozen-tree gate log are spent.
+  `TaskTransition` and `TaskReviewHandoff` generations, and `af/task-inspection@6`. A
+  continuation is an ordinary change of `TaskTransition@5`, and a handoff is
+  `af/TaskReviewHandoff@2`. Its pending-cutover paragraph and frozen-tree gate log are spent.
 - [ADR-0083](0083-run-post-round-integration-within-the-original-task.md): earlier inspection,
   transition, run-report and handoff generations. Selection and completion are ordinary changes
   of `TaskTransition@5`, a phase report is `af/TaskRunReport@2` carrying its `phase_id`, and an
@@ -233,7 +238,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0087](0087-control-native-task-invocations-through-the-shared-supervisor.md): the Worker
   entry points without a control, and the forwarding that kept their previous behavior. Every
   native Task call is controlled; an adapter honors or refuses each supplied control, and a model
-  Worker receives no sandbox-local environment.
+  Worker dispatched through the generic Task host (`invoke_model`) receives no sandbox-local
+  environment, while a Review Task reviewer receives its Build Cache location.
 - [ADR-0088](0088-retain-native-billing-completeness-with-task-usage.md): the Broker floor among
   the charges an incomplete bill must carry, and the legacy Review host among the callers that
   forward the observation. GA has no Broker and no second Review host: Provider admission and
@@ -264,17 +270,23 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   adapter now refuses a command without `--model`, which every Task binding passes. The legacy
   Review envelope and the old provider-smoke accounting that it left as follow-up work are gone
   with the pre-Task Review executor and the Provider Operation.
+- [ADR-0103](0103-constrain-native-claude-task-replies.md): the historical legacy prompts that
+  continue to use a textual `result`, and the legacy Review transport it left unchanged. GA has
+  one Review host, the Task runtime, and every native Claude Task reply is the typed file.
 - [ADR-0104](0104-preview-captured-task-plans-before-first-execution.md): the preview for the
   legacy goal entry point; `task start` takes only a Task file.
 - [ADR-0106](0106-authorize-experimental-children-separately.md): earlier inspection and execution
   generations. Experimental children are ordinary `af/TaskExecutionRecord@5` data.
-- [ADR-0107](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md): the legacy path
-  that recorded the Warm Set before the node's first `AttemptDispatched@1`, and the Task-path
-  claim that durable admission rechecks a stored `af/WorkerNotes@1` artifact against its
-  producing Attempt. That recheck was shadowed by the resolved-output override from the day it
-  was written, so it never ran; collapsing the output validators to one method makes that
-  visible. The Worker contract still refuses unknown fields and invalid paths at parse, and the
+- [ADR-0107 *Carry Worker Notes*](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md):
+  the legacy path that recorded the Warm Set before the node's first `AttemptDispatched@1`, and
+  the Task-path claim that durable admission rechecks a stored `af/WorkerNotes@1` artifact
+  against its producing Attempt. That recheck was shadowed by the resolved-output override from
+  the day it was written, so it never ran; collapsing the output validators to one method makes
+  that visible. The Worker contract still refuses unknown fields and invalid paths at parse, and the
   host still binds `node`, `attempt_id` and `head_snapshot_id` from kernel authority.
+- [ADR-0107 *Share release validation*](0107-share-release-validation-and-overlap-builds.md):
+  the CI-economics report that computed wall time apart from summed runner time. GA keeps only
+  the per-step `af.ci-step/1` record, whose `tokens` and `billed_runner_minutes` are always null.
 - [ADR-0108](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md): the legacy
   Kernel's in-memory record of a Worker's clone measurement.
 - [ADR-0110](0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md): the Kernel

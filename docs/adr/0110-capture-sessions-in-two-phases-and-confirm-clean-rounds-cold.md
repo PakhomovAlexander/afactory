@@ -107,9 +107,9 @@ Round that closes clean on warm results alone is worth less than it looks.
   its authentication directory is the directory a kernel-owned session home would replace.
 - **Cold Closeout is compiled, conditional and protected.** `[convergence] cold_closeout` names,
   at load time, the exact warm reviewers that owe a cold confirmation; the load refuses a policy
-  naming no warm reviewer and a budget that cannot admit the extra Attempt beside the Round's
-  Workers. Each named
-  node reserves its confirmation *before its warm Attempt is reserved*, which is what protects it:
+  that names no warm reviewer, and a budget that cannot admit the extra Attempt beside the
+  Round's Workers. Each named node reserves its confirmation *before its warm Attempt is
+  reserved*, which is what protects it:
   the node's own retries meet a cap that is already holding it. It carries no warm layer of any
   kind, makes no Proposal and leaves no Notes.
 - **The Round decides, not one reviewer.** A confirmation is dispatched at the Ledger, where every

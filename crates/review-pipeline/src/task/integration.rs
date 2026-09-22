@@ -60,8 +60,9 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         .map_err(|e| e.to_string())
     }
 
-    /// Execute exactly the captured sequence with the original Attempt allowance. Returned
-    /// report @2 never replaces the original Round report @1 or publishes a canonical commit.
+    /// Execute exactly the captured sequence with the original Attempt allowance. The returned
+    /// phase report never replaces the Round's own scheduler report (the one without a
+    /// `phase_id`) or publishes a canonical commit.
     pub fn execute_review_integration(
         &self,
         phase: &RegisteredTaskReviewIntegration,

@@ -48,23 +48,23 @@ impl TaskOperatorHost for RecoveringHost<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
+        definition: &review_graph::task::CompiledNode,
         attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        self.inner.prepare_context(cas, input, _definition, attempt)
+        self.inner.prepare_context(cas, input, definition, attempt)
     }
 
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
+        definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
-        _cancellation: Option<&std::sync::atomic::AtomicBool>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         self.calls.fetch_add(1, Ordering::SeqCst);
         self.inner
-            .execute(cas, input, _definition, attempt, _cancellation)
+            .execute(cas, input, definition, attempt, cancellation)
     }
 
     fn commit_domain_output(
@@ -135,10 +135,10 @@ impl TaskDomain for RecoveringHost<'_> {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
-        _definition: &review_graph::task::CompiledNode,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         self.inner
-            .validate_output(cas, task, plan, input, output, _definition)
+            .validate_output(cas, task, plan, input, output, definition)
     }
     fn validate_result(
         &self,

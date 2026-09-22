@@ -176,8 +176,8 @@ pub struct NodeSpec {
     /// The runner command then comes from the package's digest-verified manifest.
     #[serde(default)]
     pub package: Option<String>,
-    /// Required for every reviewer in pipeline v4. Earlier formats permanently retain their
-    /// pre-M6.3 credential behavior and cannot claim this binding retroactively.
+    /// Required for every reviewer in pipeline v4 and every reviewer or Scatter in v5. Formats
+    /// 2 and 3 make no credential claim and cannot add one retroactively.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<ReviewerExecutionSpec>,
     /// Required only on a pipeline-v5 Slicer. The outer graph stays static; this policy fixes

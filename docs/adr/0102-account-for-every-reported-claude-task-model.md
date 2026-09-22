@@ -1,11 +1,12 @@
 # ADR-0102: Account for every reported Claude Task model
 
 Date: 2026-09-15
-Status: Accepted (2026-09-23); superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): an
-adapter invoked without an explicit model restriction (its default-model compatibility, and any
-unambiguous entry explaining the top-level summary); the Task adapter now requires `--model`.
-The legacy Review envelope and the old provider-smoke accounting left as follow-up work are gone
-with the pre-Task Review executor and the Provider Operation.
+Status: Accepted (2026-09-23); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): an adapter invoked without an explicit model
+restriction (its default-model compatibility, and any unambiguous entry explaining the top-level
+summary); the Task adapter now requires `--model`. The legacy Review envelope and the old
+provider-smoke accounting left as follow-up work are gone with the pre-Task Review executor and
+the Provider Operation.
 
 ## Context
 

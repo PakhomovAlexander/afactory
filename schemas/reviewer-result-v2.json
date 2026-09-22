@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:review-kernel:schema:reviewer-result:2",
   "title": "ReviewerResult@2 payload",
-  "description": "Additive reviewer result contract with one explicit disposition for every assigned prior Finding. Assignment coverage is checked against the exact input FindingSet@1 by the kernel.",
+  "description": "The reviewer result contract: what one reviewer attempt returned, with one explicit disposition for every assigned prior Finding. Assignment coverage is checked against the exact input FindingSet@1 by the kernel.",
   "type": "object",
   "additionalProperties": false,
   "required": ["reports", "benchmark_demands", "dispositions"],

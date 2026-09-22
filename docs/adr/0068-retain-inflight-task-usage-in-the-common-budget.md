@@ -2,7 +2,9 @@
 
 Status: accepted. Superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): usage
 observations and settlements are encoded only as `TaskExecutionRecord@5`, the only execution
-record, with decimal-text charges; no generation carries a numeric charge.
+record, with decimal-text charges; no generation carries a numeric charge. GA has no Broker, so
+its receipts are gone and the broker-to-common-Task receipt adapter this record still awaits is
+never built.
 Date: 2026-09-12
 
 ## Context

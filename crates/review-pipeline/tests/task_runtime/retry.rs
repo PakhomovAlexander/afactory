@@ -10,20 +10,20 @@ impl TaskOperatorHost for NoRetry {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
+        definition: &review_graph::task::CompiledNode,
         attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        DocumentDomain.prepare_context(cas, input, _definition, attempt)
+        DocumentDomain.prepare_context(cas, input, definition, attempt)
     }
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
+        definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
-        _cancellation: Option<&std::sync::atomic::AtomicBool>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
-        DocumentDomain.execute(cas, input, _definition, attempt, _cancellation)
+        DocumentDomain.execute(cas, input, definition, attempt, cancellation)
     }
 }
 impl TaskDomain for NoRetry {
@@ -61,9 +61,9 @@ impl TaskDomain for NoRetry {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
-        _definition: &review_graph::task::CompiledNode,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
-        DocumentDomain.validate_output(cas, task, plan, input, output, _definition)
+        DocumentDomain.validate_output(cas, task, plan, input, output, definition)
     }
     fn validate_result(
         &self,

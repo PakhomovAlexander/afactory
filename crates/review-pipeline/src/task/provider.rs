@@ -290,6 +290,11 @@ impl ProviderTaskDomain<'_> {
     /// The Provider probe's own context bytes. The trait entry point, the probe and the
     /// admission recheck must render identically, so all three go through here. The probe
     /// carries no Attempt authority, so it renders from the feedback list alone.
+    ///
+    /// Public only for `tests/task_campaign_review/host/native.rs`'s
+    /// `provider_admission_renders_only_its_fixed_context_and_refuses_changed_identity`, which
+    /// cannot construct a `ReservedTaskAttempt`; not part of the crate's stable surface.
+    #[doc(hidden)]
     pub fn render_probe_context(
         &self,
         cas: &Cas,

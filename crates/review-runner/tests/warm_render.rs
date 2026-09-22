@@ -3,12 +3,9 @@
 
 use review_runner::{NotesRequest, ReviewerInputs, compose_command_input, compose_model_prompt};
 
-/// The prompt section a model adapter appends for `inputs`.
-fn render(inputs: &ReviewerInputs) -> Result<String, String> {
-    let mut prompt = String::new();
-    inputs.render_into(&mut prompt)?;
-    Ok(prompt)
-}
+#[path = "support/render.rs"]
+mod render_support;
+use render_support::render;
 
 const INSTRUCTIONS: &str = "Review the change.";
 
@@ -39,7 +36,7 @@ fn head_delta() -> serde_json::Value {
 }
 
 #[test]
-fn a_cold_input_renders_exactly_as_before() {
+fn a_cold_input_carries_only_its_result_contract() {
     let (prompt, manifest) =
         compose_model_prompt(INSTRUCTIONS, &ReviewerInputs::default()).unwrap();
     assert!(!prompt.contains("previous Round"));

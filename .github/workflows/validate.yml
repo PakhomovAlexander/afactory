@@ -47,7 +47,7 @@ jobs:
           mode: save
           primary-key: ${{ steps.cargo-cache.outputs.primary-key }}
           matched-key: ${{ steps.cargo-cache.outputs.matched-key }}
-      - name: Retain timings and test results
+      - name: Retain timings
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -55,7 +55,6 @@ jobs:
           path: |
             ${{ runner.temp }}/cache-metrics.json
             ${{ runner.temp }}/check-metrics.jsonl
-            target/nextest/ci/junit.xml
           if-no-files-found: warn
 
   container-probes:

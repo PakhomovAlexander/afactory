@@ -183,55 +183,17 @@ fn heartbeat_detects_a_replaced_writer_even_when_its_new_lease_is_far_from_renew
 #[test]
 fn a_host_that_cannot_honor_an_interruption_refuses_instead_of_ignoring_it() {
     // There is no forwarding default any more: every operator takes the cancellation and owes
-    // an explicit refusal when it cannot honor one. DocumentTaskDomain, PlanningTaskDomain and
-    // the pure Optimization steps all answer this way; this pins the contract they answer.
-    struct Host(std::sync::atomic::AtomicUsize);
-    impl TaskOperatorHost for Host {
-        fn prepare_context(
-            &self,
-            _: &Cas,
-            _: &TaskInvocationV1,
-            _definition: &review_graph::task::CompiledNode,
-            _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
-        ) -> Result<String, String> {
-            unreachable!()
-        }
-        fn execute(
-            &self,
-            _: &Cas,
-            _: &TaskInvocationV1,
-            _definition: &review_graph::task::CompiledNode,
-            _: Option<&PreparedTaskAttempt>,
-            cancellation: Option<&std::sync::atomic::AtomicBool>,
-        ) -> TaskWorkOutput {
-            if cancellation.is_some() {
-                return TaskWorkOutput {
-                    outputs: Err("Task operator does not support cancellation".into()),
-                    charged_tokens: Some(0),
-                    usage: None,
-                    usage_observation: None,
-                    raw_artifact_ids: vec![],
-                    usage_id: None,
-                    feedback_id: None,
-                };
-            }
-            self.0.fetch_add(1, Ordering::SeqCst);
-            TaskWorkOutput {
-                outputs: Ok(BTreeMap::new()),
-                charged_tokens: Some(0),
-                usage: None,
-                usage_observation: None,
-                raw_artifact_ids: vec![],
-                usage_id: None,
-                feedback_id: None,
-            }
-        }
-    }
-    let dir = tempfile::tempdir().unwrap();
-    let cas = Cas::open(dir.path()).unwrap();
-    let host = Host(std::sync::atomic::AtomicUsize::new(0));
+    // an explicit refusal when one is raised. PlanningTaskDomain is one of the pure domains that
+    // answer this way, so it stands here for the contract DocumentTaskDomain and the pure
+    // Optimization steps keep too.
+    let f = Fixture::new(SUCCESS);
+    let domain = review_pipeline::task::planning::PlanningTaskDomain {
+        compiler: &f.compiler,
+        task: &f.task,
+        graph: &f.graph,
+    };
     let input = TaskInvocationV1 {
-        plan_id: "a".repeat(64),
+        plan_id: f.plan_id.clone(),
         node: "root.nodes.work".into(),
         inputs: BTreeMap::new(),
     };
@@ -244,21 +206,27 @@ fn a_host_that_cannot_honor_an_interruption_refuses_instead_of_ignoring_it() {
         inputs: BTreeMap::new(),
         conditions: vec![],
     };
-    let flag = AtomicBool::new(false);
-    let refused = host.execute(&cas, &input, &node, None, Some(&flag));
-    assert!(refused.outputs.is_err());
-    assert_eq!(refused.charged_tokens, Some(0));
+    let raised = AtomicBool::new(true);
+    let refused = domain.execute(&f.cas, &input, &node, None, Some(&raised));
     assert_eq!(
-        host.0.load(Ordering::SeqCst),
-        0,
+        refused.outputs.unwrap_err(),
+        "Task execution was cancelled by its host"
+    );
+    assert_eq!(
+        refused.charged_tokens,
+        Some(0),
         "an unhonorable interruption is refused before any work runs"
     );
-    assert!(
-        host.execute(&cas, &input, &node, None, None)
-            .outputs
-            .is_ok()
-    );
-    assert_eq!(host.0.load(Ordering::SeqCst), 1);
+    // The same call without a raised interruption reaches the operator itself, so the refusal
+    // above is the cancellation check and not the domain declining the node.
+    let lowered = AtomicBool::new(false);
+    for cancellation in [None, Some(&lowered)] {
+        let reached = domain.execute(&f.cas, &input, &node, None, cancellation);
+        assert_eq!(
+            reached.outputs.unwrap_err(),
+            "Planning context requires its fixed input-free operator"
+        );
+    }
 }
 
 #[test]
@@ -269,10 +237,10 @@ fn cancellation_between_successful_work_and_selection_retains_spend_but_refuses_
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
-            _definition: &review_graph::task::CompiledNode,
+            definition: &review_graph::task::CompiledNode,
             attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
-            self.0.prepare_context(cas, input, _definition, attempt)
+            self.0.prepare_context(cas, input, definition, attempt)
         }
         fn execute(
             &self,
