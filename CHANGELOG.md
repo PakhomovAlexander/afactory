@@ -34,6 +34,18 @@ flag to use, so an existing habit fails loudly rather than silently.
   authenticated; document exit codes 3 (human action required), 4 (Provider CLI missing), 5
   (registry conflict), 6 (authentication failed) and 7 (usage unavailable) with results on stdout
   and diagnostics on stderr; and keep `af provider doctor` the charged end-to-end usability check.
+- Remove the `task_planning` integration-test timing race: a Task deadline is absolute
+  wall-clock from creation, and the generated-plan tests hold one Task open across a long chain
+  of `af` invocations, Git commits, catalog operations, signing and Python Workers. Under the
+  four-thread full test gate those subprocesses consumed the fixtures' 60s budget, so a valid
+  generated-plan resume was correctly but unhelpfully refused with `Task deadline protects
+  still-required verification`. The fixtures in `crates/af/tests/task_planning.rs` now start
+  their Tasks with a documented ten-minute wall budget, added to the total and taken from
+  nothing: per-Attempt walls, Attempt counts, token budgets and the verification reserve keep
+  their fixture values, and no production code changed. New tests pin both halves — the budget
+  must keep every Attempt a Task may start plus the whole reserve with documented slack to
+  spare, and `TaskBudget::prepare` keeps its exact deadline boundary and refusal wording at both
+  a small and a large budget (ADR-0113).
 
 ## [0.9.0-rc.6] - 2026-09-21
 
