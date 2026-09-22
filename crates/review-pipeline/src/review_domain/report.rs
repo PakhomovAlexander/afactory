@@ -172,8 +172,9 @@ impl ReviewDomainState<'_> {
                     NodeOutcome::Suppressed { reason } => RunNodeOutcomeV2::Suppressed {
                         reason: match reason {
                             review_graph::SuppressionReason::BranchNotSelected => {
-                                // Legacy Review plans cannot contain conditional Task nodes.
-                                // Their frozen report vocabulary has no inactive-branch outcome.
+                                // A node behind a Gate that did not pass is an unselected
+                                // Task branch. RunReport@6 has no inactive-branch outcome, so
+                                // it records upstream_missing.
                                 RunSuppressionReasonV2::UpstreamMissing
                             }
                             review_graph::SuppressionReason::UpstreamMissing => {

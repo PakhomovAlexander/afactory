@@ -103,7 +103,8 @@ pub struct Node {
     pub outputs: Vec<PortContract>,
     /// The gate whose pass is a precondition for dispatching this node. Transitive: a node
     /// downstream of a gated node is gated too. The Review compiler enforces it as a Task
-    /// condition; the scheduler does not read it.
+    /// condition. The scheduler does not gate on it; it only refuses an owned child that
+    /// carries one.
     pub gated_by: Option<String>,
 }
 

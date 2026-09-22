@@ -186,8 +186,9 @@ impl<'a> Scheduler<'a> {
     /// exactly what the edges deliver (sorted), suppression is a function of resolved upstream
     /// state alone, and the report lists nodes in plan order.
     ///
-    /// A node's `gated_by` is not read here: a Review Gate is compiled into a Task condition
-    /// before its plan reaches the scheduler.
+    /// A node's `gated_by` does not gate it here: a Review Gate is compiled into a Task
+    /// condition before its plan reaches the scheduler. The only use of the field is to refuse
+    /// an owned child that carries one.
     pub fn run(&self, dispatch: &(dyn Dispatch + Sync)) -> RunReport {
         let mut outputs: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
         let mut outcomes: BTreeMap<String, NodeOutcome> = BTreeMap::new();
