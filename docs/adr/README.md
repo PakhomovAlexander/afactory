@@ -202,3 +202,7 @@ Record the options you rejected and why — that is the part future readers need
 - [0107 — Share release validation and overlap builds](0107-share-release-validation-and-overlap-builds.md)
 - [0111 — Keep Provider bootstrap machine-local and cross-release
   safe](0111-keep-provider-bootstrap-machine-local-and-cross-release-safe.md)
+- [0112 — Refuse agent-mediated Provider logins and separate status from
+  usage](0112-refuse-agent-mediated-provider-logins.md)
+- [0113 — Budget CLI Task fixtures for loaded machines, never for a fast
+  one](0113-budget-cli-task-fixtures-for-loaded-machines.md)

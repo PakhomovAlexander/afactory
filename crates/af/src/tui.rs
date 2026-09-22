@@ -461,7 +461,7 @@ fn provider_limit_rows(limits: &[providers::ProviderLimit]) -> [String; 4] {
                 }
             }),
         3 if limits.len() > 3 => format!(
-            "+{} more; run `af provider status` for all limits",
+            "+{} more; run `af provider status --usage` for all limits",
             limits.len() - 3
         ),
         _ => String::new(),
@@ -1586,7 +1586,10 @@ impl App {
         let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let worker_cancelled = std::sync::Arc::clone(&cancelled);
         let handle = std::thread::spawn(move || {
-            let inventory = providers::discover_with_cancel(&worker_cancelled);
+            // An explicit refresh in the PROVIDERS pane is the operator asking for the whole
+            // picture, so it keeps probing subscription and quota windows.
+            let inventory =
+                providers::discover_with_cancel(&worker_cancelled, providers::UsageProbe::Probe);
             let _ = sender.send(inventory);
         });
         self.provider_refresh = Some(ProviderRefresh {
@@ -2847,6 +2850,7 @@ gate = "major"
         let limits: Vec<ProviderLimit> = (0..5)
             .map(|index| ProviderLimit {
                 name: format!("window-{index}"),
+                window_minutes: None,
                 used_percent: index,
                 resets_at: None,
             })
@@ -2854,7 +2858,10 @@ gate = "major"
         let rows = provider_limit_rows(&limits);
         assert!(rows[0].contains("window-0"));
         assert!(rows[2].contains("window-2"));
-        assert_eq!(rows[3], "+2 more; run `af provider status` for all limits");
+        assert_eq!(
+            rows[3],
+            "+2 more; run `af provider status --usage` for all limits"
+        );
     }
 
     #[test]

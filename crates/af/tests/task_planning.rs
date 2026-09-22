@@ -7,6 +7,28 @@ use std::process::Command;
 #[path = "support/task_cli.rs"]
 mod task_cli;
 
+/// Wall budget every Task in this file is started with, replacing the fixtures' own 60s.
+///
+/// These sequences chain many real subprocesses — `af` invocations, Git commits, catalog
+/// operations, signing and Python Workers — between Task creation and the resumed run, while a
+/// Task deadline is absolute wall-clock measured once at creation. The fixture budget therefore
+/// left the last `prepare` racing the still-required verification reserve: under `make check`'s
+/// four test threads those subprocesses stretch far enough that a valid generated-plan resume
+/// was refused with `Task deadline protects still-required verification`.
+///
+/// Ten minutes is far above the slowest observed sequence, so the deadline stops being the
+/// load-sensitive threshold. It is scheduling margin only: the per-Attempt wall (5s in every
+/// fixture Worker manifest and in the fixture code policy), the Attempt count, the token budget
+/// and the verification reserve are untouched and still bind exactly as before, and the
+/// deadline's own fail-closed refusal keeps its coverage in
+/// `crates/review-attempt/tests/task_budget.rs`. Do not collapse it back toward the elapsed time
+/// of a fast local run (ADR-0113).
+const PLANNING_WALL_MS: u64 = 600_000;
+/// Every fixture Worker manifest and the fixture code policy bound one Attempt at five seconds.
+const FIXTURE_ATTEMPT_WALL_MS: u64 = 5_000;
+/// Slack the budget keeps beyond every Attempt a Task may start plus its whole reserve.
+const PLANNING_SCHEDULING_MARGIN_MS: u64 = 300_000;
+
 fn run(repo: &Path, state: &Path, args: &[&str], code: i32) -> Value {
     let out = Command::new(env!("CARGO_BIN_EXE_af"))
         .current_dir(repo)
@@ -193,6 +215,7 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'proposal':[proposal
     ticket["facts"] = json!({"small":false});
     ticket["limits"]["max_attempts"] =
         json!(ticket["limits"]["max_attempts"].as_u64().unwrap() + if repair { 2 } else { 1 });
+    ticket["limits"]["wall_ms"] = json!(PLANNING_WALL_MS);
     write_json(&ticket_path, &ticket);
     commit(&repo);
     (repo, state, key)
@@ -256,6 +279,45 @@ fn decide(
 }
 fn approve(repo: &Path, state: &Path, root: &Path, key: &minisign::KeyPair) -> Value {
     decide(repo, state, root, key, false)
+}
+
+/// The sequences below are chains of real subprocesses, so nothing inside a test can make the
+/// Task deadline deterministic; only the admitted budget can keep it off the critical path.
+/// Pin that budget: every Attempt a Task may ever start, plus the whole protected reserve, has
+/// to fit with the documented margin still to spare, and the margin must be added to the budget
+/// rather than taken out of the reserve it protects.
+#[test]
+fn planning_fixtures_keep_the_task_deadline_off_the_load_sensitive_path() {
+    let root = tempfile::tempdir().unwrap();
+    let (repo, state, _) = setup(root.path(), true, true);
+    let planned = run(&repo, &state, &["task", "plan", "--file", "ticket.json"], 0);
+    let cas = review_store::Cas::open_existing(state.join("cas")).unwrap();
+    let revision = cas
+        .get_json(planned["revision_id"].as_str().unwrap())
+        .unwrap();
+    let limits = &revision["payload"]["limits"];
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let deadline = limits["deadline_unix_ms"].as_u64().unwrap();
+    let headroom = deadline
+        .checked_sub(now)
+        .expect("the admitted Task deadline is still ahead of the real clock");
+    let attempts = limits["max_attempts"].as_u64().unwrap();
+    let reserve = limits["verification"]["wall_ms"].as_u64().unwrap();
+    let committed = attempts * FIXTURE_ATTEMPT_WALL_MS + reserve;
+    assert!(
+        headroom >= committed + PLANNING_SCHEDULING_MARGIN_MS,
+        "{headroom}ms of Task deadline leaves no load margin over {committed}ms of Attempt and \
+         reserve wall; a slow four-thread run will refuse a valid resume"
+    );
+    let ticket_path = repo.join("ticket.json");
+    let ticket: Value = serde_json::from_slice(&std::fs::read(&ticket_path).unwrap()).unwrap();
+    assert_eq!(ticket["limits"]["wall_ms"], json!(PLANNING_WALL_MS));
+    assert_eq!(limits["verification"], ticket["limits"]["verification"]);
+    assert_eq!(limits["tokens"], ticket["limits"]["tokens"]);
+    assert_eq!(limits["max_attempts"], ticket["limits"]["max_attempts"]);
 }
 
 #[test]
@@ -459,6 +521,10 @@ fn generated_definition_exports_without_approval_and_a_second_developer_reuses_i
     let mut ticket: Value = serde_json::from_slice(&std::fs::read(&ticket_path).unwrap()).unwrap();
     ticket["task_id"] = json!("second-pagination");
     ticket["pipeline"]["name"] = json!("team/pagination");
+    // The consuming developer's Task is a fresh copy of the fixture file, so it needs the same
+    // scheduling margin as the producing one: its three Attempts run behind a catalog sync and
+    // a Git commit on the same loaded machine.
+    ticket["limits"]["wall_ms"] = json!(PLANNING_WALL_MS);
     write_json(&ticket_path, &ticket);
     commit(&consumer);
     let done = run(

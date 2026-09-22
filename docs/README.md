@@ -9,7 +9,9 @@ and `--help` on every namespace and command.
 1. [`../CONTEXT.md`](../CONTEXT.md) — the vocabulary. Everything else assumes it.
 2. [`architecture.md`](architecture.md) — the boundaries and the tests that enforce them.
 3. [`adr/README.md`](adr/README.md) — why each boundary is where it is.
-4. [`tasks.md`](tasks.md) — the `af task` walkthrough, once review makes sense.
+4. [`providers.md`](providers.md) — getting model access onto a machine, safely, before running
+   anything that spends tokens.
+5. [`tasks.md`](tasks.md) — the `af task` walkthrough, once review makes sense.
 
 ## By document
 
@@ -17,6 +19,7 @@ and `--help` on every namespace and command.
 |---|---|
 | [`architecture.md`](architecture.md) | How the kernel is built: crates, contracts, the store, source capture, Check nodes, reviewer adapters, sandboxes, the pipeline graph, pipeline definitions, routing, and Attempt budgets. Each section names the test that pins it. |
 | [`../CONTEXT.md`](../CONTEXT.md) | What a word means. Snapshot, Subject, Base, Campaign, Round, Report, Finding, Attempt, Provider and the rest, each with the nearby term it must not be confused with. Read it before arguing about behaviour. |
+| [`providers.md`](providers.md) | How a machine gets model access: registering a Provider, why an interactive login is opt-in and terminal-only, what `status` checks versus what `doctor` proves, and every `af provider` exit code. |
 | [`tasks.md`](tasks.md) | How to run implementation Tasks with `af task`: start, inspect, evaluate, and deliver to a new local worktree. |
 | [`task-execution.md`](task-execution.md) | The Task runtime reference: fixed product decisions, contracts, fixtures, and compatibility checkpoints for the common Task execution abstraction. |
 | [`migration.md`](migration.md) | Moving a repository from the retired `.review/` authority layout to `.af/` with `af onboard --migrate --apply`. |
