@@ -83,9 +83,9 @@ GA reads only what GA writes. Compatibility obligations start at the GA release.
    lose the text that described work still to come: the *Compatibility and remaining work*,
    *Verification and remaining integration*, *Compatibility and remaining integration* and
    *Evidence and migration boundary* sections of ADR-0049, ADR-0065, ADR-0067, ADR-0069,
-   ADR-0070 and ADR-0071, the pending-cutover paragraphs in the consequences of ADR-0081 and
-   ADR-0083, and the frozen-tree gate logs of ADR-0083 and ADR-0084. None of them names anything
-   a reader must still do, and their bodies stay as they were.
+   ADR-0070 and ADR-0071, the pending-cutover paragraphs in the consequences of ADR-0081,
+   ADR-0082 and ADR-0083, and the frozen-tree gate logs of ADR-0082, ADR-0083 and ADR-0084. None
+   of them names anything a reader must still do, and their bodies stay as they were.
 8. **Internal delivery records are not product documentation.** The package checklists,
    milestone plans, review records and CI measurement logs that tracked pre-GA work are deleted
    at GA, and git history keeps them: the `P00`–`P14` delivery record, the product backlog, the
@@ -215,7 +215,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   lifecycle is ordinary `af/TaskExecutionRecord@5` data.
 - [ADR-0082](0082-continue-captured-review-rounds-within-the-original-task.md): earlier
   `TaskTransition` and `TaskReviewHandoff` generations, and inspection@6. A continuation is an
-  ordinary change of `TaskTransition@5`, and a handoff is `af/TaskReviewHandoff@2`.
+  ordinary change of `TaskTransition@5`, and a handoff is `af/TaskReviewHandoff@2`. Its
+  pending-cutover paragraph and frozen-tree gate log are spent.
 - [ADR-0083](0083-run-post-round-integration-within-the-original-task.md): earlier inspection,
   transition, run-report and handoff generations. Selection and completion are ordinary changes
   of `TaskTransition@5`, a phase report is `af/TaskRunReport@2` carrying its `phase_id`, and an
@@ -233,6 +234,10 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   entry points without a control, and the forwarding that kept their previous behavior. Every
   native Task call is controlled; an adapter honors or refuses each supplied control, and a model
   Worker receives no sandbox-local environment.
+- [ADR-0088](0088-retain-native-billing-completeness-with-task-usage.md): the Broker floor among
+  the charges an incomplete bill must carry, and the legacy Review host among the callers that
+  forward the observation. GA has no Broker and no second Review host: Provider admission and
+  ordinary Task Workers forward every `af/TaskUsageObservation@1` to the common runtime.
 - [ADR-0089](0089-interrupt-task-work-when-its-writer-heartbeat-fails.md): the Broker
   accounting, calls and late receipts that the runtime kept outside Worker invocation.
 - [ADR-0091](0091-capture-explicit-task-provider-admission-costs.md): the V1 catalog and
