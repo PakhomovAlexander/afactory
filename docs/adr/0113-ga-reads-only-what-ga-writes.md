@@ -1,7 +1,7 @@
 # ADR-0113: GA reads only what GA writes
 
 **Status:** accepted (2026-09-21). Supersedes in part the ADRs listed under *Superseded clauses*
-and ADR-0024, ADR-0043 and ADR-0051 in full.
+and ADR-0016, ADR-0024, ADR-0043 and ADR-0051 in full.
 
 Before GA, Afactory treated everything it had ever written as a permanent obligation.
 [ADR-0002](0002-event-payload-changes-bump-the-type-version.md) made every superseded event reader
@@ -104,6 +104,10 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   light review stays the default.
 - [ADR-0041](0041-make-review-selectors-explicit-and-refuse-empty-diffs.md): the compatibility
   spelling `--authority REV`.
+- [ADR-0042](0042-require-provider-bindings-and-isolate-claude-reviewers.md): the durable, fenced,
+  charged Provider Operation that `af provider doctor` and `af review run` shared, with the
+  Campaign/Round admission evidence and smoke budget it left. Both commands now admit Providers
+  through the Review Task's captured Provider admission Attempts.
 - [ADR-0044](0044-af-manages-itself-and-dispatches-to-the-pinned-release.md): the `afactory/`
   configuration read-through and the `AFACTORY_*` rename refusals.
 - [ADR-0045](0045-one-release-train-and-a-pin-that-binds-bytes.md): the 0.7.1 `af_version` lock
@@ -169,11 +173,22 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   proof.
 - [ADR-0102](0102-account-for-every-reported-claude-task-model.md): the default-model
   compatibility of a Claude Task adapter invoked without an explicit model restriction. The
-  adapter now refuses a command without `--model`, which every Task binding passes.
+  adapter now refuses a command without `--model`, which every Task binding passes. The old
+  provider-smoke accounting that it left as follow-up work is gone with the Provider Operation.
 - [ADR-0104](0104-preview-captured-task-plans-before-first-execution.md): the preview for the
   legacy goal entry point; `task start` takes only a Task file.
 - [ADR-0106](0106-authorize-experimental-children-separately.md): earlier inspection and execution
   generations.
+
+ADR-0016 is superseded in full. Its Provider Operation admitted a Provider before the pre-Task
+Review executor dispatched a reviewer: a Round-bound, epoch-fenced structural probe and inference
+smoke, recorded as `ProviderOperationTransition@1`, charged to the Campaign budget and continued
+with `--resume-provider`. GA runs every Review on the common Task runtime, which admits each
+Provider through the Task's own captured probe Attempt
+([ADR-0091](0091-capture-explicit-task-provider-admission-costs.md)), so that record is deleted
+together with the executor, the flag and `af/provider-doctor@1`. Provider selection keeps its
+decision: repeatable `--provider NODE=PROVIDER_ID` bindings resolve against the machine-local
+registry and appear in neither the pipeline nor the Campaign Manifest.
 
 ADR-0024 is superseded in full. It gave source Manifests a `path_encoding` generation so that
 Manifests written before `percent_v2` stayed readable and an unchanged tree kept its Snapshot

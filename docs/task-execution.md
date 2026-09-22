@@ -38,9 +38,10 @@ expanded tree, Claude/Codex workflow and rc2 automation change.
   evidence ([ADR-0093](adr/0093-derive-code-task-acceptance-from-execution-and-evidence.md)).
 - Targeted repair is a distinct acceptance type from complete Review, and a project must opt
   into it ([ADR-0054](adr/0054-keep-targeted-repair-distinct-from-complete-review.md)).
-- Historical Campaigns keep their captured execution path; new Review commands run through the
-  common runtime, and missing common Task state refuses instead of falling back
-  ([ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md)).
+- Review commands run every Campaign through the common runtime. Missing common Task state
+  refuses instead of falling back, and a Campaign that holds pre-Task executor history (af < 0.9)
+  is refused ([ADR-0084](adr/0084-route-new-review-commands-through-the-common-task.md),
+  [ADR-0113](adr/0113-ga-reads-only-what-ga-writes.md)).
 - Provider admission is a paid, captured node inside the Task's own limits; catalog V2 requires
   an explicit admission cost, and native identity is rechecked before every private send
   ([ADR-0090](adr/0090-recheck-native-task-provider-identity-before-private-invocation.md),

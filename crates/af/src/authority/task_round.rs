@@ -1,5 +1,6 @@
 //! Common Review resumes its exact recorded Round before deciding whether any successor is
-//! authorized. The legacy `prepare` entry point retains its historical progression policy.
+//! authorized. Before its Task exists, `prepare` only captures, reuses or supersedes Round 1;
+//! every later Round starts here.
 use super::*;
 use review_store::store::task::review_round_publication::TaskReviewRoundPublication;
 #[cfg(test)]
@@ -289,7 +290,6 @@ pub(crate) fn prepare_recorded_round(
     let convergence = options.mode.convergence(campaign.loaded.convergence());
     Ok(PreparedRun {
         loaded: campaign.loaded,
-        snapshot: round.snapshot,
         run_id,
         focus: campaign.manifest.focus,
         timeout: Duration::from_secs(campaign.manifest.reviewer_timeout_seconds),
@@ -297,7 +297,6 @@ pub(crate) fn prepare_recorded_round(
         git_timeout,
         convergence,
         authority,
-        ledger_projection: round.ledger_projection,
     })
 }
 

@@ -162,12 +162,11 @@ or needs a documented hand edit.
   and `### Attempts` list. They described only Attempts of the pre-Task executor, so for a Round
   a Task hosts they were empty or held a zero-token placeholder row; `task_accounting` reports
   those Rounds' Attempts, usage, wall-clock and caps. A Campaign without a Task, whose first Task
-  capture failed, can still run on the pre-Task executor; its `af/review-report@1` report keeps
-  the Campaign `wall_ms` and each Round's reported tokens but no longer shows each Attempt's
-  tokens and wall-clock. `RunReport@1` and `RunReport@2` events are neither written nor read, so
-  a Campaign whose log holds one can no longer be run, reported or listed. The unused
-  `run-report-v2.json` and `review-report-v2.json` schemas are gone, and `review-report-v3.json`
-  now has its own `$id`, `urn:af:schema:review-report-view:3`, instead of repeating `@2`'s.
+  capture failed, keeps the `af/review-report@1` label. `RunReport@1` and `RunReport@2` events
+  are neither written nor read, so a Campaign whose log holds one can no longer be run, reported
+  or listed. The unused `run-report-v2.json` and `review-report-v2.json` schemas are gone, and
+  `review-report-v3.json` now has its own `$id`, `urn:af:schema:review-report-view:3`, instead of
+  repeating `@2`'s.
 - The retired shell review harness is gone from the repository: `compat/legacy-harness/`, the
   `fixtures/synthetic/` corpus generated from it, and the `fixtures/legacy/` private-corpus
   tests. `make fixtures` and `make review-kernel-test-corpus` no longer exist, and `make check`
@@ -175,6 +174,21 @@ or needs a documented hand edit.
   `FindingReported@1` (the `"imported": true` shape that only the unused `ledger.jsonl` importer
   wrote) no longer replays, and `af review ledger`, `af review show` and `af review report` no
   longer print an "unavailable: legacy import" placeholder.
+- `af review run` and `af provider doctor` run every Campaign on the common Task runtime; the
+  pre-Task executor they fell back to is gone. A Campaign whose log holds events only that
+  executor wrote (its reviewer Attempts, Provider Operations, broker bindings, `RunReport@3` to
+  `@5`, Cold Closeout or Session Snapshot events, from Rounds run by af 0.9.0-rc.0 or earlier) is
+  refused with "Campaign predates the common Task runtime (af < 0.9); start a new Campaign". A
+  Campaign whose first Task capture failed now retries capture on the common runtime, including
+  after `--restart-round`, `af review policy-time advance`, `af review evidence add` or
+  `af review demand waive`, where it used to run on the pre-Task executor. `--resume-provider` is
+  gone and is now a usage error (exit 2); it only continued that executor's fenced Provider
+  Operations, and the common path already refused it. The `af/review-outcome@1` and
+  `af/provider-doctor@1` documents, which only that executor printed, are no longer produced:
+  Providers are admitted by the Review Task's own probe Attempts, and doctor prints
+  `af/provider-doctor@2`. `af review run` no longer requires `HOME` up front. `af review report`,
+  `ledger` and `campaigns` count only Task Attempts toward a Campaign's wall-clock, so a pre-Task
+  Campaign's report no longer shows one. ADR-0016 is superseded.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

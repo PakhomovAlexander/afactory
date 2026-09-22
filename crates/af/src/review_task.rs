@@ -41,13 +41,6 @@ pub(super) fn initial_provider_admission(options: &Options) -> OperatorAttemptCo
         })
 }
 
-pub(super) fn refuse_legacy_admission_override(options: &Options) -> Result<(), String> {
-    if options.provider_admission.is_some() {
-        return Err("Provider admission bounds apply only to common Review Tasks; historical Campaign authority cannot change".into());
-    }
-    Ok(())
-}
-
 #[derive(Clone)]
 struct LocalWorkers {
     executions: BTreeMap<String, WorkerExecutionV1>,
@@ -317,16 +310,22 @@ fn task_id(campaign: &str) -> String {
     format!("review-{}", review_core::hex::encode(&digest.finalize()))
 }
 
-/// A paid historical Campaign keeps its original executor and accounting. A new capture
-/// that failed before execution may safely retry common Task preparation without adopting
-/// earlier spend. Missing common state must never fall back to the legacy ledger.
-pub(super) fn uses_common(cas: &Cas, store: &EventStore, campaign: &str) -> Result<bool, String> {
+/// Every Campaign runs on the common Task runtime. Its first capture may fail after preparation
+/// and operator events (a superseded Round input, policy time, Evidence, a waiver) and simply
+/// retries. Only records GA never writes refuse: evidence of the pre-Task executor, which a new
+/// capture would silently disown, and common evidence whose Task is missing, which must never
+/// fall back to a fresh allowance.
+pub(super) fn require_common_campaign(
+    cas: &Cas,
+    store: &EventStore,
+    campaign: &str,
+) -> Result<(), String> {
     if store
         .task_projection(cas, &task_id(campaign))
         .map_err(|e| e.to_string())?
         .is_some()
     {
-        return Ok(true);
+        return Ok(());
     }
     let events = store.replay(campaign).map_err(|e| e.to_string())?;
     if events.iter().any(|event| {
@@ -338,15 +337,41 @@ pub(super) fn uses_common(cas: &Cas, store: &EventStore, campaign: &str) -> Resu
     }) {
         return Err("Review has common Task evidence but its original Task is unavailable".into());
     }
-    Ok(events.iter().all(|event| {
-        matches!(
-            event.event_type,
-            review_core::EventType::CampaignOpenedV1
-                | review_core::EventType::RoundStartedV1
-                | review_core::EventType::SourceCapturedV1
-                | review_core::EventType::GenerationAdvancedV1
-        )
-    }))
+    if events
+        .iter()
+        .any(|event| written_only_by_the_pre_task_executor(event.event_type))
+    {
+        return Err(
+            "Campaign predates the common Task runtime (af < 0.9); start a new Campaign".into(),
+        );
+    }
+    Ok(())
+}
+
+/// A denylist, never an allowlist: the shared Review domain also writes Node invocations,
+/// output receipts, Gate decisions and Check results on the Task path, and ledger commands
+/// append operator events before any Task exists.
+fn written_only_by_the_pre_task_executor(event_type: review_core::EventType) -> bool {
+    use review_core::EventType;
+    matches!(
+        event_type,
+        EventType::AttemptDispatchedV1
+            | EventType::AttemptAdmittedV1
+            | EventType::AttemptFailedV1
+            | EventType::AttemptFencedV1
+            | EventType::AttemptInputV1
+            | EventType::AttemptFeedbackV1
+            | EventType::AttemptReleasedV1
+            | EventType::ReviewerExecutionBoundV1
+            | EventType::BrokerOperationCompletedV1
+            | EventType::ProviderOperationTransitionV1
+            | EventType::RunReportV3
+            | EventType::RunReportV4
+            | EventType::RunReportV5
+            | EventType::ColdCloseoutDispatchedV1
+            | EventType::SessionSnapshotPreparedV1
+            | EventType::SessionSnapshotCleanedV1
+    )
 }
 
 struct AdmissionOnly;

@@ -223,7 +223,7 @@ pub(crate) struct ReviewNamespace {
 #[derive(Debug, Args, Clone)]
 pub(crate) struct RunArgs {
     /// Versioned Review Task file, executed through the shared Task runtime
-    #[arg(long = "file", value_name = "FILE", help_heading = "Selector", conflicts_with_all = ["pipeline", "campaign", "base", "candidate", "focus", "node", "heavy", "restart_round", "provider", "resume_provider", "provider_admission_tokens", "provider_admission_wall_ms", "git_timeout_secs"])]
+    #[arg(long = "file", value_name = "FILE", help_heading = "Selector", conflicts_with_all = ["pipeline", "campaign", "base", "candidate", "focus", "node", "heavy", "restart_round", "provider", "provider_admission_tokens", "provider_admission_wall_ms", "git_timeout_secs"])]
     pub(crate) task_file: Option<PathBuf>,
     /// Explicit local Worker packages, slot replacements and Provider aliases
     #[arg(
@@ -299,9 +299,6 @@ pub(crate) struct RunArgs {
         help_heading = "Budget"
     )]
     pub(crate) provider_admission_wall_ms: Option<u64>,
-    /// Resume a fenced provider operation at the given epoch
-    #[arg(long, value_name = "OPERATION_ID:EPOCH", action = ArgAction::Append, help_heading = "Providers")]
-    pub(crate) resume_provider: Vec<String>,
     /// Wall-clock budget for the whole run
     #[arg(long, value_name = "N", help_heading = "Budget")]
     pub(crate) timeout_secs: Option<u64>,

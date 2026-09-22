@@ -103,9 +103,6 @@ pub(super) fn prepare_session(
     repo: &review_source_git::Repo,
     campaign: &str,
 ) -> Result<PreparedReviewSession, String> {
-    if !options.provider_resumes.is_empty() {
-        return Err("--resume-provider identifies a legacy Provider operation; common Review resumes its original Task Attempts with the same Campaign and explicit Provider bindings".into());
-    }
     let id = task_id(campaign);
     let engine = crate::task_execution::engine(cas)?;
     let existing = store.task_projection(cas, &id).map_err(|e| e.to_string())?;

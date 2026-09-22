@@ -802,37 +802,33 @@ fn task_sidecar_uses_decimal_usage_and_captured_round_authority() {
 }
 
 #[test]
-fn common_and_legacy_wall_intervals_merge_without_counting_overlaps_twice() {
-    let legacy = AttemptWall {
-        run_id: "campaign".into(),
-        attempt_id: "legacy".into(),
-        node_id: "reviewer".into(),
+fn overlapping_attempt_walls_merge_within_their_round_epoch() {
+    let first = TaskAttemptWall {
+        run_id: "task".into(),
+        attempt_id: "first".into(),
+        node_id: "root.reviewer".into(),
         round: 1,
         epoch: 1,
         started_unix_ms: 100,
         elapsed_ms: 40,
         usage: None,
     };
-    let common = TaskAttemptWall {
-        run_id: "task".into(),
-        attempt_id: "common".into(),
-        node_id: "root.reviewer".into(),
-        round: 1,
-        epoch: 1,
-        started_unix_ms: 120,
-        elapsed_ms: 50,
-        usage: None,
-    };
+    let mut overlapping = first.clone();
+    overlapping.attempt_id = "overlapping".into();
+    overlapping.started_unix_ms = 120;
+    overlapping.elapsed_ms = 50;
     let mut report = TaskAccountingReport {
         tasks: vec![],
-        wall_rows: vec![common.clone()],
+        wall_rows: vec![],
     };
-    assert_eq!(report.wall_ms(std::slice::from_ref(&legacy)), Some(70));
-    let mut restarted = common;
+    assert_eq!(report.wall_ms(), None);
+    report.wall_rows = vec![first, overlapping.clone()];
+    assert_eq!(report.wall_ms(), Some(70));
+    let mut restarted = overlapping;
     restarted.epoch = 2;
     restarted.started_unix_ms = 1000;
     report.wall_rows.push(restarted);
-    assert_eq!(report.wall_ms(&[legacy]), Some(120));
+    assert_eq!(report.wall_ms(), Some(120));
 }
 
 /// A Campaign whose first Task capture failed has no Task accounting, so it keeps the

@@ -1,10 +1,11 @@
 # Review command compatibility
 
 `af review run` executions and the Provider doctor use the common Task runtime alongside
-Task-file and embedded Review. Historical paid Campaigns retain their original executor and
-accounting; missing common Task state refuses instead of falling back. This page maps the
-extracted operations and the versioned CLI compatibility boundaries. See
-[ADR-0084](../adr/0084-route-new-review-commands-through-the-common-task.md).
+Task-file and embedded Review, for every Campaign. Missing common Task state refuses instead of
+falling back, and a Campaign whose log holds events only the pre-Task executor wrote (af < 0.9)
+is refused. This page maps the extracted operations and the versioned CLI compatibility
+boundaries. See [ADR-0084](../adr/0084-route-new-review-commands-through-the-common-task.md) and
+[ADR-0113](../adr/0113-ga-reads-only-what-ga-writes.md).
 
 ## Adapter boundaries
 
@@ -114,9 +115,6 @@ invocation and its accounting. Heavy Campaign continuation retains the original 
 and prior spend across Round revisions; each successor plan requires admission. The
 [heavy Review walkthrough](heavy-review.md) records the shared history and acceptance boundary.
 
-Historical Campaign readers and resumes retain their original event types and identities.
-Frozen fixtures remain byte-identical.
-
 The captured Round can now compile directly from its recorded Campaign Manifest, authority
 Snapshot and packages. The installed resource translator derives Worker timeouts, two-Attempt
 retry capacity, four-way parallelism and one wall bound for the complete Gate check sequence.
@@ -139,7 +137,7 @@ the original Ledger. The operation host additionally retains mandatory Finding S
 companions, actual common Worker execution, canonical publication recovery and domain acceptance.
 Canonical `RunReport@6` and the Task-backed Review inspection view retain exact cumulative
 accounting. Broker and owned Scatter execution, heavy-Round handoff and post-Round Integration
-now use that same runtime. The CLI keeps paid historical Campaigns on their captured path.
+now use that same runtime.
 
 Recorded-plan recompilation reads existing root wrappers and refuses their absence, different
 producer, changed Round or changed head; it does not recreate missing CAS objects. Historical

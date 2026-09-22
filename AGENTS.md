@@ -108,7 +108,7 @@ review corpora belong in consuming repositories, not here.
   pending-verification claims in one transaction; branch and PR publication stay outside the
   kernel ([ADR-0040](docs/adr/0040-promote-only-checked-derived-snapshots.md)).
 - Diff review resolves policy, Base, and candidate selectors independently. An empty typed Change
-  Set is refused before Gates, Provider operations, or Workers; it is never reported as a clean
+  Set is refused before Gates, Provider admission, or Workers; it is never reported as a clean
   review ([ADR-0041](docs/adr/0041-make-review-selectors-explicit-and-refuse-empty-diffs.md)).
 - Every packaged model Worker has an explicit admitted Provider binding. Runner adapters own
   their security flags; candidate project settings and Hooks cannot widen reviewer authority

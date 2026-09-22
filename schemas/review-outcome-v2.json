@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:review-outcome:2",
   "title": "Installed common Review outcome@2",
-  "$comment": "Read-only CLI presentation. round_outcome retains the canonical Review Round verdict; outcome controls this command exit. task.committed_tokens is the original common Task budget including all Attempts, Providers, retries, Rounds and late charges. totals.selected_attempts describes only selected Review transport observations. All observation/usage counters use bounded canonical decimal strings. Exact Task/result/plan/Round identity, selection and accounting prefixes remain Store authority; this schema grants none. Historical review-outcome@1 remains unchanged.",
+  "$comment": "Read-only CLI presentation. round_outcome retains the canonical Review Round verdict; outcome controls this command exit. task.committed_tokens is the original common Task budget including all Attempts, Providers, retries, Rounds and late charges. totals.selected_attempts describes only selected Review transport observations. All observation/usage counters use bounded canonical decimal strings. Exact Task/result/plan/Round identity, selection and accounting prefixes remain Store authority; this schema grants none.",
   "type": "object",
   "additionalProperties": false,
   "required": [

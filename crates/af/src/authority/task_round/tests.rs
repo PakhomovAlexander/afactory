@@ -157,11 +157,10 @@ to={node="ledger",port="reports"}
         candidate: None,
         uncommitted: false,
         restart_round: false,
-        mode: CampaignMode::Light,
+        mode: crate::CampaignMode::Light,
         timeout: None,
         git_timeout: None,
         provider_bindings: BTreeMap::new(),
-        provider_resumes: BTreeMap::new(),
         provider_admission: None,
         json: true,
         node: None,
@@ -212,9 +211,11 @@ to={node="ledger",port="reports"}
     let index = std::fs::read(repo_path.join(".git/index")).unwrap();
     let reader = EventStore::open_read_only(&path).unwrap();
     let recorded = prepare_recorded_round(&options, &cas, &reader, &started.event_id).unwrap();
-    assert_eq!(recorded.snapshot, first.snapshot);
+    assert_eq!(
+        recorded.authority.head_snapshot_id(),
+        first.authority.head_snapshot_id()
+    );
     assert_eq!(recorded.authority.round_event_id(), started.event_id);
-    assert_eq!(recorded.ledger_projection.ledger().round, 1);
     assert_eq!(reader.replay(&first.run_id).unwrap(), before);
     assert_eq!(git(&repo_path, &home, &["rev-parse", "HEAD"]), head);
     assert_eq!(std::fs::read(repo_path.join(".git/index")).unwrap(), index);
@@ -222,12 +223,6 @@ to={node="ledger",port="reports"}
         std::fs::read_to_string(repo_path.join("source.txt")).unwrap(),
         "uncommitted replacement"
     );
-    let error = match prepare(&options, &cas, &mut store, &repo) {
-        Ok(_) => panic!("legacy Light preparation must retain its cap"),
-        Err(error) => error,
-    };
-    assert!(error.contains("max") || error.contains("light"), "{error}");
-    assert_eq!(store.replay(&first.run_id).unwrap(), before);
     let mut wrong = options;
     wrong.focus = Some("changed focus".into());
     assert!(prepare_recorded_round(&wrong, &cas, &reader, &started.event_id).is_err());

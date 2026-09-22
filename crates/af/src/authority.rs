@@ -8,16 +8,15 @@ use review_config::Definition;
 use review_config::lock::{Lockfile, Registry};
 use review_core::{
     AuthorityFileV1, CampaignBudgetV1, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, CampaignReviewerV1, ChangeSetV1, EventType,
-    IntegrationCommittedPayloadV1, ReviewerPackageV1, RoundInputSupersededPayloadV1,
-    RoundStartedPayloadV1, SourceSnapshot, SubjectKind, SubjectV1, run_report_closes_round,
+    CampaignOpenedPayloadV1, CampaignReviewerV1, ChangeSetV1, EventType, ReviewerPackageV1,
+    RoundInputSupersededPayloadV1, RoundStartedPayloadV1, SourceSnapshot, SubjectKind, SubjectV1,
 };
 use review_pipeline::RoundAuthority;
 use review_runner::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 use review_source_git::{Capture, EntryKind, Manifest, Repo, Snapshot};
 use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, NewEvent, Status};
 
-use crate::{CampaignMode, Options, campaign_run_id};
+use crate::{Options, campaign_run_id};
 
 mod task_round;
 pub(crate) use task_round::{prepare_next_round, prepare_recorded_round};
@@ -179,10 +178,9 @@ pub(super) fn resolve_plan(
     cas: &Cas,
     repo: &Repo,
 ) -> Result<ResolvedPlan, String> {
-    if options.campaign.is_some() || options.restart_round || !options.provider_resumes.is_empty() {
+    if options.campaign.is_some() || options.restart_round {
         return Err(
-            "review plan has no Campaign state; omit --campaign, --restart-round, and --resume-provider"
-                .into(),
+            "review plan has no Campaign state; omit --campaign and --restart-round".into(),
         );
     }
     let policy_ref = options
@@ -742,7 +740,6 @@ pub(super) fn render(options: &Options, cas: &Cas, repo: &Repo) -> Result<Render
 
 pub(super) struct PreparedRun {
     pub loaded: review_config::Loaded,
-    pub snapshot: Manifest,
     pub run_id: String,
     pub focus: Option<String>,
     pub timeout: Duration,
@@ -750,7 +747,6 @@ pub(super) struct PreparedRun {
     pub git_timeout: Duration,
     pub convergence: review_store::ConvergencePolicy,
     pub authority: RoundAuthority,
-    pub ledger_projection: LedgerProjection,
 }
 
 struct OpenCampaign {
@@ -763,7 +759,6 @@ struct OpenCampaign {
 struct RoundInput {
     payload: RoundStartedPayloadV1,
     event_id: String,
-    snapshot: Manifest,
     prior_count: usize,
     ledger_projection: LedgerProjection,
 }
@@ -790,12 +785,11 @@ pub(super) fn prepare(
         (campaign, events)
     };
 
-    let round = prepare_round(options, cas, store, repo, &run_id, &campaign, &events)?;
-    let authority = RoundAuthority::load(store, cas, &run_id, &round.event_id)?;
+    let round_event_id = prepare_round(options, cas, store, repo, &run_id, &campaign, &events)?;
+    let authority = RoundAuthority::load(store, cas, &run_id, &round_event_id)?;
     let convergence = options.mode.convergence(campaign.loaded.convergence());
     Ok(PreparedRun {
         loaded: campaign.loaded,
-        snapshot: round.snapshot,
         run_id,
         focus: campaign.manifest.focus,
         timeout: Duration::from_secs(campaign.manifest.reviewer_timeout_seconds),
@@ -803,7 +797,6 @@ pub(super) fn prepare(
         git_timeout: Duration::from_secs(campaign.manifest.git_timeout_seconds),
         convergence,
         authority,
-        ledger_projection: round.ledger_projection,
     })
 }
 
@@ -1198,7 +1191,7 @@ fn prepare_round(
     run_id: &str,
     campaign: &OpenCampaign,
     events: &[review_core::RunEvent],
-) -> Result<RoundInput, String> {
+) -> Result<String, String> {
     let authority_snapshot: SourceSnapshot = serde_json::from_value(
         cas.get_json(&campaign.manifest.authority_snapshot_id)
             .map_err(|error| error.to_string())?,
@@ -1207,42 +1200,26 @@ fn prepare_round(
     let repository_id = authority_snapshot.repository_id.clone();
     let ledger_projection =
         LedgerProjection::from_events(run_id, events, cas).map_err(|error| error.to_string())?;
-    let mut closed_rounds = 0_u32;
-    for event in events {
-        if run_report_closes_round(event)
-            .map_err(|error| format!("decoding {}: {error}", event.event_type))?
-            .unwrap_or(false)
-        {
-            closed_rounds += 1;
-        }
-    }
-    let target_round = closed_rounds + 1;
-    if closed_rounds >= campaign.manifest.convergence.max_rounds {
-        return match options.mode {
-            CampaignMode::Light => Err(
-                "light Campaign already completed its single review Round; fix its concrete findings and run the deterministic project gate, then stop. Do not start another Campaign; --heavy requires a new Campaign and an explicit human choice"
-                    .into(),
-            ),
-            CampaignMode::Heavy => Err(
-                "heavy Campaign already exhausted its pinned Round limit; do not start another Campaign without an explicit human decision"
-                    .into(),
-            ),
-        };
-    }
+    // Before its Task exists a Campaign has only Round 1; later Rounds start in task_round.rs.
     let mut starts: Vec<(&review_core::RunEvent, RoundStartedPayloadV1)> = events
         .iter()
         .filter(|event| event.event_type == EventType::RoundStartedV1)
         .filter_map(|event| {
             serde_json::from_value::<RoundStartedPayloadV1>(event.payload.clone())
                 .ok()
-                .filter(|payload| payload.round == target_round)
+                .filter(|payload| payload.round == 1)
                 .map(|payload| (event, payload))
         })
         .collect();
     starts.sort_by_key(|(_, payload)| payload.epoch);
     let existing = starts.last().cloned();
 
-    let round = match (existing, options.restart_round) {
+    let RoundInput {
+        payload,
+        event_id,
+        prior_count,
+        ledger_projection,
+    } = match (existing, options.restart_round) {
         (Some((event, payload)), false) => load_round(
             options,
             cas,
@@ -1254,287 +1231,42 @@ fn prepare_round(
         (None, true) => {
             return Err("--restart-round requires an incomplete Round to supersede".into());
         }
-        (existing, _restart) => {
-            let integrated = existing
-                .is_none()
-                .then(|| next_integrated_head(events))
-                .flatten();
-            match integrated {
-                Some((event_id, committed)) => start_integrated_round(
-                    options,
-                    cas,
-                    store,
-                    run_id,
-                    campaign,
-                    IntegratedRoundRequest {
-                        round: target_round,
-                        committed_event_id: event_id,
-                        committed,
-                        ledger_projection,
-                    },
-                )?,
-                None => capture_round(
-                    options,
-                    cas,
-                    store,
-                    repo,
-                    run_id,
-                    campaign,
-                    RoundCaptureRequest {
-                        round: target_round,
-                        superseded: existing.as_ref().map(|(event, payload)| (*event, payload)),
-                        ledger_projection,
-                    },
-                )?,
-            }
-        }
+        (existing, _restart) => capture_round(
+            options,
+            cas,
+            store,
+            repo,
+            run_id,
+            campaign,
+            RoundCaptureRequest {
+                superseded: existing.as_ref().map(|(event, payload)| (*event, payload)),
+                ledger_projection,
+            },
+        )?,
     };
 
-    let mut round = round;
-    {
-        let mut ingest =
-            Ingest::from_projection(store, cas, run_id.to_string(), round.ledger_projection)
-                .map_err(|error| error.to_string())?
-                .under_round(&round.event_id);
-        while ingest.ledger().round < target_round {
-            ingest.advance().map_err(|error| error.to_string())?;
-        }
-        round.ledger_projection = ingest.into_projection();
+    let mut ingest = Ingest::from_projection(store, cas, run_id.to_string(), ledger_projection)
+        .map_err(|error| error.to_string())?
+        .under_round(&event_id);
+    if ingest.ledger().round == 0 {
+        ingest.advance().map_err(|error| error.to_string())?;
     }
     super::run_progress(
         options,
-        format_args!(
-            "round    {} (epoch {})",
-            round.payload.round, round.payload.epoch
-        ),
+        format_args!("round    {} (epoch {})", payload.round, payload.epoch),
     );
-    if round.prior_count > 0 {
+    if prior_count > 0 {
         super::run_progress(
             options,
-            format_args!("prior    {} findings carried", round.prior_count),
+            format_args!("prior    {prior_count} findings carried"),
         );
     }
-    Ok(round)
+    Ok(event_id)
 }
 
 struct RoundCaptureRequest<'a> {
-    round: u32,
     superseded: Option<(&'a review_core::RunEvent, &'a RoundStartedPayloadV1)>,
     ledger_projection: LedgerProjection,
-}
-
-struct IntegratedRoundRequest {
-    round: u32,
-    committed_event_id: String,
-    committed: IntegrationCommittedPayloadV1,
-    ledger_projection: LedgerProjection,
-}
-
-fn outstanding_attempts_for_supersession(
-    events: &[review_core::RunEvent],
-    round_event_id: &str,
-) -> Result<Vec<(String, String, Option<u64>)>, String> {
-    let mut live = BTreeMap::new();
-    for event in events
-        .iter()
-        .filter(|event| event.causation_id.as_deref() == Some(round_event_id))
-    {
-        let Some(attempt) = event.attempt_id.clone() else {
-            continue;
-        };
-        match event.event_type {
-            EventType::AttemptDispatchedV1 => {
-                live.insert(
-                    attempt,
-                    (
-                        event
-                            .node_id
-                            .clone()
-                            .ok_or("AttemptDispatched@1 has no node ID")?,
-                        event.payload["reserved"].as_u64(),
-                        0_u64,
-                    ),
-                );
-            }
-            EventType::ReviewerExecutionBoundV1 => {
-                let binding: review_core::ReviewerExecutionBindingV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                let authorized = review_core::broker_authority_usage(&binding.operations)?;
-                if let Some((_, charged, _)) = live.get_mut(&attempt) {
-                    *charged = Some(charged.unwrap_or(0).max(authorized));
-                }
-            }
-            EventType::BrokerOperationCompletedV1 => {
-                let receipt: review_core::BrokerOperationReceiptV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                if let Some((_, _, observed)) = live.get_mut(&attempt) {
-                    *observed = observed
-                        .checked_add(receipt.charged_usage)
-                        .ok_or("broker receipt usage overflow")?;
-                }
-            }
-            EventType::AttemptAdmittedV1
-            | EventType::AttemptFailedV1
-            | EventType::AttemptFencedV1
-            | EventType::AttemptReleasedV1 => {
-                live.remove(&attempt);
-            }
-            _ => {}
-        }
-    }
-    Ok(live
-        .into_iter()
-        .map(|(attempt, (node, charged, observed))| {
-            let charged = charged
-                .map(|charged| charged.max(observed))
-                .or((observed > 0).then_some(observed));
-            (node, attempt, charged)
-        })
-        .collect())
-}
-
-fn next_integrated_head(
-    events: &[review_core::RunEvent],
-) -> Option<(String, IntegrationCommittedPayloadV1)> {
-    let latest_subject_id = events.iter().rev().find_map(|event| {
-        (event.event_type == EventType::RoundStartedV1)
-            .then(|| {
-                serde_json::from_value::<RoundStartedPayloadV1>(event.payload.clone())
-                    .ok()
-                    .map(|payload| payload.subject_id)
-            })
-            .flatten()
-    })?;
-    events.iter().rev().find_map(|event| {
-        (event.event_type == EventType::IntegrationCommittedV1)
-            .then(|| {
-                serde_json::from_value::<IntegrationCommittedPayloadV1>(event.payload.clone())
-                    .ok()
-                    .filter(|payload| payload.prior_subject_id == latest_subject_id)
-                    .map(|payload| (event.event_id.clone(), payload))
-            })
-            .flatten()
-    })
-}
-
-fn start_integrated_round(
-    options: &Options,
-    cas: &Cas,
-    store: &mut EventStore,
-    run_id: &str,
-    campaign: &OpenCampaign,
-    request: IntegratedRoundRequest,
-) -> Result<RoundInput, String> {
-    let IntegratedRoundRequest {
-        round,
-        committed_event_id,
-        committed,
-        mut ledger_projection,
-    } = request;
-    committed.validate()?;
-    let subject: SubjectV1 = serde_json::from_value(
-        cas.get_json(&committed.derived_subject_id)
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    subject.validate()?;
-    if subject.head_snapshot_id != committed.derived_snapshot_id
-        || subject.kind != campaign.loaded.subject_kind()
-    {
-        return Err("committed Integration derived Subject contradicts Campaign authority".into());
-    }
-    let snapshot: SourceSnapshot = serde_json::from_value(
-        cas.get_json(&subject.head_snapshot_id)
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    if !snapshot.is_derived()
-        || snapshot.parent_snapshot_id.as_deref() != Some(committed.prior_snapshot_id.as_str())
-    {
-        return Err("committed Integration does not name a derived child of its prior head".into());
-    }
-    let manifest_id = snapshot
-        .artifact_manifest
-        .as_deref()
-        .ok_or("derived Snapshot has no exact Manifest")?;
-    let manifest: Manifest = serde_json::from_value(
-        cas.get_json(manifest_id)
-            .map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?;
-    manifest.validate().map_err(|error| error.to_string())?;
-    if manifest.content_digest() != snapshot.content_digest {
-        return Err("derived Snapshot Manifest contradicts its content digest".into());
-    }
-    let prior_findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
-    let prior_count = prior_findings.as_array().map_or(0, Vec::len);
-    let prior_finding_set = serde_json::json!({
-        "subject_id": committed.derived_subject_id,
-        "round": round,
-        "prior_findings": prior_findings,
-    });
-    let prior_bytes = serde_json::to_string_pretty(&prior_finding_set)
-        .map_err(|error| error.to_string())?
-        .len();
-    if prior_bytes > MAX_PRIOR_FINDINGS_BYTES {
-        return Err(format!(
-            "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes and partitioning is required"
-        ));
-    }
-    let prior_finding_set_id = cas
-        .put_json(&prior_finding_set)
-        .map_err(|error| error.to_string())?;
-    let prior_demand_set_id =
-        latest_demand_set_id(store, cas, run_id, &campaign.manifest.demand_genesis_id)?;
-    let payload = RoundStartedPayloadV1 {
-        round,
-        epoch: 1,
-        campaign_manifest_id: campaign.manifest_id.clone(),
-        subject_id: committed.derived_subject_id.clone(),
-        prior_finding_set_id,
-        prior_demand_set_id,
-    };
-    payload.validate()?;
-    let mut refs = vec![
-        campaign.manifest.authority_snapshot_id.clone(),
-        campaign.manifest_id.clone(),
-        subject.head_snapshot_id.clone(),
-        payload.subject_id.clone(),
-        payload.prior_finding_set_id.clone(),
-        payload.prior_demand_set_id.clone(),
-        manifest_id.to_string(),
-    ];
-    refs.extend(subject.base_snapshot_id.clone());
-    refs.extend(subject.change_set_id.clone());
-    let started = store
-        .append(
-            run_id,
-            cas,
-            NewEvent::new(
-                EventType::RoundStartedV1,
-                serde_json::to_value(&payload).map_err(|error| error.to_string())?,
-            )
-            .caused_by(committed_event_id)
-            .correlating(&payload.subject_id)
-            .referencing(refs),
-        )
-        .map_err(|error| error.to_string())?;
-    ledger_projection
-        .apply_event(&started, cas)
-        .map_err(|error| error.to_string())?;
-    super::run_progress(
-        options,
-        format_args!("snapshot {} (integrated)", snapshot.content_digest),
-    );
-    Ok(RoundInput {
-        payload,
-        event_id: started.event_id,
-        snapshot: manifest,
-        prior_count,
-        ledger_projection,
-    })
 }
 
 fn capture_round(
@@ -1547,29 +1279,10 @@ fn capture_round(
     request: RoundCaptureRequest<'_>,
 ) -> Result<RoundInput, String> {
     let RoundCaptureRequest {
-        round,
         superseded,
         mut ledger_projection,
     } = request;
-    let dispatched_attempts: Vec<(String, String, Option<u64>)> = if let Some((old_event, _)) =
-        superseded
-    {
-        let events = store.replay(run_id).map_err(|error| error.to_string())?;
-        if events.iter().any(|event| {
-            event.sequence > old_event.sequence
-                && (event.event_type == EventType::FindingReportedV1
-                    || (event.event_type == EventType::FindingResolvedV1
-                        && event.causation_id.as_deref() == Some(old_event.event_id.as_str())))
-        }) {
-            return Err(
-                "cannot supersede an incomplete Round after it published finding state; start a new Campaign"
-                    .into(),
-            );
-        }
-        outstanding_attempts_for_supersession(&events, &old_event.event_id)?
-    } else {
-        Vec::new()
-    };
+    let round = 1;
     let task_round::CapturedRoundSource {
         snapshot,
         head_snapshot_id,
@@ -1638,20 +1351,10 @@ fn capture_round(
     let prior_finding_set_id = cas
         .put_json(&prior_finding_set)
         .map_err(|error| error.to_string())?;
-    let prior_demand_set_id = if let Some((_, old)) = superseded {
-        old.prior_demand_set_id.clone()
-    } else if campaign.manifest.finding_identity_policy
-        == review_core::CANONICAL_FINDING_IDENTITY_POLICY
-    {
-        latest_demand_set_id(store, cas, run_id, &campaign.manifest.demand_genesis_id)?
-    } else {
-        cas.put_json(&serde_json::json!({
-            "subject_id": subject_id,
-            "round": round,
-            "demands": ledger_projection.ledger().demand_views(),
-        }))
-        .map_err(|error| error.to_string())?
-    };
+    let prior_demand_set_id = superseded.map_or_else(
+        || campaign.manifest.demand_genesis_id.clone(),
+        |(_, old)| old.prior_demand_set_id.clone(),
+    );
     let payload = RoundStartedPayloadV1 {
         round,
         epoch: superseded.map_or(1, |(_, old)| old.epoch + 1),
@@ -1690,22 +1393,6 @@ fn capture_round(
             .correlating(payload.subject_id.clone())
             .referencing(replacement_refs),
         ];
-        batch.extend(
-            dispatched_attempts
-                .into_iter()
-                .map(|(node, attempt, charged)| {
-                    NewEvent::new(
-                        EventType::AttemptFencedV1,
-                        serde_json::json!({
-                            "reason": "Round input superseded",
-                            "charged": charged,
-                        }),
-                    )
-                    .node(node)
-                    .attempt(attempt)
-                    .caused_by(old_event.event_id.clone())
-                }),
-        );
         let mut round_refs = vec![
             campaign.manifest.authority_snapshot_id.clone(),
             campaign.manifest_id.clone(),
@@ -1773,7 +1460,6 @@ fn capture_round(
     Ok(RoundInput {
         payload,
         event_id: started.event_id,
-        snapshot: snapshot.manifest,
         prior_count,
         ledger_projection,
     })
@@ -1880,7 +1566,6 @@ fn load_round_with_prior_subject(
     Ok(RoundInput {
         payload,
         event_id,
-        snapshot: manifest,
         prior_count,
         ledger_projection,
     })
@@ -1932,47 +1617,6 @@ fn validate_round_set(
         .as_array()
         .map(Vec::len)
         .ok_or_else(|| format!("Round {items_field} set does not contain an array"))
-}
-
-fn latest_demand_set_id(
-    store: &EventStore,
-    cas: &Cas,
-    run_id: &str,
-    genesis_id: &str,
-) -> Result<String, String> {
-    for event in store
-        .replay(run_id)
-        .map_err(|error| error.to_string())?
-        .into_iter()
-        .rev()
-    {
-        if event.event_type != EventType::NodeOutputReceiptV1 {
-            continue;
-        }
-        let receipt: review_core::NodeOutputReceiptPayloadV1 =
-            serde_json::from_value(event.payload).map_err(|error| error.to_string())?;
-        for port in receipt.outputs.into_iter().rev() {
-            for artifact_id in port.artifact_ids.into_iter().rev() {
-                let value = cas
-                    .get_json(&artifact_id)
-                    .map_err(|error| error.to_string())?;
-                let Ok(envelope) = serde_json::from_value::<review_core::ArtifactEnvelope>(value)
-                else {
-                    continue;
-                };
-                if envelope.artifact_type != review_core::contract::DEMAND_SET_V1 {
-                    continue;
-                }
-                envelope.validate().map_err(|error| error.to_string())?;
-                let payload: review_core::DemandSetV1 =
-                    serde_json::from_value(envelope.payload).map_err(|error| error.to_string())?;
-                payload.validate()?;
-                return Ok(artifact_id);
-            }
-        }
-    }
-    cas.verify(genesis_id).map_err(|error| error.to_string())?;
-    Ok(genesis_id.to_string())
 }
 
 fn prior_rows(ledger: &Ledger) -> Vec<serde_json::Value> {
@@ -2189,28 +1833,6 @@ fn authority_path(repo: &Path, pipeline: &Path) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use review_core::{IntegrationCommittedPayloadV1, RoundStartedPayloadV1};
-
-    fn attempt_event(
-        sequence: u64,
-        event_type: review_core::EventType,
-        payload: serde_json::Value,
-    ) -> review_core::RunEvent {
-        review_core::RunEvent {
-            event_id: format!("event-{sequence}"),
-            run_id: "run".into(),
-            sequence,
-            event_type,
-            occurred_at: "2026-08-31T00:00:00Z".into(),
-            node_id: Some("reviewer".into()),
-            attempt_id: Some("a".repeat(26)),
-            causation_id: Some("round".into()),
-            correlation_id: None,
-            artifact_refs: vec![],
-            payload,
-        }
-    }
-
     #[test]
     fn a_pipeline_outside_af_pipelines_is_refused() {
         assert_eq!(
@@ -2268,136 +1890,5 @@ mod tests {
             super::prior_location(review_core::legacy::CHANGE_WIDE_SENTINEL, Some(7)),
             (serde_json::Value::Null, serde_json::Value::Null, false)
         );
-    }
-
-    #[test]
-    fn supersession_fence_covers_observed_usage_above_broker_authority() {
-        let attempt = "a".repeat(26);
-        let operation = review_core::BrokerOperationPolicyV1 {
-            name: "model_inference".into(),
-            destination: "provider.test".into(),
-            method: "responses.create".into(),
-            max_request_bytes: 1024,
-            max_response_bytes: 1024,
-            max_calls: 1,
-            max_usage: 100,
-        };
-        let events = vec![
-            attempt_event(
-                1,
-                review_core::EventType::AttemptDispatchedV1,
-                serde_json::json!({"reserved": null}),
-            ),
-            attempt_event(
-                2,
-                review_core::EventType::ReviewerExecutionBoundV1,
-                serde_json::to_value(review_core::ReviewerExecutionBindingV1 {
-                    node: "reviewer".into(),
-                    attempt_id: attempt.clone(),
-                    lease_epoch: 1,
-                    credential_mode: review_core::BrokerCredentialModeV1::Brokered,
-                    auto_apply: false,
-                    broker_handle: Some("b".repeat(26)),
-                    operations: vec![operation],
-                    admitted: true,
-                })
-                .unwrap(),
-            ),
-            attempt_event(
-                3,
-                review_core::EventType::BrokerOperationCompletedV1,
-                serde_json::to_value(review_core::BrokerOperationReceiptV1 {
-                    handle_id: "b".repeat(26),
-                    node: "reviewer".into(),
-                    attempt_id: attempt.clone(),
-                    lease_epoch: 1,
-                    operation: "model_inference".into(),
-                    destination: "provider.test".into(),
-                    method: "responses.create".into(),
-                    ordinal: 1,
-                    outcome: review_core::BrokerOperationOutcomeV1::Failed,
-                    failure_reason: Some(review_core::BrokerFailureReasonV1::UsageOverrun),
-                    request_digest: format!("sha256:{}", "c".repeat(64)),
-                    response_digest: Some(format!("sha256:{}", "d".repeat(64))),
-                    request_bytes: 7,
-                    response_bytes: 8,
-                    reserved_usage: 100,
-                    charged_usage: 101,
-                })
-                .unwrap(),
-            ),
-        ];
-
-        assert_eq!(
-            super::outstanding_attempts_for_supersession(&events, "round").unwrap(),
-            vec![("reviewer".into(), attempt, Some(101))]
-        );
-    }
-
-    #[test]
-    fn only_an_integration_from_the_latest_subject_becomes_the_next_head() {
-        let digest = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
-        let round = |sequence: u64, subject_id: String| review_core::RunEvent {
-            event_id: format!("round-{sequence}"),
-            run_id: "run".into(),
-            sequence,
-            event_type: review_core::EventType::RoundStartedV1,
-            occurred_at: "2026-09-01T00:00:00Z".into(),
-            node_id: None,
-            attempt_id: None,
-            causation_id: None,
-            correlation_id: None,
-            artifact_refs: vec![],
-            payload: serde_json::to_value(RoundStartedPayloadV1 {
-                round: sequence as u32,
-                epoch: 1,
-                campaign_manifest_id: digest('1'),
-                subject_id,
-                prior_finding_set_id: digest('2'),
-                prior_demand_set_id: digest('3'),
-            })
-            .unwrap(),
-        };
-        let commit = |sequence: u64, prior: String, derived: String| review_core::RunEvent {
-            event_id: format!("commit-{sequence}"),
-            run_id: "run".into(),
-            sequence,
-            event_type: review_core::EventType::IntegrationCommittedV1,
-            occurred_at: "2026-09-01T00:00:00Z".into(),
-            node_id: None,
-            attempt_id: None,
-            causation_id: None,
-            correlation_id: None,
-            artifact_refs: vec![],
-            payload: serde_json::to_value(IntegrationCommittedPayloadV1 {
-                batch_id: format!("batch-{sequence}"),
-                prior_subject_id: prior,
-                derived_subject_id: derived,
-                prior_snapshot_id: digest('4'),
-                derived_snapshot_id: digest('5'),
-                proposal_ids: vec![digest('6')],
-                attestation_ids: vec![digest('7')],
-                expected_finding_set_id: digest('8'),
-                expected_demand_set_id: digest('9'),
-                policy_id: digest('a'),
-                semantic_closure_id: digest('b'),
-            })
-            .unwrap(),
-        };
-        let subject_one = digest('c');
-        let subject_two = digest('d');
-        let mut events = vec![
-            round(1, subject_one.clone()),
-            commit(2, subject_one, subject_two.clone()),
-        ];
-        assert_eq!(
-            super::next_integrated_head(&events)
-                .unwrap()
-                .1
-                .derived_subject_id,
-            subject_two
-        );
-        events.push(round(3, subject_two));
-        assert!(super::next_integrated_head(&events).is_none());
     }
 }

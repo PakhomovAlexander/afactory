@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:provider-doctor:2",
   "title": "Common Task Provider doctor@2",
-  "$comment": "Observations from the exact captured Provider-admission operations in one existing Review Task. gates_run and workers_dispatched describe this doctor invocation only, not earlier Task history. Common output/receipt IDs and Provider aliases, principal, model and effort remain subject to Store/compiler authority. A doctor outcome is never a complete business RunReport or TaskResult. Historical doctor@1 remains unchanged.",
+  "$comment": "Observations from the exact captured Provider-admission operations in one existing Review Task. gates_run and workers_dispatched describe this doctor invocation only, not earlier Task history. Common output/receipt IDs and Provider aliases, principal, model and effort remain subject to Store/compiler authority. A doctor outcome is never a complete business RunReport or TaskResult.",
   "type": "object",
   "additionalProperties": false,
   "required": [

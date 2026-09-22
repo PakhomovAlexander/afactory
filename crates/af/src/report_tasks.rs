@@ -87,24 +87,14 @@ impl TaskAccountingReport {
     }
 
     /// Merge raw Attempt intervals by their original Round/epoch. Neither cumulative report
-    /// snapshots nor overlapping legacy/common intervals are added as separate durations.
-    pub fn wall_ms(&self, legacy: &[review_store::AttemptWall]) -> Option<u64> {
-        super::wall_spans_ms(
-            legacy
-                .iter()
-                .map(|row| {
-                    (
-                        (row.round, row.epoch),
-                        (row.started_unix_ms, row.elapsed_ms),
-                    )
-                })
-                .chain(self.wall_rows.iter().map(|row| {
-                    (
-                        (row.round, row.epoch),
-                        (row.started_unix_ms, row.elapsed_ms),
-                    )
-                })),
-        )
+    /// snapshots nor overlapping intervals are added as separate durations.
+    pub fn wall_ms(&self) -> Option<u64> {
+        super::wall_spans_ms(self.wall_rows.iter().map(|row| {
+            (
+                (row.round, row.epoch),
+                (row.started_unix_ms, row.elapsed_ms),
+            )
+        }))
     }
 }
 

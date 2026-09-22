@@ -299,6 +299,105 @@ fn admission_plus_mandatory_reviewer_must_fit_before_any_paid_attempt() {
     }
 }
 
+/// A capture refused before its Task exists keeps its preparation events. After
+/// `--restart-round` the Campaign also holds RoundInputSuperseded@1 and still no Task; both
+/// commands must keep retrying common capture instead of treating it as pre-Task history.
+#[test]
+fn a_restarted_campaign_without_a_task_stays_on_the_common_runtime() {
+    let f = Fixture::new(5712, Some(52767));
+    let refused_by_common_capture = |out: std::process::Output| {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert_eq!(out.status.code(), Some(1), "{stderr}");
+        assert!(stderr.contains("mandatory"), "{stderr}");
+        assert!(
+            !stderr.contains("predates the common Task runtime"),
+            "{stderr}"
+        );
+    };
+    refused_by_common_capture(f.cli(&["review", "run"], NEW));
+    refused_by_common_capture(f.cli(&["review", "run"], &[NEW, &["--restart-round"]].concat()));
+    let campaign_events = || {
+        EventStore::open_read_only(Path::new(&f.state).join("events.sqlite"))
+            .unwrap()
+            .replay("campaign-admission-cost")
+            .unwrap()
+    };
+    let restarted = campaign_events();
+    assert!(
+        restarted
+            .iter()
+            .any(|event| event.event_type == review_core::EventType::RoundInputSupersededV1)
+    );
+    for mode in [["review", "run"], ["provider", "doctor"]] {
+        refused_by_common_capture(f.cli(&mode, NEW));
+    }
+    // Each retry reused the superseding Round: no executor ran and nothing was appended.
+    assert_eq!(campaign_events(), restarted);
+    assert!(
+        f.calls().is_empty(),
+        "a refused capture dispatched a paid capability"
+    );
+    let cas = Cas::open_existing(Path::new(&f.state).join("cas")).unwrap();
+    let store = EventStore::open_read_only(Path::new(&f.state).join("events.sqlite")).unwrap();
+    assert!(store.task_ids(&cas).unwrap().is_empty());
+}
+
+/// A Round closed by a pre-Task report (`RunReport@3`) is history no GA command writes: the
+/// Campaign is refused by name before preparation, capture or any Provider call.
+#[test]
+fn a_campaign_with_pre_task_executor_history_is_refused() {
+    let f = Fixture::new(5712, Some(52767));
+    assert!(!f.cli(&["review", "run"], NEW).status.success());
+    let mut store = EventStore::open(Path::new(&f.state).join("events.sqlite")).unwrap();
+    let cas = Cas::open_existing(Path::new(&f.state).join("cas")).unwrap();
+    let campaign = "campaign-admission-cost";
+    let round = store.latest_round_started(campaign).unwrap().unwrap();
+    let report = review_core::RunReportPayloadV3 {
+        outcomes: ["generation", "reviewer", "gather", "ledger"]
+            .into_iter()
+            .map(|node| review_core::RunNodeReportV2 {
+                node: node.into(),
+                outcome: review_core::RunNodeOutcomeV2::Failed {
+                    error: "resource limit reached before dispatch".into(),
+                },
+            })
+            .collect(),
+        blocked_gates: vec![],
+        verdict: review_core::RunVerdictV3::Fail {
+            reason: review_core::RunFailureReasonV3::Exhausted,
+        },
+        spent_tokens: Some(0),
+    };
+    store
+        .append(
+            campaign,
+            &cas,
+            review_store::NewEvent::new(
+                review_core::EventType::RunReportV3,
+                serde_json::to_value(report).unwrap(),
+            )
+            .caused_by(&round.event_id),
+        )
+        .unwrap();
+    let before = store.replay(campaign).unwrap();
+    drop(store);
+    for mode in [["review", "run"], ["provider", "doctor"]] {
+        let out = f.cli(&mode, NEW);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(
+            String::from_utf8_lossy(&out.stderr).contains(
+                "Campaign predates the common Task runtime (af < 0.9); start a new Campaign"
+            ),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let store = EventStore::open_read_only(Path::new(&f.state).join("events.sqlite")).unwrap();
+    assert_eq!(store.replay(campaign).unwrap(), before);
+    assert!(store.task_ids(&cas).unwrap().is_empty());
+    assert!(f.calls().is_empty());
+}
+
 #[test]
 fn admission_bounds_are_paired_positive_finite_cli_values() {
     let f = Fixture::new(5712, None);
