@@ -1312,6 +1312,36 @@ fn every_reviewer_answers_reviewer_result_v2_against_generations_finding_set() {
     );
 }
 
+/// The Ledger writes the Round's canonical Finding Set onto its one typed FindingSet@1 output,
+/// which the next Round reads back, so a Ledger that declares none, or two, is refused at load
+/// rather than failing mid-Round after its reviewers ran.
+#[test]
+fn a_ledger_without_exactly_one_finding_set_output_is_refused() {
+    let finding_set = r#"{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }"#;
+    let demand_set = r#"{ name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }"#;
+    let ledger_outputs = format!("outputs = [{finding_set}]");
+    assert_eq!(MINIMAL.matches(&ledger_outputs).count(), 1);
+    let demand_only = format!("outputs = [{demand_set}]");
+    let two_finding_sets = format!(
+        "outputs = [{finding_set}, {}]",
+        finding_set.replace(r#""findings""#, r#""more_findings""#)
+    );
+    for outputs in [demand_only, two_finding_sets] {
+        let text = MINIMAL.replace(&ledger_outputs, &outputs);
+        let error = Definition::from_toml(&text)
+            .unwrap()
+            .load()
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            error.to_string().contains(
+                "ledger node `ledger` must declare exactly one `review.kernel/FindingSet@1` output"
+            ),
+            "{error}"
+        );
+    }
+}
+
 /// Every port is a typed table and every node declares its outputs: a bare-string port or a
 /// node without `outputs` is refused when the file is parsed, before anything loads.
 #[test]

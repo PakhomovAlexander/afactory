@@ -290,7 +290,9 @@ or needs a documented hand edit.
   the Store no longer skips payload validation for Opaque@1 artifacts. Spell each port out as
   `{ name = "…", type = "…", cardinality = "one", optional = false, snapshot_affinity = "any" }`:
   a Gate outputs `review.kernel/GateDecision@1`, a Gather `review.kernel/ReportSet@1`, and a
-  Ledger `review.kernel/FindingSet@1` or `review.kernel/DemandSet@1`. `af onboard` and every
+  Ledger exactly one `review.kernel/FindingSet@1`, optionally beside a `review.kernel/DemandSet@1`;
+  a Ledger without that one Finding Set output is refused when the pipeline loads, where a lone
+  untyped Ledger output used to receive the Finding Set by position. `af onboard` and every
   shipped pipeline already write typed ports. A Campaign whose manifest pinned a pipeline with the
   shorthand can no longer be resumed or continued.
 - Brokered credentials are gone; GA has no broker. A format 4 or 5 reviewer's `execution` accepts

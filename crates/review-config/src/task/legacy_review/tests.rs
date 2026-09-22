@@ -275,16 +275,23 @@ fn codecs_follow_the_declared_contract_and_generation_stays_strict() {
         "{error}"
     );
     // Nor is a Gate or Ledger output retyped from its node kind.
-    for output in [
-        "{ name = \"decision\", type = \"review.kernel/GateDecision@1\"",
-        "{ name = \"findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = false",
+    let ledger_output = "{ name = \"findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }";
+    for (output, retyped_output) in [
+        (
+            "{ name = \"decision\", type = \"review.kernel/GateDecision@1\"",
+            "{ name = \"decision\", type = \"review.kernel/Opaque@1\"".to_string(),
+        ),
+        (
+            ledger_output,
+            format!(
+                "{ledger_output}, {}",
+                ledger_output
+                    .replace("\"findings\"", "\"extra\"")
+                    .replace("FindingSet@1", "Opaque@1")
+            ),
+        ),
     ] {
-        let retyped = PIPELINE.replace(
-            output,
-            &output
-                .replace("GateDecision@1", "Opaque@1")
-                .replace("FindingSet@1", "Opaque@1"),
-        );
+        let retyped = PIPELINE.replace(output, &retyped_output);
         assert_ne!(retyped, PIPELINE);
         let loaded = crate::Definition::from_toml(&retyped)
             .unwrap()
@@ -293,6 +300,22 @@ fn codecs_follow_the_declared_contract_and_generation_stays_strict() {
         let error = compile_legacy_review(&loaded, context(&loaded)).unwrap_err();
         assert!(error.contains("Unsupported Review output"), "{error}");
     }
+    // A Ledger without its FindingSet@1 output has nowhere to write the Round's Finding Set,
+    // so it is refused when the pipeline loads.
+    let untyped_ledger = PIPELINE.replace(
+        ledger_output,
+        &ledger_output.replace("FindingSet@1", "Opaque@1"),
+    );
+    assert_ne!(untyped_ledger, PIPELINE);
+    let error = crate::Definition::from_toml(&untyped_ledger)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("must declare exactly one"),
+        "{error}"
+    );
     let mut bad = context(&loaded);
     bad.workers.remove("second");
     assert!(compile_legacy_review(&loaded, bad).is_err());

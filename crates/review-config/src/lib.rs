@@ -685,6 +685,31 @@ fn validate_generation_output_contracts(
     Ok(())
 }
 
+/// The Ledger writes the Round's canonical Finding Set onto its one typed `FindingSet@1`
+/// output, which the next Round reads back from the Ledger receipt. Refusing a Ledger without
+/// that port here fails the pipeline at load rather than mid-Round, after its reviewers ran.
+fn validate_ledger_output_contracts(nodes: &[NodeSpec]) -> Result<(), ConfigError> {
+    for node in nodes
+        .iter()
+        .filter(|node| node.kind == NodeKindSpec::Ledger)
+    {
+        let finding_sets = node
+            .outputs
+            .iter()
+            .map(TypedPortSpec::build)
+            .filter(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
+            .count();
+        if finding_sets != 1 {
+            return Err(ConfigError::Binding(format!(
+                "ledger node `{}` must declare exactly one `{}` output",
+                node.id,
+                review_core::contract::FINDING_SET_V1,
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Every reviewer answers `ReviewerResult@2`, which dispositions exactly the prior Findings it
 /// was assigned, so every reviewer and every Scatter (whose slices are reviewers) must receive
 /// generation's exact `FindingSet@1`. Refusing the wiring here fails the pipeline at plan time
@@ -1568,6 +1593,7 @@ impl Definition {
             }
         }
         validate_generation_output_contracts(&self.nodes, subject.kind)?;
+        validate_ledger_output_contracts(&self.nodes)?;
         validate_disposition_wiring(&self.nodes, &self.edges)?;
         validate_dynamic_wiring(self.version, &self.nodes, &self.edges)?;
         if subject.kind == review_core::SubjectKind::Diff {

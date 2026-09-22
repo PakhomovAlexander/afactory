@@ -1350,7 +1350,6 @@ impl<'a> ReviewDomainState<'a> {
             .outputs
             .iter()
             .find(|port| is_generation_finding_set_output(port))
-            .or_else(|| (node.outputs.len() == 1).then(|| &node.outputs[0]))
             .ok_or_else(|| "ledger node has no Finding Set output".to_string())?;
         let mut outputs = ArtifactMap::from([(finding_port.name.clone(), vec![findings_artifact])]);
 
