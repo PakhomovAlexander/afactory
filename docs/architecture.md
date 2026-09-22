@@ -78,7 +78,7 @@ A `ReviewerResult@2` reviewer answers with flat findings; each one is converted 
 because a claim with no proposed remedy is one a triager cannot act on. An empty `file`, or the
 literal `(change-wide)` sentinel, is a change-wide claim and becomes an empty location list,
 because the sentinel shares a namespace with real paths. One violation refuses every result at
-that barrier, so a blocking verdict cannot degrade into an empty pass
+that barrier, so a blocking Finding cannot degrade into an empty pass
 (`crates/review-store/tests/canonical_identity.rs`).
 
 ## The store

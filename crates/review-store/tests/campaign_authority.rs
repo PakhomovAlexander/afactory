@@ -381,8 +381,6 @@ fn a_receipt_rejects_a_noncanonical_report_path_in_its_pinned_type() {
     let attempt = "b".repeat(26);
     let malformed_result = cas
         .put_json(&serde_json::json!({
-            "verdict": "request-changes",
-            "summary": null,
             "reports": [{
                 "severity": "major",
                 "file": "./src/main.rs",
@@ -475,8 +473,6 @@ fn a_reviewer_receipt_requires_its_task_review_selection() {
     invoke_reviewer(&mut store, &cas, &round);
     let result = cas
         .put_json(&serde_json::json!({
-            "verdict": "request-changes",
-            "summary": null,
             "reports": [{
                 "severity": "major",
                 "file": "src/main.rs",

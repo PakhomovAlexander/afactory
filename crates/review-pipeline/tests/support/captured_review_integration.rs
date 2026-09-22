@@ -113,7 +113,7 @@ pub(super) fn definition(
     failed: bool,
     calls: &std::path::Path,
 ) -> String {
-    let mut reply = serde_json::json!({"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]});
+    let mut reply = serde_json::json!({"findings":[],"benchmark_demands":[],"dispositions":[]});
     let command = if proposal {
         let manifest = |bytes: &[u8]| {
             Manifest::new(vec![Entry {
@@ -131,7 +131,6 @@ pub(super) fn definition(
                 .into(),
         )
         .unwrap();
-        reply["verdict"] = serde_json::json!("request-changes");
         reply["findings"] = serde_json::json!([{"severity":"minor","file":"value.txt","line":1,"title":"Improve fixture value","body":"The value can be improved","fix":"Use after","confidence":1.0}]);
         reply["proposal"] = serde_json::json!({"patch":patch,"report_indexes":[0],"paths":["value.txt"],"description":"Improve fixture value","auto_apply_nominated":true});
         format!(
@@ -154,7 +153,7 @@ pub(super) fn definition(
         .replace("max_paths_per_slice = 1", "max_paths_per_slice = 99")
         .replacen("runner = { program = \"/bin/true\" }", &format!("runner={{program=\"/bin/sh\",args=[{{value=\"-c\"}},{{value={}}}]}}",serde_json::to_string(&command).unwrap()),1)
         .replacen("execution = { credential_mode = \"credential_free\" }", "execution={credential_mode=\"credential_free\",auto_apply=true}",1)
-        .replace("runner = { program = \"/bin/true\" }", &format!("runner={{program=\"/bin/sh\",args=[{{value=\"-c\"}},{{value={}}}]}}",serde_json::to_string("cat >/dev/null; printf '%s' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[]}'").unwrap()))
+        .replace("runner = { program = \"/bin/true\" }", &format!("runner={{program=\"/bin/sh\",args=[{{value=\"-c\"}},{{value={}}}]}}",serde_json::to_string("cat >/dev/null; printf '%s' '{\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[]}'").unwrap()))
         + &format!("\n[integration]\npost_apply_checks=[\"first\",\"second\"]\n[[checks]]\nname=\"first\"\nprogram=\"/bin/sh\"\nargs=[{{value=\"-c\"}},{{value={}}}]\n[[checks]]\nname=\"second\"\nprogram=\"/bin/sh\"\nargs=[{{value=\"-c\"}},{{value={}}}]\n",serde_json::to_string(&first).unwrap(),serde_json::to_string(&second).unwrap())
 }
 
@@ -264,7 +263,7 @@ pub fn run_integration_handoff_with(
             continue;
         }
         let command = node["runner"]["args"][1]["value"].as_str().unwrap();
-        let reviewed = r#"input=$(cat); if test "$(cat value.txt)" = after; then finding=$(printf '%s' "$input" | sed -n 's/.*"finding_id":"\(sha256:[0-9a-f]*\)".*/\1/p'); test -n "$finding" || exit 47; printf '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[{"finding_id":"%s","position":"not_reproduced","reason":"The complete derived head contains after"}]}' "$finding"; else printf '%s' "$input" | "#;
+        let reviewed = r#"input=$(cat); if test "$(cat value.txt)" = after; then finding=$(printf '%s' "$input" | sed -n 's/.*"finding_id":"\(sha256:[0-9a-f]*\)".*/\1/p'); test -n "$finding" || exit 47; printf '{"findings":[],"benchmark_demands":[],"dispositions":[{"finding_id":"%s","position":"not_reproduced","reason":"The complete derived head contains after"}]}' "$finding"; else printf '%s' "$input" | "#;
         node["runner"]["args"][1]["value"] =
             toml::Value::String(format!("{reviewed}{command}; fi"));
     }

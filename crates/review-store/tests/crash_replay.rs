@@ -22,8 +22,7 @@ fn stage(json: &str) -> LegacyStageOutput {
 
 fn one_finding(severity: &str, file: &str, title: &str) -> LegacyStageOutput {
     stage(&format!(
-        r#"{{"verdict":"request-changes","summary":null,
-            "findings":[{{"severity":"{severity}","file":"{file}","line":7,
+        r#"{{"findings":[{{"severity":"{severity}","file":"{file}","line":7,
                           "title":"{title}","body":"b","fix":"f","confidence":0.9}}],
             "benchmark_demands":[],"disputes":[]}}"#
     ))
@@ -71,8 +70,7 @@ fn build_run(dir: &Path) -> Snapshot {
         .unwrap()
         .under_round(&round.round_event_id);
     let cross = stage(
-        r#"{"verdict":"block","summary":null,
-            "findings":[
+        r#"{"findings":[
               {"severity":"blocker","file":"src/queue.rs","line":3,"title":"Queue grows without bound",
                "body":"b","fix":"f","confidence":0.8},
               {"severity":"minor","file":"src/lib.rs","line":1,"title":"Misleading comment",
@@ -100,7 +98,7 @@ fn build_run(dir: &Path) -> Snapshot {
     let retry = key_of(ingest.ledger(), "Retry loop can spin forever");
     let queue = key_of(ingest.ledger(), "Queue grows without bound");
     let positions = stage(&format!(
-        r#"{{"verdict":"request-changes","summary":null,"findings":[],"benchmark_demands":[],
+        r#"{{"findings":[],"benchmark_demands":[],
             "disputes":[
               {{"fp":"{retry}","position":"corroborate","reason":"reproduced"}},
               {{"fp":"{queue}","position":"dispute","reason":"the producer is bounded"}}]}}"#

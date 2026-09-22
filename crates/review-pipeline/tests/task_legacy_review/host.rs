@@ -28,7 +28,7 @@ mod probe_runtime;
 mod warm;
 
 fn command_pipeline() -> String {
-    let result = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
+    let result = r#"{"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
     command_pipeline_returning(result)
 }
 
@@ -445,7 +445,8 @@ fn completed_review_retains_blocking_findings_and_required_demands() {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
-        let mut returned = serde_json::json!({"verdict":"request-changes","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]});
+        let mut returned =
+            serde_json::json!({"findings":[],"benchmark_demands":[],"dispositions":[]});
         if demand {
             returned["benchmark_demands"] = serde_json::json!([{"claim":"latency is bounded", "why":"measure against the acceptance limit", "suggested_method":"run the latency benchmark"}]);
         } else {
@@ -1076,7 +1077,7 @@ fn a_task_hosted_worker_retains_its_build_cache_clone_with_its_own_attempt() {
                  && printf compiled > \"$CARGO_TARGET_DIR/debug/deps/libfixture.rlib\"";
     let reviewer = "test \"$(cat \"$CARGO_TARGET_DIR/debug/deps/libfixture.rlib\")\" = compiled \
                     && cat >/dev/null \
-                    && printf '%s' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[]}'";
+                    && printf '%s' '{\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[]}'";
     let definition = PIPELINE
         .replace(
             "version = 2",

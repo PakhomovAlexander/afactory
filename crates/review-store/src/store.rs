@@ -4942,8 +4942,6 @@ mod tests {
     fn reviewer_result_admission_accepts_only_the_live_flat_shape() {
         let result = |report| {
             json!({
-                "verdict": "request-changes",
-                "summary": null,
                 "reports": [report],
                 "benchmark_demands": [],
                 "dispositions": [],

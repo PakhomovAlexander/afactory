@@ -56,7 +56,8 @@ GA reads only what GA writes. Compatibility obligations start at the GA release.
    formats 2 to 5 stay at GA, and only format 1 and the untyped port shorthand go. Until GA ships,
    a collapsed contract may also change in place under its number instead of taking a new
    version: it may drop a field nothing reads, require one every writer sets, or change what an
-   omitted value means. This replaces ADR-0002's bump rule, and ADR-0021's new-version rule for
+   omitted value means. `ReviewerResult@2`, for example, no longer has the reviewer `verdict` and
+   `summary` that no decision, projection or display read. This replaces ADR-0002's bump rule, and ADR-0021's new-version rule for
    reviewer results, for pre-GA contracts only. From GA on, both rules apply unchanged to every
    contract GA ships.
 4. **Persisted names keep their spelling.** This decision retires readers, not names.

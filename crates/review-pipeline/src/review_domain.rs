@@ -1035,7 +1035,12 @@ impl<'a> ReviewDomainState<'a> {
                     dynamic_sets.push((scatter_node, input.clone(), slice_set, shard_set));
                     continue;
                 }
-                if value.get("verdict").is_some() && value.get("reports").is_some() {
+                // A direct ReviewerResult@2 carries all three of its keys; a gather manifest
+                // is keyed by reviewer node instead.
+                if ["reports", "benchmark_demands", "dispositions"]
+                    .iter()
+                    .all(|key| value.get(key).is_some())
+                {
                     let upstream = self
                         .input_bindings
                         .get(&node.id)

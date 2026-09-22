@@ -13,8 +13,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-const REVIEW_REPLY: &[u8] =
-    br#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
+const REVIEW_REPLY: &[u8] = br#"{"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
 
 struct Model {
     calls: AtomicUsize,

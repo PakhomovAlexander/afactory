@@ -72,7 +72,7 @@ kind = "reviewer"
 inputs = ["gate", { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
 outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
-runner = { program = "/bin/sh", args = [{ value = "-c" }, { value = '''cat >/dev/null; printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}' ''' }] }
+runner = { program = "/bin/sh", args = [{ value = "-c" }, { value = '''cat >/dev/null; printf '%s' '{"findings":[],"benchmark_demands":[],"dispositions":[]}' ''' }] }
 [[nodes]]
 id = "gather"
 kind = "gather"

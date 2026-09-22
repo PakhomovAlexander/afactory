@@ -274,6 +274,10 @@ fn run_case(case: &str) {
             max_attempts: 3,
             max_parallel: 2,
         };
+        // A command Worker keeps only stdout, which holds nothing but its reply, so a reviewer
+        // that read the exact patch bytes says so in this file.
+        let reads = directory.path().join("patch-reads.log");
+        let reads = reads.to_str().unwrap();
         let mut packages = Vec::new();
         for name in policy.reviewers.keys() {
             pipeline.slots.insert(
@@ -305,8 +309,7 @@ fn run_case(case: &str) {
                 outcome: ReceiptOutcomeV1::Passed,
             });
             pipeline.nodes.push(reviewer);
-            let stage = json!({"verdict":if case == "finding" {"request-changes"} else {"approve"},"summary":"Fixture review",
-                "reports":if case == "finding" && name=="correctness" {json!([{"severity":"major","file":"lib.rs","line":1,"title":"Missing behavior","body":"The implementation omits the required behavior","fix":"Implement the requested behavior","confidence":0.9}])} else {json!([])},
+            let stage = json!({"reports":if case == "finding" && name=="correctness" {json!([{"severity":"major","file":"lib.rs","line":1,"title":"Missing behavior","body":"The implementation omits the required behavior","fix":"Implement the requested behavior","confidence":0.9}])} else {json!([])},
                 "benchmark_demands":if case=="demand" && name=="correctness" {json!([{"claim":"Runtime is bounded","why":"Large inputs matter","suggested_method":"Measure the scaling"}])} else {json!([])},"dispositions":[]});
             let reply = json!({"schema":"af.worker-reply/1","outputs":{"result":[stage]}});
             let script = if case == "missing_reviewer" && name == "bugs" {
@@ -331,11 +334,11 @@ if 'change_scope' in s:
     assert len(b)==patch['bytes'] and len(b)>780*1024 and b'// readable source change' in b
     assert len(json.dumps(r))<65536 and 'canonical_patch_base64' not in json.dumps(r)
     assert 'sha256:'+hashlib.sha256(b'review.kernel/content-id/v1\0'+b).hexdigest()==patch['content_id']
-    print('read exact patch bytes: '+json.dumps(patch,sort_keys=True),file=sys.stderr)
+    with open({reads:?},'a') as evidence: evidence.write('read exact patch bytes: '+json.dumps(patch,sort_keys=True)+'\n')
     if {case:?}=='mutated':
         os.chmod(patch['path'],0o644)
         pathlib.Path(patch['path']).write_bytes(b'changed')
-stage={{'verdict':'approve','summary':('read exact patch bytes: '+json.dumps(patch,sort_keys=True)) if 'change_scope' in s else 'Complete source-scoped review','reports':[],'benchmark_demands':[],'dispositions':[]}}
+stage={{'reports':[],'benchmark_demands':[],'dispositions':[]}}
 if s['round']==1 and {name:?}=='correctness':
     stage['reports']=[{{'severity':'major','file':'lib.rs','line':1,'title':'Missing behavior','body':'The implementation omits the required behavior','fix':'Implement it','confidence':1.0}}]
     if {case:?}=='valid':
@@ -355,8 +358,8 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
             let worker=TaskWorkerManifest {schema:"af.worker/1".into(),name:format!("fixture/{name}"),version:"1.0.0".into(),signature:signature.clone(),
                 runner:TaskWorkerRunner::Command {command:serde_json::from_value(json!({"program":"/usr/bin/python3","args":[{"value":"-B","provenance":"literal"},{"value":"@package/worker.py","provenance":"literal"}]})).unwrap()}};
             let input_schema = json!({"type":"object","required":["source","subject","history","checks","assignment"],"additionalProperties":{"type":"array","minItems":1,"maxItems":1,"items":{"type":"object"}}});
-            let output_schema = json!({"type":"object","required":["verdict","summary","reports","benchmark_demands","dispositions"],"additionalProperties":false,
-                "properties":{"verdict":{"enum":["approve","request-changes","block"]},"summary":{"type":["string","null"]},"reports":{"type":"array"},"benchmark_demands":{"type":"array"},"dispositions":{"type":"array"}}});
+            let output_schema = json!({"type":"object","required":["reports","benchmark_demands","dispositions"],"additionalProperties":false,
+                "properties":{"reports":{"type":"array"},"benchmark_demands":{"type":"array"},"dispositions":{"type":"array"}}});
             packages.push((
                 worker.name.clone(),
                 BTreeMap::from([
@@ -642,39 +645,11 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
             return;
         }
         if matches!(case, "large" | "mutated" | "collision") {
-            let reader =
-                EventStore::open_read_only(directory.path().join("events.sqlite")).unwrap();
-            let mut reads = 0;
-            for event in reader
-                .replay(&review_store::store::task::task_run_id(&task.task_id).unwrap())
-                .unwrap()
-            {
-                let transition: review_core::task::event::TaskTransitionV1 =
-                    serde_json::from_value(event.payload).unwrap();
-                if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
-                    transition.change
-                {
-                    let record = review_store::store::task::execution::read_execution_record(
-                        &cas, &record_id,
-                    )
-                    .unwrap()
-                    .record;
-                    if let review_core::task::execution::TaskExecutionRecordV1::Settled {
-                        raw_artifact_ids,
-                        ..
-                    } = record
-                    {
-                        for id in raw_artifact_ids {
-                            let bytes = cas.get(&id).unwrap();
-                            if String::from_utf8_lossy(&bytes).contains("read exact patch bytes:") {
-                                reads += 1;
-                            }
-                        }
-                    }
-                }
-            }
+            let read = std::fs::read_to_string(reads).unwrap_or_default();
             assert_eq!(
-                reads,
+                read.lines()
+                    .filter(|line| line.starts_with("read exact patch bytes:"))
+                    .count(),
                 match case {
                     "large" => 4,
                     "mutated" => 4,

@@ -23,7 +23,7 @@ a contract.
 ## Reply
 
 Return the reply envelope the request describes with one `result` payload:
-`verdict` (approve | request-changes | block), `summary`, `reports` (each with severity
-blocker | major | minor, file, line, title, body, fix, confidence), `benchmark_demands` and
-`dispositions` (exactly one per assigned prior Finding: corroborate | not_reproduced | dispute,
-with a reason). Every report needs an exact location, a reproducible path and a concrete fix.
+`reports` (each with severity blocker | major | minor, file, line, title, body, fix,
+confidence), `benchmark_demands` and `dispositions` (exactly one per assigned prior Finding:
+corroborate | not_reproduced | dispute, with a reason). Every report needs an exact location, a
+reproducible path and a concrete fix.

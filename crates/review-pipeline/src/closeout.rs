@@ -57,12 +57,10 @@ pub fn bounded_reason(error: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use review_core::legacy::{LegacyFinding, LegacyVerdict};
+    use review_core::legacy::LegacyFinding;
 
     fn output(severities: &[Severity]) -> LegacyStageOutput {
         LegacyStageOutput {
-            verdict: LegacyVerdict::Approve,
-            summary: None,
             findings: severities
                 .iter()
                 .map(|severity| LegacyFinding {

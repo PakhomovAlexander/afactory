@@ -285,7 +285,7 @@ fn review_output_with_provenance(
             .node,
         attempt_id: attempt.into(),
     };
-    let result = json!({"verdict":"approve","summary":"checked","reports":[],"benchmark_demands":[],"dispositions":[]});
+    let result = json!({"reports":[],"benchmark_demands":[],"dispositions":[]});
     let result_id = f.cas.put_json(&result).unwrap();
     let result_envelope = f
         .cas
@@ -822,7 +822,7 @@ fn review_selection_requires_common_publication_and_replays_without_legacy_attem
         };
         let wrong = f
         .cas
-        .put_json(&json!({"verdict":"approve","summary":"different valid result","reports":[],"benchmark_demands":[],"dispositions":[]}))
+        .put_json(&json!({"reports":[],"benchmark_demands":[{"claim":"different valid result","why":"it is not the selected one","suggested_method":"compare the ids"}],"dispositions":[]}))
         .unwrap();
         assert!(
             f.store

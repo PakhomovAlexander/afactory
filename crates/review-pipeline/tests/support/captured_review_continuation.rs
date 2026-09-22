@@ -184,7 +184,6 @@ fn admit_heavy(
     review_store::store::task::TaskLease,
 ) {
     let returned = serde_json::json!({
-        "verdict":"request-changes", "summary":null,
         "findings":[{"severity":"major", "file":".af/pipelines/review.toml", "line":1,
             "title":"Missing required behavior", "body":"The required behavior is absent",
             "fix":"Implement the missing behavior", "confidence":0.9,

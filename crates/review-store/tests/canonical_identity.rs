@@ -9,8 +9,6 @@ use support::opened_round;
 
 fn stage() -> LegacyStageOutput {
     serde_json::from_value(serde_json::json!({
-        "verdict": "request-changes",
-        "summary": null,
         "findings": [{
             "severity": "major",
             "file": "src/lib.rs",
@@ -802,8 +800,6 @@ fn canonical_confirmation_becomes_current_corroborating_evidence() {
         .unwrap();
     let key = ingest.ledger().findings()[0].key.clone();
     let confirmation: LegacyStageOutput = serde_json::from_value(serde_json::json!({
-        "verdict": "approve",
-        "summary": "still present",
         "findings": [],
         "benchmark_demands": [],
         "disputes": [{
@@ -896,8 +892,6 @@ fn canonical_confirmation_replay_reuses_the_exact_corroborating_report() {
         .unwrap();
     let key = ingest.ledger().findings()[0].key.clone();
     let confirmation: LegacyStageOutput = serde_json::from_value(serde_json::json!({
-        "verdict": "approve",
-        "summary": "still present",
         "findings": [],
         "benchmark_demands": [],
         "disputes": [{
@@ -1057,8 +1051,6 @@ fn explicit_dispositions_are_immutable_and_only_disputes_contest() {
         review_store::Status::Fixed
     );
     let dispositions: LegacyStageOutput = serde_json::from_value(serde_json::json!({
-        "verdict": "request-changes",
-        "summary": "explicit coverage",
         "findings": [],
         "benchmark_demands": [],
         "disputes": [
@@ -1453,12 +1445,10 @@ fn fixed_requires_current_attestation_and_verification_and_resolutions_can_expir
 
 // Flat `ReviewerResult@2` answers reach the canonical reduction a Campaign runs at its barrier
 // only through the strict gate: every finding must satisfy FindingReport@1, and one violation
-// refuses every result at that barrier, so a blocking verdict cannot degrade into an empty pass.
+// refuses every result at that barrier, so a blocking Finding cannot degrade into an empty pass.
 
 fn flat_stage(findings: serde_json::Value, disputes: serde_json::Value) -> LegacyStageOutput {
     serde_json::from_value(serde_json::json!({
-        "verdict": "request-changes",
-        "summary": null,
         "findings": findings,
         "benchmark_demands": [],
         "disputes": disputes,

@@ -521,7 +521,7 @@ mod task_selected_stage_tests {
 
     #[test]
     fn selected_stage_preserves_canonical_numbers_optional_fields_and_exact_payload() {
-        let mut payload = json!({"verdict":"request-changes","summary":"Review","reports":[{"severity":"major","file":"lib.rs","title":"Missing behavior","body":"Required behavior is absent","fix":"Implement it","confidence":1.0}],"benchmark_demands":[],"dispositions":[]});
+        let mut payload = json!({"reports":[{"severity":"major","file":"lib.rs","title":"Missing behavior","body":"Required behavior is absent","fix":"Implement it","confidence":1.0}],"benchmark_demands":[],"dispositions":[]});
         let original = selected_task_stage(&payload).unwrap();
         let stored: serde_json::Value =
             serde_json::from_slice(&crate::canonical::canonicalize(&payload).unwrap()).unwrap();

@@ -15,7 +15,7 @@ if 'change_scope' in s:
     if "valid"=='mutated':
         os.chmod(patch['path'],0o644)
         pathlib.Path(patch['path']).write_bytes(b'changed')
-stage={'verdict':'approve','summary':('read exact patch bytes: '+json.dumps(patch,sort_keys=True)) if 'change_scope' in s else 'Complete source-scoped review','reports':[],'benchmark_demands':[],'dispositions':[]}
+stage={'reports':[],'benchmark_demands':[],'dispositions':[]}
 if s['round']==1 and "bugs"=='correctness':
     stage['reports']=[{'severity':'major','file':'lib.rs','line':1,'title':'Missing behavior','body':'The implementation omits the required behavior','fix':'Implement it','confidence':0.9}]
     stage['benchmark_demands']=[{'claim':'Runtime is bounded','why':'Large inputs matter','suggested_method':'Measure scaling'}]

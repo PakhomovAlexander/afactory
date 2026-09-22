@@ -5,10 +5,8 @@
   "description": "Additive reviewer result contract with one explicit disposition for every assigned prior Finding. Assignment coverage is checked against the exact input FindingSet@1 by the kernel.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["verdict", "summary", "reports", "benchmark_demands", "dispositions"],
+  "required": ["reports", "benchmark_demands", "dispositions"],
   "properties": {
-    "verdict": { "enum": ["approve", "request-changes", "block"] },
-    "summary": { "type": ["string", "null"] },
     "reports": {
       "type": "array",
       "items": { "$ref": "#/$defs/legacyReport" }

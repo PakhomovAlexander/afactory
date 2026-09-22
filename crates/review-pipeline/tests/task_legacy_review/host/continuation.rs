@@ -18,7 +18,7 @@ fn input_epoch_handoff_retains_failed_attempts_and_the_same_round_scope() {
     let cas = Cas::open(temp.path().join("cas")).unwrap();
     let path = temp.path().join("events.sqlite");
     let mut store = EventStore::open(&path).unwrap();
-    let script = r#"input=$(cat); case "$input" in *'"epoch":1'*) exit 1;; *'"epoch":2'*) printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}' ;; *) exit 33;; esac"#;
+    let script = r#"input=$(cat); case "$input" in *'"epoch":1'*) exit 1;; *'"epoch":2'*) printf '%s' '{"findings":[],"benchmark_demands":[],"dispositions":[]}' ;; *) exit 33;; esac"#;
     let definition = PIPELINE.replace(
         "runner = { program = \"/bin/true\" }",
         &format!(

@@ -765,8 +765,6 @@ fn every_schema_is_a_valid_json_schema() {
 fn reviewer_result_schema_names_the_live_flat_report_shape() {
     let result = |report| {
         json!({
-            "verdict": "request-changes",
-            "summary": null,
             "reports": [report],
             "benchmark_demands": [],
             "dispositions": [],
@@ -827,8 +825,6 @@ fn reviewer_result_conformance_corpus_matches_schema() {
 #[test]
 fn reviewer_result_v2_names_explicit_dispositions() {
     let value = json!({
-        "verdict": "approve",
-        "summary": null,
         "reports": [],
         "benchmark_demands": [],
         "dispositions": [{

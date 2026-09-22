@@ -3,12 +3,12 @@ code_policy = ".af/code-policy.toml"
 
 [packages."fixture/bugs"]
 version = "1.0.0"
-digest = "sha256:07358e73d44756efa1b131e5584dcd03e2c9fa1a3d32d96deacea50d28502cc9"
+digest = "sha256:6ef9fae3d6950f35c29db25be5b19ffc7ed4d70c4bda82496359f87b70f7e42a"
 path = ".af/task-packages/fixture/bugs"
 
 [packages."fixture/correctness"]
 version = "1.0.0"
-digest = "sha256:6ba8815256564933f988893e403b4cb7aa999b3e44413a81c7c1928141d70183"
+digest = "sha256:291281301ef538a7aa5657c666fe6bc18e5dc1c7502a3c498409723b24d63852"
 path = ".af/task-packages/fixture/correctness"
 
 [packages."fixture/review"]

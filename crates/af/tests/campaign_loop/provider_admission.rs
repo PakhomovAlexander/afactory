@@ -26,7 +26,7 @@ if sys.argv[1:2]==['app-server']:
 request=sys.stdin.read()
 probe=request=='Reply with exactly: OK\n'
 with open(home+'/calls','a') as f: f.write('admission\n' if probe else 'reviewer\n')
-message='OK' if probe else json.dumps({'verdict':'approve','summary':None,'findings':[],'benchmark_demands':[],'dispositions':[]})
+message='OK' if probe else json.dumps({'findings':[],'benchmark_demands':[],'dispositions':[]})
 with open(sys.argv[sys.argv.index('-o')+1],'w') as f: f.write(message)
 usage=json.load(open(home+'/usage.json')) if probe else {'input_tokens':1,'output_tokens':1}
 print(json.dumps({'type':'turn.completed','usage':usage}))

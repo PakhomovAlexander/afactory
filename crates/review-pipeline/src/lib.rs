@@ -1439,8 +1439,6 @@ outputs = ["findings"]
     #[test]
     fn flat_reviewer_reports_reach_the_legacy_reducer() {
         let output = reviewer_stage_output(serde_json::json!({
-            "verdict": "request-changes",
-            "summary": null,
             "reports": [{
                 "severity": "major",
                 "file": "src/a.rs",
@@ -1463,8 +1461,6 @@ outputs = ["findings"]
         assert_eq!(output.disputes[0].fp, "prior");
         assert_eq!(output.disputes[0].position, "dispute");
         let retired = reviewer_stage_output(serde_json::json!({
-            "verdict": "approve",
-            "summary": null,
             "reports": [],
             "benchmark_demands": [],
             "disputes": []
@@ -1475,8 +1471,6 @@ outputs = ["findings"]
     #[test]
     fn reviewer_result_v2_requires_exact_disposition_coverage() {
         let stage = |ids: &[&str]| LegacyStageOutput {
-            verdict: review_core::legacy::LegacyVerdict::Approve,
-            summary: None,
             findings: Vec::new(),
             benchmark_demands: Vec::new(),
             disputes: ids

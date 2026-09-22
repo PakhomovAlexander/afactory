@@ -17,14 +17,6 @@ use crate::finding::{FindingReport, Location, Severity};
 /// The path-field sentinel for a change-wide finding.
 pub const CHANGE_WIDE_SENTINEL: &str = "(change-wide)";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub enum LegacyVerdict {
-    Approve,
-    RequestChanges,
-    Block,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LegacyFinding {
@@ -64,8 +56,6 @@ pub struct LegacyDispute {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LegacyStageOutput {
-    pub verdict: LegacyVerdict,
-    pub summary: Option<String>,
     pub findings: Vec<LegacyFinding>,
     pub benchmark_demands: Vec<LegacyBenchmarkDemand>,
     pub disputes: Vec<LegacyDispute>,
@@ -169,22 +159,12 @@ pub fn validate_reviewer_result_v2_classified(
         .ok_or(ReviewerResultRejection::NotObject)?;
     exact_reviewer_keys(
         object,
-        &[
-            "verdict",
-            "summary",
-            "reports",
-            "benchmark_demands",
-            "dispositions",
-        ],
+        &["reports", "benchmark_demands", "dispositions"],
         ReviewerResultRejection::UnexpectedFields,
     )?;
-    if !matches!(
-        value["verdict"].as_str(),
-        Some("approve" | "request-changes" | "block")
-    ) || value["reports"]
+    if value["reports"]
         .as_array()
         .is_none_or(|reports| reports.iter().any(|report| !report.is_object()))
-        || (!value["summary"].is_null() && value["summary"].as_str().is_none())
         || value["benchmark_demands"].as_array().is_none()
         || value["dispositions"].as_array().is_none()
     {
@@ -475,8 +455,6 @@ mod tests {
     fn stable_claim_identity_is_validated_at_reviewer_result_admission() {
         let result = |rule_id: &str, occurrence_key: &str| {
             serde_json::json!({
-                "verdict": "request-changes",
-                "summary": null,
                 "reports": [{
                     "severity": "major",
                     "file": "src/a.rs",

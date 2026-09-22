@@ -6,7 +6,7 @@ use review_pipeline::task::host::TaskDomain;
 use serde_json::json;
 
 fn definition(fail: bool) -> String {
-    let result = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
+    let result = r#"{"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
     let command = if fail {
         "cat >/dev/null; exit 1".to_owned()
     } else {
@@ -310,9 +310,9 @@ fn owned_scatter_requires_whole_subject_closeout_after_semantic_closure() {
     let temp = tempfile::tempdir().unwrap();
     let cas = Cas::open(temp.path().join("cas")).unwrap();
     let mut store = EventStore::open(temp.path().join("events.sqlite")).unwrap();
-    let clean = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
+    let clean = r#"{"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
     let boundary = json!({
-        "verdict": "request-changes", "summary": null, "benchmark_demands": [], "dispositions": [],
+        "benchmark_demands": [], "dispositions": [],
         "findings": [{
             "severity": "major", "file": ".af/af.lock", "line": 1,
             "title": "cross-slice invariant is broken",

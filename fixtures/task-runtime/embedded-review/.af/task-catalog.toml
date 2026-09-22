@@ -5,12 +5,12 @@
 
 ["packages"."fixture/bugs"]
 "version" = "1.0.0"
-"digest" = "sha256:ca432dc6c511d0b420bb00ea6d6adfa339f67d961ea0198176012a6eac62a332"
+"digest" = "sha256:627f9bb0b89b28bb47f4c4fe70585c9223068c277967566da83f85ced266ac0f"
 "path" = ".af/task-packages/fixture/bugs"
 
 ["packages"."fixture/correctness"]
 "version" = "1.0.0"
-"digest" = "sha256:c370162cb18c64fa247cbb01809f85186d1616fc3755264e90d09da0c07dae84"
+"digest" = "sha256:89f65c7c77f0040cd4e406184e9e2b20b2c639601ed525cd31e9e6ef23898c89"
 "path" = ".af/task-packages/fixture/correctness"
 
 ["packages"."fixture/implementation"]

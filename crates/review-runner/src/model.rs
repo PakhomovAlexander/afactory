@@ -83,8 +83,7 @@ impl std::error::Error for RunnerError {}
 pub const RESULT_CONTRACT_V2: &str = "\n\n## Output contract\n\n\
 Your FINAL message must be exactly one JSON object and nothing else - no prose before or \
 after, no markdown fence. Shape:\n\
-{\"verdict\":\"approve\"|\"request-changes\"|\"block\",\"summary\":string|null,\
-\"findings\":[{\"severity\":\"blocker\"|\"major\"|\"minor\",\"file\":string,\"line\":positive-integer|null,\
+{\"findings\":[{\"severity\":\"blocker\"|\"major\"|\"minor\",\"file\":string,\"line\":positive-integer|null,\
 \"title\":string,\"body\":string,\"fix\":string,\"confidence\":number}],\
 \"benchmark_demands\":[{\"claim\":string,\"why\":string,\"suggested_method\":string}],\
 \"dispositions\":[{\"finding_id\":string,\"position\":\"corroborate\"|\"not_reproduced\"|\"dispute\",\"reason\":string}],\
@@ -275,16 +274,7 @@ fn normalize(value: &mut serde_json::Value) {
             }
         }
     }
-    keep(
-        value,
-        &[
-            "verdict",
-            "summary",
-            "findings",
-            "benchmark_demands",
-            "dispositions",
-        ],
-    );
+    keep(value, &["findings", "benchmark_demands", "dispositions"]);
     keep_each(
         value,
         "findings",
@@ -314,10 +304,11 @@ mod tests {
 
     #[test]
     fn extra_fields_are_dropped_and_the_findings_survive() {
+        // A model that still answers with a verdict or summary is tolerated: both are dropped.
         let answer = r#"Verified against the scheduler first.
 
 ```json
-{"verdict":"block","summary":null,"findings":[
+{"verdict":"block","summary":"prose","findings":[
   {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F",
    "confidence":0.8,"failure_scenario":"a story the contract never asked for"}
 ],"benchmark_demands":[],"dispositions":[],"reviewer_notes":"extra"}
@@ -340,7 +331,7 @@ mod tests {
 ",
         ] {
             let answer = format!(
-                r#"{prefix}{{"verdict":"block","summary":null,"findings":[
+                r#"{prefix}{{"findings":[
   {{"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F",
    "confidence":0.8}}
 ],"benchmark_demands":[],"dispositions":[]}}"#
@@ -359,24 +350,22 @@ mod tests {
     fn a_fenced_block_still_wins_over_a_bare_object() {
         // The fence is the model's explicit marker; a stray bare object earlier in the
         // prose must not preempt it.
-        let answer = r#"Draft: {"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}
+        let answer = r#"Draft: {"findings":[],"benchmark_demands":[],"dispositions":[]}
 
 ```json
-{"verdict":"block","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}
+{"findings":[
+  {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
+],"benchmark_demands":[],"dispositions":[]}
 ```"#;
         let output = parse_reviewer_result(answer).unwrap();
-        assert_eq!(
-            format!("{:?}", output.verdict),
-            "Block",
-            "the fenced result governs"
-        );
+        assert_eq!(output.findings.len(), 1, "the fenced result governs");
     }
 
     #[test]
     fn a_missing_required_field_still_fails() {
         // (`fix` is deliberately not the probe: the flat result allows a null fix at parse
         // time and ledger ingest is what enforces it, as `ImportReason::MissingFix`.)
-        let answer = r#"{"verdict":"block","summary":null,"findings":[
+        let answer = r#"{"findings":[
   {"file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
 ],"benchmark_demands":[],"dispositions":[]}"#;
         assert!(
@@ -387,7 +376,7 @@ mod tests {
 
     #[test]
     fn proposal_transport_is_extracted_but_not_part_of_the_result() {
-        let answer = r#"{"verdict":"block","summary":null,"findings":[
+        let answer = r#"{"findings":[
   {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
 ],"benchmark_demands":[],"dispositions":[],"proposal":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\n","report_indexes":[0],"finding_ids":[],"evidence_ids":[],"paths":["src/lib.rs"],"description":"fix T","auto_apply_nominated":false}}"#;
         let output = parse_reviewer_result(answer).unwrap();
@@ -399,22 +388,22 @@ mod tests {
 
     #[test]
     fn more_than_one_proposal_cannot_fit_the_transport_shape() {
-        let answer = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[],"proposal":[]}"#;
+        let answer = r#"{"findings":[],"benchmark_demands":[],"dispositions":[],"proposal":[]}"#;
         assert!(parse_proposal_declaration(answer).is_err());
     }
 
     #[test]
     fn notes_transport_is_extracted_beside_the_flat_result() {
         use super::parse_notes_declaration;
-        let answer = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[],"notes":{"inspected":["src/lib.rs"],"model_of_change":"one cap","open_questions":[],"hints":[{"path":"src/lib.rs","note":"cap read once"}]}}"#;
+        let answer = r#"{"findings":[],"benchmark_demands":[],"dispositions":[],"notes":{"inspected":["src/lib.rs"],"model_of_change":"one cap","open_questions":[],"hints":[{"path":"src/lib.rs","note":"cap read once"}]}}"#;
         let output = parse_reviewer_result(answer).unwrap();
         assert!(output.findings.is_empty());
         let notes = parse_notes_declaration(answer).unwrap().unwrap();
         assert_eq!(notes.inspected, vec!["src/lib.rs"]);
         assert_eq!(notes.hints[0].note, "cap read once");
-        let silent = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
+        let silent = r#"{"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
         assert_eq!(parse_notes_declaration(silent).unwrap(), None);
-        let malformed = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[],"notes":{"verdict":"block"}}"#;
+        let malformed = r#"{"findings":[],"benchmark_demands":[],"dispositions":[],"notes":{"verdict":"block"}}"#;
         assert!(parse_notes_declaration(malformed).is_err());
     }
 }

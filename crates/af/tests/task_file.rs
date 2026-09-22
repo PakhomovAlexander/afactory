@@ -151,7 +151,7 @@ else:
  value=json.loads(request)
  assert set(value['inputs'])=={'source','subject','history','checks','assignment'}
  assert value['inputs']['assignment'][0]['payload']['findings']==[]
- result=json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'verdict':'approve','summary':'Checked source','reports':[],'benchmark_demands':[],'dispositions':[]}]}})
+ result=json.dumps({'schema':'af.worker-reply/1','outputs':{'result':[{'reports':[],'benchmark_demands':[],'dispositions':[]}]}})
 envelope={'is_error':False,'result':result,'usage':{'input_tokens':10,'output_tokens':2,'cache_creation_input_tokens':0}}
 if request!='Reply with exactly: OK\n':
  assert '--json-schema' in sys.argv
@@ -527,7 +527,7 @@ fn embedded_review_never_accepts_findings_missing_reviewers_or_failed_checks() {
         let packages = repo.join(".af/task-packages/fixture");
         match case {
             "finding" => {
-                let reply = serde_json::json!({"schema":"af.worker-reply/1","outputs":{"result":[{"verdict":"request-changes","summary":"Required case is missing","reports":[{"severity":"major","file":"pagination.py","line":1,"title":"Missing validation","body":"Offset must reject negative values","fix":"Validate offset","confidence":0.9}],"benchmark_demands":[],"dispositions":[]}]}});
+                let reply = serde_json::json!({"schema":"af.worker-reply/1","outputs":{"result":[{"reports":[{"severity":"major","file":"pagination.py","line":1,"title":"Missing validation","body":"Offset must reject negative values","fix":"Validate offset","confidence":0.9}],"benchmark_demands":[],"dispositions":[]}]}});
                 std::fs::write(
                     packages.join("correctness/worker.py"),
                     format!(

@@ -119,10 +119,10 @@ fn repin(repo: &Path) {
 }
 
 fn write_review_config(repo: &Path) {
-    let finding = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"major\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins\",\"fix\":\"bound it\",\"confidence\":0.9,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"dispositions\":[$d]}"#;
-    let blocker = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"blocker\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins and prevents shutdown\",\"fix\":\"bound it\",\"confidence\":0.99,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"dispositions\":[$d]}"#;
-    let demand = r#"{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[{\"claim\":\"the loop terminates\",\"why\":\"termination is not demonstrated\",\"suggested_method\":\"run a bounded integration test\"}],\"dispositions\":[$d]}"#;
-    let clean = r#"{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[$d]}"#;
+    let finding = r#"{\"findings\":[{\"severity\":\"major\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins\",\"fix\":\"bound it\",\"confidence\":0.9,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"dispositions\":[$d]}"#;
+    let blocker = r#"{\"findings\":[{\"severity\":\"blocker\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins and prevents shutdown\",\"fix\":\"bound it\",\"confidence\":0.99,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"dispositions\":[$d]}"#;
+    let demand = r#"{\"findings\":[],\"benchmark_demands\":[{\"claim\":\"the loop terminates\",\"why\":\"termination is not demonstrated\",\"suggested_method\":\"run a bounded integration test\"}],\"dispositions\":[$d]}"#;
+    let clean = r#"{\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[$d]}"#;
     // A committed `FAIL` marker makes the reviewer exit non-zero, so a test can produce an
     // incomplete run on demand. Absent in every other test, so it changes nothing there.
     // Every prior Finding the input assigns is answered `not_reproduced`, the disposition that
@@ -223,12 +223,12 @@ fn write_disposition_config(repo: &Path) {
         r#"#!/bin/sh
 input=$(cat)
 if [ -f OMIT ]; then
-  printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}'
+  printf '%s' '{"findings":[],"benchmark_demands":[],"dispositions":[]}'
 elif grep -q 'loop {}' src/main.rs; then
-  printf '%s' '{"verdict":"request-changes","summary":null,"findings":[{"severity":"major","file":"src/main.rs","line":1,"title":"Unbounded loop","body":"spins","fix":"bound it","confidence":0.9}],"benchmark_demands":[],"dispositions":[]}'
+  printf '%s' '{"findings":[{"severity":"major","file":"src/main.rs","line":1,"title":"Unbounded loop","body":"spins","fix":"bound it","confidence":0.9}],"benchmark_demands":[],"dispositions":[]}'
 else
   finding_id=$(printf '%s' "$input" | sed -n 's/.*"finding_id":"\([^"]*\)".*/\1/p')
-  printf '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[{"finding_id":"%s","position":"not_reproduced","reason":"the unbounded loop is absent from the current Subject"}]}' "$finding_id"
+  printf '{"findings":[],"benchmark_demands":[],"dispositions":[{"finding_id":"%s","position":"not_reproduced","reason":"the unbounded loop is absent from the current Subject"}]}' "$finding_id"
 fi
 "#,
     )
@@ -1632,7 +1632,7 @@ input=$(cat)
 if [ -n "$out" ] && [ "$input" = 'Reply with exactly: OK' ]; then
   printf '%s' 'OK' >"$out"
 elif [ -n "$out" ]; then
-  printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}' >"$out"
+  printf '%s' '{"findings":[],"benchmark_demands":[],"dispositions":[]}' >"$out"
 fi
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'

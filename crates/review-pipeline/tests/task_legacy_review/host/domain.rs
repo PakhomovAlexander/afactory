@@ -8,7 +8,7 @@ use review_graph::{NodeOutcome, RunReport};
 use review_sandbox::{CacheError, CacheErrorKind, CacheKind, CacheLimits, CacheSource};
 use review_store::store::task::TaskLease;
 
-pub(super) const APPROVE: &str = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
+pub(super) const APPROVE: &str = r#"{"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
 
 /// The ordinary source every Round of these tests reviews.
 pub(super) fn source() -> BTreeMap<String, Vec<u8>> {
@@ -59,7 +59,7 @@ pub(super) fn finding(severity: &str, title: &str, occurrence: Option<&str>) -> 
 
 pub(super) fn requesting(findings: Vec<serde_json::Value>) -> serde_json::Value {
     serde_json::json!({
-        "verdict": "request-changes", "summary": null, "findings": findings,
+        "findings": findings,
         "benchmark_demands": [], "dispositions": [],
     })
 }
@@ -1635,7 +1635,7 @@ fn an_unadmissible_answer_is_refused_before_selection_and_only_that_reviewer_ret
     .to_string();
     // A Benchmark Demand with an empty claim is refused before selection like a bad Finding.
     let bad_metadata = serde_json::json!({
-        "verdict": "approve", "summary": null, "findings": [], "dispositions": [],
+        "findings": [], "dispositions": [],
         "benchmark_demands": [{
             "claim": "", "why": "reason", "suggested_method": "measure the fixture loop",
         }],

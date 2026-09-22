@@ -65,8 +65,6 @@ to = { node = "ledger", port = "reports" }
         .unwrap();
     let forged = cas
         .put_json(&serde_json::json!({
-            "verdict": "approve",
-            "summary": null,
             "reports": [],
             "benchmark_demands": [],
             "dispositions": [],

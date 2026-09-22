@@ -1,1 +1,1 @@
-{"type":"object","required":["verdict","summary","reports","benchmark_demands","dispositions"],"additionalProperties":false,"properties":{"verdict":{"enum":["approve","request-changes","block"]},"summary":{"type":["string","null"]},"reports":{"type":"array"},"benchmark_demands":{"type":"array"},"dispositions":{"type":"array"}}}
+{"type":"object","required":["reports","benchmark_demands","dispositions"],"additionalProperties":false,"properties":{"reports":{"type":"array"},"benchmark_demands":{"type":"array"},"dispositions":{"type":"array"}}}

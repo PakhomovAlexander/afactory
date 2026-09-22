@@ -475,13 +475,13 @@ fn overlapping_captured_proposals_record_conflict_without_a_check_attempt_or_pro
             .into(),
     )
     .unwrap();
-    let reply = serde_json::json!({"verdict":"request-changes","summary":null,"findings":[{"severity":"minor","file":"value.txt","line":1,"title":"Alternative fixture value","body":"The alternative changes the same path","fix":"Use other","confidence":1.0}],"benchmark_demands":[],"dispositions":[],
+    let reply = serde_json::json!({"findings":[{"severity":"minor","file":"value.txt","line":1,"title":"Alternative fixture value","body":"The alternative changes the same path","fix":"Use other","confidence":1.0}],"benchmark_demands":[],"dispositions":[],
         "proposal":{"patch":patch,"report_indexes":[0],"paths":["value.txt"],"description":"Alternative value","auto_apply_nominated":true}});
     let command = format!(
         "cat >/dev/null; printf 'other\\n' > value.txt; printf '%s' '{}'",
         reply.to_string().replace('\'', "'\\''")
     );
-    let clean = "cat >/dev/null; printf '%s' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[]}'";
+    let clean = "cat >/dev/null; printf '%s' '{\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[]}'";
     let definition = definition(&cas, true, false, &calls)
         .replace(
             &serde_json::to_string(clean).unwrap(),
@@ -1113,7 +1113,7 @@ fn disjoint_proposals_compose_into_one_checked_integration() {
                 .into(),
         )
         .unwrap();
-        serde_json::json!({"verdict":"request-changes","summary":null,"findings":[{"severity":"minor","file":path,"line":1,"title":"constant can be corrected","body":"the fixture expects two","fix":"set the constant to two","confidence":1.0}],"benchmark_demands":[],"dispositions":[],
+        serde_json::json!({"findings":[{"severity":"minor","file":path,"line":1,"title":"constant can be corrected","body":"the fixture expects two","fix":"set the constant to two","confidence":1.0}],"benchmark_demands":[],"dispositions":[],
             "proposal":{"patch":patch,"report_indexes":[0],"paths":[path],"description":"set the fixture constant to two","auto_apply_nominated":true}})
         .to_string()
         .replace('\'', "'\\''")
@@ -1125,7 +1125,7 @@ fn disjoint_proposals_compose_into_one_checked_integration() {
         reply("left.rs", &manifest(LEFT_FIXED, RIGHT)),
         reply("right.rs", &manifest(LEFT, RIGHT_FIXED)),
     );
-    let clean = "cat >/dev/null; printf '%s' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[]}'";
+    let clean = "cat >/dev/null; printf '%s' '{\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[]}'";
     // The Gate runs the same check on the original head, where it passes without a record.
     let composed = format!(
         "if test \"$(cat left.rs)\" = 'pub const LEFT: u8 = 2;'; then test \"$(cat right.rs)\" = 'pub const RIGHT: u8 = 2;' || exit 9; printf x >> '{}'; fi",

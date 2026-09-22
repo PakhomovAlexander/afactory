@@ -170,7 +170,7 @@ impl<'a> Ingest<'a> {
     /// Bridge selected flat results into typed, provenance-carrying Report artifacts and reduce
     /// them with the canonical path-independent identity policy. Every finding must satisfy
     /// `FindingReport@1` ([`LegacyFinding::into_report`]), and one violation refuses the complete
-    /// set, so a blocking verdict cannot degrade into an empty pass. Validation or storage
+    /// set, so a blocking Finding cannot degrade into an empty pass. Validation or storage
     /// failure leaves the event log untouched, so a retry cannot inherit half a reduction and
     /// duplicate the reviewers that were committed first.
     ///

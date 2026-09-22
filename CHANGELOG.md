@@ -273,6 +273,15 @@ or needs a documented hand edit.
   `finding-reducer@2` as well, so that Finding Set's ID differs from an earlier release's. A
   command reviewer's stdin document now always carries
   `"result_contract": "review.kernel/ReviewerResult@2"`.
+- `review.kernel/ReviewerResult@2` no longer has the reviewer's `verdict` and `summary`, which no
+  decision, report or display read. A result is exactly `reports`, `benchmark_demands` and
+  `dispositions`, and the model output contract no longer asks for the other two. A model reviewer
+  that still sends them is unaffected, because its answer is normalized to the contract. A command
+  or Task reviewer Worker whose reply still carries them is refused as
+  `unexpected_or_missing_fields`: drop both keys from its output and from the package's
+  `outputs/result.schema.json`, then re-pin the package digest. That includes the `bugs` and
+  `correctness` Workers of a starter an earlier `af catalog init --profile software` wrote; run
+  it again into a new directory to get the current ones.
 
 ## [0.9.0-rc.6] - 2026-09-21
 
