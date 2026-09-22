@@ -120,7 +120,9 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0046](0046-add-versioned-task-contracts-with-exact-plan-approval.md): retained
   `tasks.sqlite` histories and the idempotent linking of historical Stores.
 - [ADR-0048](0048-compile-task-ports-and-fence-developer-plan-decisions.md): the legacy-link
-  obligation.
+  obligation, and the scheduler's own Gate suppression, which only the pre-Task Review executor
+  used. A Review Gate is a Task condition, so a node it blocks is suppressed as an unselected
+  branch, and no report records a `gate_blocked` suppression.
 - [ADR-0049](0049-run-task-workers-through-shared-durable-attempts.md): retained legacy
   implementation Stores, the common Store's read-only links to legacy histories, the historical
   delivery fixture, and the fixed command implementation entry point with its ADR-0051 migration.

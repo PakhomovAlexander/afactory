@@ -176,9 +176,6 @@ impl ReviewDomainState<'_> {
                                 // Their frozen report vocabulary has no inactive-branch outcome.
                                 RunSuppressionReasonV2::UpstreamMissing
                             }
-                            review_graph::SuppressionReason::GateBlocked => {
-                                RunSuppressionReasonV2::GateBlocked
-                            }
                             review_graph::SuppressionReason::UpstreamMissing => {
                                 RunSuppressionReasonV2::UpstreamMissing
                             }

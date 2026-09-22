@@ -1,6 +1,6 @@
 [package]
 name = "review-graph"
-description = "The typed pipeline graph: named ports, deterministic planning, and gating that suppresses dispatch structurally"
+description = "The typed pipeline graph: named ports, deterministic planning, and gates compiled into Task conditions"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

@@ -3467,7 +3467,6 @@ impl LatestRoundEvidence {
         match self.ledger_production {
             "not_produced_upstream_missing" => "required upstream output was missing",
             "not_produced_failed" => "the Ledger node failed",
-            "not_produced_gate_blocked" => "the Ledger node was gate-blocked",
             _ => "the Ledger node did not produce an authoritative output",
         }
     }
@@ -3569,9 +3568,6 @@ fn latest_round_evidence(
         review_core::RunNodeOutcomeV2::Suppressed {
             reason: review_core::RunSuppressionReasonV2::UpstreamMissing,
         } => "not_produced_upstream_missing",
-        review_core::RunNodeOutcomeV2::Suppressed {
-            reason: review_core::RunSuppressionReasonV2::GateBlocked,
-        } => "not_produced_gate_blocked",
         review_core::RunNodeOutcomeV2::Failed { .. } => "not_produced_failed",
         review_core::RunNodeOutcomeV2::Completed { .. } => {
             return Err("Ledger completed without a NodeOutputReceipt".into());

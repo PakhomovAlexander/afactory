@@ -8,8 +8,9 @@
 //!   scope. Prior claims rendered ad hoc into a prompt would exist only inside a subagent's
 //!   context, unreconstructable afterwards from any artifact.
 //! - **A failed gate suppresses dispatch.** Not "the orchestrator remembers not to continue":
-//!   gated nodes are structurally unreachable once their gate blocks, and the test asserts they
-//!   left no events and no artifacts behind.
+//!   planning resolves every gate a node depends on, directly or through an ancestor, and the
+//!   Review compiler turns each into a Task condition, so nothing behind a blocked gate is
+//!   dispatched.
 //!
 //! Planning happens before anything runs. A cycle, a dangling dependency, or an edge to a port a
 //! node does not declare is a planning failure — the graph never starts, rather than failing

@@ -131,9 +131,6 @@ impl review_graph::Dispatch for MissingSecond<'_> {
     ) -> Result<(), String> {
         self.inner.record_outputs(node, outputs)
     }
-    fn gate_passed(&self, node: &str, outputs: &review_graph::ArtifactMap) -> bool {
-        self.inner.gate_passed(node, outputs)
-    }
     fn failure_class(&self, node: &str) -> Option<review_graph::NodeFailureClass> {
         self.inner.failure_class(node)
     }

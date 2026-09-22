@@ -68,7 +68,6 @@ impl TaskRuntime<'_, '_> {
                         SuppressionReason::BranchNotSelected => {
                             TaskSuppressionV1::BranchNotSelected
                         }
-                        SuppressionReason::GateBlocked => TaskSuppressionV1::GateBlocked,
                         SuppressionReason::UpstreamMissing => TaskSuppressionV1::UpstreamMissing,
                     },
                 },

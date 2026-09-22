@@ -569,8 +569,7 @@ impl CompiledTask {
             .iter()
             .map(|(scope, call)| (scope.clone(), call.max_parallel as usize))
             .collect();
-        Ok(crate::Scheduler::new(&plan)
-            .with_parallelism(self.max_parallel as usize)
+        Ok(crate::Scheduler::new(&plan, self.max_parallel as usize)
             .with_scope_limits(limits)?
             .run(dispatch))
     }

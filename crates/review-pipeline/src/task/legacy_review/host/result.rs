@@ -149,7 +149,6 @@ impl LegacyReviewTaskHost<'_, '_> {
                         TaskSuppressionV1::BranchNotSelected => {
                             SuppressionReason::BranchNotSelected
                         }
-                        TaskSuppressionV1::GateBlocked => SuppressionReason::GateBlocked,
                         TaskSuppressionV1::UpstreamMissing => SuppressionReason::UpstreamMissing,
                     },
                 },

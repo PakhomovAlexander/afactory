@@ -430,7 +430,6 @@ pub enum RunFailureReasonV3 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunSuppressionReasonV2 {
-    GateBlocked,
     UpstreamMissing,
 }
 

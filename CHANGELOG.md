@@ -221,6 +221,14 @@ or needs a documented hand edit.
   `reported_tokens`, which only those reports' plain numeric spend filled. Every row now carries
   `task_chargeable_tokens_at_report` and `task_accounting`, and the `review-report-v3.json` and
   `-v4.json` schemas require both.
+- The `gate_blocked` suppression reason is gone; only the pre-Task executor's scheduler wrote it.
+  A Review Gate is a Task condition, so a node behind a Gate that did not pass reads
+  `branch_not_selected` in `af/TaskRunReport@1` and in `af/review-outcome@2` and `@3` node
+  outcomes, or `upstream_missing` once its predecessors were suppressed, and `RunReport@6`
+  records both as `upstream_missing`, as before. `task-run-report-v1.json`, `run-report-v6.json`
+  and the `review-outcome-v2.json` and `-v3.json` schemas no longer list `gate_blocked`, and the
+  review-outcome `ledger_production` no longer lists `not_produced_gate_blocked`. A stored report
+  that carries `gate_blocked` no longer decodes.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

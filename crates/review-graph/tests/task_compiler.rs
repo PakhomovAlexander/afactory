@@ -765,7 +765,7 @@ fn bounded_branches_execute_only_the_selected_arm_and_keep_evidence_coverage() {
             outcome,
             invocations: Mutex::new(Vec::new()),
         };
-        let report = Scheduler::new(&planned).run(&dispatch);
+        let report = Scheduler::new(&planned, 4).run(&dispatch);
         let NodeOutcome::Completed { outputs } = report.outcome("root.nodes.choose").unwrap()
         else {
             panic!("{report:?}")

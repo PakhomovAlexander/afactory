@@ -46,7 +46,6 @@ pub enum TaskFailureClassV1 {
 #[serde(rename_all = "snake_case")]
 pub enum TaskSuppressionV1 {
     BranchNotSelected,
-    GateBlocked,
     UpstreamMissing,
 }
 

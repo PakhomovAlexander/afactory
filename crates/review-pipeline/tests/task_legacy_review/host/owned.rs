@@ -107,9 +107,7 @@ fn owned_review_runs_real_slice_attempts_under_one_task_and_replays_lossless_can
                 .recompile(&cas, &state.revision, &runtime_plan(&cas, &state))
                 .unwrap();
             let plan = captured.compilation.graph.scheduler_plan().unwrap();
-            let report = review_graph::Scheduler::new(&plan)
-                .with_parallelism(1)
-                .run(&runtime);
+            let report = review_graph::Scheduler::new(&plan, 1).run(&runtime);
             assert!(report.complete(), "one-slot owned execution: {report:?}");
         }
         let report = runtime.execute().unwrap();
@@ -644,9 +642,6 @@ impl review_graph::Dispatch for Interrupted<'_, '_, '_> {
             self.runtime.record_outputs(n, o)
         }
     }
-    fn gate_passed(&self, n: &str, o: &review_graph::ArtifactMap) -> bool {
-        self.runtime.gate_passed(n, o)
-    }
     fn failure_class(&self, n: &str) -> Option<review_graph::NodeFailureClass> {
         self.runtime.failure_class(n)
     }
@@ -685,9 +680,7 @@ fn selected_owned_outputs_recover_after_publication_loss_without_another_child_a
             runtime: &runtime,
             after_registration: false,
         };
-        let _ = review_graph::Scheduler::new(&plan)
-            .with_parallelism(1)
-            .run(&interrupted);
+        let _ = review_graph::Scheduler::new(&plan, 1).run(&interrupted);
         let state = runtime.projection().unwrap();
         let execution = state.execution.unwrap();
         selected = execution
@@ -771,12 +764,10 @@ fn expired_resume_records_all_unstarted_slices_as_missing_without_new_attempts()
             .compilation
             .graph;
         let plan = graph.scheduler_plan().unwrap();
-        let _ = review_graph::Scheduler::new(&plan)
-            .with_parallelism(1)
-            .run(&Interrupted {
-                runtime: &runtime,
-                after_registration: true,
-            });
+        let _ = review_graph::Scheduler::new(&plan, 1).run(&Interrupted {
+            runtime: &runtime,
+            after_registration: true,
+        });
         let state = runtime.projection().unwrap();
         let execution = state.execution.unwrap();
         let owner = graph.owned_children.keys().next().unwrap();

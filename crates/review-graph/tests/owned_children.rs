@@ -1,6 +1,6 @@
 use review_graph::{
     ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, OwnedChildDispatch, Pipeline, Port,
-    Scheduler,
+    PortContract, Scheduler,
 };
 use std::collections::BTreeMap;
 use std::sync::{Condvar, Mutex};
@@ -68,7 +68,7 @@ impl Dispatch for Host {
                     },
                     NodeKind::Task,
                 )
-                .accepting(&["item"]),
+                .accepting_contracts(vec![PortContract::opaque("item")]),
                 inputs: BTreeMap::from([("item".into(), vec![format!("item:{index}")])]),
             })
             .collect())
@@ -128,7 +128,10 @@ impl Dispatch for Host {
 fn plan() -> review_graph::Planned {
     Pipeline::default()
         .node(Node::new("root.owner", NodeKind::Task))
-        .node(Node::new("root.after", NodeKind::Task).accepting(&["parent"]))
+        .node(
+            Node::new("root.after", NodeKind::Task)
+                .accepting_contracts(vec![PortContract::opaque("parent")]),
+        )
         .edge(
             Port::new("root.owner", "out"),
             Port::new("root.after", "parent"),
@@ -142,7 +145,7 @@ fn an_owned_parent_makes_progress_with_one_global_slot_and_retains_every_failure
     let plan = plan();
     let mut host = Host::new(3);
     host.fail = true;
-    let report = Scheduler::new(&plan).with_parallelism(1).run(&host);
+    let report = Scheduler::new(&plan, 1).run(&host);
     assert_eq!(
         report.outcomes.len(),
         2,
@@ -173,7 +176,7 @@ fn owned_children_share_the_existing_wave_and_publish_in_registered_order() {
     let plan = plan();
     let mut host = Host::new(2);
     host.reverse = true;
-    let report = Scheduler::new(&plan).with_parallelism(2).run(&host);
+    let report = Scheduler::new(&plan, 2).run(&host);
     assert!(matches!(
         report.outcome("root.after"),
         Some(NodeOutcome::Completed { .. })
@@ -204,8 +207,7 @@ fn owned_children_obey_existing_scope_capacity_and_empty_sets_fold() {
     for count in [0, 3] {
         let plan = plan();
         let host = Host::new(count);
-        let report = Scheduler::new(&plan)
-            .with_parallelism(4)
+        let report = Scheduler::new(&plan, 4)
             .with_scope_limits(BTreeMap::from([("root.owner".into(), 1)]))
             .unwrap()
             .run(&host);
@@ -224,7 +226,7 @@ fn an_owned_expansion_cannot_replace_a_static_or_foreign_node() {
     let plan = plan();
     let mut host = Host::new(1);
     host.invalid = true;
-    let report = Scheduler::new(&plan).run(&host);
+    let report = Scheduler::new(&plan, 4).run(&host);
     assert!(matches!(
         report.outcome("root.owner"),
         Some(NodeOutcome::Failed { .. })

@@ -366,7 +366,7 @@ impl Presentation<'_> {
             NodeOutcome::Completed { outputs } => json!({"node":node,"kind":"completed","output_artifacts":outputs.values().flatten().collect::<Vec<_>>()}),
             NodeOutcome::Failed { error, .. } => json!({"node":node,"kind":"failed","error":error}),
             NodeOutcome::Suppressed { reason } => json!({"node":node,"kind":"suppressed","reason":match reason {
-                SuppressionReason::BranchNotSelected=>"branch_not_selected",SuppressionReason::GateBlocked=>"gate_blocked",SuppressionReason::UpstreamMissing=>"upstream_missing",
+                SuppressionReason::BranchNotSelected=>"branch_not_selected",SuppressionReason::UpstreamMissing=>"upstream_missing",
             }}),
         }).collect();
         let attempts: Vec<_> = self

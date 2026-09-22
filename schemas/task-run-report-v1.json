@@ -99,7 +99,6 @@
                   "reason": {
                     "enum": [
                       "branch_not_selected",
-                      "gate_blocked",
                       "upstream_missing"
                     ]
                   }

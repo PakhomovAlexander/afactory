@@ -172,7 +172,6 @@
               "reason": {
                 "enum": [
                   "branch_not_selected",
-                  "gate_blocked",
                   "upstream_missing"
                 ]
               }
@@ -455,8 +454,7 @@
         "produced_clean",
         "produced_with_findings",
         "not_produced_upstream_missing",
-        "not_produced_failed",
-        "not_produced_gate_blocked"
+        "not_produced_failed"
       ]
     },
     "available_node_results": {

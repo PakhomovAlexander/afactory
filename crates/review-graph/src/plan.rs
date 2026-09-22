@@ -102,7 +102,8 @@ pub struct Node {
     pub inputs: Vec<PortContract>,
     pub outputs: Vec<PortContract>,
     /// The gate whose pass is a precondition for dispatching this node. Transitive: a node
-    /// downstream of a gated node is gated too.
+    /// downstream of a gated node is gated too. The Review compiler enforces it as a Task
+    /// condition; the scheduler does not read it.
     pub gated_by: Option<String>,
 }
 
@@ -115,16 +116,6 @@ impl Node {
             outputs: vec![PortContract::opaque("out")],
             gated_by: None,
         }
-    }
-
-    pub fn accepting(mut self, ports: &[&str]) -> Node {
-        self.inputs = ports.iter().map(|p| PortContract::opaque(*p)).collect();
-        self
-    }
-
-    pub fn emitting(mut self, ports: &[&str]) -> Node {
-        self.outputs = ports.iter().map(|p| PortContract::opaque(*p)).collect();
-        self
     }
 
     pub fn accepting_contracts(mut self, ports: Vec<PortContract>) -> Node {
@@ -449,10 +440,9 @@ impl Pipeline {
 
 /// Kahn's algorithm with a deterministic tie-break: among ready nodes, the lowest ID first.
 ///
-/// `gated_by` counts as an ordering dependency alongside the edges: a gate must resolve
-/// before any node it gates is even considered, whether or not an edge also connects them —
-/// and a gate that depends on its own gated node is a cycle, caught here rather than
-/// deadlocking a run.
+/// `gated_by` counts as an ordering dependency alongside the edges: a gate precedes every node
+/// it gates, whether or not an edge also connects them — and a gate that depends on its own
+/// gated node is a cycle, caught here before anything runs.
 fn topological_order(
     nodes: &BTreeMap<String, Node>,
     edges: &[Edge],

@@ -1657,7 +1657,7 @@ fn run_reports_are_structural_and_close_a_round_only_with_a_terminal_verdict() {
             RunNodeReportV2 {
                 node: "architecture".into(),
                 outcome: RunNodeOutcomeV2::Suppressed {
-                    reason: RunSuppressionReasonV2::GateBlocked,
+                    reason: RunSuppressionReasonV2::UpstreamMissing,
                 },
             },
             RunNodeReportV2 {
@@ -1671,7 +1671,7 @@ fn run_reports_are_structural_and_close_a_round_only_with_a_terminal_verdict() {
         RunVerdictV3::Incomplete {
             missing_nodes: vec![MissingNodeV2 {
                 node: "architecture".into(),
-                reason: "gate blocked".into(),
+                reason: "BranchNotSelected".into(),
             }],
         },
         RunReportExecutionV6::Unbound {},

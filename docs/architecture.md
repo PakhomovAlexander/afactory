@@ -32,7 +32,7 @@ crates/
   review-sandbox/ materialized sandboxes, sealed mutation capture, and an
                  isolation level a pipeline can refuse
   review-graph/  the typed pipeline: named ports, deterministic planning, and
-                 gating that suppresses dispatch structurally
+                 gates compiled into Task conditions
   review-pipeline/ composition — the graph driving real capture, sandboxes,
                  checks, reviewers and the ledger
   review-config/ the pipeline definition format
@@ -308,20 +308,21 @@ harness had exactly this shape: prior claims reached a reviewer by being rendere
 so what it actually received existed only inside a subagent's context and could not be
 reconstructed from any artifact afterwards. Here an unwired input is a planning error.
 
-**Gating is structural.** Once a gate blocks, every node downstream is *suppressed* — never
-dispatched, and the test asserts the recorder saw exactly one dispatch. Suppression is transitive
-and labelled with its root cause rather than the proximate one: a whole subgraph reading
-"upstream missing" would bury the single fact that explains all of it. Suppressed nodes stay in
-the report, because an absent node reads as "nothing to report", and `complete()` is false unless
-every node actually ran.
+**Gating is planned, then compiled.** A `gated_by` gate reaches through the graph: planning
+resolves every gate a node depends on, directly or through an ancestor, so a pipeline declares it
+once. The Review compiler turns each of those gates into a Task condition. A node behind a gate
+that did not pass is *suppressed* — as an unselected branch, or as missing its upstream when its
+predecessors were suppressed first — never dispatched, and never able to leave an artifact behind.
+Suppressed nodes stay in the report, because an absent node reads as "nothing to report", and
+`complete()` is false unless every node actually ran.
 
 A failed reviewer is a fact about the review, not a reason to lose the rest of it — its siblings
 still run — but nothing may consume an output that does not exist, so its dependents are
 suppressed. Plan order is a function of the pipeline alone (ties break by node ID), so two runs
 on two machines produce the same report, including which nodes were suppressed and why.
 
-The scheduler owns *when* and *whether*; the caller owns *what*. That split is why all nine of
-these properties are proved with a recording stub — no models, no checks, no filesystem.
+The scheduler owns *when* and *whether*; the caller owns *what*. That split is why these
+properties are proved with a recording stub — no models, no checks, no filesystem.
 
 ## One review, end to end
 
