@@ -5,7 +5,7 @@ This is the long-form companion to the [README](../README.md): the crate layout,
 the store, source capture, Check nodes, reviewer adapters, sandboxes, the pipeline graph, pipeline
 definitions, routing, and Attempt budgets. The vocabulary it uses is defined in
 [`CONTEXT.md`](../CONTEXT.md); the decisions it rests on are recorded as ADRs under
-[`adr/`](adr/README.md); the design notes it was ported from live under [`design/`](design/overview.md).
+[`adr/`](adr/README.md); the values that order its trade-offs are in [`values.md`](values.md).
 
 Every section names the test that pins the property it describes, because a documented boundary
 that no test enforces is a wish.
@@ -456,11 +456,10 @@ mapping is an error, never an implicit read of `~/.cargo`; `max_files` counts di
 files so directory-only trees are bounded. Durable cache failures are typed and path-free;
 machine-local operator detail is emitted only to stderr.
 
-**Format note.** The examples in the ported design notes under [`design/`](design/overview.md) are YAML and
-this is TOML. The shape is unchanged and the
-loader is serde types, so another syntax is a different `from_str`, not a different model. The
-reason is dependency risk: `serde_yaml` is archived and its forks are uneven, while `toml` is
-the ecosystem default for Rust tooling configuration. Recorded rather than quietly done.
+**Format note.** Pipeline definitions are TOML, like every other human-authored file. The reason
+is dependency risk: `serde_yaml` is archived and its forks are uneven, while `toml` is the
+ecosystem default for Rust tooling configuration. The loader is serde types, so another syntax
+would be a different `from_str`, not a different model. Recorded rather than quietly done.
 
 ## Routing by changed paths
 

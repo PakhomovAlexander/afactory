@@ -1,13 +1,13 @@
 # Self-optimizer: project improvement through an AF Pipeline
 
-Status: proposal, 2026-09-16. This describes new behavior, not a shipped command.
-The design targets the common Task runtime at source revision `166eca5`.
-Revised after one AF review with Fable 5.1 / medium; see the
-[review record and dispositions](self-optimizer-review.md). Revisions have local
-document checks, not a second independent review verdict.
-The owner subsequently expanded token/time economics and requested light/heavy
-strategies; those additions and the [implementation plan](self-optimizer-plan.md)
-postdate that review.
+Status: design, 2026-09-16, revised. It targets the common Task runtime at source
+revision `166eca5`. Milestones M1–M3 of §10 ship: `af self optimize` captures
+history, runs protected experiments and drives the light diagnose/propose/adopt
+path with typed recipe, economics and adoption contracts. M4, the heavy
+whole-Pipeline redesign, has not started, and live paid demonstrations remain
+pending. The shipped behaviour is documented in
+[Self-optimizer economics](../task-execution/self-optimizer.md); the binding record
+is [`../adr/`](../adr/), and where this note and an ADR disagree, the ADR wins.
 
 `af self optimize` should turn experience working in a project into a reviewable,
 tested improvement to the project's Pipelines, Workers and harness. It is a normal
@@ -615,9 +615,9 @@ Task kinds. CLI help must distinguish project optimization from `self update`.
 
 ## 10. Implementation milestones and exit criteria
 
-The [implementation plan](self-optimizer-plan.md) groups the architecture into four
-large, dependency-ordered milestones. It supersedes the earlier smaller increment
-sequence and includes the owner's expanded economics and strategy requirements.
+The architecture is delivered as four large, dependency-ordered milestones. Each
+one states the product capability it adds and the evidence that closes it; no
+milestone is complete until that evidence exists.
 
 | Milestone | Product capability | Defining exit evidence |
 |---|---|---|

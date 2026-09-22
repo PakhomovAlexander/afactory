@@ -380,6 +380,13 @@ or needs a documented hand edit.
   already used, instead of `findings`. An answer that still says `findings` is read as `reports`,
   so hand-written command reviewers keep working, but the prompt bytes changed: reviewer Attempt
   context IDs differ from those an earlier release computed for the same node.
+- The internal delivery records are out of `docs/`: the `P00`–`P14` package checklist, the product
+  backlog, the release-timing and validation-cost measurement records, the self-optimizer plan and
+  review record, and the pre-implementation design notes the shipped architecture was ported from
+  (`docs/design/{overview,entities,state-machines,config,store,research,task-execution,task-execution-examples}.md`).
+  Git history keeps them. The engineering values are now [`docs/values.md`](docs/values.md), and
+  `docs/design/` keeps only the two designs still in flight, warm layers and the self-optimizer.
+  `CONTRIBUTING.md` now documents the opt-in `make check TEST_RUNNER=nextest` runner.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

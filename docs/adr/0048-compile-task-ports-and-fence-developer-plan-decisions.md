@@ -84,4 +84,4 @@ materialization, and implementation/review cutover. Missing execution remains di
 negative check result. General Task sealing retains a separate contract from frozen checked
 Review Integration. These obligations are not satisfied by the new types or lifecycle mocks.
 
-The complete package and PR sequence is tracked in [the delivery record](../task-execution/pr-sequence.md).
+The complete package and PR sequence is tracked in the delivery record.

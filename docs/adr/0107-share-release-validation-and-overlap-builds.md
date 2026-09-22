@@ -43,7 +43,7 @@ protection or ruleset that names the old PR contexts when rolling this out. The 
 repository had no protection rules or rulesets when inspected for this PR; no remote
 rule mutation is needed. The README badge follows the main Release workflow.
 
-See [release performance](../development/release-performance.md) for the observed
+See the release performance record for the observed
 baseline, workflow graph, measurement commands and limits of savings estimates.
 
 Local native-provider probe timeouts block promoting nextest to the required CI gate.

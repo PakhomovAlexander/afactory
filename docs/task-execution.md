@@ -80,7 +80,6 @@ Start with the Task-file walkthrough, then follow the composition pages in order
 - [Self-optimizer economics](task-execution/self-optimizer.md) — declared history capture, exact project economics and the report-only M1 Pipeline.
 - [Review report inspection](task-execution/review-report-inspection.md) — exact current Task accounting beside immutable report snapshots.
 - [Campaign Review](task-execution/campaign-review.md) — how `af review run` maps onto the common Task runtime, and the CLI boundaries.
-- [Increment structure](task-execution/pr-sequence.md) — how the packages map to walkthroughs and decisions.
 
 The operator-facing guide for the `implement` Task and local delivery is
 [Implementation Tasks with `af task`](tasks.md). Capabilities deliberately left out are listed in

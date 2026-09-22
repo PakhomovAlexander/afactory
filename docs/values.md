@@ -8,7 +8,7 @@ worth a line in the ADR or PR that resolved it. Each value comes with the test t
 whether a change honours it; a change that cannot answer its tests is not done.
 
 The order and the first two values are recorded in
-[ADR-0028](../adr/0028-prioritize-wise-token-use-and-minimum-worker-context.md).
+[ADR-0028](adr/0028-prioritize-wise-token-use-and-minimum-worker-context.md).
 Sharability, batteries included, and pluggability were added as product values with the
 [Task execution increment](task-execution.md) under one explicit rule: **keep the existing
 priority order and add these values**. All eight engineering values retain their order, led by
@@ -67,8 +67,8 @@ on every read; attempts run concurrently and are admitted deterministically.
 
 Time-to-value for a developer: install `af`, connect a provider, connect it to Claude or
 Codex, and see a task or PR get better — in minutes, with defaults that are right for most
-repos. A single static binary, a pinned release, `af init` and `af doctor` that say exactly
-what is missing. Afactory itself is usable for its own development.
+repos. A single static binary, a pinned release, `af catalog init` and `af provider doctor`
+that say exactly what is missing. Afactory itself is usable for its own development.
 
 - First useful result within three commands of installation.
 - The kernel repo implements its own real changes with `af`.
@@ -170,7 +170,7 @@ environment adapters extend the product without a new scheduler.
   mandatory verification, enlarge authority, or change a resumed Plan.
 
 These are acceptance requirements for the
-[Task execution increment](task-execution.md), not claims that the full
+[Task execution runtime](task-execution.md), not claims that the full
 catalog, plugin contracts, or starter pack already ship.
 
 ## Two consequences of the values
@@ -183,7 +183,7 @@ catalog, plugin contracts, or starter pack already ship.
   tasks, artifacts — the state — live in the kernel's Store (SQLite for now), never in the
   repository. No lock files in the tree, no state merged through git, no state branches.
 
-These values are applied in [`overview.md`](overview.md); the
-kernel invariants in [`AGENTS.md`](../../AGENTS.md) (never weaken a contract, fixture, gate,
+These values are applied in [`architecture.md`](architecture.md); the
+kernel invariants in [`AGENTS.md`](../AGENTS.md) (never weaken a contract, fixture, gate,
 budget, or sandbox boundary; no credential in any artifact; publishing is a human action)
 remain in force alongside them.

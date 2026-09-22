@@ -2,9 +2,9 @@
 
 **Status:** design proposal, 2026-09-16, revised 2026-09-17 after its first `af review` Round
 (Campaign `worker-warm-layers`, eight Findings, all accepted). Against `main` 166eca5
-(v0.9.0-rc.2). No ADR yet. Companion vocabulary lives in [`entities.md`](entities.md) and
-[`state-machines.md`](state-machines.md); the binding record is [`../adr/`](../adr/); the
-delivery sequence is [`worker-warm-layers-plan.md`](worker-warm-layers-plan.md).
+(v0.9.0-rc.2). Packages P1–P4 are accepted as ADR-0107 through ADR-0110, which are the binding
+record; the vocabulary is [`CONTEXT.md`](../../CONTEXT.md) and the delivery sequence is
+[`worker-warm-layers-plan.md`](worker-warm-layers-plan.md).
 
 A Round 3 reviewer today pays the same cold start as Round 1: a fresh harness, a fresh tree, no
 build cache, and a model that re-reads everything it already read twice. This design splits a

@@ -27,7 +27,20 @@ make check
 That is `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`,
 `cargo test --locked`, and the release-selection check (`scripts/test-release-resolve.py`). CI
 runs exactly this, so a green local run is a green PR. Clippy warnings are errors; fix them
-rather than allowing them.
+rather than allowing them. `TEST_THREADS` overrides the four-thread bound; native-provider
+fixtures spawn several processes per test, so the host CPU count is not a suitable bound.
+
+`make check TEST_RUNNER=nextest` is an opt-in cross-binary experiment, not the gate. It needs the
+pinned, checksum-verified binary that `scripts/install-nextest.sh` places in a temporary tools
+directory:
+
+```sh
+scripts/install-nextest.sh
+PATH="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/af-ci-tools:$PATH" make check TEST_RUNNER=nextest
+```
+
+Cargo stays the required runner in CI until a complete comparison passes on Linux and macOS;
+native-provider probe timeouts under cross-binary scheduling currently block promoting it.
 
 If you touch `crates/review-sandbox`, also run the live probes:
 

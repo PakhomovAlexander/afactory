@@ -86,6 +86,16 @@ GA reads only what GA writes. Compatibility obligations start at the GA release.
    ADR-0070 and ADR-0071, the pending-cutover paragraphs in the consequences of ADR-0081 and
    ADR-0083, and the frozen-tree gate logs of ADR-0083 and ADR-0084. None of them names anything
    a reader must still do, and their bodies stay as they were.
+8. **Internal delivery records are not product documentation.** The package checklists,
+   milestone plans, review records and CI measurement logs that tracked pre-GA work are deleted
+   at GA, and git history keeps them: the `P00`–`P14` delivery record, the product backlog, the
+   release-timing record, the validation-cost microbenchmarks, the self-optimizer plan and review
+   record, and the pre-implementation design notes that the shipped architecture was ported from.
+   The engineering values move to `docs/values.md` and stay binding, and a design note whose work
+   is still in flight stays under `docs/design/`. An accepted ADR that linked a deleted record —
+   ADR-0048 and ADR-0107 *Share release validation and overlap builds* — keeps its decision and
+   its words; only the dead link itself becomes plain text, the same remedy clause 6 gives for a
+   deleted ADR. The record it named lives on in git history.
 
 ## Cutover acceptance
 
