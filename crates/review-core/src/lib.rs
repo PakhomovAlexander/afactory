@@ -99,10 +99,9 @@ pub use event::{
     PortCardinality, ProviderFailureClassV1, ProviderNextActionV1, ProviderOperationStateV1,
     ProviderOperationTransitionPayloadV1, RunCacheFailureReasonV5, RunCacheFailureV5,
     RunCacheKindV5, RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
-    RunExecutionProviderV4, RunFailureReasonV2, RunFailureReasonV3, RunIsolationV4,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportExecutionV6, RunReportPayloadV2,
-    RunReportPayloadV3, RunReportPayloadV4, RunReportPayloadV5, RunReportPayloadV6,
-    RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3, SnapshotAffinity,
+    RunExecutionProviderV4, RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2,
+    RunReportExecutionV6, RunReportPayloadV3, RunReportPayloadV4, RunReportPayloadV5,
+    RunReportPayloadV6, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV3, SnapshotAffinity,
     TaskReviewAccountingV1, UnknownEventType, is_artifact_type, run_report_closes_round,
 };
 pub use exec::{Arg, ArgError, Command, Provenance};

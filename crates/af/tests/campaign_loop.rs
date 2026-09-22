@@ -1044,7 +1044,8 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
         "{report_out}"
     );
     assert!(report_out.contains("Fix: bound it"), "{report_out}");
-    assert!(report_out.contains("## Spend"), "{report_out}");
+    assert!(report_out.contains("## Task accounting:"), "{report_out}");
+    assert!(!report_out.contains("## Spend"), "{report_out}");
     assert!(report_out.contains("architecture"), "{report_out}");
 
     let (code, report_json, report_err) = af(
@@ -1064,10 +1065,7 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     let report: serde_json::Value = serde_json::from_str(&report_json).unwrap();
     assert_eq!(report["schema"], "af/review-report@3");
     assert_eq!(report["rounds"][0]["round"], 1);
-    assert!(
-        report["spend"].as_array().unwrap().is_empty(),
-        "common Task spend is never copied into the historical Round accumulator"
-    );
+    assert!(report.get("spend").is_none(), "{report_json}");
     let task = &report["task_accounting"][0];
     assert_eq!(task["attempts_started"], "2");
     assert_eq!(task["chargeable_tokens"], "0");

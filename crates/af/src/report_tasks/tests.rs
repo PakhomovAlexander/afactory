@@ -14,7 +14,7 @@ fn event() -> review_core::RunEvent {
         event_id: "b".repeat(26),
         run_id: crate::campaign_run_id("accounting"),
         sequence: 0,
-        event_type: review_core::EventType::RunReportV1,
+        event_type: review_core::EventType::RunReportV6,
         occurred_at: "2026-09-12T00:00:00Z".into(),
         node_id: None,
         attempt_id: None,
@@ -501,7 +501,6 @@ impl Fixture {
 
     fn report_event(&self, charge: u128, sequence: u64) -> review_core::RunEvent {
         let mut event = event();
-        event.event_type = review_core::EventType::RunReportV6;
         event.payload = serde_json::to_value(review_core::RunReportPayloadV6 {
             outcomes: vec![],
             blocked_gates: vec![],
@@ -580,7 +579,7 @@ fn failures_before_first_conclusion_use_common_provider_and_business_attempts() 
     let view = serde_json::to_value(view).unwrap();
     assert_eq!(view["schema"], "af/review-report@3");
     assert_eq!(view["runs_recorded"], 0);
-    assert_eq!(view["spend"], json!([]));
+    assert!(view.get("spend").is_none());
     assert_eq!(view["task_accounting"][0]["chargeable_tokens"], "12");
 }
 
@@ -827,7 +826,6 @@ fn common_and_legacy_wall_intervals_merge_without_counting_overlaps_twice() {
     let mut report = TaskAccountingReport {
         tasks: vec![],
         wall_rows: vec![common.clone()],
-        rounds: BTreeSet::new(),
     };
     assert_eq!(report.wall_ms(std::slice::from_ref(&legacy)), Some(70));
     let mut restarted = common;
@@ -837,8 +835,10 @@ fn common_and_legacy_wall_intervals_merge_without_counting_overlaps_twice() {
     assert_eq!(report.wall_ms(&[legacy]), Some(120));
 }
 
+/// A Campaign whose first Task capture failed has no Task accounting, so it keeps the
+/// `af/review-report@1` label rather than claiming the Task-backed `@3` shape.
 #[test]
-fn legacy_only_report_view_keeps_its_numeric_shape() {
+fn a_campaign_without_a_task_keeps_the_review_report_1_label() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let store = EventStore::open_in_memory().unwrap();
@@ -846,17 +846,7 @@ fn legacy_only_report_view_keeps_its_numeric_shape() {
     let value = serde_json::to_value(view).unwrap();
     assert_eq!(value["schema"], "af/review-report@1");
     assert!(value.get("task_accounting").is_none());
-    let event = review_core::RunEvent {
-        payload: json!({"outcomes":[], "blocked_gates":[], "verdict":"Pass", "spent_tokens":9}),
-        event_type: review_core::EventType::RunReportV1,
-        ..event()
-    };
-    let rows = crate::report_rounds(&[&event], &BTreeMap::new()).unwrap();
-    assert_eq!(rows[0].tokens_label(), "reported tokens 9");
-    assert_eq!(
-        serde_json::to_value(&rows[0]).unwrap(),
-        json!({"run":1, "verdict":"Pass", "reported_tokens":9})
-    );
+    assert!(value.get("spend").is_none());
 }
 
 #[test]

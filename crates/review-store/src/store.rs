@@ -2084,10 +2084,6 @@ fn report_outcomes(
     payload: &Value,
 ) -> Result<Vec<review_core::RunNodeReportV2>, StoreError> {
     match event_type {
-        EventType::RunReportV2 => Ok(serde_json::from_value::<review_core::RunReportPayloadV2>(
-            payload.clone(),
-        )?
-        .outcomes),
         EventType::RunReportV3 => Ok(serde_json::from_value::<review_core::RunReportPayloadV3>(
             payload.clone(),
         )?
@@ -2570,11 +2566,6 @@ fn validate_campaign_transition(
                     return Err(StoreError::Conflict(format!(
                         "{event_type} requires an active Round"
                     )));
-                }
-                if event_type == EventType::RunReportV1 {
-                    return Err(StoreError::Conflict(
-                        "RunReport@1 is replay-only and cannot be appended".into(),
-                    ));
                 }
                 if let Some((active_id, active_payload)) = &active {
                     let plan = authority_plan.as_ref();
@@ -4095,12 +4086,8 @@ fn validate_campaign_transition(
                         // authority. Validate its plan, binding, cache, and receipt claims even
                         // when it keeps the Round open; frozen report versions retain their
                         // existing closing-report admission behavior.
-                        if event_type.run_report_requires_receipts()
-                            && (closes
-                                || matches!(
-                                    event_type,
-                                    EventType::RunReportV5 | EventType::RunReportV6
-                                ))
+                        if closes
+                            || matches!(event_type, EventType::RunReportV5 | EventType::RunReportV6)
                         {
                             if let Some(plan) = plan {
                                 validate_report_plan(plan, event_type, &event.payload)?;

@@ -1,11 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "urn:af:schema:review-report-view:2",
+  "$id": "urn:af:schema:review-report-view:3",
   "title": "af/review-report@3 inspection view",
-  "description": "Task-backed Review inspection. Legacy spend fields retain their numeric shape. Task totals are current cumulative ledger charges; Round snapshots are frozen cumulative charges and must not be summed.",
+  "description": "Task-backed Review inspection. Task totals are current cumulative ledger charges; Round snapshots are frozen cumulative charges and must not be summed.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "campaign", "runs_recorded", "ledger_round", "final_verdict", "rounds", "spend", "task_accounting", "demands", "findings_summary", "findings"],
+  "required": ["schema", "campaign", "runs_recorded", "ledger_round", "final_verdict", "rounds", "task_accounting", "demands", "findings_summary", "findings"],
   "properties": {
     "schema": {"const": "af/review-report@3"},
     "campaign": {"type": "string"},
@@ -13,7 +13,6 @@
     "ledger_round": {"$ref": "#/$defs/count"},
     "final_verdict": {"type": ["string", "null"]},
     "rounds": {"type": "array", "items": {"$ref": "#/$defs/round"}},
-    "spend": {"type": "array", "items": {"type": "object"}},
     "task_accounting": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/task"}},
     "demands": {"type": "array", "items": {"type": "object"}},
     "recorded_not_gathered": {"type": "object"},

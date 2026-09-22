@@ -7,7 +7,7 @@ use review_core::{
     BrokerOperationPolicyV1, BrokerOperationReceiptV1, CampaignConvergenceV1, CampaignManifestV1,
     CampaignOpenedPayloadV1, EventType, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1,
     PortArtifactsV1, PortCardinality, ReviewerExecutionBindingV1, RoundInputSupersededPayloadV1,
-    RoundStartedPayloadV1, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunVerdictV2,
+    RoundStartedPayloadV1, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3, RunVerdictV3,
     SnapshotAffinity, SubjectKind, SubjectV1,
 };
 use review_store::{Cas, EventStore, NewEvent, StoreError};
@@ -544,7 +544,7 @@ fn a_terminal_report_requires_matching_output_receipts() {
     let ids = authority(&cas, "report");
     let round = opened_round(&mut store, &cas, "run", &ids);
     let output = cas.put(b"unreceipted output").unwrap();
-    let report = RunReportPayloadV2 {
+    let report = RunReportPayloadV3 {
         outcomes: vec![RunNodeReportV2 {
             node: "reviewer".into(),
             outcome: RunNodeOutcomeV2::Completed {
@@ -552,7 +552,7 @@ fn a_terminal_report_requires_matching_output_receipts() {
             },
         }],
         blocked_gates: vec![],
-        verdict: RunVerdictV2::Pass,
+        verdict: RunVerdictV3::Pass,
         spent_tokens: None,
     };
 
@@ -561,7 +561,7 @@ fn a_terminal_report_requires_matching_output_receipts() {
             "run",
             &cas,
             NewEvent::new(
-                EventType::RunReportV2,
+                EventType::RunReportV3,
                 serde_json::to_value(report).unwrap(),
             )
             .caused_by(round.event_id),
@@ -572,34 +572,6 @@ fn a_terminal_report_requires_matching_output_receipts() {
         error.to_string().contains("without a durable receipt"),
         "{error}"
     );
-}
-
-#[test]
-fn a_campaign_cannot_append_a_legacy_run_report() {
-    let directory = tempfile::tempdir().unwrap();
-    let cas = Cas::open(directory.path().join("cas")).unwrap();
-    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
-    let ids = authority(&cas, "legacy-report");
-    let round = opened_round(&mut store, &cas, "run", &ids);
-
-    let error = store
-        .append(
-            "run",
-            &cas,
-            NewEvent::new(
-                EventType::RunReportV1,
-                serde_json::json!({
-                    "outcomes": [{"node": "reviewer", "status": "completed", "detail": {}}],
-                    "blocked_gates": [],
-                    "verdict": "Pass",
-                    "spent_tokens": 0
-                }),
-            )
-            .caused_by(round.event_id),
-        )
-        .unwrap_err();
-
-    assert!(error.to_string().contains("replay-only"), "{error}");
 }
 
 #[test]

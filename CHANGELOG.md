@@ -156,6 +156,15 @@ or needs a documented hand edit.
   Windows and the BSDs, now stops with a compile error. It no longer compiles fallbacks that
   skipped read-only sandboxes, process-group kills, symlinks or executable bits. The release
   targets and `install.sh` are unchanged.
+- `af review report` no longer has a `spend` section: `af/review-report@3` and `@4` JSON drops the
+  `spend` array (their schemas no longer list it), text output drops its `Spend:` block, and
+  Markdown drops its `## Spend` table and `### Attempts` list. They described only Attempts of
+  the pre-Task executor, so for every Campaign this release runs they were empty or held a
+  zero-token placeholder row; `task_accounting` reports those Rounds' Attempts, usage, wall-clock
+  and caps. `RunReport@1` and `RunReport@2` events are neither written nor read, so a Campaign
+  whose log holds one can no longer be run, reported or listed. The unused `run-report-v2.json`
+  and `review-report-v2.json` schemas are gone, and `review-report-v3.json` now has its own
+  `$id`, `urn:af:schema:review-report-view:3`, instead of repeating `@2`'s.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

@@ -104,10 +104,6 @@ pub enum EventType {
     ProposalRefusedV1,
     #[serde(rename = "ReviewerExecutionBound@1")]
     ReviewerExecutionBoundV1,
-    #[serde(rename = "RunReport@1")]
-    RunReportV1,
-    #[serde(rename = "RunReport@2")]
-    RunReportV2,
     #[serde(rename = "RunReport@3")]
     RunReportV3,
     #[serde(rename = "RunReport@4")]
@@ -145,7 +141,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 65] = [
+    pub const ALL: [Self; 63] = [
         Self::TaskTransitionV1,
         Self::TaskTransitionV2,
         Self::TaskTransitionV3,
@@ -192,8 +188,6 @@ impl EventType {
         Self::ProposalPreparedV1,
         Self::ProposalRefusedV1,
         Self::ReviewerExecutionBoundV1,
-        Self::RunReportV1,
-        Self::RunReportV2,
         Self::RunReportV3,
         Self::RunReportV4,
         Self::RunReportV5,
@@ -261,8 +255,6 @@ impl EventType {
             Self::ProposalPreparedV1 => "ProposalPrepared@1",
             Self::ProposalRefusedV1 => "ProposalRefused@1",
             Self::ReviewerExecutionBoundV1 => "ReviewerExecutionBound@1",
-            Self::RunReportV1 => "RunReport@1",
-            Self::RunReportV2 => "RunReport@2",
             Self::RunReportV3 => "RunReport@3",
             Self::RunReportV4 => "RunReport@4",
             Self::RunReportV5 => "RunReport@5",
@@ -287,24 +279,7 @@ impl EventType {
     pub const fn is_run_report(self) -> bool {
         matches!(
             self,
-            Self::RunReportV1
-                | Self::RunReportV2
-                | Self::RunReportV3
-                | Self::RunReportV4
-                | Self::RunReportV5
-                | Self::RunReportV6
-        )
-    }
-
-    /// Whether this run-report generation carries plan and receipt authority.
-    pub const fn run_report_requires_receipts(self) -> bool {
-        matches!(
-            self,
-            Self::RunReportV2
-                | Self::RunReportV3
-                | Self::RunReportV4
-                | Self::RunReportV5
-                | Self::RunReportV6
+            Self::RunReportV3 | Self::RunReportV4 | Self::RunReportV5 | Self::RunReportV6
         )
     }
 
@@ -356,8 +331,6 @@ impl EventType {
             Self::ProposalPreparedV1 => ("ProposalPrepared", 1),
             Self::ProposalRefusedV1 => ("ProposalRefused", 1),
             Self::ReviewerExecutionBoundV1 => ("ReviewerExecutionBound", 1),
-            Self::RunReportV1 => ("RunReport", 1),
-            Self::RunReportV2 => ("RunReport", 2),
             Self::RunReportV3 => ("RunReport", 3),
             Self::RunReportV4 => ("RunReport", 4),
             Self::RunReportV5 => ("RunReport", 5),
@@ -458,8 +431,6 @@ impl std::str::FromStr for EventType {
             "ProposalAccepted@1" => Ok(Self::ProposalAcceptedV1),
             "ProposalPrepared@1" => Ok(Self::ProposalPreparedV1),
             "ProposalRefused@1" => Ok(Self::ProposalRefusedV1),
-            "RunReport@1" => Ok(Self::RunReportV1),
-            "RunReport@2" => Ok(Self::RunReportV2),
             "RunReport@3" => Ok(Self::RunReportV3),
             "RunReport@4" => Ok(Self::RunReportV4),
             "RunReport@5" => Ok(Self::RunReportV5),
@@ -522,14 +493,6 @@ impl RunEvent {
     }
 }
 
-/// Stable reasons a completed run can fail its convergence gate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RunFailureReasonV2 {
-    NotConverged,
-    Exhausted,
-}
-
 /// Stable reasons a completed RunReport@3 can fail its convergence gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -567,24 +530,6 @@ pub struct RunNodeReportV2 {
 pub struct MissingNodeV2 {
     pub node: String,
     pub reason: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum RunVerdictV2 {
-    Pass,
-    Fail { reason: RunFailureReasonV2 },
-    Incomplete { missing_nodes: Vec<MissingNodeV2> },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunReportPayloadV2 {
-    pub outcomes: Vec<RunNodeReportV2>,
-    pub blocked_gates: Vec<String>,
-    pub verdict: RunVerdictV2,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spent_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1025,7 +970,7 @@ impl ProviderOperationTransitionPayloadV1 {
     }
 }
 
-impl RunReportPayloadV2 {
+impl RunReportPayloadV3 {
     pub fn validate(&self) -> Result<(), String> {
         if self.outcomes.is_empty() {
             return Err("a run report must contain at least one node outcome".into());
@@ -1093,16 +1038,18 @@ impl RunReportPayloadV2 {
             })
             .collect();
         let verdict_validation: Result<(), String> = match &self.verdict {
-            RunVerdictV2::Pass
-            | RunVerdictV2::Fail {
-                reason: RunFailureReasonV2::NotConverged,
+            // Only an exhausted budget may conclude with unresolved nodes. Every other terminal
+            // verdict, including an authority failure, must have resolved each node.
+            RunVerdictV3::Pass
+            | RunVerdictV3::Fail {
+                reason: RunFailureReasonV3::NotConverged | RunFailureReasonV3::AuthorityUnavailable,
             } if !unresolved.is_empty() => {
                 Err("a terminal pass/fail report cannot contain failed or suppressed nodes".into())
             }
-            RunVerdictV2::Pass if !self.blocked_gates.is_empty() => {
+            RunVerdictV3::Pass if !self.blocked_gates.is_empty() => {
                 Err("a passing report cannot contain blocked gates".into())
             }
-            RunVerdictV2::Incomplete { missing_nodes } => {
+            RunVerdictV3::Incomplete { missing_nodes } => {
                 if missing_nodes.is_empty() {
                     return Err("an incomplete report must name at least one missing node".into());
                 }
@@ -1137,34 +1084,6 @@ impl RunReportPayloadV2 {
             return Err("spent_tokens exceeds the JSON safe-integer bound".into());
         }
         Ok(())
-    }
-}
-
-impl RunReportPayloadV3 {
-    pub fn validate(&self) -> Result<(), String> {
-        // RunReport@3 changes only the durable failure-reason vocabulary. Reuse the frozen
-        // structural rules from @2 so the two readers cannot drift on node or receipt shape.
-        let verdict = match &self.verdict {
-            RunVerdictV3::Pass => RunVerdictV2::Pass,
-            RunVerdictV3::Fail {
-                reason: RunFailureReasonV3::Exhausted,
-            } => RunVerdictV2::Fail {
-                reason: RunFailureReasonV2::Exhausted,
-            },
-            RunVerdictV3::Fail { .. } => RunVerdictV2::Fail {
-                reason: RunFailureReasonV2::NotConverged,
-            },
-            RunVerdictV3::Incomplete { missing_nodes } => RunVerdictV2::Incomplete {
-                missing_nodes: missing_nodes.clone(),
-            },
-        };
-        RunReportPayloadV2 {
-            outcomes: self.outcomes.clone(),
-            blocked_gates: self.blocked_gates.clone(),
-            verdict,
-            spent_tokens: self.spent_tokens,
-        }
-        .validate()
     }
 }
 
@@ -1256,99 +1175,6 @@ impl RunReportPayloadV5 {
         }
         Ok(())
     }
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyRunReportV1 {
-    outcomes: Vec<LegacyRunNodeV1>,
-    blocked_gates: Vec<String>,
-    verdict: String,
-    spent_tokens: Option<u64>,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyRunNodeV1 {
-    node: String,
-    status: String,
-    detail: serde_json::Value,
-}
-
-impl LegacyRunReportV1 {
-    fn validate(&self) -> Result<bool, String> {
-        if self.outcomes.is_empty() {
-            return Err("a frozen RunReport@1 must contain at least one node outcome".into());
-        }
-        let mut nodes = std::collections::BTreeSet::new();
-        let mut unresolved = Vec::new();
-        for outcome in &self.outcomes {
-            if outcome.node.trim().is_empty() || !nodes.insert(outcome.node.as_str()) {
-                return Err("a frozen RunReport@1 contains an empty or duplicate node".into());
-            }
-            match outcome.status.as_str() {
-                "completed" if outcome.detail.is_object() => {}
-                "failed" if outcome.detail.as_str().is_some_and(|text| !text.is_empty()) => {
-                    unresolved.push((
-                        outcome.node.clone(),
-                        outcome.detail.as_str().unwrap_or_default().to_string(),
-                    ));
-                }
-                "suppressed"
-                    if matches!(
-                        outcome.detail.as_str(),
-                        Some("GateBlocked" | "UpstreamMissing")
-                    ) =>
-                {
-                    unresolved.push((
-                        outcome.node.clone(),
-                        outcome.detail.as_str().unwrap_or_default().to_string(),
-                    ));
-                }
-                status => {
-                    return Err(format!(
-                        "invalid frozen RunReport@1 outcome `{status}` for node `{}`",
-                        outcome.node
-                    ));
-                }
-            }
-        }
-        let blocked: std::collections::BTreeSet<&str> =
-            self.blocked_gates.iter().map(String::as_str).collect();
-        if blocked.len() != self.blocked_gates.len()
-            || blocked
-                .iter()
-                .any(|gate| gate.is_empty() || !nodes.contains(gate))
-        {
-            return Err("a frozen RunReport@1 contains an invalid blocked gate".into());
-        }
-        if self.spent_tokens.unwrap_or(0) > 9_007_199_254_740_991 {
-            return Err("frozen RunReport@1 spent_tokens exceeds the safe-integer bound".into());
-        }
-        match self.verdict.as_str() {
-            "Pass" if unresolved.is_empty() && blocked.is_empty() => Ok(true),
-            "Fail(NotConverged)" | "Fail(Exhausted)" if unresolved.is_empty() => Ok(true),
-            verdict if verdict == frozen_incomplete_verdict(&unresolved) => Ok(false),
-            verdict => Err(format!(
-                "frozen RunReport@1 verdict `{verdict}` contradicts its outcomes"
-            )),
-        }
-    }
-}
-
-fn frozen_incomplete_verdict(missing: &[(String, String)]) -> String {
-    let entries = missing
-        .iter()
-        .map(|(node, reason)| {
-            format!(
-                "({}, {})",
-                serde_json::to_string(node).expect("String is JSON"),
-                serde_json::to_string(reason).expect("String is JSON")
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(", ");
-    format!("Incomplete {{ missing: [{entries}] }}")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1722,21 +1548,6 @@ pub fn validate_event_payload(
                 .validate()
                 .map_err(|error| format!("ReviewerExecutionBound@1: {error}"))
         }
-        EventType::RunReportV1 => {
-            let report = serde_json::from_value::<LegacyRunReportV1>(payload.clone())
-                .map_err(|error| format!("RunReport@1: {error}"))?;
-            report
-                .validate()
-                .map(|_| ())
-                .map_err(|error| format!("RunReport@1: {error}"))
-        }
-        EventType::RunReportV2 => {
-            let report = serde_json::from_value::<RunReportPayloadV2>(payload.clone())
-                .map_err(|error| format!("RunReport@2: {error}"))?;
-            report
-                .validate()
-                .map_err(|error| format!("RunReport@2: {error}"))
-        }
         EventType::RunReportV3 => {
             let report = serde_json::from_value::<RunReportPayloadV3>(payload.clone())
                 .map_err(|error| format!("RunReport@3: {error}"))?;
@@ -2099,28 +1910,9 @@ impl NodeOutputReceiptPayloadV1 {
 
 /// Decode whether a report event closed a campaign round.
 ///
-/// The `RunReport@1` arm is permanent: append-only logs may contain it forever. Its debug-string
-/// prefix is isolated here and can no longer leak into new writes. A malformed report is an
-/// error, not a closed round.
+/// A malformed report is an error, not a closed round.
 pub fn run_report_closes_round(event: &RunEvent) -> Result<Option<bool>, serde_json::Error> {
     match event.event_type {
-        EventType::RunReportV1 => {
-            let report: LegacyRunReportV1 = serde_json::from_value(event.payload.clone())?;
-            report
-                .validate()
-                .map(Some)
-                .map_err(<serde_json::Error as serde::de::Error>::custom)
-        }
-        EventType::RunReportV2 => {
-            let report: RunReportPayloadV2 = serde_json::from_value(event.payload.clone())?;
-            report
-                .validate()
-                .map_err(<serde_json::Error as serde::de::Error>::custom)?;
-            Ok(Some(!matches!(
-                report.verdict,
-                RunVerdictV2::Incomplete { .. }
-            )))
-        }
         EventType::RunReportV3 => {
             let report: RunReportPayloadV3 = serde_json::from_value(event.payload.clone())?;
             report

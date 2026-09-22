@@ -22,17 +22,17 @@ use review_core::{
     ResolutionChallengeKind, ResolutionChallengeV1, ReviewSliceV1, ReviewerExecutionBindingV1,
     ReviewerPackageV1, RunCacheFailureReasonV5, RunCacheFailureV5, RunCacheKindV5,
     RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
-    RunExecutionProviderV4, RunFailureReasonV2, RunFailureReasonV3, RunIsolationV4,
-    RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV2, RunReportPayloadV3, RunReportPayloadV4,
-    RunReportPayloadV5, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV2, RunVerdictV3,
-    SemanticClosureV1, SemanticDispositionV1, ShardOutcomeV1, ShardReceiptV1, ShardSetV1,
-    SliceCoverageV1, SliceSetV1, SnapshotAffinity, SourceSnapshot, SubjectKind, SubjectV1,
+    RunExecutionProviderV4, RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2,
+    RunReportPayloadV3, RunReportPayloadV4, RunReportPayloadV5, RunSandboxModeV4,
+    RunSuppressionReasonV2, RunVerdictV3, SemanticClosureV1, SemanticDispositionV1, ShardOutcomeV1,
+    ShardReceiptV1, ShardSetV1, SliceCoverageV1, SliceSetV1, SnapshotAffinity, SourceSnapshot,
+    SubjectKind, SubjectV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 188] = [
+const SCHEMAS: [&str; 187] = [
     "session-snapshot-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -212,7 +212,6 @@ const SCHEMAS: [&str; 188] = [
     "round-input-superseded-v1.json",
     "round-started-v1.json",
     "run-event-v1.json",
-    "run-report-v2.json",
     "run-report-v3.json",
     "run-report-v4.json",
     "run-report-v5.json",
@@ -1822,7 +1821,7 @@ fn provider_operation_continuation_is_exact_and_secret_free() {
 
 #[test]
 fn run_reports_are_structural_and_every_report_version_remains_readable() {
-    let report = RunReportPayloadV2 {
+    let report = RunReportPayloadV3 {
         outcomes: vec![
             RunNodeReportV2 {
                 node: "architecture".into(),
@@ -1838,7 +1837,7 @@ fn run_reports_are_structural_and_every_report_version_remains_readable() {
             },
         ],
         blocked_gates: vec!["gate".into()],
-        verdict: RunVerdictV2::Incomplete {
+        verdict: RunVerdictV3::Incomplete {
             missing_nodes: vec![MissingNodeV2 {
                 node: "architecture".into(),
                 reason: "gate blocked".into(),
@@ -1846,10 +1845,11 @@ fn run_reports_are_structural_and_every_report_version_remains_readable() {
         },
         spent_tokens: Some(42),
     };
+    report.validate().unwrap();
     let value = serde_json::to_value(&report).unwrap();
-    assert_valid("run-report-v2.json", &value);
+    assert_valid("run-report-v3.json", &value);
     assert_eq!(
-        serde_json::from_value::<RunReportPayloadV2>(value).unwrap(),
+        serde_json::from_value::<RunReportPayloadV3>(value).unwrap(),
         report
     );
 
@@ -1857,42 +1857,21 @@ fn run_reports_are_structural_and_every_report_version_remains_readable() {
         event_id: "01jd8m4qz9k7v3n2p6r8t0w1xy".into(),
         run_id: "01jd8m4qz9k7v3n2p6r8t0w1xz".into(),
         sequence: 1,
-        event_type: EventType::RunReportV1,
+        event_type: EventType::RunReportV3,
         occurred_at: "2026-08-16T12:00:00Z".into(),
         node_id: None,
         attempt_id: None,
         causation_id: None,
         correlation_id: None,
         artifact_refs: vec![],
-        payload: json!({
-            "outcomes": [{"node":"review", "status":"completed", "detail":{}}],
-            "blocked_gates": [],
-            "verdict": "Fail(NotConverged)",
-            "spent_tokens": null
-        }),
+        payload: serde_json::to_value(report).unwrap(),
     };
-    assert_eq!(
-        review_core::run_report_closes_round(&event).unwrap(),
-        Some(true)
-    );
-    event.payload = json!({
-        "outcomes": [{"node":"review", "status":"failed", "detail":"crashed"}],
-        "blocked_gates": [],
-        "verdict": "Incomplete { missing: [(\"review\", \"crashed\")] }",
-        "spent_tokens": 7
-    });
-    assert_eq!(
-        review_core::run_report_closes_round(&event).unwrap(),
-        Some(false)
-    );
-    event.event_type = EventType::RunReportV2;
-    event.payload = serde_json::to_value(report).unwrap();
     assert_eq!(
         review_core::run_report_closes_round(&event).unwrap(),
         Some(false)
     );
 
-    event.payload = serde_json::to_value(RunReportPayloadV2 {
+    event.payload = serde_json::to_value(RunReportPayloadV3 {
         outcomes: vec![RunNodeReportV2 {
             node: "review".into(),
             outcome: RunNodeOutcomeV2::Failed {
@@ -1900,8 +1879,8 @@ fn run_reports_are_structural_and_every_report_version_remains_readable() {
             },
         }],
         blocked_gates: vec![],
-        verdict: RunVerdictV2::Fail {
-            reason: RunFailureReasonV2::Exhausted,
+        verdict: RunVerdictV3::Fail {
+            reason: RunFailureReasonV3::Exhausted,
         },
         spent_tokens: None,
     })
@@ -2120,16 +2099,34 @@ fn node_invocation_and_output_receipt_roundtrip() {
 
 #[test]
 fn event_validation_rejects_semantically_malformed_run_reports() {
-    let contradictory_legacy = json!({
-        "outcomes": [{"node":"reviewer", "status":"failed", "detail":"crashed"}],
-        "blocked_gates": [],
-        "verdict": "Pass",
-        "spent_tokens": null
-    });
-    assert!(
-        review_core::event::validate_event_payload(EventType::RunReportV1, &contradictory_legacy)
-            .is_err()
-    );
+    // Only an exhausted budget may conclude a Round with unresolved nodes; every other terminal
+    // verdict, including an authority failure, contradicts a failed or suppressed outcome.
+    let unresolved = |verdict: Value| {
+        json!({
+            "outcomes": [{"node":"reviewer", "outcome":{"kind":"failed", "error":"crashed"}}],
+            "blocked_gates": [],
+            "verdict": verdict
+        })
+    };
+    for contradictory in [
+        json!({"kind":"pass"}),
+        json!({"kind":"fail", "reason":"not_converged"}),
+        json!({"kind":"fail", "reason":"authority_unavailable"}),
+    ] {
+        assert!(
+            review_core::event::validate_event_payload(
+                EventType::RunReportV3,
+                &unresolved(contradictory.clone())
+            )
+            .is_err(),
+            "{contradictory}"
+        );
+    }
+    review_core::event::validate_event_payload(
+        EventType::RunReportV3,
+        &unresolved(json!({"kind":"fail", "reason":"exhausted"})),
+    )
+    .unwrap();
 
     let empty_reason = json!({
         "outcomes": [{"node":"reviewer", "outcome":{"kind":"failed", "error":"x"}}],
@@ -2137,7 +2134,7 @@ fn event_validation_rejects_semantically_malformed_run_reports() {
         "verdict": {"kind":"incomplete", "missing_nodes":[{"node":"reviewer", "reason":""}]}
     });
     assert!(
-        review_core::event::validate_event_payload(EventType::RunReportV2, &empty_reason).is_err()
+        review_core::event::validate_event_payload(EventType::RunReportV3, &empty_reason).is_err()
     );
 }
 

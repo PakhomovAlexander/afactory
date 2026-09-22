@@ -1,5 +1,5 @@
 //! Review inspection reads the common Task ledger once per Task. RunReport@6 values are
-//! frozen cumulative snapshots, never Round costs or inputs to another spend accumulator.
+//! frozen cumulative snapshots, never Round costs.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -76,7 +76,6 @@ struct TaskWallView {
 pub(super) struct TaskAccountingReport {
     pub tasks: Vec<TaskAccountingView>,
     pub wall_rows: Vec<TaskAttemptWall>,
-    pub rounds: BTreeSet<(u32, u32)>,
 }
 
 impl TaskAccountingReport {
@@ -201,7 +200,6 @@ pub(super) fn read(
     let mut report = TaskAccountingReport {
         tasks: Vec::new(),
         wall_rows: Vec::new(),
-        rounds: BTreeSet::new(),
     };
     for id in ids {
         let task = store
@@ -240,9 +238,6 @@ pub(super) fn read(
         if rounds.iter().any(|round| round.campaign_id != campaign_run) {
             return Err("Review accounting Task spans different captured Campaigns".into());
         }
-        report
-            .rounds
-            .extend(rounds.iter().map(|round| (round.round, round.epoch)));
         let walls: BTreeMap<_, _> = store
             .task_attempt_wall(&task_run_id(&id).map_err(|error| error.to_string())?)
             .map_err(|error| error.to_string())?

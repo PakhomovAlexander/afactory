@@ -169,8 +169,8 @@ fn closed_review_round_refuses_prepared_start_and_keeps_credit_release_available
             &round.campaign_id,
             &f.cas,
             NewEvent::new(
-                EventType::RunReportV2,
-                serde_json::to_value(review_core::RunReportPayloadV2 {
+                EventType::RunReportV3,
+                serde_json::to_value(review_core::RunReportPayloadV3 {
                     outcomes: vec![review_core::RunNodeReportV2 {
                         node: "reviewer".into(),
                         outcome: review_core::RunNodeOutcomeV2::Failed {
@@ -178,7 +178,7 @@ fn closed_review_round_refuses_prepared_start_and_keeps_credit_release_available
                         },
                     }],
                     blocked_gates: vec![],
-                    verdict: review_core::RunVerdictV2::Incomplete {
+                    verdict: review_core::RunVerdictV3::Incomplete {
                         missing_nodes: vec![review_core::MissingNodeV2 {
                             node: "reviewer".into(),
                             reason: "worker unavailable".into(),
@@ -201,8 +201,8 @@ fn closed_review_round_refuses_prepared_start_and_keeps_credit_release_available
             &round.campaign_id,
             &f.cas,
             NewEvent::new(
-                EventType::RunReportV2,
-                serde_json::to_value(review_core::RunReportPayloadV2 {
+                EventType::RunReportV3,
+                serde_json::to_value(review_core::RunReportPayloadV3 {
                     outcomes: vec![review_core::RunNodeReportV2 {
                         node: "reviewer".into(),
                         outcome: review_core::RunNodeOutcomeV2::Failed {
@@ -210,8 +210,8 @@ fn closed_review_round_refuses_prepared_start_and_keeps_credit_release_available
                         },
                     }],
                     blocked_gates: vec![],
-                    verdict: review_core::RunVerdictV2::Fail {
-                        reason: review_core::RunFailureReasonV2::Exhausted,
+                    verdict: review_core::RunVerdictV3::Fail {
+                        reason: review_core::RunFailureReasonV3::Exhausted,
                     },
                     spent_tokens: Some(0),
                 })

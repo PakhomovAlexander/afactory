@@ -273,7 +273,7 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
     );
     assert_eq!(report["task_accounting"][0]["other_attempts_started"], "2");
     assert_eq!(report["rounds"].as_array().unwrap().len(), 2);
-    assert!(report["spend"].as_array().unwrap().is_empty());
+    assert!(report.get("spend").is_none());
     let campaigns: Value = serde_json::from_slice(
         &checked(
             invoke(

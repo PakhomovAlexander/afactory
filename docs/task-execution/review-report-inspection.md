@@ -1,22 +1,20 @@
 # Review accounting inspection
 
-`af review report` keeps `af/review-report@1` and its numeric fields for historical Campaigns.
-When a captured Review Task is present, JSON uses
+`af review report --format json` uses
 [`af/review-report@3`](../../schemas/review-report-v3.json), or
 [`af/review-report@4`](../../schemas/review-report-v4.json) when a native usage component
-requires the wider representation. The existing `spend` array still
-describes legacy Review Attempts and Provider operations. The additional `task_accounting`
-array reads each distinct Task's validated common execution ledger, including failures before
-the first canonical report or selected Reviewer output. Inspection opens the Store and CAS
-read-only and does not create events, receipts or missing artifacts.
+requires the wider representation. A Campaign whose first Task capture failed has no Task
+accounting and keeps the `af/review-report@1` label. The `task_accounting` array reads each
+distinct Task's validated common execution ledger, including failures before the first
+canonical report or selected Reviewer output. Inspection opens the Store and CAS read-only and
+does not create events, receipts or missing artifacts.
 
 Each Task entry reports current cumulative `chargeable_tokens`, outstanding `reserved_tokens`,
 and started Attempt counts. Token totals and per-Attempt cumulative charges are canonical
 u128 decimal strings, including totals of several Broker operations. Attempt counts and original
 reservation caps remain canonical u64 decimal strings. Native usage components retain u64 bounds
 in generation 3; generation 4 also permits exact u128 components accumulated across native turns.
-The earlier [`@2` schema](../../schemas/review-report-v2.json) remains available for its u64
-per-Attempt representation. Sequence numbers and wall-clock fields retain their numeric shape.
+Sequence numbers and wall-clock fields are JSON numbers.
 
 Counts include failed, abandoned and fenced work, and exclude reservations released before
 starting. The three categories add up to the common budget's started Attempt count. A Provider
@@ -35,5 +33,4 @@ reads the ledger's effective charge, which can exceed the original terminal rece
 subtracts snapshots to infer Round costs or changes an original reservation cap.
 
 Text and Markdown distinguish “Task cumulative charge at report” from current “Task accounting”.
-The same historical snapshot label is used by Campaign listing. Historical reports, legacy
-numeric spend fields and their existing rendered labels remain unchanged.
+The same historical snapshot label is used by Campaign listing.

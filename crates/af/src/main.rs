@@ -28,9 +28,8 @@ use std::time::Duration;
 
 use review_attempt::{Budget, BudgetLedger, Scope};
 use review_core::{
-    EventType, RunFailureReasonV2, RunFailureReasonV3, RunReportPayloadV2, RunReportPayloadV3,
-    RunReportPayloadV4, RunReportPayloadV5, RunReportPayloadV6, RunVerdictV2, RunVerdictV3,
-    Severity,
+    EventType, RunFailureReasonV3, RunReportPayloadV3, RunReportPayloadV4, RunReportPayloadV5,
+    RunReportPayloadV6, RunVerdictV3, Severity,
 };
 use review_graph::NodeOutcome;
 use review_pipeline::{Kernel, RoundAuthority, RunVerdict};
@@ -2605,7 +2604,6 @@ struct ReviewReportView {
     ledger_round: u32,
     final_verdict: Option<String>,
     rounds: Vec<ReportRoundView>,
-    spend: Vec<RoundSpendView>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     task_accounting: Vec<report_tasks::TaskAccountingView>,
     demands: Vec<review_core::DemandSetEntryV1>,
@@ -2649,56 +2647,6 @@ impl ReportRoundView {
     }
 }
 
-#[derive(serde::Serialize)]
-struct RoundSpendView {
-    round: u32,
-    epoch: u32,
-    spent_tokens: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    wall_ms: Option<u64>,
-    reviewers: Vec<ReviewerSpendView>,
-}
-
-#[derive(serde::Serialize)]
-struct ReviewerSpendView {
-    reviewer: String,
-    spent_tokens: u64,
-    attempt_tokens: u64,
-    provider_tokens: u64,
-    attempts: Vec<AttemptSpendView>,
-    provider_operations: Vec<ProviderSpendView>,
-    /// The Warm Set this node's Attempts started from in the Round, when one was recorded.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    warm: Option<WarmSelectionView>,
-}
-
-#[derive(serde::Serialize)]
-struct AttemptSpendView {
-    attempt_id: String,
-    outcome: String,
-    spent_tokens: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    detail: Option<String>,
-    /// The reservation that bounded this Attempt: the node's own cap, or the pipeline's.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reserved: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    wall: Option<AttemptWallView>,
-    /// Which warm layers this Attempt used and what its rendered input cost, when the node
-    /// ran warm. Input and cache-read tokens are in `wall.usage`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    warm: Option<AttemptWarmView>,
-}
-
-/// The recorded `WarmSetSelected@1` of one node in one Round.
-#[derive(serde::Serialize, Clone)]
-struct WarmSelectionView {
-    warm_set_artifact_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    source_attempt_id: Option<String>,
-    layers: Vec<String>,
-}
-
 #[derive(serde::Serialize, Clone)]
 struct AttemptWarmView {
     layers: Vec<String>,
@@ -2719,15 +2667,6 @@ struct WorkspacePreparationView {
     fallback: Option<String>,
     entries_touched: u64,
     preparation_ms: u64,
-}
-
-/// Wall-clock and provider usage from the store's sidecar; absent when the Attempt predates it.
-#[derive(serde::Serialize, Clone)]
-struct AttemptWallView {
-    started_unix_ms: u64,
-    elapsed_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    usage: Option<review_store::AttemptUsage>,
 }
 
 /// Findings by disposition, so precision is a number rather than a feeling.
@@ -2800,34 +2739,6 @@ fn wall_spans_ms(rows: impl IntoIterator<Item = ((u32, u32), (u64, u64))>) -> Op
     }))
 }
 
-/// Attaches sidecar rows to the spend view and returns the campaign's wall-clock total.
-fn attach_attempt_wall(
-    spend: &mut [RoundSpendView],
-    rows: &[review_store::AttemptWall],
-) -> Option<u64> {
-    let by_attempt: BTreeMap<&str, &review_store::AttemptWall> = rows
-        .iter()
-        .map(|row| (row.attempt_id.as_str(), row))
-        .collect();
-    for round in spend.iter_mut() {
-        let mut in_round = Vec::new();
-        for reviewer in &mut round.reviewers {
-            for attempt in &mut reviewer.attempts {
-                if let Some(row) = by_attempt.get(attempt.attempt_id.as_str()) {
-                    attempt.wall = Some(AttemptWallView {
-                        started_unix_ms: row.started_unix_ms,
-                        elapsed_ms: row.elapsed_ms,
-                        usage: row.usage.clone(),
-                    });
-                    in_round.push((*row).clone());
-                }
-            }
-        }
-        round.wall_ms = wall_span_ms(&in_round);
-    }
-    wall_span_ms(rows)
-}
-
 fn human_duration(ms: u64) -> String {
     let seconds = ms / 1000;
     if ms < 1000 {
@@ -2841,41 +2752,6 @@ fn human_duration(ms: u64) -> String {
     }
 }
 
-fn usage_summary(usage: &review_store::AttemptUsage) -> String {
-    let mut parts = Vec::new();
-    for (label, value) in [
-        ("in", usage.input_tokens),
-        ("out", usage.output_tokens),
-        ("cache-read", usage.cache_read_tokens),
-        ("cache-write", usage.cache_write_tokens),
-        ("reasoning", usage.reasoning_tokens),
-    ] {
-        if let Some(value) = value {
-            parts.push(format!("{label} {value}"));
-        }
-    }
-    if parts.is_empty() {
-        format!("chargeable {}", usage.chargeable_tokens)
-    } else {
-        parts.join(", ")
-    }
-}
-
-fn attempt_wall_suffix(wall: Option<&AttemptWallView>) -> String {
-    wall.map(|wall| {
-        format!(
-            ", {}{}",
-            human_duration(wall.elapsed_ms),
-            wall.usage
-                .as_ref()
-                .map(|usage| format!(" ({})", usage_summary(usage)))
-                .unwrap_or_default()
-        )
-    })
-    .unwrap_or_default()
-}
-
-/// Which warm layers an Attempt used and what its rendered input cost; empty for cold nodes.
 /// Whether any pinned reviewer policy keeps a Warm Workspace (`warm = { workspace = "rebase" }`).
 fn keeps_warm_workspace(loaded: &review_config::Loaded) -> bool {
     loaded
@@ -2884,6 +2760,7 @@ fn keeps_warm_workspace(loaded: &review_config::Loaded) -> bool {
         .any(|policy| policy.workspace == review_config::WorkspaceSpec::Rebase)
 }
 
+/// Which warm layers an Attempt used and what its rendered input cost; empty for cold nodes.
 fn attempt_warm_suffix(warm: Option<&AttemptWarmView>) -> String {
     let Some(warm) = warm else {
         return String::new();
@@ -2914,84 +2791,6 @@ fn attempt_warm_suffix(warm: Option<&AttemptWarmView>) -> String {
         })
         .unwrap_or_default();
     format!(", warm[{layers}]{rendered}{workspace}")
-}
-
-/// Rendered input size of one admitted Attempt from its durable provenance. Evidence for a
-/// report, never accounting: an unreadable provenance yields nothing rather than an error.
-fn admitted_context_size(cas: &Cas, provenance_id: &str) -> Option<(u64, u64)> {
-    let manifest = match cas.get_optional_artifact(provenance_id).ok()? {
-        Some(envelope) => {
-            let context_id = envelope.payload.get("context_id")?.as_str()?;
-            let context = cas.get_artifact(context_id).ok()?;
-            let manifest_id = context.payload.get("context_manifest_id")?.as_str()?;
-            cas.get_json(manifest_id).ok()?
-        }
-        None => {
-            let provenance = cas.get_json(provenance_id).ok()?;
-            provenance["context_manifest"].clone()
-        }
-    };
-    let rendered_bytes = manifest.get("rendered_bytes")?.as_u64()?;
-    let estimated_tokens = manifest.get("estimated_tokens")?.as_u64()?;
-    Some((rendered_bytes, estimated_tokens))
-}
-
-fn attempt_warm_view(
-    selection: Option<&WarmSelectionView>,
-    context_size: Option<(u64, u64)>,
-) -> Option<AttemptWarmView> {
-    let selection = selection?;
-    Some(AttemptWarmView {
-        layers: selection.layers.clone(),
-        rendered_bytes: context_size.map(|size| size.0),
-        estimated_tokens: context_size.map(|size| size.1),
-        // The pre-Task renderer serves logs written before Warm Workspaces existed; every
-        // Task-backed review joins its preparation in `report_tasks`.
-        workspace: None,
-    })
-}
-
-#[derive(serde::Serialize)]
-struct ProviderSpendView {
-    operation_id: String,
-    provider_id: String,
-    capability_id: String,
-    state: String,
-    spent_tokens: u64,
-}
-
-struct RoundSpendAccumulator {
-    round: u32,
-    epoch: u32,
-    reviewers: BTreeMap<String, ReviewerSpendAccumulator>,
-}
-
-#[derive(Default)]
-struct ReviewerSpendAccumulator {
-    attempts: BTreeMap<String, AttemptSpendAccumulator>,
-    providers: BTreeMap<String, ProviderSpendAccumulator>,
-    warm: Option<WarmSelectionView>,
-}
-
-struct AttemptSpendAccumulator {
-    outcome: String,
-    spent_tokens: u64,
-    /// The reservation that bounded this Attempt — its node cap, or the pipeline's.
-    reserved: Option<u64>,
-    broker_observed_tokens: u64,
-    detail: Option<String>,
-    terminal: bool,
-    /// Rendered input bytes and estimated tokens of an admitted Attempt, from its provenance.
-    context_size: Option<(u64, u64)>,
-}
-
-struct ProviderSpendAccumulator {
-    provider_id: String,
-    capability_id: String,
-    state: review_core::ProviderOperationStateV1,
-    charged_tokens: u64,
-    reserved_tokens: u64,
-    failure: bool,
 }
 
 fn print_report(options: &ReportOptions) -> Result<(), String> {
@@ -3030,14 +2829,8 @@ fn read_report_view(
     let recorded_not_gathered = latest_round_evidence(&events, cas)?.filter(|evidence| {
         evidence.ledger_was_not_produced() && !evidence.available_node_results.is_empty()
     });
-    let mut spend = report_spend(&events, &round_authority, Some(cas))?;
     let task_accounting = report_tasks::read(store, cas, &run_id, &events)?;
-    // An empty legacy accumulator says nothing about common Task work in that Round.
-    spend.retain(|round| {
-        !round.reviewers.is_empty() || !task_accounting.rounds.contains(&(round.round, round.epoch))
-    });
     let wall_rows = store.attempt_wall(&run_id).map_err(|e| e.to_string())?;
-    attach_attempt_wall(&mut spend, &wall_rows);
     let wall_ms = task_accounting.wall_ms(&wall_rows);
     let findings = ledger.finding_views();
     Ok(ReviewReportView {
@@ -3056,7 +2849,6 @@ fn read_report_view(
             .map(|event| report_verdict(event))
             .transpose()?,
         rounds,
-        spend,
         task_accounting: task_accounting.tasks,
         demands: ledger.demand_views(),
         recorded_not_gathered,
@@ -3111,319 +2903,6 @@ fn report_round_authority(
         .collect()
 }
 
-fn report_spend(
-    events: &[review_core::RunEvent],
-    round_authority: &BTreeMap<String, (u32, u32)>,
-    cas: Option<&Cas>,
-) -> Result<Vec<RoundSpendView>, String> {
-    let mut rounds: BTreeMap<String, RoundSpendAccumulator> = round_authority
-        .iter()
-        .map(|(event_id, (round, epoch))| {
-            (
-                event_id.clone(),
-                RoundSpendAccumulator {
-                    round: *round,
-                    epoch: *epoch,
-                    reviewers: BTreeMap::new(),
-                },
-            )
-        })
-        .collect();
-
-    for event in events {
-        let Some(round_id) = event.causation_id.as_deref() else {
-            continue;
-        };
-        let Some(round) = rounds.get_mut(round_id) else {
-            continue;
-        };
-        match event.event_type {
-            EventType::AttemptDispatchedV1 => {
-                let payload: review_core::event::AttemptDispatchedPayloadV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                let (node, attempt) = event_attempt_identity(event)?;
-                round
-                    .reviewers
-                    .entry(node.to_string())
-                    .or_default()
-                    .attempts
-                    .insert(
-                        attempt.to_string(),
-                        AttemptSpendAccumulator {
-                            outcome: "running".to_string(),
-                            spent_tokens: payload.reserved.unwrap_or(0),
-                            reserved: payload.reserved,
-                            broker_observed_tokens: 0,
-                            detail: None,
-                            terminal: false,
-                            context_size: None,
-                        },
-                    );
-            }
-            EventType::WarmSetSelectedV1 => {
-                let payload: review_core::WarmSetSelectedPayloadV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                let node = event
-                    .node_id
-                    .as_deref()
-                    .ok_or("WarmSetSelected@1 has no reviewer node")?;
-                round.reviewers.entry(node.to_string()).or_default().warm =
-                    Some(WarmSelectionView {
-                        warm_set_artifact_id: payload.warm_set_artifact_id,
-                        source_attempt_id: payload.source_attempt_id,
-                        layers: payload
-                            .layers
-                            .iter()
-                            .map(|layer| layer.as_str().to_string())
-                            .collect(),
-                    });
-            }
-            EventType::ReviewerExecutionBoundV1 => {
-                let binding: review_core::ReviewerExecutionBindingV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                let authority = review_core::broker_authority_usage(&binding.operations)?;
-                let (node, attempt_id) = event_attempt_identity(event)?;
-                let attempt = round
-                    .reviewers
-                    .get_mut(node)
-                    .and_then(|reviewer| reviewer.attempts.get_mut(attempt_id))
-                    .ok_or("Reviewer Execution Binding has no dispatched Attempt")?;
-                if !attempt.terminal {
-                    attempt.spent_tokens = attempt.spent_tokens.max(authority);
-                }
-            }
-            EventType::BrokerOperationCompletedV1 => {
-                let receipt: review_core::BrokerOperationReceiptV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                let (node, attempt_id) = event_attempt_identity(event)?;
-                let attempt = round
-                    .reviewers
-                    .get_mut(node)
-                    .and_then(|reviewer| reviewer.attempts.get_mut(attempt_id))
-                    .ok_or("Broker operation receipt has no dispatched Attempt")?;
-                attempt.broker_observed_tokens = attempt
-                    .broker_observed_tokens
-                    .checked_add(receipt.charged_usage)
-                    .ok_or("reported Broker spend overflow")?;
-                attempt.spent_tokens = attempt.spent_tokens.max(attempt.broker_observed_tokens);
-            }
-            EventType::AttemptAdmittedV1 => {
-                let payload: review_core::event::AttemptAdmittedPayloadV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                let provenance = payload.provenance_artifact.clone();
-                settle_attempt(round, event, payload.selection, payload.cost_tokens, None)?;
-                if let (Some(cas), Some(provenance)) = (cas, provenance.as_deref()) {
-                    let (node, attempt_id) = event_attempt_identity(event)?;
-                    let attempt = round
-                        .reviewers
-                        .get_mut(node)
-                        .and_then(|reviewer| reviewer.attempts.get_mut(attempt_id));
-                    if let Some(attempt) = attempt {
-                        attempt.context_size = admitted_context_size(cas, provenance);
-                    }
-                }
-            }
-            EventType::AttemptFailedV1 => {
-                let payload: review_core::event::AttemptFailedPayloadV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                settle_attempt(
-                    round,
-                    event,
-                    "failed".to_string(),
-                    payload.charged.unwrap_or(0),
-                    Some(payload.error),
-                )?;
-            }
-            EventType::AttemptFencedV1 => {
-                let payload: review_core::event::AttemptFencedPayloadV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                settle_attempt(
-                    round,
-                    event,
-                    "fenced".to_string(),
-                    payload.charged.unwrap_or(0),
-                    Some(payload.reason),
-                )?;
-            }
-            EventType::AttemptReleasedV1 => {
-                let payload: review_core::event::AttemptReleasedPayloadV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                settle_attempt(round, event, "released".to_string(), 0, Some(payload.error))?;
-            }
-            EventType::ProviderOperationTransitionV1 => {
-                let payload: review_core::ProviderOperationTransitionPayloadV1 =
-                    serde_json::from_value(event.payload.clone())
-                        .map_err(|error| error.to_string())?;
-                let reviewer = round.reviewers.entry(payload.node_id.clone()).or_default();
-                let operation = reviewer
-                    .providers
-                    .entry(payload.operation_id.clone())
-                    .or_insert_with(|| ProviderSpendAccumulator {
-                        provider_id: payload.provider_id.clone(),
-                        capability_id: payload.capability_id.clone(),
-                        state: payload.state,
-                        charged_tokens: 0,
-                        reserved_tokens: 0,
-                        failure: false,
-                    });
-                operation.charged_tokens = operation
-                    .charged_tokens
-                    .checked_add(payload.charged_tokens)
-                    .ok_or("reported Provider spend overflow")?;
-                operation.state = payload.state;
-                operation.reserved_tokens = payload.reserved_tokens;
-                operation.failure = payload.failure_class.is_some();
-            }
-            _ => {}
-        }
-    }
-
-    let mut views = rounds
-        .into_values()
-        .map(round_spend_view)
-        .collect::<Result<Vec<_>, String>>()?;
-    views.sort_by_key(|view| (view.round, view.epoch));
-    Ok(views)
-}
-
-fn event_attempt_identity(event: &review_core::RunEvent) -> Result<(&str, &str), String> {
-    Ok((
-        event
-            .node_id
-            .as_deref()
-            .ok_or_else(|| format!("{} has no reviewer node", event.event_type))?,
-        event
-            .attempt_id
-            .as_deref()
-            .ok_or_else(|| format!("{} has no Attempt ID", event.event_type))?,
-    ))
-}
-
-fn settle_attempt(
-    round: &mut RoundSpendAccumulator,
-    event: &review_core::RunEvent,
-    outcome: String,
-    spent_tokens: u64,
-    detail: Option<String>,
-) -> Result<(), String> {
-    let (node, attempt_id) = event_attempt_identity(event)?;
-    let attempt = round
-        .reviewers
-        .entry(node.to_string())
-        .or_default()
-        .attempts
-        .entry(attempt_id.to_string())
-        .or_insert_with(|| AttemptSpendAccumulator {
-            outcome: "running".to_string(),
-            spent_tokens: 0,
-            reserved: None,
-            broker_observed_tokens: 0,
-            detail: None,
-            terminal: false,
-            context_size: None,
-        });
-    if attempt.terminal {
-        // A late response to an already-fenced Attempt is durably quarantined but must not be
-        // charged twice. The first terminal lifecycle event owns its operator-visible outcome.
-        return Ok(());
-    }
-    attempt.outcome = outcome;
-    attempt.spent_tokens = spent_tokens.max(attempt.broker_observed_tokens);
-    attempt.detail = detail;
-    attempt.terminal = true;
-    Ok(())
-}
-
-fn round_spend_view(round: RoundSpendAccumulator) -> Result<RoundSpendView, String> {
-    let mut spent_tokens = 0_u64;
-    let mut reviewers = Vec::new();
-    for (reviewer, accumulator) in round.reviewers {
-        if accumulator.attempts.is_empty() && accumulator.providers.is_empty() {
-            // A Task-backed warm node records its selection here but its Attempts in the
-            // Task accounting; an empty legacy row would only duplicate that reviewer.
-            continue;
-        }
-        let warm = accumulator.warm;
-        let attempts = accumulator
-            .attempts
-            .into_iter()
-            .map(|(attempt_id, attempt)| AttemptSpendView {
-                attempt_id,
-                outcome: attempt.outcome,
-                spent_tokens: attempt.spent_tokens,
-                detail: attempt.detail,
-                reserved: attempt.reserved,
-                wall: None,
-                warm: attempt_warm_view(warm.as_ref(), attempt.context_size),
-            })
-            .collect::<Vec<_>>();
-        let attempt_tokens = attempts.iter().try_fold(0_u64, |sum, attempt| {
-            sum.checked_add(attempt.spent_tokens)
-                .ok_or("reported Attempt spend overflow")
-        })?;
-        let provider_operations = accumulator
-            .providers
-            .into_iter()
-            .map(|(operation_id, provider)| {
-                let outstanding = if provider.state
-                    == review_core::ProviderOperationStateV1::Running
-                    && !provider.failure
-                {
-                    provider.reserved_tokens
-                } else {
-                    0
-                };
-                Ok(ProviderSpendView {
-                    operation_id,
-                    provider_id: provider.provider_id,
-                    capability_id: provider.capability_id,
-                    state: provider_state_label(provider.state).to_string(),
-                    spent_tokens: provider
-                        .charged_tokens
-                        .checked_add(outstanding)
-                        .ok_or("reported Provider spend overflow")?,
-                })
-            })
-            .collect::<Result<Vec<_>, String>>()?;
-        let provider_tokens = provider_operations
-            .iter()
-            .try_fold(0_u64, |sum, operation| {
-                sum.checked_add(operation.spent_tokens)
-                    .ok_or("reported Provider spend overflow")
-            })?;
-        let reviewer_tokens = attempt_tokens
-            .checked_add(provider_tokens)
-            .ok_or("reported reviewer spend overflow")?;
-        spent_tokens = spent_tokens
-            .checked_add(reviewer_tokens)
-            .ok_or("reported Round spend overflow")?;
-        reviewers.push(ReviewerSpendView {
-            reviewer,
-            spent_tokens: reviewer_tokens,
-            attempt_tokens,
-            provider_tokens,
-            attempts,
-            provider_operations,
-            warm,
-        });
-    }
-    Ok(RoundSpendView {
-        round: round.round,
-        epoch: round.epoch,
-        spent_tokens,
-        wall_ms: None,
-        reviewers,
-    })
-}
-
 fn print_report_text(report: &ReviewReportView) {
     println!("Review campaign: {}", report.campaign);
     println!("Runs recorded: {}", report.runs_recorded);
@@ -3452,47 +2931,6 @@ fn print_report_text(report: &ReviewReportView) {
             round.verdict,
             round.tokens_label()
         );
-    }
-    println!("Spend:");
-    for round in &report.spend {
-        println!(
-            "  round {} epoch {}: {} tokens{}",
-            round.round,
-            round.epoch,
-            round.spent_tokens,
-            round
-                .wall_ms
-                .map(|ms| format!(", {}", human_duration(ms)))
-                .unwrap_or_default()
-        );
-        for reviewer in &round.reviewers {
-            println!(
-                "    {}: {} tokens (attempts {}, providers {})",
-                reviewer.reviewer,
-                reviewer.spent_tokens,
-                reviewer.attempt_tokens,
-                reviewer.provider_tokens
-            );
-            for attempt in &reviewer.attempts {
-                println!(
-                    "      attempt {}: {}, {} tokens{}{}{}{}",
-                    attempt.attempt_id,
-                    attempt.outcome,
-                    attempt.spent_tokens,
-                    attempt
-                        .reserved
-                        .map(|cap| format!(" (cap {cap})"))
-                        .unwrap_or_default(),
-                    attempt_wall_suffix(attempt.wall.as_ref()),
-                    attempt_warm_suffix(attempt.warm.as_ref()),
-                    attempt
-                        .detail
-                        .as_deref()
-                        .map(|detail| format!(" - {}", one_line(detail)))
-                        .unwrap_or_default()
-                );
-            }
-        }
     }
     print!("{}", report_tasks::render(&report.task_accounting, false));
     println!("Demands:");
@@ -3587,64 +3025,6 @@ fn print_report_markdown(report: &ReviewReportView) {
             round.verdict,
             round.tokens_cell()
         );
-    }
-    println!();
-    println!("## Spend");
-    println!();
-    println!(
-        "| Round | Epoch | Reviewer | Attempt tokens | Provider tokens | Total tokens | Round wall |"
-    );
-    println!("| ---: | ---: | --- | ---: | ---: | ---: | ---: |");
-    for round in &report.spend {
-        let wall = round
-            .wall_ms
-            .map(human_duration)
-            .unwrap_or_else(|| "-".to_string());
-        if round.reviewers.is_empty() {
-            println!(
-                "| {} | {} | - | 0 | 0 | 0 | {wall} |",
-                round.round, round.epoch
-            );
-        }
-        for reviewer in &round.reviewers {
-            println!(
-                "| {} | {} | {} | {} | {} | {} | {wall} |",
-                round.round,
-                round.epoch,
-                reviewer.reviewer,
-                reviewer.attempt_tokens,
-                reviewer.provider_tokens,
-                reviewer.spent_tokens
-            );
-        }
-    }
-    println!();
-    println!("### Attempts");
-    for round in &report.spend {
-        for reviewer in &round.reviewers {
-            for attempt in &reviewer.attempts {
-                println!();
-                println!(
-                    "- Round {}, **{}**, Attempt `{}`: {}, {} tokens{}{}{}{}",
-                    round.round,
-                    reviewer.reviewer,
-                    attempt.attempt_id,
-                    attempt.outcome,
-                    attempt.spent_tokens,
-                    attempt
-                        .reserved
-                        .map(|cap| format!(" (cap {cap})"))
-                        .unwrap_or_default(),
-                    attempt_wall_suffix(attempt.wall.as_ref()),
-                    attempt_warm_suffix(attempt.warm.as_ref()),
-                    attempt
-                        .detail
-                        .as_deref()
-                        .map(|detail| format!(" — {}", markdown_line(detail)))
-                        .unwrap_or_default()
-                );
-            }
-        }
     }
     println!();
     print!("{}", report_tasks::render(&report.task_accounting, true));
@@ -3824,16 +3204,6 @@ fn print_recorded_not_gathered_markdown(evidence: Option<&LatestRoundEvidence>) 
     }
 }
 
-fn provider_state_label(state: review_core::ProviderOperationStateV1) -> &'static str {
-    match state {
-        review_core::ProviderOperationStateV1::Running => "running",
-        review_core::ProviderOperationStateV1::WaitingForHuman => "waiting_for_human",
-        review_core::ProviderOperationStateV1::Resumed => "resumed",
-        review_core::ProviderOperationStateV1::Done => "done",
-        review_core::ProviderOperationStateV1::Failed => "failed",
-    }
-}
-
 fn severity_label(severity: Severity) -> &'static str {
     match severity {
         Severity::Minor => "minor",
@@ -3906,26 +3276,6 @@ fn one_line(value: &str) -> String {
 
 fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
     match event.event_type {
-        EventType::RunReportV1 => event.payload["verdict"]
-            .as_str()
-            .map(str::to_string)
-            .ok_or_else(|| "RunReport@1 has no string verdict".to_string()),
-        EventType::RunReportV2 => {
-            let report: RunReportPayloadV2 =
-                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(match report.verdict {
-                RunVerdictV2::Pass => "pass".to_string(),
-                RunVerdictV2::Fail {
-                    reason: RunFailureReasonV2::NotConverged,
-                } => "fail (not_converged)".to_string(),
-                RunVerdictV2::Fail {
-                    reason: RunFailureReasonV2::Exhausted,
-                } => "fail (exhausted)".to_string(),
-                RunVerdictV2::Incomplete { missing_nodes } => {
-                    format!("incomplete ({} missing nodes)", missing_nodes.len())
-                }
-            })
-        }
         EventType::RunReportV3 => {
             let report: RunReportPayloadV3 =
                 serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
@@ -4399,36 +3749,31 @@ fn ledger_node_id(round_event: &review_core::RunEvent, cas: &Cas) -> Result<Stri
 
 fn run_report_outcomes(
     event: &review_core::RunEvent,
-) -> Result<Option<Vec<review_core::RunNodeReportV2>>, String> {
-    match event.event_type {
-        EventType::RunReportV2 => Ok(Some(
-            serde_json::from_value::<RunReportPayloadV2>(event.payload.clone())
-                .map_err(|error| error.to_string())?
-                .outcomes,
-        )),
-        EventType::RunReportV3 => Ok(Some(
+) -> Result<Vec<review_core::RunNodeReportV2>, String> {
+    let outcomes = match event.event_type {
+        EventType::RunReportV3 => {
             serde_json::from_value::<RunReportPayloadV3>(event.payload.clone())
                 .map_err(|error| error.to_string())?
-                .outcomes,
-        )),
-        EventType::RunReportV4 => Ok(Some(
+                .outcomes
+        }
+        EventType::RunReportV4 => {
             serde_json::from_value::<RunReportPayloadV4>(event.payload.clone())
                 .map_err(|error| error.to_string())?
-                .outcomes,
-        )),
-        EventType::RunReportV5 => Ok(Some(
+                .outcomes
+        }
+        EventType::RunReportV5 => {
             serde_json::from_value::<RunReportPayloadV5>(event.payload.clone())
                 .map_err(|error| error.to_string())?
-                .outcomes,
-        )),
-        EventType::RunReportV6 => Ok(Some(
+                .outcomes
+        }
+        EventType::RunReportV6 => {
             serde_json::from_value::<RunReportPayloadV6>(event.payload.clone())
                 .map_err(|error| error.to_string())?
-                .outcomes,
-        )),
-        EventType::RunReportV1 => Ok(None),
-        _ => Err(format!("{} is not a Run Report", event.event_type)),
-    }
+                .outcomes
+        }
+        _ => return Err(format!("{} is not a Run Report", event.event_type)),
+    };
+    Ok(outcomes)
 }
 
 fn latest_round_evidence(
@@ -4491,9 +3836,7 @@ fn latest_round_evidence(
     let Some(report) = report else {
         return Ok(None);
     };
-    let Some(outcomes) = run_report_outcomes(report)? else {
-        return Ok(None);
-    };
+    let outcomes = run_report_outcomes(report)?;
     let outcome = outcomes
         .iter()
         .find(|outcome| outcome.node == ledger_node_id)
@@ -5207,9 +4550,8 @@ fn run(options: &Options) -> Result<RunVerdict, String> {
 mod option_tests {
     use super::{
         CampaignMode, Options, campaign_id, campaign_labels_beneath, campaign_state_beneath,
-        default_campaigns_root, enumerate_campaigns, last_closed_summary, latest_round_evidence,
-        report_round_authority, report_rounds, report_spend, require_static_attempt_capacity,
-        validate_campaign_name,
+        default_campaigns_root, enumerate_campaigns, latest_round_evidence,
+        require_static_attempt_capacity, validate_campaign_name,
     };
 
     fn event(
@@ -5418,252 +4760,6 @@ mod option_tests {
         assert!(enumeration.campaigns.is_empty());
         assert_eq!(enumeration.problems.len(), 1);
         assert!(enumeration.problems[0].reason.contains("real regular file"));
-    }
-
-    #[test]
-    fn spend_projection_keeps_fenced_released_and_outstanding_work_visible() {
-        let round = event(
-            0,
-            review_core::EventType::RoundStartedV1,
-            None,
-            None,
-            None,
-            serde_json::json!({
-                "round": 1,
-                "epoch": 1,
-                "campaign_manifest_id": "manifest",
-                "subject_id": "subject",
-                "prior_finding_set_id": "findings",
-                "prior_demand_set_id": "demands"
-            }),
-        );
-        let attempt = |sequence, event_type, node, attempt_id, payload| {
-            event(
-                sequence,
-                event_type,
-                Some("event-0"),
-                Some(node),
-                Some(attempt_id),
-                payload,
-            )
-        };
-        let events = vec![
-            round,
-            attempt(
-                1,
-                review_core::EventType::AttemptDispatchedV1,
-                "architecture",
-                "selected",
-                serde_json::json!({"reserved": 100, "prior_findings": null}),
-            ),
-            attempt(
-                2,
-                review_core::EventType::AttemptAdmittedV1,
-                "architecture",
-                "selected",
-                serde_json::json!({
-                    "selection": "selected",
-                    "cost_tokens": 31,
-                    "result_artifact": null,
-                    "provenance_artifact": null
-                }),
-            ),
-            attempt(
-                3,
-                review_core::EventType::AttemptDispatchedV1,
-                "architecture",
-                "fenced",
-                serde_json::json!({"reserved": 50, "prior_findings": null}),
-            ),
-            attempt(
-                4,
-                review_core::EventType::AttemptFencedV1,
-                "architecture",
-                "fenced",
-                serde_json::json!({"reason": "deadline", "charged": 11}),
-            ),
-            attempt(
-                5,
-                review_core::EventType::AttemptAdmittedV1,
-                "architecture",
-                "fenced",
-                serde_json::json!({
-                    "selection": "quarantined",
-                    "cost_tokens": 11,
-                    "result_artifact": null,
-                    "provenance_artifact": null
-                }),
-            ),
-            attempt(
-                6,
-                review_core::EventType::AttemptDispatchedV1,
-                "correctness",
-                "released",
-                serde_json::json!({"reserved": 20, "prior_findings": null}),
-            ),
-            attempt(
-                7,
-                review_core::EventType::AttemptReleasedV1,
-                "correctness",
-                "released",
-                serde_json::json!({"error": "not run", "released": 20}),
-            ),
-            attempt(
-                8,
-                review_core::EventType::AttemptDispatchedV1,
-                "correctness",
-                "running",
-                serde_json::json!({"reserved": 7, "prior_findings": null}),
-            ),
-            event(
-                9,
-                review_core::EventType::ProviderOperationTransitionV1,
-                Some("event-0"),
-                Some("architecture"),
-                None,
-                serde_json::json!({
-                    "operation_id": "provider-op",
-                    "provider_id": "codex",
-                    "capability_id": "smoke",
-                    "node_id": "architecture",
-                    "round": 1,
-                    "round_epoch": 1,
-                    "operation_epoch": 1,
-                    "state": "failed",
-                    "attempt": null,
-                    "attempt_id": null,
-                    "failure_class": "transient_transport_failure",
-                    "failure_fingerprint": "fingerprint",
-                    "continuation_handle": null,
-                    "reserved_tokens": 5,
-                    "charged_tokens": 2,
-                    "elapsed_ms": 10,
-                    "retry_permitted": true,
-                    "circuit_open": false,
-                    "next_action": "retry_explicitly"
-                }),
-            ),
-            attempt(
-                10,
-                review_core::EventType::AttemptDispatchedV1,
-                "correctness",
-                "brokered",
-                serde_json::json!({"reserved": null, "prior_findings": null}),
-            ),
-            attempt(
-                11,
-                review_core::EventType::ReviewerExecutionBoundV1,
-                "correctness",
-                "brokered",
-                serde_json::json!({
-                    "node": "correctness",
-                    "attempt_id": "brokered",
-                    "lease_epoch": 1,
-                    "credential_mode": "brokered",
-                    "auto_apply": false,
-                    "broker_handle": "bbbbbbbbbbbbbbbbbbbbbbbbbb",
-                    "operations": [{
-                        "name": "model_inference",
-                        "destination": "provider.test",
-                        "method": "responses.create",
-                        "max_request_bytes": 32,
-                        "max_response_bytes": 32,
-                        "max_calls": 1,
-                        "max_usage": 100
-                    }],
-                    "admitted": true
-                }),
-            ),
-            attempt(
-                12,
-                review_core::EventType::AttemptFencedV1,
-                "correctness",
-                "brokered",
-                serde_json::json!({"reason": "recovery", "charged": 100}),
-            ),
-            attempt(
-                13,
-                review_core::EventType::BrokerOperationCompletedV1,
-                "correctness",
-                "brokered",
-                serde_json::json!({
-                    "handle_id": "bbbbbbbbbbbbbbbbbbbbbbbbbb",
-                    "node": "correctness",
-                    "attempt_id": "brokered",
-                    "lease_epoch": 1,
-                    "operation": "model_inference",
-                    "destination": "provider.test",
-                    "method": "responses.create",
-                    "ordinal": 1,
-                    "outcome": "revoked",
-                    "failure_reason": "authority_revoked",
-                    "request_digest": format!("sha256:{}", "c".repeat(64)),
-                    "request_bytes": 7,
-                    "response_bytes": 0,
-                    "reserved_usage": 100,
-                    "charged_usage": 101
-                }),
-            ),
-        ];
-
-        let authority = report_round_authority(&events).unwrap();
-        let spend = report_spend(&events, &authority, None).unwrap();
-        assert_eq!(spend.len(), 1);
-        assert_eq!(spend[0].spent_tokens, 152);
-        let architecture = &spend[0].reviewers[0];
-        assert_eq!(architecture.reviewer, "architecture");
-        assert_eq!(architecture.attempt_tokens, 42);
-        assert_eq!(architecture.provider_tokens, 2);
-        let fenced = architecture
-            .attempts
-            .iter()
-            .find(|attempt| attempt.attempt_id == "fenced")
-            .unwrap();
-        assert_eq!(fenced.outcome, "fenced");
-        assert_eq!(fenced.spent_tokens, 11);
-        let correctness = &spend[0].reviewers[1];
-        assert_eq!(correctness.attempt_tokens, 108);
-        let attempt = |id| {
-            correctness
-                .attempts
-                .iter()
-                .find(|attempt| attempt.attempt_id == id)
-                .unwrap()
-        };
-        assert_eq!(attempt("released").outcome, "released");
-        assert_eq!(attempt("released").spent_tokens, 0);
-        assert_eq!(attempt("running").outcome, "running");
-        assert_eq!(attempt("running").spent_tokens, 7);
-        assert_eq!(attempt("brokered").outcome, "fenced");
-        assert_eq!(attempt("brokered").spent_tokens, 101);
-    }
-
-    #[test]
-    fn legacy_report_without_round_authority_remains_reportable() {
-        let legacy = event(
-            0,
-            review_core::EventType::RunReportV1,
-            None,
-            None,
-            None,
-            serde_json::json!({
-                "outcomes": [{"node": "reviewer", "status": "completed", "detail": {}}],
-                "blocked_gates": [],
-                "verdict": "Pass",
-                "spent_tokens": 9
-            }),
-        );
-        let rounds = report_rounds(&[&legacy], &std::collections::BTreeMap::new()).unwrap();
-        assert_eq!(rounds.len(), 1);
-        assert_eq!(rounds[0].run, 1);
-        assert_eq!(rounds[0].round, None);
-        assert_eq!(rounds[0].epoch, None);
-        assert_eq!(rounds[0].verdict, "Pass");
-        assert_eq!(rounds[0].reported_tokens, Some(9));
-        assert_eq!(
-            last_closed_summary(rounds[0].round, rounds[0].epoch, Some(&rounds[0].verdict)),
-            Some("round - epoch -; Pass".to_string())
-        );
     }
 
     #[test]
