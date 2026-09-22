@@ -1104,22 +1104,16 @@ impl TaskOperatorHost for ReviewTaskDomain {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        definition: &review_graph::task::CompiledNode,
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        self.code.prepare_context(cas, input, feedback)
+        self.code.prepare_context(cas, input, definition, attempt)
     }
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-    ) -> TaskWorkOutput {
-        self.execute_controlled(cas, input, attempt, None)
-    }
-    fn execute_controlled(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
@@ -1138,7 +1132,7 @@ impl TaskOperatorHost for ReviewTaskDomain {
         ) {
             return self
                 .code
-                .execute_controlled(cas, input, attempt, cancellation);
+                .execute(cas, input, definition, attempt, cancellation);
         }
         let _operation = match self.begin_operation() {
             Ok(guard) => guard,
@@ -1154,7 +1148,7 @@ impl TaskOperatorHost for ReviewTaskDomain {
             _ => {
                 return self
                     .code
-                    .execute_controlled(cas, input, attempt, cancellation);
+                    .execute(cas, input, definition, attempt, cancellation);
             }
         };
         TaskWorkOutput {
@@ -1181,7 +1175,7 @@ impl TaskDomain for ReviewTaskDomain {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         id: &str,
     ) -> Result<(), String> {
         let _operation = self.begin_operation()?;
@@ -1204,7 +1198,7 @@ impl TaskDomain for ReviewTaskDomain {
             }
             return Ok(());
         }
-        self.code.validate_context(cas, input, feedback, id)
+        self.code.validate_context(cas, input, attempt, id)
     }
     fn validate_output(
         &self,
@@ -1213,6 +1207,7 @@ impl TaskDomain for ReviewTaskDomain {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         let _operation = self.begin_operation()?;
         let expected = match self.operator(input)? {
@@ -1250,7 +1245,8 @@ impl TaskDomain for ReviewTaskDomain {
             }
             return Ok(());
         }
-        self.code.validate_output(cas, task, plan, input, output)
+        self.code
+            .validate_output(cas, task, plan, input, output, definition)
     }
     fn validate_result(
         &self,

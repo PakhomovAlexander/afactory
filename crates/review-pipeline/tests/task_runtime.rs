@@ -131,7 +131,8 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             &self,
             _: &Cas,
             _: &TaskInvocationV1,
-            _: &[String],
+            _definition: &review_graph::task::CompiledNode,
+            _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
             Err("dynamic command context must use its resolved captured Worker".into())
         }
@@ -139,7 +140,9 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             &self,
             _: &Cas,
             _: &TaskInvocationV1,
+            _definition: &review_graph::task::CompiledNode,
             _: Option<&PreparedTaskAttempt>,
+            _cancellation: Option<&std::sync::atomic::AtomicBool>,
         ) -> TaskWorkOutput {
             panic!("dynamic command children must use the common command Worker")
         }
@@ -172,7 +175,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             &self,
             _: &Cas,
             _: &TaskInvocationV1,
-            _: &[String],
+            _: &review_store::store::task::execution::ReservedTaskAttempt,
             _: &str,
         ) -> Result<(), String> {
             Ok(())
@@ -184,6 +187,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             _: &ExecutionPlanV1,
             _: &TaskInvocationV1,
             _: &TaskOutputV1,
+            _definition: &review_graph::task::CompiledNode,
         ) -> Result<(), String> {
             Ok(())
         }
@@ -781,7 +785,7 @@ fn substituted_resolved_context_is_rejected_before_model_dispatch() {
         replacement: String,
     }
     impl TaskOperatorHost for Substitute<'_> {
-        fn prepare_context_for_resolved_attempt(
+        fn prepare_context(
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
@@ -789,24 +793,19 @@ fn substituted_resolved_context_is_rejected_before_model_dispatch() {
             attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
             self.inner
-                .prepare_context_for_resolved_attempt(cas, input, definition, attempt)?;
+                .prepare_context(cas, input, definition, attempt)?;
             Ok(self.replacement.clone())
-        }
-        fn prepare_context(
-            &self,
-            cas: &Cas,
-            input: &TaskInvocationV1,
-            feedback: &[String],
-        ) -> Result<String, String> {
-            self.inner.prepare_context(cas, input, feedback)
         }
         fn execute(
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
+            definition: &review_graph::task::CompiledNode,
             attempt: Option<&PreparedTaskAttempt>,
+            cancellation: Option<&std::sync::atomic::AtomicBool>,
         ) -> TaskWorkOutput {
-            self.inner.execute(cas, input, attempt)
+            self.inner
+                .execute(cas, input, definition, attempt, cancellation)
         }
     }
 
@@ -1094,7 +1093,8 @@ impl TaskOperatorHost for DocumentDomain {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
-        _: &[String],
+        _definition: &review_graph::task::CompiledNode,
+        _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
         Err("No built-in Worker".into())
     }
@@ -1102,7 +1102,9 @@ impl TaskOperatorHost for DocumentDomain {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         _: Option<&PreparedTaskAttempt>,
+        _cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         panic!("Only the command Worker should execute")
     }
@@ -1112,7 +1114,7 @@ impl TaskDomain for DocumentDomain {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
-        _: &[String],
+        _: &review_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         Ok(())
@@ -1124,6 +1126,7 @@ impl TaskDomain for DocumentDomain {
         _: &ExecutionPlanV1,
         _: &TaskInvocationV1,
         output: &TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         for port in output.outputs.values() {
             if port.artifact_type != "af/CheckedDocument@1" {
@@ -1205,7 +1208,8 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
-            feedback: &[String],
+            _definition: &review_graph::task::CompiledNode,
+            attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
             {
                 let store = self.lock();
@@ -1215,14 +1219,16 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
                     .unwrap();
                 assert_eq!(state.plan_id.as_deref(), Some(input.plan_id.as_str()));
             }
-            self.inner.prepare_context(cas, input, feedback)
+            self.inner.prepare_context(cas, input, _definition, attempt)
         }
 
         fn execute(
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
+            _definition: &review_graph::task::CompiledNode,
             attempt: Option<&PreparedTaskAttempt>,
+            _cancellation: Option<&std::sync::atomic::AtomicBool>,
         ) -> TaskWorkOutput {
             let attempt = attempt.expect("the fixture invokes one Worker");
             {
@@ -1247,7 +1253,8 @@ fn domain_observes_started_attempt_and_persists_through_the_runtime_store() {
                 store.renew_task_lease(cas, &self.lease, 60_000).unwrap();
             }
             self.calls.fetch_add(1, Ordering::SeqCst);
-            self.inner.execute(cas, input, Some(attempt))
+            self.inner
+                .execute(cas, input, _definition, Some(attempt), _cancellation)
         }
     }
 

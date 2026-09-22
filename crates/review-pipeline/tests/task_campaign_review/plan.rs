@@ -21,7 +21,8 @@ impl TaskOperatorHost for RefuseExecution {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
-        _: &[String],
+        _definition: &review_graph::task::CompiledNode,
+        _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
         panic!("plan admission rendered Worker context")
     }
@@ -29,7 +30,9 @@ impl TaskOperatorHost for RefuseExecution {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         _: Option<&PreparedTaskAttempt>,
+        _cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         panic!("plan admission executed work")
     }
@@ -39,7 +42,7 @@ impl TaskDomain for RefuseExecution {
         &self,
         _: &Cas,
         _: &TaskInvocationV1,
-        _: &[String],
+        _: &review_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         Err("not executing".into())
@@ -51,6 +54,7 @@ impl TaskDomain for RefuseExecution {
         _: &ExecutionPlanV1,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         Err("not executing".into())
     }

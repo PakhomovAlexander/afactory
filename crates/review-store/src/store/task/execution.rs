@@ -1492,7 +1492,7 @@ impl EventStore {
         }
         let input = invocation(cas, &attempt.invocation_id)?;
         authority
-            .validate_context_for_attempt(cas, &state.revision, &plan, &input, attempt, context_id)
+            .validate_context(cas, &state.revision, &plan, &input, attempt, context_id)
             .map_err(conflict)?;
         // Domain callbacks cannot leave stale plan, revocation or artifact authority admitted.
         let fresh = self.checked_task_dispatch(cas, lease, authority)?.0;
@@ -1758,7 +1758,7 @@ impl EventStore {
                 .map_err(|e| StoreError::Artifact(e.to_string()))?;
         }
         authority
-            .validate_resolved_output(cas, &state.revision, plan, &input, &out, &definition)
+            .validate_output(cas, &state.revision, plan, &input, &out, &definition)
             .map_err(StoreError::TaskOutputRejected)?;
         Ok((out, input))
     }

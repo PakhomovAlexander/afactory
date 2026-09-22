@@ -107,7 +107,7 @@ impl TaskAuthority for Authority {
         _: &TaskRevisionV1,
         _: &ExecutionPlanV1,
         _: &review_core::task::execution::TaskInvocationV1,
-        _: &[String],
+        _: &crate::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         Ok(())
@@ -152,6 +152,7 @@ impl TaskAuthority for Authority {
         _: &ExecutionPlanV1,
         _: &review_core::task::execution::TaskInvocationV1,
         _: &review_core::task::execution::TaskOutputV1,
+        _: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         if let Some(path) = &self.corrupt_during_output {
             std::fs::write(path, b"changed during domain validation").map_err(|e| e.to_string())?;

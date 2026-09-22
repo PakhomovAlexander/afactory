@@ -84,7 +84,7 @@ impl ProviderTaskDomain<'_> {
         let prepared = (|| {
             let receipt = self.receipt(cas, input)?;
             let attempt = attempt.ok_or("Provider capability probe has no started Task Attempt")?;
-            let context = self.prepare_context(cas, input, &[])?;
+            let context = self.render_probe_context(cas, input, &[])?;
             if context != attempt.context_id() {
                 return Err("Provider probe lost its exact context".into());
             }
@@ -240,18 +240,6 @@ impl TaskOperatorHost for ProviderTaskDomain<'_> {
         self.inner.commit_domain_output(cas, input, id, output)
     }
 
-    fn prepare_context_for_attempt(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: &ReservedTaskAttempt,
-    ) -> Result<String, String> {
-        if self.slots(input).is_none() {
-            self.inner.prepare_context_for_attempt(cas, input, attempt)
-        } else {
-            self.prepare_context(cas, input, attempt.feedback_ids())
-        }
-    }
     fn output_rejection_feedback(
         &self,
         cas: &Cas,
@@ -269,11 +257,45 @@ impl TaskOperatorHost for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        definition: &review_graph::task::CompiledNode,
+        attempt: &ReservedTaskAttempt,
     ) -> Result<String, String> {
         if self.slots(input).is_none() {
-            return self.inner.prepare_context(cas, input, feedback);
+            return self.inner.prepare_context(cas, input, definition, attempt);
         }
+        self.render_probe_context(cas, input, attempt.feedback_ids())
+    }
+    fn execute(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
+        attempt: Option<&PreparedTaskAttempt>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+    ) -> TaskWorkOutput {
+        if let Err(error) = crate::task::control::check(cancellation) {
+            return crate::task::control::refused(error);
+        }
+
+        if self.slots(input).is_some() {
+            self.probe(cas, input, attempt, cancellation)
+        } else {
+            self.inner
+                .execute(cas, input, definition, attempt, cancellation)
+        }
+    }
+}
+
+impl ProviderTaskDomain<'_> {
+    /// The Provider probe's own context bytes. The trait entry point, the probe and the
+    /// admission recheck must render identically, so all three go through here. The probe
+    /// carries no Attempt authority, so it renders from the feedback list alone.
+    pub fn render_probe_context(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        feedback: &[String],
+    ) -> Result<String, String> {
         if !feedback.is_empty() {
             return Err("Provider admission has one bounded Attempt".into());
         }
@@ -305,33 +327,6 @@ impl TaskOperatorHost for ProviderTaskDomain<'_> {
         )
         .map(|(id, _)| id)
         .map_err(|e| e.to_string())
-    }
-    fn execute(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-    ) -> TaskWorkOutput {
-        self.execute_controlled(cas, input, attempt, None)
-    }
-
-    fn execute_controlled(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> TaskWorkOutput {
-        if let Err(error) = crate::task::control::check(cancellation) {
-            return crate::task::control::refused(error);
-        }
-
-        if self.slots(input).is_some() {
-            self.probe(cas, input, attempt, cancellation)
-        } else {
-            self.inner
-                .execute_controlled(cas, input, attempt, cancellation)
-        }
     }
 }
 impl TaskDomain for ProviderTaskDomain<'_> {
@@ -442,30 +437,16 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
-        id: &str,
-    ) -> Result<(), String> {
-        if self.slots(input).is_none() {
-            return self.inner.validate_context(cas, input, feedback, id);
-        }
-        if self.prepare_context(cas, input, feedback)? != id {
-            return Err("Provider context changed its admitted capability or input".into());
-        }
-        Ok(())
-    }
-    fn validate_context_for_attempt(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
         attempt: &ReservedTaskAttempt,
         id: &str,
     ) -> Result<(), String> {
         if self.slots(input).is_none() {
-            self.inner
-                .validate_context_for_attempt(cas, input, attempt, id)
-        } else {
-            self.validate_context(cas, input, attempt.feedback_ids(), id)
+            return self.inner.validate_context(cas, input, attempt, id);
         }
+        if self.render_probe_context(cas, input, attempt.feedback_ids())? != id {
+            return Err("Provider context changed its admitted capability or input".into());
+        }
+        Ok(())
     }
     fn validate_output(
         &self,
@@ -474,9 +455,12 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         if self.slots(input).is_none() {
-            return self.inner.validate_output(cas, task, plan, input, output);
+            return self
+                .inner
+                .validate_output(cas, task, plan, input, output, definition);
         }
         let id = output
             .outputs

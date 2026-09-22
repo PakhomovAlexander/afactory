@@ -229,7 +229,12 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0106](0106-authorize-experimental-children-separately.md): earlier inspection and execution
   generations. Experimental children are ordinary `af/TaskExecutionRecord@5` data.
 - [ADR-0107](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md): the legacy path
-  that recorded the Warm Set before the node's first `AttemptDispatched@1`.
+  that recorded the Warm Set before the node's first `AttemptDispatched@1`, and the Task-path
+  claim that durable admission rechecks a stored `af/WorkerNotes@1` artifact against its
+  producing Attempt. That recheck was shadowed by the resolved-output override from the day it
+  was written, so it never ran; collapsing the output validators to one method makes that
+  visible. The Worker contract still refuses unknown fields and invalid paths at parse, and the
+  host still binds `node`, `attempt_id` and `head_snapshot_id` from kernel authority.
 - [ADR-0108](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md): the legacy
   Kernel's in-memory record of a Worker's clone measurement.
 - [ADR-0110](0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md): the Kernel

@@ -244,22 +244,16 @@ pub trait TaskDomain: TaskOperatorHost {
     ) -> Result<TaskResultV1, String> {
         Err("This Task domain has no installed final-result assembler".into())
     }
+    /// Recheck the admitted context against the exact persisted reservation it was bound to.
     fn validate_context(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        feedback: &[String],
-        context_id: &str,
-    ) -> Result<(), String>;
-    fn validate_context_for_attempt(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: &ReservedTaskAttempt,
         context_id: &str,
-    ) -> Result<(), String> {
-        self.validate_context(cas, input, attempt.feedback_ids(), context_id)
-    }
+    ) -> Result<(), String>;
+    /// Recheck an output against the exact static or registered dynamic node the Store
+    /// resolved, so a registered child reapplies its captured Worker contract.
     fn validate_output(
         &self,
         cas: &Cas,
@@ -267,18 +261,8 @@ pub trait TaskDomain: TaskOperatorHost {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String>;
-    fn validate_resolved_output(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        input: &TaskInvocationV1,
-        output: &TaskOutputV1,
-        _definition: &review_graph::task::CompiledNode,
-    ) -> Result<(), String> {
-        self.validate_output(cas, task, plan, input, output)
-    }
     fn validate_result(
         &self,
         cas: &Cas,
@@ -381,20 +365,6 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         decision: &review_core::task::optimization_experiment::ExperimentPlanDecisionV1,
     ) -> Result<(), String> {
         self.developer.experiment_current(decision)
-    }
-
-    fn validate_resolved_output(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        input: &TaskInvocationV1,
-        output: &TaskOutputV1,
-        definition: &review_graph::task::CompiledNode,
-    ) -> Result<(), String> {
-        self.validate_plan(cas, task, plan)?;
-        self.domain
-            .validate_resolved_output(cas, task, plan, input, output, definition)
     }
 
     fn validate_review_integration_selection(
@@ -539,22 +509,10 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         _: &TaskRevisionV1,
         _: &ExecutionPlanV1,
         input: &TaskInvocationV1,
-        feedback: &[String],
-        id: &str,
-    ) -> Result<(), String> {
-        self.domain.validate_context(cas, input, feedback, id)
-    }
-    fn validate_context_for_attempt(
-        &self,
-        cas: &Cas,
-        _: &TaskRevisionV1,
-        _: &ExecutionPlanV1,
-        input: &TaskInvocationV1,
         attempt: &ReservedTaskAttempt,
         id: &str,
     ) -> Result<(), String> {
-        self.domain
-            .validate_context_for_attempt(cas, input, attempt, id)
+        self.domain.validate_context(cas, input, attempt, id)
     }
     fn validate_output(
         &self,
@@ -563,9 +521,11 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
-        validate_worker_notes_outputs(cas, input, output)?;
-        self.domain.validate_output(cas, task, plan, input, output)
+        self.validate_plan(cas, task, plan)?;
+        self.domain
+            .validate_output(cas, task, plan, input, output, definition)
     }
     fn validate_result(
         &self,
@@ -611,46 +571,6 @@ pub struct CapturedTaskHost<'a> {
     resolved_contexts: std::sync::Mutex<BTreeMap<String, String>>,
     environment: &'a dyn TaskEnvironment,
     domain: &'a dyn TaskDomain,
-}
-
-/// Durable admission and replay recheck of every `af/WorkerNotes@1` output: the stored payload
-/// must be a closed `WorkerNotesV1` bound to the producing Attempt, this node and the head the
-/// output port names. Worker JSON never establishes that identity on its own.
-fn validate_worker_notes_outputs(
-    cas: &Cas,
-    input: &TaskInvocationV1,
-    output: &TaskOutputV1,
-) -> Result<(), String> {
-    for value in output.outputs.values() {
-        if value.artifact_type != review_core::task::WORKER_NOTES_V1 {
-            continue;
-        }
-        for id in &value.artifact_ids {
-            let stored = envelope(cas, id)?;
-            if stored.artifact_type != review_core::task::WORKER_NOTES_V1 {
-                return Err("Worker Notes output names an artifact of another type".into());
-            }
-            let Producer::Attempt {
-                node_id,
-                attempt_id,
-                ..
-            } = &stored.producer
-            else {
-                return Err("Worker Notes must be produced by an Attempt".into());
-            };
-            if node_id != &input.node {
-                return Err("Worker Notes were produced by another node".into());
-            }
-            let head = stored
-                .subject_snapshot_id
-                .as_deref()
-                .ok_or("Worker Notes artifact names no head Snapshot")?;
-            let notes: review_core::WorkerNotesV1 = serde_json::from_value(stored.payload)
-                .map_err(|error| format!("stored Worker Notes are not WorkerNotes@1: {error}"))?;
-            notes.check_bound(&input.node, attempt_id, head)?;
-        }
-    }
-    Ok(())
 }
 
 impl<'a> CapturedTaskHost<'a> {
@@ -1151,7 +1071,7 @@ impl<'a> CapturedTaskHost<'a> {
 }
 
 impl TaskOperatorHost for CapturedTaskHost<'_> {
-    fn prepare_context_for_resolved_attempt(
+    fn prepare_context(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
@@ -1164,7 +1084,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
                     .contract
                     .prepare(cas, input, attempt.feedback_ids(), &worker.instructions)
             }
-            None => self.domain.prepare_context_for_attempt(cas, input, attempt),
+            None => self.domain.prepare_context(cas, input, definition, attempt),
         }?;
         let previous = self
             .resolved_contexts
@@ -1180,7 +1100,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         Ok(context_id)
     }
 
-    fn execute_resolved_controlled(
+    fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
@@ -1188,6 +1108,9 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         attempt: Option<&PreparedTaskAttempt>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
+        if let Err(error) = crate::task::control::check(cancellation) {
+            return crate::task::control::refused(error);
+        }
         let worker = match self.resolved_worker(cas, definition) {
             Ok(worker) => worker,
             Err(error) => return crate::task::control::refused(error),
@@ -1207,7 +1130,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
             },
             (None, _) => self
                 .domain
-                .execute_controlled(cas, input, attempt, cancellation),
+                .execute(cas, input, definition, attempt, cancellation),
         }
     }
     fn prepare_experiment(
@@ -1282,70 +1205,6 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
                 )
                 .map(Some),
             None => self.domain.output_rejection_feedback(cas, input, attempt),
-        }
-    }
-
-    fn prepare_context(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        feedback: &[String],
-    ) -> Result<String, String> {
-        match self.workers.get(&input.node) {
-            Some(worker) => worker
-                .contract
-                .prepare(cas, input, feedback, &worker.instructions),
-            None => self.domain.prepare_context(cas, input, feedback),
-        }
-    }
-    fn prepare_context_for_attempt(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: &ReservedTaskAttempt,
-    ) -> Result<String, String> {
-        if self.workers.contains_key(&input.node) {
-            self.prepare_context(cas, input, attempt.feedback_ids())
-        } else {
-            self.domain.prepare_context_for_attempt(cas, input, attempt)
-        }
-    }
-    fn execute(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-    ) -> TaskWorkOutput {
-        self.execute_controlled(cas, input, attempt, None)
-    }
-
-    fn execute_controlled(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> TaskWorkOutput {
-        if let Err(error) = crate::task::control::check(cancellation) {
-            return crate::task::control::refused(error);
-        }
-
-        match (self.workers.get(&input.node), attempt) {
-            (Some(worker), Some(attempt)) => {
-                self.worker_execute(cas, input, attempt, worker, cancellation)
-            }
-            (Some(_), None) => TaskWorkOutput {
-                usage_observation: None,
-                usage: None,
-                outputs: Err("Worker has no durably started Attempt".into()),
-                charged_tokens: Some(0),
-                raw_artifact_ids: vec![],
-                usage_id: None,
-                feedback_id: None,
-            },
-            (None, _) => self
-                .domain
-                .execute_controlled(cas, input, attempt, cancellation),
         }
     }
 }
@@ -1446,10 +1305,23 @@ impl TaskDomain for CapturedTaskHost<'_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        attempt: &ReservedTaskAttempt,
         context_id: &str,
     ) -> Result<(), String> {
-        if let Some(worker) = self.workers.get(&input.node).map(std::sync::Arc::as_ref) {
+        if let Some(expected) = self
+            .resolved_contexts
+            .lock()
+            .expect("resolved Task contexts")
+            .get(attempt.id())
+            .cloned()
+        {
+            if expected != context_id {
+                return Err(
+                    "Task context differs from the exact registered Worker definition".into(),
+                );
+            }
+        } else if let Some(worker) = self.workers.get(&input.node).map(std::sync::Arc::as_ref) {
+            let feedback = attempt.feedback_ids();
             let (context, _) = worker.contract.read_context(cas, context_id)?;
             if matches!(worker.transport, WorkerTransport::Model(_))
                 && self
@@ -1474,37 +1346,9 @@ impl TaskDomain for CapturedTaskHost<'_> {
                         .into(),
                 );
             }
-            self.domain
-                .validate_context(cas, input, feedback, context_id)
-        } else {
-            self.domain
-                .validate_context(cas, input, feedback, context_id)
-        }
-    }
-    fn validate_context_for_attempt(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: &ReservedTaskAttempt,
-        context_id: &str,
-    ) -> Result<(), String> {
-        if let Some(expected) = self
-            .resolved_contexts
-            .lock()
-            .expect("resolved Task contexts")
-            .get(attempt.id())
-            .cloned()
-        {
-            if expected != context_id {
-                return Err(
-                    "Task context differs from the exact registered Worker definition".into(),
-                );
-            }
-        } else if self.workers.contains_key(&input.node) {
-            self.validate_context(cas, input, attempt.feedback_ids(), context_id)?;
         }
         self.domain
-            .validate_context_for_attempt(cas, input, attempt, context_id)
+            .validate_context(cas, input, attempt, context_id)
     }
     fn validate_output(
         &self,
@@ -1513,40 +1357,26 @@ impl TaskDomain for CapturedTaskHost<'_> {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
-    ) -> Result<(), String> {
-        let node = self
-            .graph
-            .nodes
-            .get(&input.node)
-            .ok_or("Unknown Task output node")?;
-        if matches!(
-            node.operator,
-            CompiledOperator::RootInputs | CompiledOperator::Select
-        ) {
-            return Ok(());
-        }
-        if let Some(worker) = self.workers.get(&input.node) {
-            self.validate_worker_output(cas, input, output, worker)?;
-        }
-        self.domain.validate_output(cas, task, plan, input, output)
-    }
-    fn validate_resolved_output(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        input: &TaskInvocationV1,
-        output: &TaskOutputV1,
         definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
-        if self.graph.nodes.contains_key(&input.node) {
-            return self.validate_output(cas, task, plan, input, output);
+        if let Some(node) = self.graph.nodes.get(&input.node) {
+            if matches!(
+                node.operator,
+                CompiledOperator::RootInputs | CompiledOperator::Select
+            ) {
+                return Ok(());
+            }
+            if let Some(worker) = self.workers.get(&input.node) {
+                self.validate_worker_output(cas, input, output, worker)?;
+            }
+        } else {
+            let worker = self
+                .resolved_worker(cas, definition)?
+                .ok_or("Registered Task output has no captured Worker")?;
+            self.validate_worker_output(cas, input, output, &worker)?;
         }
-        let worker = self
-            .resolved_worker(cas, definition)?
-            .ok_or("Registered Task output has no captured Worker")?;
-        self.validate_worker_output(cas, input, output, &worker)?;
-        self.domain.validate_output(cas, task, plan, input, output)
+        self.domain
+            .validate_output(cas, task, plan, input, output, definition)
     }
     fn validate_result(
         &self,

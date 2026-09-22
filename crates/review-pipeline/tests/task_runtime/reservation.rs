@@ -18,16 +18,9 @@ fn exact_context(input: &TaskInvocationV1, attempt: &ReservedTaskAttempt) -> ser
 impl TaskOperatorHost for IdentityHost {
     fn prepare_context(
         &self,
-        _: &Cas,
-        _: &TaskInvocationV1,
-        _: &[String],
-    ) -> Result<String, String> {
-        panic!("Attempt-dependent context cannot render before reservation")
-    }
-    fn prepare_context_for_attempt(
-        &self,
         cas: &Cas,
         input: &TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         attempt: &ReservedTaskAttempt,
     ) -> Result<String, String> {
         let mut value = exact_context(input, attempt);
@@ -40,7 +33,9 @@ impl TaskOperatorHost for IdentityHost {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
+        _cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         let attempt = attempt.unwrap();
         let context = cas.get_json(attempt.context_id()).unwrap();
@@ -84,15 +79,6 @@ impl TaskOperatorHost for IdentityHost {
 impl TaskDomain for IdentityHost {
     fn validate_context(
         &self,
-        _: &Cas,
-        _: &TaskInvocationV1,
-        _: &[String],
-        _: &str,
-    ) -> Result<(), String> {
-        Err("Context admission requires the real reservation".into())
-    }
-    fn validate_context_for_attempt(
-        &self,
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: &ReservedTaskAttempt,
@@ -110,12 +96,13 @@ impl TaskDomain for IdentityHost {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         if input.node == "root.inputs" {
             assert_eq!(output.outputs, task.inputs);
             return Ok(());
         }
-        DocumentDomain.validate_output(cas, task, plan, input, output)
+        DocumentDomain.validate_output(cas, task, plan, input, output, _definition)
     }
     fn validate_result(
         &self,

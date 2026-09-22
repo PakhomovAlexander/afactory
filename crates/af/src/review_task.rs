@@ -395,7 +395,8 @@ impl review_pipeline::task::TaskOperatorHost for AdmissionOnly {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
-        _: &[String],
+        _definition: &review_graph::task::CompiledNode,
+        _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
         Err("Installed Review plan admission cannot render Worker context".into())
     }
@@ -403,7 +404,9 @@ impl review_pipeline::task::TaskOperatorHost for AdmissionOnly {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         _: Option<&review_store::store::task::execution::PreparedTaskAttempt>,
+        _cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> review_pipeline::task::TaskWorkOutput {
         review_pipeline::task::TaskWorkOutput {
             usage_observation: None,
@@ -421,7 +424,7 @@ impl review_pipeline::task::host::TaskDomain for AdmissionOnly {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
-        _: &[String],
+        _: &review_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         Err("Installed Review plan admission grants no context authority".into())
@@ -433,6 +436,7 @@ impl review_pipeline::task::host::TaskDomain for AdmissionOnly {
         _: &ExecutionPlanV1,
         _: &review_core::task::execution::TaskInvocationV1,
         _: &review_core::task::execution::TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         Err("Installed Review plan admission grants no output authority".into())
     }

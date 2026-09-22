@@ -581,6 +581,7 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
             .unwrap()
             .0;
         let domain = ReviewTaskDomain::captured(&cas, &policy_id, graph.clone()).unwrap();
+        let host_graph = graph.clone();
         let environment = SnapshotTaskEnvironment {
             policy: code.isolation(),
         };
@@ -662,6 +663,7 @@ print(json.dumps({{'schema':'af.worker-reply/1','outputs':{{'result':[stage]}}}}
             assert_two_rounds(
                 &cas,
                 &domain,
+                &host_graph,
                 &task,
                 &state,
                 &result,
@@ -800,6 +802,7 @@ fn export_fixture(
 fn assert_two_rounds(
     cas: &Cas,
     domain: &ReviewTaskDomain,
+    graph: &review_graph::task::CompiledTask,
     task: &TaskRevisionV1,
     state: &review_store::store::task::TaskProjection,
     result: &TaskResultV1,
@@ -877,7 +880,7 @@ fn assert_two_rounds(
         wrong.inputs.get_mut("correctness").unwrap().artifact_ids = vec![forged];
         assert!(
             domain
-                .execute(cas, &wrong, None)
+                .execute(cas, &wrong, &graph.nodes[&wrong.node], None, None)
                 .outputs
                 .unwrap_err()
                 .contains("declared Worker")

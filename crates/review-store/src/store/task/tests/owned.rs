@@ -43,8 +43,10 @@ impl TaskAuthority for OwnedAuthority<'_> {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
-        self.0.validate_output(cas, task, plan, input, output)
+        self.0
+            .validate_output(cas, task, plan, input, output, definition)
     }
     fn validate_context(
         &self,
@@ -52,11 +54,11 @@ impl TaskAuthority for OwnedAuthority<'_> {
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        attempt: &crate::store::task::execution::ReservedTaskAttempt,
         context: &str,
     ) -> Result<(), String> {
         self.0
-            .validate_context(cas, task, plan, input, feedback, context)
+            .validate_context(cas, task, plan, input, attempt, context)
     }
     fn validate_owned_children(
         &self,

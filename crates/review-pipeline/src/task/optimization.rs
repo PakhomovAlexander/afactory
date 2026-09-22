@@ -653,8 +653,10 @@ impl OptimizationTaskDomain {
     }
 }
 
-impl TaskOperatorHost for OptimizationTaskDomain {
-    fn prepare_context(
+impl OptimizationTaskDomain {
+    /// The Optimization context bytes for this invocation. The trait entry point and the
+    /// admission recheck must render identically, so both go through here.
+    fn render_context(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
@@ -680,31 +682,31 @@ impl TaskOperatorHost for OptimizationTaskDomain {
         .map(|(id, _)| id)
         .map_err(|error| error.to_string())
     }
+}
 
-    fn execute_controlled(
+impl TaskOperatorHost for OptimizationTaskDomain {
+    fn prepare_context(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> TaskWorkOutput {
-        if let Err(error) = super::control::check(cancellation) {
-            return super::control::refused(error);
-        }
-        let output = self.execute(cas, input, attempt);
-        if let Err(error) = super::control::check(cancellation) {
-            return super::control::refused(error);
-        }
-        output
+        _definition: &review_graph::task::CompiledNode,
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
+    ) -> Result<String, String> {
+        self.render_context(cas, input, attempt.feedback_ids())
     }
 
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        _: Option<&PreparedTaskAttempt>,
+        _definition: &review_graph::task::CompiledNode,
+        _attempt: Option<&PreparedTaskAttempt>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
-        TaskWorkOutput {
+        if let Err(error) = super::control::check(cancellation) {
+            return super::control::refused(error);
+        }
+        let output = TaskWorkOutput {
             usage_observation: None,
             usage: None,
             outputs: self.outputs(cas, input),
@@ -712,7 +714,11 @@ impl TaskOperatorHost for OptimizationTaskDomain {
             raw_artifact_ids: vec![],
             usage_id: None,
             feedback_id: None,
+        };
+        if let Err(error) = super::control::check(cancellation) {
+            return super::control::refused(error);
         }
+        output
     }
 }
 
@@ -764,10 +770,10 @@ impl TaskDomain for OptimizationTaskDomain {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         context_id: &str,
     ) -> Result<(), String> {
-        if self.prepare_context(cas, input, feedback)? != context_id {
+        if self.render_context(cas, input, attempt.feedback_ids())? != context_id {
             return Err("Optimization context changed its captured invocation".into());
         }
         Ok(())
@@ -780,6 +786,7 @@ impl TaskDomain for OptimizationTaskDomain {
         _: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         let expected = self.outputs(cas, input)?;
         if output.outputs != expected {
@@ -1866,23 +1873,6 @@ impl OptimizationCandidateTaskDomain {
 }
 
 impl TaskOperatorHost for OptimizationCandidateTaskDomain {
-    fn execute_controlled(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> TaskWorkOutput {
-        if let Err(error) = super::control::check(cancellation) {
-            return super::control::refused(error);
-        }
-        let output = self.execute(cas, input, attempt);
-        if let Err(error) = super::control::check(cancellation) {
-            return super::control::refused(error);
-        }
-        output
-    }
-
     fn prepare_experiment(
         &self,
         cas: &Cas,
@@ -2422,9 +2412,10 @@ impl TaskOperatorHost for OptimizationCandidateTaskDomain {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
+        _definition: &review_graph::task::CompiledNode,
+        attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        if !feedback.is_empty() {
+        if !attempt.feedback_ids().is_empty() {
             return Err("Pure optimizer steps have no retry context".into());
         }
         cas.put_artifact(
@@ -2445,9 +2436,14 @@ impl TaskOperatorHost for OptimizationCandidateTaskDomain {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        _: Option<&PreparedTaskAttempt>,
+        _definition: &review_graph::task::CompiledNode,
+        _attempt: Option<&PreparedTaskAttempt>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
-        TaskWorkOutput {
+        if let Err(error) = super::control::check(cancellation) {
+            return super::control::refused(error);
+        }
+        let output = TaskWorkOutput {
             outputs: self.pure_outputs(cas, input),
             usage_observation: None,
             usage: None,
@@ -2455,7 +2451,11 @@ impl TaskOperatorHost for OptimizationCandidateTaskDomain {
             raw_artifact_ids: vec![],
             usage_id: None,
             feedback_id: None,
+        };
+        if let Err(error) = super::control::check(cancellation) {
+            return super::control::refused(error);
         }
+        output
     }
 }
 
@@ -2550,7 +2550,7 @@ impl TaskDomain for OptimizationCandidateTaskDomain {
         &self,
         _: &Cas,
         input: &TaskInvocationV1,
-        _: &[String],
+        _: &review_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         if input.node == self.parent {
@@ -2567,6 +2567,7 @@ impl TaskDomain for OptimizationCandidateTaskDomain {
         _: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         if input.node != self.parent {
             if self.graph.nodes.get(&input.node).is_some_and(|node| {

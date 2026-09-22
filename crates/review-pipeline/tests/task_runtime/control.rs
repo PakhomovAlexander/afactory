@@ -181,14 +181,18 @@ fn heartbeat_detects_a_replaced_writer_even_when_its_new_lease_is_far_from_renew
 }
 
 #[test]
-fn unsupported_host_control_refuses_before_execution_and_none_forwards() {
+fn a_host_that_cannot_honor_an_interruption_refuses_instead_of_ignoring_it() {
+    // There is no forwarding default any more: every operator takes the cancellation and owes
+    // an explicit refusal when it cannot honor one. DocumentTaskDomain, PlanningTaskDomain and
+    // the pure Optimization steps all answer this way; this pins the contract they answer.
     struct Host(std::sync::atomic::AtomicUsize);
     impl TaskOperatorHost for Host {
         fn prepare_context(
             &self,
             _: &Cas,
             _: &TaskInvocationV1,
-            _: &[String],
+            _definition: &review_graph::task::CompiledNode,
+            _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
             unreachable!()
         }
@@ -196,8 +200,21 @@ fn unsupported_host_control_refuses_before_execution_and_none_forwards() {
             &self,
             _: &Cas,
             _: &TaskInvocationV1,
+            _definition: &review_graph::task::CompiledNode,
             _: Option<&PreparedTaskAttempt>,
+            cancellation: Option<&std::sync::atomic::AtomicBool>,
         ) -> TaskWorkOutput {
+            if cancellation.is_some() {
+                return TaskWorkOutput {
+                    outputs: Err("Task operator does not support cancellation".into()),
+                    charged_tokens: Some(0),
+                    usage: None,
+                    usage_observation: None,
+                    raw_artifact_ids: vec![],
+                    usage_id: None,
+                    feedback_id: None,
+                };
+            }
             self.0.fetch_add(1, Ordering::SeqCst);
             TaskWorkOutput {
                 outputs: Ok(BTreeMap::new()),
@@ -218,13 +235,26 @@ fn unsupported_host_control_refuses_before_execution_and_none_forwards() {
         node: "root.nodes.work".into(),
         inputs: BTreeMap::new(),
     };
+    let node = review_graph::task::CompiledNode {
+        operator: review_graph::task::CompiledOperator::Select,
+        contract: review_core::task::pipeline::PipelineContractV1 {
+            inputs: BTreeMap::new(),
+            outputs: BTreeMap::new(),
+        },
+        inputs: BTreeMap::new(),
+        conditions: vec![],
+    };
     let flag = AtomicBool::new(false);
-    let refused = host.execute_controlled(&cas, &input, None, Some(&flag));
+    let refused = host.execute(&cas, &input, &node, None, Some(&flag));
     assert!(refused.outputs.is_err());
     assert_eq!(refused.charged_tokens, Some(0));
-    assert_eq!(host.0.load(Ordering::SeqCst), 0);
+    assert_eq!(
+        host.0.load(Ordering::SeqCst),
+        0,
+        "an unhonorable interruption is refused before any work runs"
+    );
     assert!(
-        host.execute_controlled(&cas, &input, None, None)
+        host.execute(&cas, &input, &node, None, None)
             .outputs
             .is_ok()
     );
@@ -239,26 +269,22 @@ fn cancellation_between_successful_work_and_selection_retains_spend_but_refuses_
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
-            feedback: &[String],
+            _definition: &review_graph::task::CompiledNode,
+            attempt: &review_store::store::task::execution::ReservedTaskAttempt,
         ) -> Result<String, String> {
-            self.0.prepare_context(cas, input, feedback)
+            self.0.prepare_context(cas, input, _definition, attempt)
         }
         fn execute(
             &self,
             cas: &Cas,
             input: &TaskInvocationV1,
-            attempt: Option<&PreparedTaskAttempt>,
-        ) -> TaskWorkOutput {
-            self.0.execute(cas, input, attempt)
-        }
-        fn execute_controlled(
-            &self,
-            cas: &Cas,
-            input: &TaskInvocationV1,
+            definition: &review_graph::task::CompiledNode,
             attempt: Option<&PreparedTaskAttempt>,
             cancellation: Option<&AtomicBool>,
         ) -> TaskWorkOutput {
-            let mut returned = self.0.execute_controlled(cas, input, attempt, cancellation);
+            let mut returned = self
+                .0
+                .execute(cas, input, definition, attempt, cancellation);
             assert!(returned.outputs.is_ok());
             returned.charged_tokens = Some(7);
             cancellation.unwrap().store(true, Ordering::Release);

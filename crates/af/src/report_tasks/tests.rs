@@ -51,7 +51,7 @@ impl TaskAuthority for Authority {
         _: &TaskRevisionV1,
         _: &ExecutionPlanV1,
         _: &TaskInvocationV1,
-        _: &[String],
+        _: &review_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         Ok(())
@@ -63,6 +63,7 @@ impl TaskAuthority for Authority {
         _: &ExecutionPlanV1,
         _: &TaskInvocationV1,
         _: &TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         Ok(())
     }

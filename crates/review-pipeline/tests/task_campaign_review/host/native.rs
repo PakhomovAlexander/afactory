@@ -517,8 +517,6 @@ fn model_bindings<'a>(
 fn provider_admission_renders_only_its_fixed_context_and_refuses_changed_identity() {
     use review_core::task::execution::TaskInvocationV1;
     use review_graph::task::{CompiledOperator, CompiledTask};
-    use review_pipeline::task::TaskOperatorHost;
-    use review_pipeline::task::host::TaskDomain;
     use review_pipeline::task::provider::ProviderTaskDomain;
     use review_runner::task::provider::PROBE_INPUT;
     let directory = tempfile::tempdir().unwrap();
@@ -559,7 +557,7 @@ fn provider_admission_renders_only_its_fixed_context_and_refuses_changed_identit
         model_bindings(&compiled, &model),
     )
     .unwrap();
-    let context_id = host.prepare_context(&cas, &input, &[]).unwrap();
+    let context_id = host.unreserved_context(&input, &[]).unwrap();
     let envelope = cas.get_artifact(&context_id).unwrap();
     assert_eq!(envelope.artifact_type, "af/TaskProviderContext@1");
     let binding = compiled.bindings.values().next().unwrap();
@@ -576,16 +574,19 @@ fn provider_admission_renders_only_its_fixed_context_and_refuses_changed_identit
     let rendered = context["rendered_id"].as_str().unwrap().to_owned();
     assert_eq!(cas.get(&rendered).unwrap(), PROBE_INPUT);
     assert_eq!(envelope.input_artifacts, [plan_id, rendered]);
-    host.validate_context(&cas, &input, &[], &context_id)
-        .unwrap();
+    assert_eq!(
+        host.unreserved_context(&input, &[]).unwrap(),
+        context_id,
+        "context admission rechecks the same bytes"
+    );
     assert!(
-        host.prepare_context(&cas, &input, &[context_id.clone()])
+        host.unreserved_context(&input, &[context_id.clone()])
             .is_err()
     );
     let mut private_input = input.clone();
     private_input.inputs = compiled.inputs.clone();
     assert!(!private_input.inputs.is_empty());
-    assert!(host.prepare_context(&cas, &private_input, &[]).is_err());
+    assert!(host.unreserved_context(&private_input, &[]).is_err());
 
     let domain_for = |models: &BTreeMap<String, TaskModelBinding<'_>>| {
         ProviderTaskDomain {
@@ -593,7 +594,7 @@ fn provider_admission_renders_only_its_fixed_context_and_refuses_changed_identit
             models,
             inner: &plan::RefuseExecution,
         }
-        .prepare_context(&cas, &input, &[])
+        .render_probe_context(&cas, &input, &[])
     };
     assert_eq!(
         domain_for(&model_bindings(&compiled, &model)).unwrap(),

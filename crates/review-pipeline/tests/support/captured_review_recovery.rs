@@ -251,7 +251,8 @@ impl review_pipeline::task::TaskOperatorHost for RecordingOnly<'_> {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
-        _: &[String],
+        _definition: &review_graph::task::CompiledNode,
+        _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
         panic!("recording recovery prepared a new context")
     }
@@ -259,7 +260,9 @@ impl review_pipeline::task::TaskOperatorHost for RecordingOnly<'_> {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         _: Option<&review_store::store::task::execution::PreparedTaskAttempt>,
+        _cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> review_pipeline::task::TaskWorkOutput {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         panic!("recording recovery executed new work")
@@ -301,25 +304,21 @@ impl review_pipeline::task::TaskOperatorHost for LostPublication<'_> {
         &self,
         cas: &Cas,
         input: &review_core::task::execution::TaskInvocationV1,
-        feedback: &[String],
-    ) -> Result<String, String> {
-        self.inner.prepare_context(cas, input, feedback)
-    }
-    fn prepare_context_for_attempt(
-        &self,
-        cas: &Cas,
-        input: &review_core::task::execution::TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
-        self.inner.prepare_context_for_attempt(cas, input, attempt)
+        self.inner.prepare_context(cas, input, _definition, attempt)
     }
     fn execute(
         &self,
         cas: &Cas,
         input: &review_core::task::execution::TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
         attempt: Option<&review_store::store::task::execution::PreparedTaskAttempt>,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> review_pipeline::task::TaskWorkOutput {
-        self.inner.execute(cas, input, attempt)
+        self.inner
+            .execute(cas, input, definition, attempt, cancellation)
     }
 }
 

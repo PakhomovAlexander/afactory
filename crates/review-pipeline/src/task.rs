@@ -68,27 +68,6 @@ pub trait TaskOperatorHost: Sync {
         Err("Task operator has no installed experiment preparation".into())
     }
 
-    fn prepare_context_for_resolved_attempt(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
-        attempt: &ReservedTaskAttempt,
-    ) -> Result<String, String> {
-        self.prepare_context_for_attempt(cas, input, attempt)
-    }
-
-    fn execute_resolved_controlled(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        _definition: &review_graph::task::CompiledNode,
-        attempt: Option<&PreparedTaskAttempt>,
-        cancellation: Option<&AtomicBool>,
-    ) -> TaskWorkOutput {
-        self.execute_controlled(cas, input, attempt, cancellation)
-    }
-
     fn complete_experiment(
         &self,
         _cas: &Cas,
@@ -155,47 +134,29 @@ pub trait TaskOperatorHost: Sync {
         Ok(None)
     }
 
-    /// Pure rendering/capture only: no Provider operation or subprocess may start here.
+    /// Pure rendering/capture only: no Provider operation or subprocess may start here. The
+    /// exact static or registered dynamic node the Store resolved, and the persisted
+    /// reservation, are both available to adapters whose invocation protocol names them.
     fn prepare_context(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback_ids: &[String],
-    ) -> Result<String, String>;
-
-    /// Same pure capture boundary, with the actual persisted reservation available to render
-    /// adapters whose invocation protocol includes Attempt identity and resource authority.
-    fn prepare_context_for_attempt(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
         attempt: &ReservedTaskAttempt,
-    ) -> Result<String, String> {
-        self.prepare_context(cas, input, attempt.feedback_ids())
-    }
+    ) -> Result<String, String>;
 
     /// A paid operation receives its durably started Attempt capability. Implementations must
     /// report failed usage too. Pure installed operators receive None and cannot launch Workers.
+    /// An optional host interruption must be consumed explicitly: an operator either honors it
+    /// with [`control::check`] or refuses, never ignores it.
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-    ) -> TaskWorkOutput;
-
-    /// Optional host interruption must be consumed explicitly; None forwards to `execute`.
-    fn execute_controlled(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
         cancellation: Option<&AtomicBool>,
-    ) -> TaskWorkOutput {
-        if cancellation.is_some() {
-            return control::refused("Task operator does not support cancellation");
-        }
-        self.execute(cas, input, attempt)
-    }
+    ) -> TaskWorkOutput;
 }
 
 pub struct TaskRuntime<'store, 'host> {
@@ -327,7 +288,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             Ok(value) => value,
             Err(error) => return control::refused(error),
         };
-        self.host.execute_resolved_controlled(
+        self.host.execute(
             self.cas,
             input,
             &resolved.definition,
@@ -468,7 +429,7 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             .map_err(|e| e.to_string())?;
         // Release the Store lock before pure host capture; it may read shared domain evidence.
         let context = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.host.prepare_context_for_resolved_attempt(
+            self.host.prepare_context(
                 self.cas,
                 input,
                 &self.resolve_node(&input.node)?.definition,

@@ -573,6 +573,53 @@ impl<'store, 'host> CampaignReviewTaskHost<'store, 'host> {
     }
 }
 
+impl CampaignReviewTaskHost<'_, '_> {
+    /// The context bytes for this invocation, rendered identically by the capture entry point
+    /// and by the admission recheck. A reviewer's Worker context needs the reserved Attempt;
+    /// every pure Review operation is its own durable invocation identity.
+    fn render_context(
+        &self,
+        cas: &Cas,
+        input: &TaskInvocationV1,
+        attempt: &ReservedTaskAttempt,
+    ) -> Result<String, String> {
+        if let Some(ReviewOperation::Reviewer { .. }) = self
+            .operation(input)?
+            .map(|(_, _, op)| op)
+            .filter(|_| !self.is_provider(input))
+        {
+            return self.worker_context(cas, input, attempt);
+        }
+        self.unreserved_context(input, attempt.feedback_ids())
+    }
+
+    /// The context bytes for an operation that carries no Attempt authority: every pure Review
+    /// operation, whose identity is its durable invocation, and the Provider capability probe.
+    pub fn unreserved_context(
+        &self,
+        input: &TaskInvocationV1,
+        feedback: &[String],
+    ) -> Result<String, String> {
+        if self.is_provider(input) {
+            return self
+                .providers()
+                .render_probe_context(self.domain.cas, input, feedback);
+        }
+        if self.operation(input)?.is_some_and(|(_, _, op)| {
+            matches!(
+                op,
+                ReviewOperation::Reviewer { .. } | ReviewOperation::Scatter { .. }
+            )
+        }) {
+            return Err("Review Worker context requires its actual reserved Attempt".into());
+        }
+        if !feedback.is_empty() {
+            return Err("Pure Review operation cannot consume retry feedback".into());
+        }
+        Ok(self.invocation(input)?.0)
+    }
+}
+
 impl TaskOperatorHost for CampaignReviewTaskHost<'_, '_> {
     fn prepare_owned_children(
         &self,
@@ -750,58 +797,19 @@ impl TaskOperatorHost for CampaignReviewTaskHost<'_, '_> {
 
     fn prepare_context(
         &self,
-        _: &Cas,
-        input: &TaskInvocationV1,
-        feedback: &[String],
-    ) -> Result<String, String> {
-        if self.is_provider(input) {
-            return self
-                .providers()
-                .prepare_context(self.domain.cas, input, feedback);
-        }
-        if self.operation(input)?.is_some_and(|(_, _, op)| {
-            matches!(
-                op,
-                ReviewOperation::Reviewer { .. } | ReviewOperation::Scatter { .. }
-            )
-        }) {
-            return Err("Review Worker context requires its actual reserved Attempt".into());
-        }
-        if !feedback.is_empty() {
-            return Err("Pure Review operation cannot consume retry feedback".into());
-        }
-        Ok(self.invocation(input)?.0)
-    }
-
-    fn prepare_context_for_attempt(
-        &self,
         cas: &Cas,
         input: &TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         attempt: &ReservedTaskAttempt,
     ) -> Result<String, String> {
-        if self
-            .operation(input)?
-            .is_some_and(|(_, _, op)| matches!(op, ReviewOperation::Reviewer { .. }))
-        {
-            self.worker_context(cas, input, attempt)
-        } else {
-            self.prepare_context(cas, input, attempt.feedback_ids())
-        }
+        self.render_context(cas, input, attempt)
     }
 
     fn execute(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-    ) -> TaskWorkOutput {
-        self.execute_controlled(cas, input, attempt, None)
-    }
-
-    fn execute_controlled(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
+        definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
@@ -812,7 +820,7 @@ impl TaskOperatorHost for CampaignReviewTaskHost<'_, '_> {
         if self.is_provider(input) {
             return self
                 .providers()
-                .execute_controlled(cas, input, attempt, cancellation);
+                .execute(cas, input, definition, attempt, cancellation);
         }
         if self.is_integration(input) {
             return self.execute_integration(cas, input, attempt, cancellation);
@@ -934,20 +942,6 @@ impl TaskDomain for CampaignReviewTaskHost<'_, '_> {
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
-        feedback: &[String],
-        context_id: &str,
-    ) -> Result<(), String> {
-        cas.get_artifact(context_id).map_err(|e| e.to_string())?;
-        if self.prepare_context(cas, input, feedback)? != context_id {
-            return Err("Review context changed its exact invocation".into());
-        }
-        Ok(())
-    }
-
-    fn validate_context_for_attempt(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
         attempt: &ReservedTaskAttempt,
         context_id: &str,
     ) -> Result<(), String> {
@@ -955,7 +949,7 @@ impl TaskDomain for CampaignReviewTaskHost<'_, '_> {
         for id in &artifact.input_artifacts {
             cas.verify(id).map_err(|e| e.to_string())?;
         }
-        if self.prepare_context_for_attempt(cas, input, attempt)? != context_id {
+        if self.render_context(cas, input, attempt)? != context_id {
             return Err("Review context changed the reserved Attempt or rendered inputs".into());
         }
         Ok(())
@@ -968,6 +962,7 @@ impl TaskDomain for CampaignReviewTaskHost<'_, '_> {
         plan: &ExecutionPlanV1,
         input: &TaskInvocationV1,
         output: &TaskOutputV1,
+        definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         if task != &self.task || plan != &self.plan {
             return Err("Review output changed captured Task authority".into());
@@ -975,7 +970,7 @@ impl TaskDomain for CampaignReviewTaskHost<'_, '_> {
         if self.is_provider(input) {
             return self
                 .providers()
-                .validate_output(cas, task, plan, input, output);
+                .validate_output(cas, task, plan, input, output, definition);
         }
         if !self.is_integration(input) && self.operation(input)?.is_none() {
             return Ok(());

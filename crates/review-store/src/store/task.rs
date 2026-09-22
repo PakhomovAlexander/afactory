@@ -228,30 +228,10 @@ pub trait TaskAuthority: Sync {
         _task: &TaskRevisionV1,
         _plan: &ExecutionPlanV1,
         _invocation: &review_core::task::execution::TaskInvocationV1,
-        _feedback_ids: &[String],
+        _attempt: &execution::ReservedTaskAttempt,
         _context_id: &str,
     ) -> Result<(), String> {
         Err("Task context admission is not configured".into())
-    }
-    /// Adapters whose prompt includes Attempt authority validate the exact Store reservation.
-    /// This runs after pure capture and before the context can become executable.
-    fn validate_context_for_attempt(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        invocation: &review_core::task::execution::TaskInvocationV1,
-        attempt: &execution::ReservedTaskAttempt,
-        context_id: &str,
-    ) -> Result<(), String> {
-        self.validate_context(
-            cas,
-            task,
-            plan,
-            invocation,
-            attempt.feedback_ids(),
-            context_id,
-        )
     }
     /// Recompute acceptance from exact durable output/verification receipts, not result prose.
     fn validate_result(
@@ -261,7 +241,9 @@ pub trait TaskAuthority: Sync {
         result: &TaskResultV1,
     ) -> Result<(), String>;
     /// Domain checks supplement the Store's exact graph-port/provenance checks. The host
-    /// verifies typed Worker schemas, seal ancestry and retained verifier receipts here.
+    /// verifies typed Worker schemas, seal ancestry and retained verifier receipts here,
+    /// against the exact static or registered dynamic node the Store resolved: an experimental
+    /// child reapplies its captured Worker contract without admitting node-controlled authority.
     fn validate_output(
         &self,
         _cas: &Cas,
@@ -269,23 +251,9 @@ pub trait TaskAuthority: Sync {
         _plan: &ExecutionPlanV1,
         _invocation: &review_core::task::execution::TaskInvocationV1,
         _output: &review_core::task::execution::TaskOutputV1,
-    ) -> Result<(), String> {
-        Err("Task output domain admission is not configured".into())
-    }
-
-    /// Validate an output against the exact static or registered dynamic node resolved by the
-    /// Store. The default preserves existing adapters; experimental adapters use the definition
-    /// to reapply the captured Worker contract without admitting node-controlled authority.
-    fn validate_resolved_output(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        invocation: &review_core::task::execution::TaskInvocationV1,
-        output: &review_core::task::execution::TaskOutputV1,
         _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
-        self.validate_output(cas, task, plan, invocation, output)
+        Err("Task output domain admission is not configured".into())
     }
 }
 

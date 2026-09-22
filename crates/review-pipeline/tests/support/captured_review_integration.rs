@@ -67,7 +67,8 @@ impl TaskOperatorHost for PlanOnly {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
-        _: &[String],
+        _definition: &review_graph::task::CompiledNode,
+        _attempt: &review_store::store::task::execution::ReservedTaskAttempt,
     ) -> Result<String, String> {
         panic!("admission must not render context")
     }
@@ -75,7 +76,9 @@ impl TaskOperatorHost for PlanOnly {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
+        _definition: &review_graph::task::CompiledNode,
         _: Option<&review_store::store::task::execution::PreparedTaskAttempt>,
+        _cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         panic!("admission must not execute")
     }
@@ -85,7 +88,7 @@ impl TaskDomain for PlanOnly {
         &self,
         _: &Cas,
         _: &review_core::task::execution::TaskInvocationV1,
-        _: &[String],
+        _: &review_store::store::task::execution::ReservedTaskAttempt,
         _: &str,
     ) -> Result<(), String> {
         Err("not executing".into())
@@ -97,6 +100,7 @@ impl TaskDomain for PlanOnly {
         _: &review_core::task::plan::ExecutionPlanV1,
         _: &review_core::task::execution::TaskInvocationV1,
         _: &review_core::task::execution::TaskOutputV1,
+        _definition: &review_graph::task::CompiledNode,
     ) -> Result<(), String> {
         Err("not executing".into())
     }
