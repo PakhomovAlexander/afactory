@@ -2086,7 +2086,6 @@ fn validate_campaign_transition(
         None => false,
     };
     let mut pending_supersession: Option<review_core::RoundInputSupersededPayloadV1> = None;
-    let mut batch_selected = std::collections::BTreeMap::new();
     let mut batch_proposal_attempts = std::collections::BTreeSet::new();
     let mut batch_prepared_proposals = std::collections::BTreeMap::new();
     let mut batch_accepted_proposals = std::collections::BTreeSet::new();
@@ -2313,10 +2312,6 @@ fn validate_campaign_transition(
                                     "Selected Task result differs from the pinned Review output contract".into(),
                                 ));
                             }
-                            batch_selected.insert(
-                                event.attempt_id.clone().expect("validated Review Attempt"),
-                                (node.into(), selected.result_artifact_id),
-                            );
                         }
                         EventType::GateExecutionBoundV1 => {
                             let node = event.node_id.as_deref().ok_or_else(|| {
@@ -2558,12 +2553,7 @@ fn validate_campaign_transition(
                                     tx, cas, run_id, active_id, node, attempt,
                                 )?;
                                 let result = selected_attempt_result(
-                                    tx,
-                                    run_id,
-                                    active_id,
-                                    &batch_selected,
-                                    node,
-                                    attempt,
+                                    tx, run_id, active_id, event_type, node, attempt,
                                 )?;
                                 let outputs: Vec<&String> = receipt
                                     .outputs
@@ -2572,7 +2562,7 @@ fn validate_campaign_transition(
                                     .collect();
                                 if outputs.len() != 1 || outputs[0] != &result {
                                     return Err(StoreError::Conflict(
-                                        "reviewer receipt contradicts its selected admitted result"
+                                        "reviewer receipt contradicts its selected Task result"
                                             .into(),
                                     ));
                                 }
@@ -2589,12 +2579,7 @@ fn validate_campaign_transition(
                                 tx, cas, run_id, active_id, event,
                             )?;
                             let selected_result = selected_attempt_result(
-                                tx,
-                                run_id,
-                                active_id,
-                                &batch_selected,
-                                node,
-                                attempt,
+                                tx, run_id, active_id, event_type, node, attempt,
                             )?;
                             let existing: i64 = tx.query_row(
                                 "SELECT COUNT(*) FROM events
@@ -2679,12 +2664,7 @@ fn validate_campaign_transition(
                                 .validate()
                                 .map_err(|error| StoreError::Conflict(error.to_string()))?;
                             let selected_result = selected_attempt_result(
-                                tx,
-                                run_id,
-                                active_id,
-                                &batch_selected,
-                                node,
-                                attempt,
+                                tx, run_id, active_id, event_type, node, attempt,
                             )?;
                             let prepared_authority = prepared_proposal_authority(
                                 tx,
@@ -3876,18 +3856,10 @@ fn selected_attempt_result(
     tx: &rusqlite::Transaction<'_>,
     run_id: &str,
     round_event_id: &str,
-    batch_selected: &std::collections::BTreeMap<String, (String, String)>,
+    event_type: EventType,
     node: &str,
     attempt: &str,
 ) -> Result<String, StoreError> {
-    if let Some((selected_node, result)) = batch_selected.get(attempt) {
-        if selected_node == node {
-            return Ok(result.clone());
-        }
-        return Err(StoreError::Conflict(
-            "Proposal Attempt metadata disagrees with selected admission".into(),
-        ));
-    }
     let rows = tx
         .prepare(
             "SELECT payload FROM events
@@ -3899,9 +3871,9 @@ fn selected_attempt_result(
         })?
         .collect::<Result<Vec<_>, _>>()?;
     let [raw] = rows.as_slice() else {
-        return Err(StoreError::Conflict(
-            "Proposal has no unique selected Attempt admission".into(),
-        ));
+        return Err(StoreError::Conflict(format!(
+            "{event_type} has no unique Task Review selection"
+        )));
     };
     let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
         serde_json::from_str(raw)?;

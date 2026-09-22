@@ -1,8 +1,9 @@
 use review_core::{
     AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1, EventType,
     NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1, PortCardinality,
-    RoundInputSupersededPayloadV1, RoundStartedPayloadV1, RunNodeOutcomeV2, RunNodeReportV2,
-    RunReportPayloadV3, RunVerdictV3, SnapshotAffinity, SubjectKind, SubjectV1,
+    ProposalRefusalReasonV1, ProposalRefusedPayloadV1, RoundInputSupersededPayloadV1,
+    RoundStartedPayloadV1, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3, RunVerdictV3,
+    SnapshotAffinity, SubjectKind, SubjectV1,
 };
 use review_store::{Cas, EventStore, NewEvent};
 
@@ -106,6 +107,25 @@ fn round_refs(ids: &Authority) -> Vec<String> {
         ids.findings.clone(),
         ids.demands.clone(),
     ]
+}
+
+fn invoke_reviewer(store: &mut EventStore, cas: &Cas, round: &review_core::RunEvent) {
+    store
+        .append(
+            "run",
+            cas,
+            NewEvent::new(
+                EventType::NodeInvocationV1,
+                serde_json::to_value(NodeInvocationPayloadV1 {
+                    node: "reviewer".into(),
+                    inputs: vec![],
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .caused_by(&round.event_id),
+        )
+        .unwrap();
 }
 
 fn opened_round(
@@ -416,22 +436,7 @@ fn a_receipt_rejects_a_noncanonical_report_path_in_its_pinned_type() {
         }))
         .unwrap();
 
-    store
-        .append(
-            "run",
-            &cas,
-            NewEvent::new(
-                EventType::NodeInvocationV1,
-                serde_json::to_value(NodeInvocationPayloadV1 {
-                    node: "reviewer".into(),
-                    inputs: vec![],
-                })
-                .unwrap(),
-            )
-            .node("reviewer")
-            .caused_by(&round.event_id),
-        )
-        .unwrap();
+    invoke_reviewer(&mut store, &cas, &round);
     let error = store
         .append(
             "run",
@@ -460,4 +465,102 @@ fn a_receipt_rejects_a_noncanonical_report_path_in_its_pinned_type() {
         .unwrap_err();
 
     assert!(error.to_string().contains("canonical"), "{error}");
+}
+
+#[test]
+fn a_proposal_requires_its_task_review_selection() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let ids = authority(&cas, "unselected-proposal");
+    let round = opened_round(&mut store, &cas, "run", &ids);
+    invoke_reviewer(&mut store, &cas, &round);
+    let result = cas.put(b"unselected reviewer result").unwrap();
+
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::ProposalRefusedV1,
+                serde_json::to_value(ProposalRefusedPayloadV1 {
+                    reason: ProposalRefusalReasonV1::InvalidPath,
+                    result_artifact_id: result.clone(),
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .attempt("c".repeat(26))
+            .caused_by(&round.event_id)
+            .referencing(vec![result]),
+        )
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("Proposal has no Task Review selection"),
+        "{error}"
+    );
+}
+
+#[test]
+fn a_reviewer_receipt_requires_its_task_review_selection() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let ids = authority(&cas, "unselected-receipt");
+    let round = opened_round(&mut store, &cas, "run", &ids);
+    invoke_reviewer(&mut store, &cas, &round);
+    let result = cas
+        .put_json(&serde_json::json!({
+            "verdict": "request-changes",
+            "summary": null,
+            "reports": [{
+                "severity": "major",
+                "file": "src/main.rs",
+                "line": 1,
+                "title": "valid path",
+                "body": "body",
+                "fix": "fix",
+                "confidence": 0.9
+            }],
+            "benchmark_demands": [],
+            "disputes": []
+        }))
+        .unwrap();
+
+    let error = store
+        .append(
+            "run",
+            &cas,
+            NewEvent::new(
+                EventType::NodeOutputReceiptV1,
+                serde_json::to_value(NodeOutputReceiptPayloadV1 {
+                    node: "reviewer".into(),
+                    outputs: vec![PortArtifactsV1 {
+                        port: "out".into(),
+                        artifact_type: "review.kernel/ReviewerResult@1".into(),
+                        cardinality: PortCardinality::One,
+                        optional: false,
+                        snapshot_affinity: SnapshotAffinity::Any,
+                        artifact_ids: vec![result.clone()],
+                        subject_snapshot_id: None,
+                    }],
+                })
+                .unwrap(),
+            )
+            .node("reviewer")
+            .attempt("d".repeat(26))
+            .caused_by(&round.event_id)
+            .referencing(vec![result]),
+        )
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("Reviewer receipt has no Task Review selection"),
+        "{error}"
+    );
 }
