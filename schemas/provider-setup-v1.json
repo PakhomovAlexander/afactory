@@ -1,0 +1,198 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:provider-setup:1",
+  "title": "Provider setup@1",
+  "$comment": "The machine-readable result of one non-interactive `af provider setup`. `login_launched` is always false in this document: `--json` conflicts with `--login`, because the login path hands the interactive terminal to the official Provider CLI rather than producing a document. `human_action_required` is the safe outcome for a context that needs a login — it carries the exact command a human must run at a private terminal and never an OAuth URL or authorization code. Deliberately absent, in every state: account email, organization or account identity, credentials, OAuth material, and raw Provider output; `diagnostic` is af-authored text.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "result",
+    "exit_code",
+    "login_launched",
+    "provider",
+    "next_action",
+    "diagnostic"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/provider-setup@1"
+    },
+    "result": {
+      "enum": [
+        "registered",
+        "already_registered",
+        "human_action_required",
+        "provider_cli_missing",
+        "registry_conflict",
+        "authentication_failed"
+      ]
+    },
+    "exit_code": {
+      "$comment": "0 registered; 3 human action required; 4 Provider CLI missing; 5 registry conflict; 6 authentication failed.",
+      "enum": [0, 3, 4, 5, 6]
+    },
+    "login_launched": {
+      "const": false
+    },
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "auth_context", "registered", "auth", "usability"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64
+        },
+        "kind": {
+          "enum": ["claude", "codex"]
+        },
+        "auth_context": {
+          "type": "string",
+          "minLength": 1
+        },
+        "registered": {
+          "type": "boolean"
+        },
+        "auth": {
+          "enum": [
+            "authenticated",
+            "not_authenticated",
+            "unknown",
+            "not_probed"
+          ]
+        },
+        "usability": {
+          "enum": ["usable_or_untested", "unusable", "unknown"]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "auth": { "const": "authenticated" } }
+          },
+          "then": {
+            "properties": {
+              "usability": { "const": "usable_or_untested" }
+            }
+          },
+          "else": {
+            "properties": {
+              "usability": { "enum": ["unusable", "unknown"] }
+            }
+          }
+        }
+      ]
+    },
+    "next_action": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "command"],
+          "properties": {
+            "kind": {
+              "$comment": "interactive_login: no --login was given. private_terminal: --login was given but this process is not attached to an interactive terminal.",
+              "enum": ["interactive_login", "private_terminal"]
+            },
+            "command": {
+              "type": "string",
+              "pattern": "^af provider setup ",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "diagnostic": {
+      "type": ["string", "null"],
+      "minLength": 1
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "Success registers the named context and proves it authenticated.",
+      "if": {
+        "properties": {
+          "result": { "enum": ["registered", "already_registered"] }
+        }
+      },
+      "then": {
+        "properties": {
+          "exit_code": { "const": 0 },
+          "next_action": { "type": "null" },
+          "diagnostic": { "type": "null" },
+          "provider": {
+            "properties": {
+              "registered": { "const": true },
+              "auth": { "const": "authenticated" }
+            }
+          }
+        }
+      },
+      "else": {
+        "$comment": "A refusal may name an already registered Provider, but never both a registration and a proven login: that pair is exactly the success state.",
+        "properties": {
+          "exit_code": { "enum": [3, 4, 5, 6] },
+          "diagnostic": { "type": "string" },
+          "provider": {
+            "not": {
+              "type": "object",
+              "required": ["registered", "auth"],
+              "properties": {
+                "registered": { "const": true },
+                "auth": { "const": "authenticated" }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "A human-action-required result always names the exact command, and only that result carries one.",
+      "if": {
+        "properties": { "result": { "const": "human_action_required" } }
+      },
+      "then": {
+        "properties": {
+          "exit_code": { "const": 3 },
+          "next_action": { "type": "object" },
+          "provider": {
+            "properties": { "auth": { "const": "not_authenticated" } }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "next_action": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "result": { "const": "provider_cli_missing" } }
+      },
+      "then": {
+        "properties": { "exit_code": { "const": 4 } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "result": { "const": "registry_conflict" } }
+      },
+      "then": {
+        "properties": { "exit_code": { "const": 5 } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "result": { "const": "authentication_failed" } }
+      },
+      "then": {
+        "properties": { "exit_code": { "const": 6 } }
+      }
+    }
+  ]
+}

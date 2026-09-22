@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:provider-status:1",
+  "title": "Provider status@1",
+  "$comment": "The machine-readable result of `af provider status`: what the machine-local registry declares and what one bounded authentication check per context concluded. Registration, authentication, usability and usage are four independent axes. `usability` is never `usable`: status does not dispatch, so only the charged `af provider doctor` can prove end-to-end usability, and this document may claim at most `usable_or_untested`. Usage is probed only when `--usage` is passed, and an `unavailable` usage probe never changes `auth`. Deliberately absent, in every state: account email, organization or account identity, plan-holder identity, credentials, OAuth URLs or authorization codes, and Provider-authored text of any kind — quota windows carry only the numbers af derived, never the Provider's own labels, and `registry.warning` is af-authored.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "exit_code",
+    "usage_requested",
+    "registry",
+    "providers"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af/provider-status@1"
+    },
+    "exit_code": {
+      "$comment": "0 fine; 7 optional usage probing was requested and did not answer.",
+      "enum": [0, 7]
+    },
+    "usage_requested": {
+      "type": "boolean"
+    },
+    "registry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "warning"],
+      "properties": {
+        "path": {
+          "type": ["string", "null"],
+          "minLength": 1
+        },
+        "warning": {
+          "type": ["string", "null"],
+          "minLength": 1
+        }
+      }
+    },
+    "providers": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "registered",
+          "auth_context",
+          "auth",
+          "credential",
+          "usability",
+          "usage"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "kind": {
+            "enum": ["claude", "codex"]
+          },
+          "registered": {
+            "$comment": "Only a registered Provider is selectable by `--provider NODE=ID`; an ambient discovery label is not.",
+            "type": "boolean"
+          },
+          "auth_context": {
+            "$comment": "The machine-local auth directory, or null for the Provider CLI's own default.",
+            "type": ["string", "null"],
+            "minLength": 1
+          },
+          "auth": {
+            "enum": [
+              "authenticated",
+              "not_authenticated",
+              "unknown",
+              "unavailable",
+              "not_probed"
+            ]
+          },
+          "credential": {
+            "$comment": "What kind of capability the context holds, never whose it is.",
+            "enum": ["none", "api_key", "subscription", "other"]
+          },
+          "usability": {
+            "enum": ["usable_or_untested", "unusable", "unknown"]
+          },
+          "usage": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["state", "windows"],
+            "properties": {
+              "state": {
+                "enum": [
+                  "not_requested",
+                  "not_applicable",
+                  "unsupported",
+                  "available",
+                  "unavailable"
+                ]
+              },
+              "windows": {
+                "type": "array",
+                "maxItems": 16,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "window_minutes",
+                    "used_percent",
+                    "resets_at_unix"
+                  ],
+                  "properties": {
+                    "window_minutes": {
+                      "type": ["integer", "null"],
+                      "minimum": 1
+                    },
+                    "used_percent": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 100
+                    },
+                    "resets_at_unix": {
+                      "type": ["integer", "null"],
+                      "minimum": 0
+                    }
+                  }
+                }
+              }
+            },
+            "allOf": [
+              {
+                "$comment": "Only a probe that answered may carry windows.",
+                "if": {
+                  "properties": {
+                    "state": {
+                      "not": { "const": "available" }
+                    }
+                  }
+                },
+                "then": {
+                  "properties": {
+                    "windows": { "maxItems": 0 }
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "$comment": "Status never claims usable; authentication and usability stay aligned.",
+            "if": {
+              "properties": { "auth": { "const": "authenticated" } }
+            },
+            "then": {
+              "properties": {
+                "usability": { "const": "usable_or_untested" }
+              }
+            },
+            "else": {
+              "properties": {
+                "usability": { "enum": ["unusable", "unknown"] },
+                "usage": {
+                  "properties": {
+                    "state": {
+                      "enum": ["not_applicable", "not_requested"]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  },
+  "allOf": [
+    {
+      "$comment": "Usage states exist only under an explicit --usage request.",
+      "if": {
+        "properties": { "usage_requested": { "const": false } }
+      },
+      "then": {
+        "properties": {
+          "exit_code": { "const": 0 },
+          "providers": {
+            "items": {
+              "properties": {
+                "usage": {
+                  "properties": {
+                    "state": { "enum": ["not_requested", "not_applicable"] }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "Exit 7 is claimed only when some requested usage probe did not answer.",
+      "if": {
+        "properties": { "exit_code": { "const": 7 } }
+      },
+      "then": {
+        "properties": {
+          "usage_requested": { "const": true },
+          "providers": {
+            "contains": {
+              "properties": {
+                "usage": {
+                  "properties": { "state": { "const": "unavailable" } },
+                  "required": ["state"]
+                }
+              },
+              "required": ["usage"]
+            }
+          }
+        }
+      }
+    }
+  ]
+}

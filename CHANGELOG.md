@@ -9,6 +9,32 @@ release pages only.
 
 ## [Unreleased]
 
+### Authority compatibility
+
+Committed `.af/` policy keeps working as is and needs no migration: this change touches only the
+machine-local `af provider` surface, which is not repository authority. The machine-local registry
+stays version 1, and its transaction, lock, publication and recovery protocol is unchanged. Two
+command-line behaviours change: `af provider setup` no longer starts an official Provider CLI login
+on its own — add `--login`, and run it at an interactive terminal — and `af provider status` no
+longer probes subscription and quota windows unless asked with `--usage`. Both print the command or
+flag to use, so an existing habit fails loudly rather than silently.
+
+### Changes
+
+- Make Provider onboarding safe for automated callers (ADR-0112): refuse to start an official CLI
+  login unless the operator opted in with `--login` *and* the process owns an interactive terminal
+  on stdin, stdout and stderr, returning the `human_action_required` result with the exact
+  private-terminal command instead; warn about OAuth URLs and authorization codes before handing
+  over the terminal; keep registering an already-authenticated context with no login at all; add
+  stable versioned `af/provider-status@1` and `af/provider-setup@1` documents under `--json` that
+  distinguish registration, authentication, usable-or-untested and usage without exposing account
+  email, organization identity, credentials, OAuth material or raw Provider output; make
+  `af provider status` a fast registry and authentication check with subscription and quota probes
+  behind `--usage`, where an unavailable probe exits 7 and leaves an authenticated Provider
+  authenticated; document exit codes 3 (human action required), 4 (Provider CLI missing), 5
+  (registry conflict), 6 (authentication failed) and 7 (usage unavailable) with results on stdout
+  and diagnostics on stderr; and keep `af provider doctor` the charged end-to-end usability check.
+
 ## [0.9.0-rc.6] - 2026-09-21
 
 ### Authority compatibility
