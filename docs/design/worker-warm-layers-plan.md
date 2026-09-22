@@ -317,9 +317,9 @@ Findings that reduce to six defects, all fixed before verification:
 - **Clone measurement never settled.** The Worker's clone was recorded beside the node, where
   only a Gate settlement collects it. A Task-hosted Worker now settles the clone as its own
   `TaskRuntimeEvidence@1` after its raw reply.
-- **Wrapper stripped the environment.** The production provider wrapper implemented
-  `invoke_controlled` only, so the trait default refused the sandbox environment and every
-  model reviewer would have run cold. The wrapper now has one invocation path that rechecks
+- **Wrapper stripped the environment.** The production provider wrapper implemented only the
+  controlled call without an environment, so the trait default refused the sandbox environment
+  and every model reviewer would have run cold. The wrapper now has one invocation path that rechecks
   identity and forwards the environment.
 - **`WarmSetSelected@1` widened in place.** Rejected as a defect: the event was introduced by P1
   on this same unreleased branch, no released kernel has written it, and ADR-0107 now states

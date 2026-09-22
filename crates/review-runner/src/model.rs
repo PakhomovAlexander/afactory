@@ -51,10 +51,7 @@ pub enum RunnerError {
     },
     /// The reviewer did not answer by its deadline and was killed. Whatever it spent is gone;
     /// whether to retry is the kernel's decision, not this layer's.
-    TimedOut {
-        after_ms: u64,
-        raw_artifact: Option<String>,
-    },
+    TimedOut { after_ms: u64 },
 }
 
 impl std::fmt::Display for RunnerError {
@@ -66,7 +63,7 @@ impl std::fmt::Display for RunnerError {
                 exit_code,
                 stderr_excerpt,
             } => write!(f, "reviewer failed (exit {exit_code}): {stderr_excerpt}"),
-            RunnerError::TimedOut { after_ms, .. } => {
+            RunnerError::TimedOut { after_ms } => {
                 write!(
                     f,
                     "reviewer did not answer within {after_ms}ms and was killed"
@@ -983,14 +980,6 @@ impl ReviewerInputs {
         ))
     }
 
-    /// The prompt section a model adapter appends for these inputs. Empty when there is
-    /// nothing to deliver, so a first round's prompt is byte-identical to before.
-    pub fn render(&self) -> Result<String, String> {
-        let mut prompt = String::new();
-        self.render_into(&mut prompt)?;
-        Ok(prompt)
-    }
-
     /// The attempt-authority section, or nothing when no Attempt is bound yet.
     fn rendered_attempt_context_section(&self) -> Result<Option<String>, String> {
         let Some(context) = &self.attempt_context else {
@@ -1019,7 +1008,8 @@ impl ReviewerInputs {
         )))
     }
 
-    /// Append the prompt section without allocating a second complete prompt string.
+    /// Append the prompt section a model adapter adds for these inputs. Nothing is appended
+    /// when there is nothing to deliver, so a first round's prompt carries no empty section.
     pub fn render_into(&self, prompt: &mut String) -> Result<(), String> {
         if let Some(section) = self.rendered_attempt_context_section()? {
             prompt.push_str(&section);
@@ -1266,20 +1256,6 @@ impl ReviewerAdapter for CommandAdapter {
     }
 }
 
-/// The raw capture of one supervised process, after redaction.
-///
-/// A nonzero exit is *in* the capture, not an error: what a provider's failure means — spent
-/// or not spent, retryable or fatal — is the adapter's call, usually made by reading the very
-/// output captured here.
-#[derive(Debug, Clone)]
-pub struct RawCapture {
-    pub status: std::process::ExitStatus,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
-    /// CAS id of the redacted stdout.
-    pub raw_artifact: String,
-}
-
 /// Process evidence remains available for usage accounting even when the deadline or CAS
 /// fails. A failed status never authorizes a business output, including a complete message
 /// printed before a timeout. Raw bytes have already had credential grants redacted.
@@ -1327,68 +1303,19 @@ impl ModelRunner {
         self
     }
 
-    /// Run the command to completion or deadline. Stdout is redacted and stored to the CAS
-    /// before this returns, so even a failure leaves the bytes inspectable.
-    pub fn capture(&self, cas: &Cas, command: &Command) -> Result<RawCapture, RunnerError> {
-        self.capture_inner(cas, command, None)
-    }
-
-    /// Run a model command with its prompt on stdin, outside argv's platform-sized ceiling.
-    pub fn capture_with_stdin(
-        &self,
-        cas: &Cas,
-        command: &Command,
-        input: Vec<u8>,
-    ) -> Result<RawCapture, RunnerError> {
-        self.capture_inner(cas, command, Some(input))
-    }
-
-    fn capture_inner(
-        &self,
-        cas: &Cas,
-        command: &Command,
-        input: Option<Vec<u8>>,
-    ) -> Result<RawCapture, RunnerError> {
-        let capture = self.capture_process(command, input, None);
-        let status = capture.status.map_err(|error| match error {
-            RunnerError::TimedOut { after_ms, .. } => RunnerError::TimedOut {
-                after_ms,
-                raw_artifact: cas.put(&capture.stdout).ok(),
-            },
-            error => error,
-        })?;
-        let raw_artifact = cas
-            .put(&capture.stdout)
-            .map_err(|e| RunnerError::Unavailable(format!("storing raw output: {e}")))?;
-        Ok(RawCapture {
-            status,
-            stdout: capture.stdout,
-            stderr: capture.stderr,
-            raw_artifact,
-        })
-    }
-
-    /// Task adapters decode usage from both successful and failed process captures. Storage
-    /// failure refuses the output without erasing usage that was already reported on stdout.
-    pub fn capture_settled_with_stdin(
-        &self,
-        cas: &Cas,
-        command: &Command,
-        input: Vec<u8>,
-    ) -> SettledCapture {
-        self.capture_settled_with_stdin_controlled(cas, command, input, None)
-    }
-
-    /// Cooperative process cancellation preserves the same redacted bytes and CAS-failure
-    /// accounting as the ordinary settled capture. None retains the original transport.
-    pub fn capture_settled_with_stdin_controlled(
+    /// Run a command with its input on stdin, outside argv's platform-sized ceiling, until it
+    /// exits, reaches its deadline or observes cooperative cancellation. Redacted stdout and
+    /// stderr are stored to the CAS before this returns, so even a failure leaves the bytes
+    /// inspectable; a storage failure refuses the output without erasing usage the adapter
+    /// can still decode from stdout.
+    pub fn capture(
         &self,
         cas: &Cas,
         command: &Command,
         input: Vec<u8>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> SettledCapture {
-        let mut capture = self.capture_process(command, Some(input), cancellation);
+        let mut capture = self.capture_process(command, input, cancellation);
         for bytes in [&capture.stdout, &capture.stderr] {
             if bytes.is_empty() {
                 continue;
@@ -1408,7 +1335,7 @@ impl ModelRunner {
     fn capture_process(
         &self,
         command: &Command,
-        input: Option<Vec<u8>>,
+        input: Vec<u8>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> SettledCapture {
         let mut capture = SettledCapture {
@@ -1442,8 +1369,10 @@ impl ModelRunner {
             cmd.env(&grant.name, &grant.value);
         }
         let output = match cancellation {
-            Some(flag) => run_supervised_captured_cancellable(&mut cmd, input, self.timeout, flag),
-            None => run_supervised_captured(&mut cmd, input, self.timeout),
+            Some(flag) => {
+                run_supervised_captured_cancellable(&mut cmd, Some(input), self.timeout, flag)
+            }
+            None => run_supervised_captured(&mut cmd, Some(input), self.timeout),
         };
         capture.stdout = redact(output.stdout, &self.grants);
         capture.stderr = redact(output.stderr, &self.grants);
@@ -1455,7 +1384,6 @@ impl ModelRunner {
         capture.status = output.status.map_err(|error| match error {
             SupervisedError::TimedOut { .. } => RunnerError::TimedOut {
                 after_ms: self.timeout.as_millis() as u64,
-                raw_artifact: None,
             },
             SupervisedError::Spawn(error) => {
                 RunnerError::Unavailable(format!("{}: {error}", command.program))

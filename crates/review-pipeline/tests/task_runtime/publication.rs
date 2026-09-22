@@ -171,6 +171,8 @@ fn publication_recovers(before_attempt: bool) {
             input: Vec<u8>,
             _: std::time::Duration,
             writable: bool,
+            _: Option<&std::sync::atomic::AtomicBool>,
+            _: &[(String, String)],
         ) -> ModelWorkerReturn {
             assert!(!writable);
             let request: serde_json::Value = serde_json::from_slice(&input).unwrap();

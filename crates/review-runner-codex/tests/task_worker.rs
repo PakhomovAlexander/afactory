@@ -37,6 +37,8 @@ fn review_role_keeps_the_legacy_workspace_write_sandbox() {
         b"review".to_vec(),
         Duration::from_secs(5),
         true,
+        None,
+        &[],
     );
     assert_eq!(returned.message.unwrap(), b"OK");
     let flags = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
@@ -94,6 +96,8 @@ fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_messa
                 Duration::from_secs(5)
             },
             false,
+            None,
+            &[],
         );
         assert!(
             returned.message.is_err(),
@@ -178,6 +182,8 @@ fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage
             b"{\"declared\":\"input\"}".to_vec(),
             Duration::from_secs(5),
             false,
+            None,
+            &[],
         );
         assert_eq!(returned.usage.as_ref().unwrap().chargeable_tokens.get(), 35);
         assert_eq!(
@@ -230,6 +236,8 @@ fn multiple_native_turns_retain_exact_components_and_uncached_charge() {
         b"input".to_vec(),
         Duration::from_secs(5),
         false,
+        None,
+        &[],
     );
     assert_eq!(returned.message.unwrap(), b"OK");
     let usage = returned.usage.unwrap();
@@ -282,6 +290,8 @@ fn malformed_native_usage_refuses_message_and_survives_raw_capture_outage() {
             b"input".to_vec(),
             Duration::from_secs(5),
             false,
+            None,
+            &[],
         );
         assert!(returned.message.is_err());
         let observation = returned.usage_observation.unwrap();

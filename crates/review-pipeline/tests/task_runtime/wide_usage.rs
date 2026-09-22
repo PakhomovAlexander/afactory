@@ -60,6 +60,8 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
             input: Vec<u8>,
             _: std::time::Duration,
             writable: bool,
+            _: Option<&std::sync::atomic::AtomicBool>,
+            _: &[(String, String)],
         ) -> ModelWorkerReturn {
             assert!(!writable);
             let n = self.calls.fetch_add(1, Ordering::SeqCst);

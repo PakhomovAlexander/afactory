@@ -120,13 +120,14 @@ impl ProviderTaskDomain<'_> {
                 };
             }
         };
-        let returned = model.adapter.invoke_controlled(
+        let returned = model.adapter.invoke(
             cas,
             directory.path(),
             PROBE_INPUT.to_vec(),
             timeout,
             false,
             cancellation,
+            &[],
         );
         let charged_tokens = returned
             .usage

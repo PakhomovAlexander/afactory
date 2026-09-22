@@ -3,6 +3,13 @@ use std::collections::BTreeMap;
 use review_core::{ChangeSetV1, SubjectV1};
 use review_runner::{MAX_CHANGE_SET_BYTES, ReviewerInputArtifact, ReviewerInputs};
 
+/// The prompt section a model adapter appends for `inputs`.
+fn render(inputs: &ReviewerInputs) -> Result<String, String> {
+    let mut prompt = String::new();
+    inputs.render_into(&mut prompt)?;
+    Ok(prompt)
+}
+
 fn inputs_with_change_set(change_set: serde_json::Value) -> Result<ReviewerInputs, String> {
     let encoded = review_store::canonical::canonicalize(&change_set).unwrap();
     let artifact_id = review_store::canonical::blob_content_id(&encoded);
@@ -29,11 +36,10 @@ fn oversized_prior_findings_fail_closed_without_silent_truncation() {
             "body": "x".repeat(256 * 1024),
         }],
     });
-    let rendered = ReviewerInputs {
+    let rendered = render(&ReviewerInputs {
         prior_findings: Some(prior),
         ..ReviewerInputs::default()
-    }
-    .render();
+    });
 
     let error = rendered.expect_err("an inexact prompt must never reach a reviewer");
     assert!(error.contains("partitioning is required"), "{error}");
@@ -52,10 +58,9 @@ fn non_utf8_change_set_patches_remain_byte_exact_in_the_prompt() {
     )
     .unwrap();
     let encoded = change_set.canonical_patch_base64.clone();
-    let rendered = inputs_with_change_set(serde_json::to_value(change_set).unwrap())
-        .unwrap()
-        .render()
-        .unwrap();
+    let rendered =
+        render(&inputs_with_change_set(serde_json::to_value(change_set).unwrap()).unwrap())
+            .unwrap();
 
     assert!(rendered.contains(&encoded));
     assert!(!rendered.contains('\u{fffd}'));

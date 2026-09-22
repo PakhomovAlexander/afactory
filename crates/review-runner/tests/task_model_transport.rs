@@ -1,19 +1,18 @@
-//! The model Worker transport forwards the exact captured context to its adapter and retains
-//! usage and raw evidence on every outcome. The adapter is in-process; no Provider,
-//! subprocess, or Task scheduler is involved.
+//! The model Worker transport forwards the exact captured context and the host's cancellation,
+//! but no sandbox-local environment, to its adapter and retains usage and raw evidence on every
+//! outcome. The adapter is in-process; no Provider, subprocess, or Task scheduler is involved.
 
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use review_core::CredentialModeV1;
 use review_core::task::execution::TaskInvocationV1;
 use review_core::task::feedback::TaskFeedbackCodeV1;
 use review_core::task::usage::TaskTokenUsageV3;
-use review_runner::task::{
-    ModelWorkerReturn, WorkerContract, WorkerModelAdapter, invoke_model, invoke_model_controlled,
-};
+use review_runner::task::{ModelWorkerReturn, WorkerContract, WorkerModelAdapter, invoke_model};
 use review_store::Cas;
 use serde_json::json;
 
@@ -66,6 +65,8 @@ impl Fixture {
 struct NativeModel<'a> {
     fixture: &'a Fixture,
     calls: AtomicUsize,
+    /// The address of each cancellation flag the adapter received, in call order.
+    cancellations: Mutex<Vec<Option<usize>>>,
     reply: &'a [u8],
     failed: bool,
     usage: u128,
@@ -76,6 +77,7 @@ impl<'a> NativeModel<'a> {
         Self {
             fixture,
             calls: AtomicUsize::new(0),
+            cancellations: Mutex::new(vec![]),
             reply,
             failed,
             usage,
@@ -97,8 +99,18 @@ impl WorkerModelAdapter for NativeModel<'_> {
         input: Vec<u8>,
         timeout: Duration,
         writable: bool,
+        cancellation: Option<&AtomicBool>,
+        environment: &[(String, String)],
     ) -> ModelWorkerReturn {
         self.calls.fetch_add(1, Ordering::SeqCst);
+        self.cancellations
+            .lock()
+            .unwrap()
+            .push(cancellation.map(|flag| std::ptr::from_ref(flag) as usize));
+        assert!(
+            environment.is_empty(),
+            "a model Worker receives no sandbox-local environment"
+        );
         assert!(std::ptr::eq(cas, &self.fixture.cas));
         assert_eq!(workdir, self.fixture.directory.path());
         assert_eq!(input, self.fixture.input);
@@ -120,32 +132,21 @@ impl WorkerModelAdapter for NativeModel<'_> {
 #[test]
 fn native_transport_forwards_exact_invocation_and_retains_success_or_failed_evidence() {
     let fixture = Fixture::new();
+    let flag = AtomicBool::new(false);
     for failed in [false, true] {
         let model = NativeModel::new(&fixture, VALID_REPLY, failed, u64::MAX.into());
         assert_eq!(model.credential_mode(), CredentialModeV1::TrustedUnsafe);
-        for controlled in [false, true] {
-            let result = if controlled {
-                invoke_model_controlled(
-                    &fixture.cas,
-                    fixture.directory.path(),
-                    &model,
-                    &fixture.contract,
-                    &fixture.context_id,
-                    TIMEOUT,
-                    true,
-                    None,
-                )
-            } else {
-                invoke_model(
-                    &fixture.cas,
-                    fixture.directory.path(),
-                    &model,
-                    &fixture.contract,
-                    &fixture.context_id,
-                    TIMEOUT,
-                    true,
-                )
-            };
+        for cancellation in [None, Some(&flag)] {
+            let result = invoke_model(
+                &fixture.cas,
+                fixture.directory.path(),
+                &model,
+                &fixture.contract,
+                &fixture.context_id,
+                TIMEOUT,
+                true,
+                cancellation,
+            );
             assert_eq!(result.reply.is_err(), failed);
             assert_eq!(
                 result.feedback_code,
@@ -159,35 +160,12 @@ fn native_transport_forwards_exact_invocation_and_retains_success_or_failed_evid
             assert_eq!(fixture.cas.get(&result.raw_artifact_ids[0]).unwrap(), RAW);
         }
         assert_eq!(model.calls.load(Ordering::SeqCst), 2);
-    }
-}
-
-#[test]
-fn unsupported_control_is_refused_without_invoking_adapter() {
-    let fixture = Fixture::new();
-    let model = NativeModel::new(&fixture, VALID_REPLY, false, 1);
-    for cancelled in [false, true] {
-        let flag = std::sync::atomic::AtomicBool::new(cancelled);
-        let result = invoke_model_controlled(
-            &fixture.cas,
-            fixture.directory.path(),
-            &model,
-            &fixture.contract,
-            &fixture.context_id,
-            TIMEOUT,
-            true,
-            Some(&flag),
+        assert_eq!(
+            *model.cancellations.lock().unwrap(),
+            [None, Some(std::ptr::from_ref(&flag) as usize)],
+            "the adapter receives exactly the host's cancellation"
         );
-        assert!(
-            result
-                .reply
-                .unwrap_err()
-                .contains("does not support controlled invocation")
-        );
-        assert_eq!(result.usage.unwrap().chargeable_tokens.get(), 0);
-        assert!(result.raw_artifact_ids.is_empty());
     }
-    assert_eq!(model.calls.load(Ordering::SeqCst), 0);
 }
 
 #[test]
@@ -212,6 +190,7 @@ fn context_and_output_checks_run_around_the_adapter_and_retain_failed_usage() {
             &wrong_context,
             TIMEOUT,
             true,
+            None,
         );
         assert!(rejected.reply.is_err());
         assert_eq!(
@@ -229,6 +208,7 @@ fn context_and_output_checks_run_around_the_adapter_and_retain_failed_usage() {
             &fixture.context_id,
             TIMEOUT,
             true,
+            None,
         );
         assert_eq!(result.reply.is_err(), expected_feedback.is_some());
         assert_eq!(result.feedback_code, expected_feedback);

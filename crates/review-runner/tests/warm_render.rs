@@ -3,6 +3,13 @@
 
 use review_runner::{NotesRequest, ReviewerInputs, compose_command_input, compose_model_prompt};
 
+/// The prompt section a model adapter appends for `inputs`.
+fn render(inputs: &ReviewerInputs) -> Result<String, String> {
+    let mut prompt = String::new();
+    inputs.render_into(&mut prompt)?;
+    Ok(prompt)
+}
+
 const INSTRUCTIONS: &str = "Review the change.";
 
 fn notes() -> serde_json::Value {
@@ -42,7 +49,7 @@ fn a_cold_input_renders_exactly_as_before() {
         2,
         "worker_instructions and role_scoped_inputs only"
     );
-    assert_eq!(ReviewerInputs::default().render().unwrap(), "");
+    assert_eq!(render(&ReviewerInputs::default()).unwrap(), "");
     let command = serde_json::to_value(ReviewerInputs::default()).unwrap();
     assert_eq!(
         command,
@@ -145,7 +152,7 @@ fn a_selected_warm_set_never_fails_at_rendering() {
         notes: Some(large),
         ..ReviewerInputs::default()
     };
-    let rendered = inputs.render().unwrap();
+    let rendered = render(&inputs).unwrap();
     assert!(
         rendered.len() < pretty + 1024,
         "rendered compactly, not pretty-printed"

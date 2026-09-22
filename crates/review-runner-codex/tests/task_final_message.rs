@@ -97,6 +97,8 @@ print(json.dumps({{'type':'turn.completed','usage':{{'input_tokens':184467440737
         b"native request".to_vec(),
         Duration::from_secs(5),
         false,
+        None,
+        &[],
     );
     assert!(started.elapsed() < Duration::from_secs(10));
     let usage = returned.usage.unwrap();

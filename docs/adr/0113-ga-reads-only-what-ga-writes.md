@@ -178,6 +178,10 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   separate `AttemptEvidence`; the exact Task Attempt evidence now carries that name.
 - [ADR-0086](0086-record-expired-review-publication-without-restarting-work.md): earlier transition
   and inspection generations.
+- [ADR-0087](0087-control-native-task-invocations-through-the-shared-supervisor.md): the Worker
+  entry points without a control, and the forwarding that kept their previous behavior. Every
+  native Task call is controlled; an adapter honors or refuses each supplied control, and a model
+  Worker receives no sandbox-local environment.
 - [ADR-0089](0089-interrupt-task-work-when-its-writer-heartbeat-fails.md): the Broker
   accounting, calls and late receipts that the runtime kept outside Worker invocation.
 - [ADR-0091](0091-capture-explicit-task-provider-admission-costs.md): the V1 catalog and

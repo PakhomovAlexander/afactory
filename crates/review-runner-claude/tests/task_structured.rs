@@ -39,6 +39,8 @@ fn invoke(
         input.to_string().into_bytes(),
         Duration::from_secs(5),
         writable,
+        None,
+        &[],
     );
     let flags = returned
         .raw_artifact_ids

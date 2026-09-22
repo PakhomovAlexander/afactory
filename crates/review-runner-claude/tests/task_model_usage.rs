@@ -39,6 +39,8 @@ printf '%s' '{"is_error":false,"result":"OK","usage":{"input_tokens":0,"output_t
         b"public input".to_vec(),
         Duration::from_secs(5),
         false,
+        None,
+        &[],
     );
     assert!(result.message.is_ok());
     assert_eq!(
@@ -111,6 +113,8 @@ fn synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage() 
                 Duration::from_secs(5)
             },
             false,
+            None,
+            &[],
         );
         assert_eq!(
             result.message.is_ok(),
@@ -211,6 +215,8 @@ fn old_top_level_artifact_identity_and_reopened_new_charge_remain_exact() {
             b"input".to_vec(),
             Duration::from_secs(5),
             false,
+            None,
+            &[],
         );
         if expanded {
             // The auxiliary model's usage refuses the reply and is still charged exactly.

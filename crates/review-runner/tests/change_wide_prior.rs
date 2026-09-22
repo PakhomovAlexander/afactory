@@ -1,8 +1,16 @@
-use review_runner::{RESULT_CONTRACT_V2, ReviewerInputs};
+use review_runner::ReviewerInputs;
+use review_runner::model::RESULT_CONTRACT_V2;
+
+/// The prompt section a model adapter appends for `inputs`.
+fn render(inputs: &ReviewerInputs) -> Result<String, String> {
+    let mut prompt = String::new();
+    inputs.render_into(&mut prompt)?;
+    Ok(prompt)
+}
 
 #[test]
 fn prompt_states_the_change_wide_encoding_used_by_prior_rows() {
-    let rendered = ReviewerInputs {
+    let rendered = render(&ReviewerInputs {
         prior_findings: Some(serde_json::json!({
             "findings": [{
                 "finding_id": "sha256:claim",
@@ -11,8 +19,7 @@ fn prompt_states_the_change_wide_encoding_used_by_prior_rows() {
             }]
         })),
         ..ReviewerInputs::default()
-    }
-    .render()
+    })
     .unwrap();
 
     assert!(RESULT_CONTRACT_V2.contains("An empty `file` means the claim is change-wide"));
@@ -23,7 +30,7 @@ fn prompt_states_the_change_wide_encoding_used_by_prior_rows() {
 
 #[test]
 fn prior_findings_require_dispositions_without_duplicate_reports() {
-    let rendered = ReviewerInputs {
+    let rendered = render(&ReviewerInputs {
         prior_findings: Some(serde_json::json!({
             "findings": [{
                 "finding_id": "sha256:claim",
@@ -32,8 +39,7 @@ fn prior_findings_require_dispositions_without_duplicate_reports() {
             }]
         })),
         ..ReviewerInputs::default()
-    }
-    .render()
+    })
     .unwrap();
 
     assert!(rendered.contains("do not emit a second flat report"));

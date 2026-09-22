@@ -985,7 +985,7 @@ impl<'a> CapturedTaskHost<'a> {
                                 .into();
                         }
                     }
-                    review_runner::task::invoke_command_controlled_with_environment(
+                    review_runner::task::invoke_command(
                         cas,
                         sandbox.root(),
                         tempfile::tempdir().map_err(|e| e.to_string())?.path(),
@@ -997,7 +997,7 @@ impl<'a> CapturedTaskHost<'a> {
                         &command_environment,
                     )
                 }
-                WorkerTransport::Model(adapter) => review_runner::task::invoke_model_controlled(
+                WorkerTransport::Model(adapter) => review_runner::task::invoke_model(
                     cas,
                     sandbox.root(),
                     *adapter,

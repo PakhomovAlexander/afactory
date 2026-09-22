@@ -37,7 +37,7 @@ fn controlled_capture_preserves_redacted_evidence_after_cancellation() {
             flag.store(true, Ordering::Release);
             assert!(dir.path().join("ready").exists());
         });
-        let capture = runner.capture_settled_with_stdin_controlled(&cas,
+        let capture = runner.capture(&cas,
             &sh("cat >/dev/null; printf 'prefix:%s' \"$AF_FIXTURE_SECRET\"; printf 'diagnostic:%s' \"$AF_FIXTURE_SECRET\" >&2; touch ready; sleep 30"),
             b"captured input".to_vec(), Some(&flag));
         cancel.join().unwrap();
@@ -71,10 +71,13 @@ fn a_hung_reviewer_is_killed_at_the_deadline() {
     let runner = ModelRunner::new(dir.path(), Duration::from_millis(200));
 
     let started = Instant::now();
-    let error = runner.capture(&cas, &sh("sleep 30")).unwrap_err();
+    let capture = runner.capture(&cas, &sh("sleep 30"), vec![], None);
     let waited = started.elapsed();
 
-    assert!(matches!(error, RunnerError::TimedOut { after_ms: 200, .. }));
+    assert!(matches!(
+        capture.status,
+        Err(RunnerError::TimedOut { after_ms: 200 })
+    ));
     assert!(
         waited < Duration::from_secs(5),
         "the deadline must be enforced by killing, not by waiting out the sleep ({waited:?})"
@@ -92,23 +95,23 @@ fn a_killed_reviewer_keeps_what_it_wrote_so_far() {
     // direct child would leave an orphan holding the stdout pipe — and this call would then
     // take the orphan's 30 seconds to return. The elapsed assertion is what catches that.
     let started = Instant::now();
-    let error = runner
-        .capture(&cas, &sh("echo partial answer; sleep 30"))
-        .unwrap_err();
-    let RunnerError::TimedOut {
-        raw_artifact: Some(raw_artifact),
-        ..
-    } = error
-    else {
-        panic!("timeout did not retain its partial artifact: {error:?}");
-    };
+    let capture = runner.capture(&cas, &sh("echo partial answer; sleep 30"), vec![], None);
+    assert!(
+        matches!(capture.status, Err(RunnerError::TimedOut { .. })),
+        "{:?}",
+        capture.status
+    );
     assert!(
         started.elapsed() < Duration::from_secs(5),
         "an orphaned grandchild must not hold the supervisor hostage"
     );
 
     // The partial stdout was stored to the CAS before the error was returned.
-    assert_eq!(cas.get(&raw_artifact).unwrap(), b"partial answer\n");
+    assert_eq!(capture.raw_artifact_ids.len(), 1);
+    assert_eq!(
+        cas.get(&capture.raw_artifact_ids[0]).unwrap(),
+        b"partial answer\n"
+    );
 }
 
 #[test]
@@ -121,7 +124,9 @@ fn a_model_parent_exit_cannot_leave_the_stdin_writer_unbounded() {
     let started = Instant::now();
 
     assert!(matches!(
-        runner.capture_with_stdin(&cas, &command, vec![b'x'; 16 * 1024 * 1024]),
+        runner
+            .capture(&cas, &command, vec![b'x'; 16 * 1024 * 1024], None)
+            .status,
         Err(RunnerError::TimedOut { .. })
     ));
     assert!(started.elapsed() < Duration::from_secs(5));
@@ -131,24 +136,23 @@ fn a_model_parent_exit_cannot_leave_the_stdin_writer_unbounded() {
 fn a_model_descendant_holding_output_is_charged_not_empty_evidence() {
     let (dir, cas) = workdir();
     let runner = ModelRunner::new(dir.path(), Duration::from_secs(1));
-    let error = runner
-        .capture(&cas, &sh("sleep 30 & printf partial"))
-        .unwrap_err();
+    let capture = runner.capture(&cas, &sh("sleep 30 & printf partial"), vec![], None);
 
     assert!(
-        matches!(error, RunnerError::Failed { ref stderr_excerpt, .. } if stderr_excerpt.contains("stdout pipe was still held")),
-        "{error:?}"
+        matches!(capture.status, Err(RunnerError::Failed { ref stderr_excerpt, .. }) if stderr_excerpt.contains("stdout pipe was still held")),
+        "{:?}",
+        capture.status
     );
+    assert_eq!(cas.get(&capture.raw_artifact_ids[0]).unwrap(), b"partial");
 }
 
 #[test]
 fn a_model_descendant_holding_only_stderr_preserves_the_complete_answer() {
     let (dir, cas) = workdir();
     let runner = ModelRunner::new(dir.path(), Duration::from_secs(1));
-    let capture = runner
-        .capture(&cas, &sh("sleep 30 >&2 & printf complete"))
-        .unwrap();
+    let capture = runner.capture(&cas, &sh("sleep 30 >&2 & printf complete"), vec![], None);
 
+    assert!(capture.status.unwrap().success());
     assert_eq!(capture.stdout, b"complete");
     assert!(
         String::from_utf8_lossy(&capture.stderr).contains("stderr was still held"),
@@ -164,11 +168,9 @@ fn a_model_descendant_holding_only_stderr_preserves_the_complete_answer() {
 fn a_worker_may_ignore_its_stdin() {
     let (dir, cas) = workdir();
     let runner = ModelRunner::new(dir.path(), Duration::from_secs(5));
-    let capture = runner
-        .capture_with_stdin(&cas, &sh("printf answer"), vec![b'x'; 1024 * 1024])
-        .unwrap();
+    let capture = runner.capture(&cas, &sh("printf answer"), vec![b'x'; 1024 * 1024], None);
 
-    assert!(capture.status.success());
+    assert!(capture.status.unwrap().success());
     assert_eq!(capture.stdout, b"answer");
 }
 
@@ -176,15 +178,14 @@ fn a_worker_may_ignore_its_stdin() {
 fn large_stdin_and_stderr_are_drained_concurrently() {
     let (dir, cas) = workdir();
     let runner = ModelRunner::new(dir.path(), Duration::from_secs(5));
-    let capture = runner
-        .capture_with_stdin(
-            &cas,
-            &sh("head -c 1048576 /dev/zero >&2; cat >/dev/null; printf answer"),
-            vec![b'x'; 1024 * 1024],
-        )
-        .unwrap();
+    let capture = runner.capture(
+        &cas,
+        &sh("head -c 1048576 /dev/zero >&2; cat >/dev/null; printf answer"),
+        vec![b'x'; 1024 * 1024],
+        None,
+    );
 
-    assert!(capture.status.success());
+    assert!(capture.status.unwrap().success());
     assert_eq!(capture.stdout, b"answer");
     assert_eq!(capture.stderr.len(), 1024 * 1024);
 }
@@ -193,16 +194,19 @@ fn large_stdin_and_stderr_are_drained_concurrently() {
 fn a_briefly_lingering_descendant_cannot_truncate_a_large_answer() {
     let (dir, cas) = workdir();
     let runner = ModelRunner::new(dir.path(), Duration::from_secs(5));
-    let capture = runner
-        .capture(
-            &cas,
-            &sh("sleep 1 & head -c 1048576 /dev/zero | tr '\\000' x"),
-        )
-        .unwrap();
+    let capture = runner.capture(
+        &cas,
+        &sh("sleep 1 & head -c 1048576 /dev/zero | tr '\\000' x"),
+        vec![],
+        None,
+    );
 
-    assert!(capture.status.success());
+    assert!(capture.status.unwrap().success());
     assert_eq!(capture.stdout, vec![b'x'; 1024 * 1024]);
-    assert_eq!(cas.get(&capture.raw_artifact).unwrap(), capture.stdout);
+    assert_eq!(
+        cas.get(&capture.raw_artifact_ids[0]).unwrap(),
+        capture.stdout
+    );
 }
 
 /// A granted credential reaches the child — and nothing this layer stores or reports. The
@@ -216,30 +220,30 @@ fn a_granted_secret_is_redacted_from_everything_kept() {
         .with_grant("REVIEW_MODEL_KEY", secret);
 
     // Success path: the child proves it *received* the grant by writing it out.
-    let capture = runner
-        .capture(&cas, &sh("echo \"key=$REVIEW_MODEL_KEY\""))
-        .unwrap();
+    let capture = runner.capture(&cas, &sh("echo \"key=$REVIEW_MODEL_KEY\""), vec![], None);
     assert_eq!(capture.stdout, b"key=[redacted]\n");
-    let stored = cas.get(&capture.raw_artifact).unwrap();
+    let stored = cas.get(&capture.raw_artifact_ids[0]).unwrap();
     assert_eq!(
         stored, b"key=[redacted]\n",
         "the CAS copy is the redacted one"
     );
 
     // Failure path: the secret lands in stderr, which an adapter may quote in a diagnostic.
-    let failed = runner
-        .capture(
-            &cas,
-            &sh("echo \"auth failed for $REVIEW_MODEL_KEY\" >&2; exit 7"),
-        )
-        .unwrap();
-    assert_eq!(failed.status.code(), Some(7));
+    let failed = runner.capture(
+        &cas,
+        &sh("echo \"auth failed for $REVIEW_MODEL_KEY\" >&2; exit 7"),
+        vec![],
+        None,
+    );
+    assert_eq!(failed.status.unwrap().code(), Some(7));
     let stderr = String::from_utf8_lossy(&failed.stderr);
     assert!(
         !stderr.contains(secret),
         "a quoted diagnostic would put the credential in the event log: {stderr}"
     );
     assert!(stderr.contains("[redacted]"));
+    let stored = cas.get(&failed.raw_artifact_ids[0]).unwrap();
+    assert!(!String::from_utf8_lossy(&stored).contains(secret));
 }
 
 /// An ungranted credential simply is not there: the environment is rebuilt, not filtered.
@@ -247,9 +251,12 @@ fn a_granted_secret_is_redacted_from_everything_kept() {
 fn an_ungranted_variable_never_reaches_the_child() {
     let (dir, cas) = workdir();
     let runner = ModelRunner::new(dir.path(), Duration::from_secs(10));
-    let capture = runner
-        .capture(&cas, &sh("echo \"token=${GITHUB_TOKEN:-absent}\""))
-        .unwrap();
+    let capture = runner.capture(
+        &cas,
+        &sh("echo \"token=${GITHUB_TOKEN:-absent}\""),
+        vec![],
+        None,
+    );
     assert_eq!(capture.stdout, b"token=absent\n");
 }
 
@@ -259,8 +266,8 @@ fn a_missing_provider_is_unavailable_not_silent() {
     let runner = ModelRunner::new(dir.path(), Duration::from_secs(1));
     let command = Command::new("/nonexistent/model-cli", vec![]);
     assert!(matches!(
-        runner.capture(&cas, &command).unwrap_err(),
-        RunnerError::Unavailable(_)
+        runner.capture(&cas, &command, vec![], None).status,
+        Err(RunnerError::Unavailable(_))
     ));
 }
 
@@ -271,10 +278,9 @@ fn an_untrusted_option_is_refused_before_the_model_starts() {
     let (dir, cas) = workdir();
     let runner = ModelRunner::new(dir.path(), Duration::from_secs(1));
     let command = Command::new("/bin/sh", vec![Arg::untrusted("--dangerously-bypass")]);
-    assert!(matches!(
-        runner.capture(&cas, &command).unwrap_err(),
-        RunnerError::Refused(_)
-    ));
+    let capture = runner.capture(&cas, &command, vec![], None);
+    assert!(matches!(capture.status, Err(RunnerError::Refused(_))));
+    assert!(capture.raw_artifact_ids.is_empty());
 }
 
 #[test]
@@ -282,10 +288,11 @@ fn settled_held_output_retains_redacted_bytes_without_admitting_a_message() {
     let (dir, cas) = workdir();
     let runner = ModelRunner::new(dir.path(), Duration::from_secs(1))
         .with_grant("FIXTURE_SECRET", "sensitive-fixture-value");
-    let capture = runner.capture_settled_with_stdin(
+    let capture = runner.capture(
         &cas,
         &sh("printf '%s' \"$FIXTURE_SECRET\"; printf '%s' \"$FIXTURE_SECRET\" >&2; sleep 30 &"),
         vec![],
+        None,
     );
     assert!(matches!(
         capture.status,

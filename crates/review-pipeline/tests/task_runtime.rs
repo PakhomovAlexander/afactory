@@ -73,6 +73,8 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
             input: Vec<u8>,
             _: std::time::Duration,
             writable: bool,
+            _: Option<&std::sync::atomic::AtomicBool>,
+            _: &[(String, String)],
         ) -> ModelWorkerReturn {
             assert!(!writable);
             let request: Value = serde_json::from_slice(&input).unwrap();
@@ -766,6 +768,8 @@ fn substituted_resolved_context_is_rejected_before_model_dispatch() {
             _: Vec<u8>,
             _: std::time::Duration,
             _: bool,
+            _: Option<&std::sync::atomic::AtomicBool>,
+            _: &[(String, String)],
         ) -> ModelWorkerReturn {
             self.0.fetch_add(1, Ordering::SeqCst);
             panic!("a substituted context reached model dispatch")
@@ -1315,6 +1319,8 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
             input: Vec<u8>,
             _: std::time::Duration,
             writable: bool,
+            _: Option<&std::sync::atomic::AtomicBool>,
+            _: &[(String, String)],
         ) -> ModelWorkerReturn {
             assert!(!writable);
             let n = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -1466,6 +1472,8 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
             bytes: Vec<u8>,
             _: std::time::Duration,
             writable: bool,
+            _: Option<&std::sync::atomic::AtomicBool>,
+            _: &[(String, String)],
         ) -> ModelWorkerReturn {
             assert!(!writable);
             let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();

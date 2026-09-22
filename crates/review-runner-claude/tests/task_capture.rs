@@ -32,6 +32,8 @@ fn held_output_retains_reported_overrun_without_admitting_the_message() {
         b"input".to_vec(),
         Duration::from_secs(5),
         false,
+        None,
+        &[],
     );
     assert!(
         returned

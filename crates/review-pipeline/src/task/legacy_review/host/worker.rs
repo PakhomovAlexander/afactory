@@ -324,26 +324,21 @@ impl LegacyReviewTaskHost<'_, '_> {
                 WorkerExecutionV1::Model { .. } => TaskFeedbackCodeV1::ProviderFailure,
             };
             let returned = match self.execution(&node.id)? {
-                WorkerExecutionV1::Command {} => {
-                    review_runner::task::invoke_command_bytes_controlled_with_environment(
-                        cas,
-                        sandbox.root(),
-                        runtime.as_ref().expect("command runtime").path(),
-                        &self.captured.loaded.reviewers()
-                            [&self.domain.reviewer_binding_node(&node.id)],
-                        bytes,
-                        timeout,
-                        cancellation,
-                        &environment,
-                    )
-                }
+                WorkerExecutionV1::Command {} => review_runner::task::invoke_command_bytes(
+                    cas,
+                    sandbox.root(),
+                    runtime.as_ref().expect("command runtime").path(),
+                    &self.captured.loaded.reviewers()[&self.domain.reviewer_binding_node(&node.id)],
+                    bytes,
+                    timeout,
+                    cancellation,
+                    &environment,
+                ),
                 // Preserve the native Review capability profile: ADR-0042 keeps Claude
                 // read-only, while the legacy Codex adapter permits sandbox Proposals.
                 // A different installed backend has no implicit edit authority.
-                WorkerExecutionV1::Model { provider_kind, .. } => self
-                    .model(&node.id)?
-                    .adapter
-                    .invoke_controlled_with_environment(
+                WorkerExecutionV1::Model { provider_kind, .. } => {
+                    self.model(&node.id)?.adapter.invoke(
                         cas,
                         sandbox.root(),
                         bytes,
@@ -351,7 +346,8 @@ impl LegacyReviewTaskHost<'_, '_> {
                         provider_kind == "codex",
                         cancellation,
                         &environment,
-                    ),
+                    )
+                }
             };
             // Build cache bytes leave before the seal: they never enter the sealed diff, a
             // Proposal, or provenance.

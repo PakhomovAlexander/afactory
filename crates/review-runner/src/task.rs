@@ -3,16 +3,17 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use review_core::task::execution::TaskInvocationV1;
 use review_core::task::feedback::TaskFeedbackCodeV1;
-use review_core::{ArtifactEnvelope, Command, CredentialModeV1, Producer};
+use review_core::{ArtifactEnvelope, CredentialModeV1, Producer};
 use review_store::{Cas, validate_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{ContextManifest, ModelRunner, RunnerError};
+use crate::{ContextManifest, RunnerError};
 pub mod provider;
 pub mod usage;
 
@@ -116,7 +117,6 @@ impl TaskContext {
 
 pub struct WorkerContract {
     id: String,
-    input_schema: Value,
     output_schemas: BTreeMap<String, Value>,
     input: jsonschema::Validator,
     outputs: BTreeMap<String, jsonschema::Validator>,
@@ -175,7 +175,6 @@ impl WorkerContract {
         let id = cas.put(&bytes).map_err(|e| e.to_string())?;
         Ok(Self {
             id,
-            input_schema: input,
             output_schemas: outputs,
             input: input_validator,
             outputs: output_validators,
@@ -352,10 +351,6 @@ impl WorkerContract {
         }
         Ok((context, bytes))
     }
-
-    pub fn input_schema(&self) -> &Value {
-        &self.input_schema
-    }
 }
 
 fn worker_value(cas: &Cas, id: &str) -> Result<WorkerValue, String> {
@@ -392,7 +387,7 @@ pub struct WorkerReturn {
 /// performs admission afterwards. Every failure retains raw evidence and any known usage.
 pub struct ModelWorkerReturn {
     /// Explicit native billing completeness when reporting was malformed or partial. None
-    /// preserves the existing complete-known / wholly-unavailable usage convention.
+    /// means `usage` is either complete or wholly unavailable.
     pub usage_observation: Option<review_core::task::usage::TaskUsageObservationV1>,
     pub message: Result<Vec<u8>, String>,
     pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
@@ -411,7 +406,12 @@ pub trait WorkerModelAdapter: Send + Sync {
     /// a plan binding; provider defaults or aliases must be resolved during host admission.
     fn model_settings(&self) -> Option<(String, String)>;
     /// Called only by the host after common Task Attempt admission. The adapter owns security
-    /// flags; writable grants only edits inside the supplied source sandbox.
+    /// flags; writable grants only edits inside the supplied source sandbox. An adapter honors
+    /// both controls or refuses before it spawns: `cancellation` must stop an in-flight
+    /// process (a preflight flag check alone is not support), and `environment` carries the
+    /// sandbox-local, non-secret variables the kernel resolved for this exact Attempt, such as
+    /// `CARGO_TARGET_DIR` pointing at a cloned Build Cache, which must reach the process.
+    #[allow(clippy::too_many_arguments)]
     fn invoke(
         &self,
         cas: &Cas,
@@ -419,75 +419,25 @@ pub trait WorkerModelAdapter: Send + Sync {
         input: Vec<u8>,
         timeout: Duration,
         writable: bool,
-    ) -> ModelWorkerReturn;
-
-    /// Optional cooperative cancellation is an installed transport capability. An adapter
-    /// must implement in-flight cancellation before accepting Some; a preflight flag check
-    /// alone cannot establish support. None forwards to the native `invoke`.
-    fn invoke_controlled(
-        &self,
-        cas: &Cas,
-        workdir: &Path,
-        input: Vec<u8>,
-        timeout: Duration,
-        writable: bool,
-        cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> ModelWorkerReturn {
-        if cancellation.is_some() {
-            return ModelWorkerReturn {
-                usage_observation: None,
-                message: Err("Worker model adapter does not support controlled invocation".into()),
-                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
-                raw_artifact_ids: vec![],
-            };
-        }
-        self.invoke(cas, workdir, input, timeout, writable)
-    }
-
-    /// Controlled invocation with sandbox-local, non-secret variables the kernel resolved for
-    /// this exact Attempt, such as `CARGO_TARGET_DIR` pointing at a cloned Build Cache. An
-    /// adapter that does not thread the environment into its process must refuse a non-empty
-    /// one rather than silently run without it.
-    #[allow(clippy::too_many_arguments)]
-    fn invoke_controlled_with_environment(
-        &self,
-        cas: &Cas,
-        workdir: &Path,
-        input: Vec<u8>,
-        timeout: Duration,
-        writable: bool,
-        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
-    ) -> ModelWorkerReturn {
-        if !environment.is_empty() {
-            return ModelWorkerReturn {
-                usage_observation: None,
-                message: Err(
-                    "Worker model adapter does not support a sandbox-local environment".into(),
-                ),
-                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
-                raw_artifact_ids: vec![],
-            };
-        }
-        self.invoke_controlled(cas, workdir, input, timeout, writable, cancellation)
-    }
+    ) -> ModelWorkerReturn;
 }
 
 impl ModelWorkerReturn {
     pub fn failed(error: RunnerError) -> Self {
-        let raw_artifact_ids = match &error {
-            RunnerError::TimedOut { raw_artifact, .. } => raw_artifact.iter().cloned().collect(),
-            _ => vec![],
-        };
         Self {
             usage_observation: None,
             message: Err(error.to_string()),
             usage: None,
-            raw_artifact_ids,
+            raw_artifact_ids: vec![],
         }
     }
 }
 
+/// Validates the captured context and the returned output around one model call. Model
+/// Workers receive no sandbox-local environment.
+#[allow(clippy::too_many_arguments)]
 pub fn invoke_model(
     cas: &Cas,
     workdir: &Path,
@@ -496,23 +446,7 @@ pub fn invoke_model(
     context_id: &str,
     timeout: Duration,
     writable: bool,
-) -> WorkerReturn {
-    invoke_model_controlled(
-        cas, workdir, adapter, contract, context_id, timeout, writable, None,
-    )
-}
-
-/// Same captured context/output validation with explicit optional transport cancellation.
-#[allow(clippy::too_many_arguments)]
-pub fn invoke_model_controlled(
-    cas: &Cas,
-    workdir: &Path,
-    adapter: &dyn WorkerModelAdapter,
-    contract: &WorkerContract,
-    context_id: &str,
-    timeout: Duration,
-    writable: bool,
-    cancellation: Option<&std::sync::atomic::AtomicBool>,
+    cancellation: Option<&AtomicBool>,
 ) -> WorkerReturn {
     let bytes = match contract.read_context(cas, context_id) {
         Ok((_, bytes)) => bytes,
@@ -526,7 +460,7 @@ pub fn invoke_model_controlled(
             };
         }
     };
-    let returned = adapter.invoke_controlled(cas, workdir, bytes, timeout, writable, cancellation);
+    let returned = adapter.invoke(cas, workdir, bytes, timeout, writable, cancellation, &[]);
     let (reply, feedback_code) = match returned.message {
         Ok(bytes) => {
             let reply = contract.validate_reply(&bytes);
@@ -546,158 +480,5 @@ pub fn invoke_model_controlled(
     }
 }
 
-pub fn invoke_command(
-    cas: &Cas,
-    workdir: &Path,
-    runtime_root: &Path,
-    command: &Command,
-    contract: &WorkerContract,
-    context_id: &str,
-    timeout: Duration,
-) -> WorkerReturn {
-    let prepared = contract
-        .read_context(cas, context_id)
-        .map_err(RunnerError::Refused);
-    let result = prepared.and_then(|(_, bytes)| {
-        capture_command(cas, workdir, runtime_root, command, bytes, timeout)
-    });
-    match result {
-        Ok(raw) => {
-            let reply = if raw.status.success() {
-                contract.validate_reply(&raw.stdout)
-            } else {
-                Err(format!("Command Worker exited with {}", raw.status))
-            };
-            let feedback_code = reply.is_err().then_some(if raw.status.success() {
-                TaskFeedbackCodeV1::InvalidOutputContract
-            } else {
-                TaskFeedbackCodeV1::ProcessFailure
-            });
-            WorkerReturn {
-                usage_observation: None,
-                reply,
-                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
-                raw_artifact_ids: vec![raw.raw_artifact],
-                feedback_code,
-            }
-        }
-        Err(error) => WorkerReturn {
-            usage_observation: None,
-            raw_artifact_ids: match &error {
-                RunnerError::TimedOut { raw_artifact, .. } => {
-                    raw_artifact.iter().cloned().collect()
-                }
-                _ => vec![],
-            },
-            reply: Err(error.to_string()),
-            usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
-            feedback_code: Some(TaskFeedbackCodeV1::ProcessFailure),
-        },
-    }
-}
-
-/// The same isolated command transport with an independently installed business parser.
-/// No scheduler or retry loop; the caller supplies an already-started Attempt's remaining time.
-pub fn invoke_command_bytes(
-    cas: &Cas,
-    workdir: &Path,
-    runtime_root: &Path,
-    command: &Command,
-    bytes: Vec<u8>,
-    timeout: Duration,
-) -> ModelWorkerReturn {
-    match capture_command(cas, workdir, runtime_root, command, bytes, timeout) {
-        Ok(raw) => ModelWorkerReturn {
-            usage_observation: None,
-            message: if raw.status.success() {
-                Ok(raw.stdout)
-            } else {
-                Err(format!("Command Worker exited with {}", raw.status))
-            },
-            usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
-            raw_artifact_ids: vec![raw.raw_artifact],
-        },
-        Err(error) => {
-            let mut result = ModelWorkerReturn::failed(error);
-            result.usage = Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0));
-            result
-        }
-    }
-}
-
-fn capture_command(
-    cas: &Cas,
-    workdir: &Path,
-    runtime_root: &Path,
-    command: &Command,
-    bytes: Vec<u8>,
-    timeout: Duration,
-) -> Result<crate::RawCapture, RunnerError> {
-    command_runner(workdir, runtime_root, timeout)?.capture_with_stdin(cas, command, bytes)
-}
-
-fn command_runner(
-    workdir: &Path,
-    runtime_root: &Path,
-    timeout: Duration,
-) -> Result<ModelRunner, RunnerError> {
-    command_runner_with_environment(workdir, runtime_root, timeout, &[])
-}
-
-fn command_runner_with_environment(
-    workdir: &Path,
-    runtime_root: &Path,
-    timeout: Duration,
-    additional_environment: &[(String, String)],
-) -> Result<ModelRunner, RunnerError> {
-    let deadline = std::time::Instant::now()
-        .checked_add(timeout)
-        .ok_or_else(|| RunnerError::Refused("Command deadline overflow".into()))?;
-    let mut environment = Vec::new();
-    for (key, directory) in [
-        ("HOME", "home"),
-        ("XDG_CONFIG_HOME", "config"),
-        ("XDG_CACHE_HOME", "cache"),
-        ("XDG_STATE_HOME", "state"),
-        ("TMPDIR", "tmp"),
-    ] {
-        let path = runtime_root.join(directory);
-        std::fs::create_dir_all(&path).map_err(|e| RunnerError::Unavailable(e.to_string()))?;
-        environment.push((
-            key,
-            path.to_str()
-                .ok_or_else(|| RunnerError::Refused("Worker runtime path is not UTF-8".into()))?
-                .to_owned(),
-        ));
-    }
-    let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-    if remaining.is_zero() {
-        return Err(RunnerError::TimedOut {
-            after_ms: timeout.as_millis().try_into().unwrap_or(u64::MAX),
-            raw_artifact: None,
-        });
-    }
-    let mut runner = ModelRunner::new(workdir, remaining);
-    for (key, value) in environment {
-        runner = runner.with_env(key, value);
-    }
-    for (key, value) in additional_environment {
-        if key.is_empty()
-            || key.contains('=')
-            || key.chars().any(char::is_control)
-            || value.contains('\0')
-        {
-            return Err(RunnerError::Refused(
-                "Worker environment contains an invalid variable".into(),
-            ));
-        }
-        runner = runner.with_env(key, value);
-    }
-    Ok(runner)
-}
-
-mod command_control;
-pub use command_control::{
-    invoke_command_bytes_controlled, invoke_command_bytes_controlled_with_environment,
-    invoke_command_controlled, invoke_command_controlled_with_environment,
-};
+mod command;
+pub use command::{invoke_command, invoke_command_bytes};

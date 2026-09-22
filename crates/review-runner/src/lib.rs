@@ -11,21 +11,17 @@ pub mod session;
 pub mod task;
 
 pub use model::{
-    CommandAdapter, ContextEntry, ContextManifest, Grant, InputTransport, ModelRunner,
-    NotesRequest, RESULT_CONTRACT_V2, RawCapture, RenderedInput, ReviewerAdapter,
-    ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs, ReviewerNoteHint,
-    ReviewerNotesDeclaration, ReviewerProposalDeclaration, RunnerError, TokenUsage, append_focus,
-    compose_command_input, compose_model_prompt, estimate_tokens, extract_result,
-    parse_notes_declaration, parse_proposal_declaration, parse_reviewer_result, unfence,
+    CommandAdapter, ContextEntry, ContextManifest, InputTransport, ModelRunner, NotesRequest,
+    RenderedInput, ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs,
+    ReviewerNoteHint, ReviewerNotesDeclaration, ReviewerProposalDeclaration, RunnerError,
+    TokenUsage, append_focus, compose_command_input, compose_model_prompt, estimate_tokens,
+    parse_notes_declaration, parse_proposal_declaration, parse_reviewer_result,
 };
 pub use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
-pub use review_process::{
-    ExitPolicy, SupervisedDuplexOutput, SupervisedError, SupervisedOutput, SupervisedStreamError,
-    run_supervised, run_supervised_duplex, run_supervised_streaming, run_supervised_with_policy,
-};
+pub use review_process::run_supervised;
 pub use session::{
-    CapturedSession, HARNESS_PLACEHOLDER, SANDBOX_PLACEHOLDER, SessionCapture, SessionDeletion,
-    SessionLayer, SessionResume, TranscriptRefusal, rehydrate_transcript, sanitize_transcript,
+    CapturedSession, SessionCapture, SessionDeletion, SessionLayer, SessionResume,
+    rehydrate_transcript, sanitize_transcript,
 };
 
 use std::collections::BTreeMap;

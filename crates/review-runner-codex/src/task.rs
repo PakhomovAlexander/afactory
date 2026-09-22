@@ -52,53 +52,6 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         input: Vec<u8>,
         timeout: Duration,
         writable: bool,
-    ) -> ModelWorkerReturn {
-        self.invoke_inner(cas, workdir, input, timeout, writable, None, &[])
-    }
-
-    fn invoke_controlled(
-        &self,
-        cas: &Cas,
-        workdir: &Path,
-        input: Vec<u8>,
-        timeout: Duration,
-        writable: bool,
-        cancellation: Option<&std::sync::atomic::AtomicBool>,
-    ) -> ModelWorkerReturn {
-        self.invoke_inner(cas, workdir, input, timeout, writable, cancellation, &[])
-    }
-
-    fn invoke_controlled_with_environment(
-        &self,
-        cas: &Cas,
-        workdir: &Path,
-        input: Vec<u8>,
-        timeout: Duration,
-        writable: bool,
-        cancellation: Option<&std::sync::atomic::AtomicBool>,
-        environment: &[(String, String)],
-    ) -> ModelWorkerReturn {
-        self.invoke_inner(
-            cas,
-            workdir,
-            input,
-            timeout,
-            writable,
-            cancellation,
-            environment,
-        )
-    }
-}
-
-impl CodexTaskAdapter {
-    #[allow(clippy::too_many_arguments)]
-    fn invoke_inner(
-        &self,
-        cas: &Cas,
-        workdir: &Path,
-        input: Vec<u8>,
-        timeout: Duration,
-        writable: bool,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
@@ -150,8 +103,7 @@ impl CodexTaskAdapter {
         for (name, value) in environment {
             runner = runner.with_env(name, value);
         }
-        let capture =
-            runner.capture_settled_with_stdin_controlled(cas, &command, input, cancellation);
+        let capture = runner.capture(cas, &command, input, cancellation);
         let events = TaskEvents::parse(&capture.stdout);
         let mut returned = ModelWorkerReturn {
             usage_observation: None,

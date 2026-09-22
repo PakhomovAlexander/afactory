@@ -48,13 +48,14 @@ pub fn check(
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         let adapter = make(program.to_str().unwrap());
         let flag = AtomicBool::new(true);
-        let pre = adapter.invoke_controlled(
+        let pre = adapter.invoke(
             &cas,
             directory.path(),
             b"exact context".to_vec(),
             Duration::from_secs(10),
             false,
             Some(&flag),
+            &[],
         );
         assert!(pre.message.is_err());
         assert_eq!(pre.usage.unwrap().chargeable_tokens.get(), 0);
@@ -97,13 +98,14 @@ pub fn check(
                 );
                 (pids, stopped)
             });
-            let returned = adapter.invoke_controlled(
+            let returned = adapter.invoke(
                 &cas,
                 directory.path(),
                 b"exact context".to_vec(),
                 Duration::from_secs(10),
                 false,
                 Some(&flag),
+                &[],
             );
             let (pids, stopped) = cancel.join().unwrap();
             (returned, pids, stopped)

@@ -26,6 +26,8 @@ impl WorkerModelAdapter for Model {
         input: Vec<u8>,
         _: std::time::Duration,
         writable: bool,
+        _: Option<&std::sync::atomic::AtomicBool>,
+        _: &[(String, String)],
     ) -> ModelWorkerReturn {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let (message, usage) = if n == 0 {
@@ -486,8 +488,18 @@ impl WorkerModelAdapter for Substituted<'_> {
         input: Vec<u8>,
         timeout: std::time::Duration,
         writable: bool,
+        cancellation: Option<&std::sync::atomic::AtomicBool>,
+        environment: &[(String, String)],
     ) -> ModelWorkerReturn {
-        self.inner.invoke(cas, workdir, input, timeout, writable)
+        self.inner.invoke(
+            cas,
+            workdir,
+            input,
+            timeout,
+            writable,
+            cancellation,
+            environment,
+        )
     }
 }
 
@@ -1084,6 +1096,8 @@ fn incomplete_billing_on_captured_reviewers_never_publishes_a_selected_result() 
             input: Vec<u8>,
             _: std::time::Duration,
             writable: bool,
+            _: Option<&std::sync::atomic::AtomicBool>,
+            _: &[(String, String)],
         ) -> ModelWorkerReturn {
             assert!(!writable);
             let call = self.0.fetch_add(1, Ordering::SeqCst);

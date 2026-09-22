@@ -107,9 +107,9 @@ fn identity_rechecks_cancel_an_inflight_status_process() {
     }
 }
 
-/// An inner adapter that records whether, and with what environment, it was reached.
+/// An inner adapter that records whether it was reached.
 struct Recording {
-    reached: std::sync::Mutex<Option<Vec<(String, String)>>>,
+    reached: std::sync::Arc<AtomicBool>,
 }
 impl WorkerModelAdapter for Recording {
     fn credential_mode(&self) -> review_core::CredentialModeV1 {
@@ -128,20 +128,10 @@ impl WorkerModelAdapter for Recording {
         _input: Vec<u8>,
         _timeout: Duration,
         _writable: bool,
-    ) -> ModelWorkerReturn {
-        unreachable!("the wrapper never uses the bare invocation")
-    }
-    fn invoke_controlled_with_environment(
-        &self,
-        _cas: &Cas,
-        _workdir: &Path,
-        _input: Vec<u8>,
-        _timeout: Duration,
-        _writable: bool,
         _cancellation: Option<&AtomicBool>,
-        environment: &[(String, String)],
+        _environment: &[(String, String)],
     ) -> ModelWorkerReturn {
-        *self.reached.lock().unwrap() = Some(environment.to_vec());
+        self.reached.store(true, Ordering::SeqCst);
         ModelWorkerReturn {
             message: Ok(b"{}".to_vec()),
             usage: None,
@@ -156,6 +146,7 @@ fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_nativ
     let directory = tempfile::tempdir().unwrap();
     let (program, spec) = fixture(ProviderKind::Claude, directory.path(), "exit 0");
     let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let reached = std::sync::Arc::new(AtomicBool::new(false));
     // A fixture provider is not in the machine-local registry, so the recheck fails.
     let wrapper = CurrentTaskProviderAdapter {
         identity: TaskProviderIdentity {
@@ -168,14 +159,14 @@ fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_nativ
             user: std::env::var_os("USER"),
         },
         inner: Box::new(Recording {
-            reached: std::sync::Mutex::new(None),
+            reached: reached.clone(),
         }),
     };
     let environment = [(
         "CARGO_TARGET_DIR".to_string(),
         "/sandbox/.af-cache".to_string(),
     )];
-    let returned = wrapper.invoke_controlled_with_environment(
+    let returned = wrapper.invoke(
         &cas,
         directory.path(),
         b"{}".to_vec(),
@@ -187,24 +178,10 @@ fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_nativ
     let error = returned.message.unwrap_err().to_string();
     assert!(
         error.contains("Captured Task Provider identity is no longer current"),
-        "the wrapper's own recheck answered, not the trait default: {error}"
+        "the wrapper's own recheck answered: {error}"
     );
     assert!(
-        !error.contains("sandbox environment"),
-        "a wrapper without the environment method would have refused the layer itself"
-    );
-    // The bare path is the same method with no environment, so the two cannot diverge.
-    let bare = wrapper.invoke_controlled(
-        &cas,
-        directory.path(),
-        b"{}".to_vec(),
-        Duration::from_secs(5),
-        false,
-        None,
-    );
-    assert_eq!(
-        bare.message.unwrap_err().to_string(),
-        error,
-        "same refusal with and without environment"
+        !reached.load(Ordering::SeqCst),
+        "a failed recheck must not reach the native client"
     );
 }
