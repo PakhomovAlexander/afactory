@@ -248,11 +248,6 @@ impl EventStore {
         })
     }
 
-    pub fn open_in_memory() -> Result<Self, StoreError> {
-        let conn = Connection::open_in_memory()?;
-        Self::init(conn)
-    }
-
     fn init(conn: Connection) -> Result<Self, StoreError> {
         conn.pragma_update(None, "journal_mode", "WAL")?;
         // FULL, not NORMAL: an accepted effect must survive process death, which is the entire
@@ -1496,7 +1491,9 @@ fn validate_artifact_payload(
                 ));
             }
         }
-        review_core::contract::REVIEWER_RESULT_V1 => validate_reviewer_result(value)?,
+        review_core::contract::REVIEWER_RESULT_V1 => {
+            review_core::validate_reviewer_result(value).map_err(StoreError::Conflict)?
+        }
         review_core::contract::REVIEWER_RESULT_V2 => {
             review_core::validate_reviewer_result_v2(value).map_err(StoreError::Conflict)?
         }
@@ -1685,10 +1682,6 @@ fn validated_envelope_payload<T: serde::de::DeserializeOwned>(
         )));
     }
     serde_json::from_value(envelope.payload).map_err(StoreError::from)
-}
-
-pub fn validate_reviewer_result(value: &Value) -> Result<(), StoreError> {
-    review_core::validate_reviewer_result(value).map_err(StoreError::Conflict)
 }
 
 fn exact_keys(
@@ -5009,8 +5002,8 @@ mod tests {
             "confidence": 0.9,
         });
 
-        assert!(validate_reviewer_result(&result(legacy)).is_ok());
-        assert!(validate_reviewer_result(&result(typed)).is_err());
+        assert!(review_core::validate_reviewer_result(&result(legacy)).is_ok());
+        assert!(review_core::validate_reviewer_result(&result(typed)).is_err());
     }
 
     #[test]
@@ -5019,14 +5012,14 @@ mod tests {
         let corpus: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         for case in corpus["valid"].as_array().unwrap() {
             assert!(
-                validate_reviewer_result(&case["payload"]).is_ok(),
+                review_core::validate_reviewer_result(&case["payload"]).is_ok(),
                 "{}",
                 case["name"]
             );
         }
         for case in corpus["invalid"].as_array().unwrap() {
             assert!(
-                validate_reviewer_result(&case["payload"]).is_err(),
+                review_core::validate_reviewer_result(&case["payload"]).is_err(),
                 "{}",
                 case["name"]
             );

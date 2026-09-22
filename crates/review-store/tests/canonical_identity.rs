@@ -4,9 +4,7 @@ use review_core::{
     EventType, FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1,
     LegacyStageOutput, Producer, RoundStartedPayloadV1, RunEvent, SubjectV1,
 };
-use review_store::{
-    CanonicalStage, Cas, ConvergencePolicy, EventStore, Ingest, LedgerProjection, NewEvent,
-};
+use review_store::{CanonicalStage, Cas, EventStore, Ingest, LedgerProjection, NewEvent};
 use support::opened_round;
 
 fn stage() -> LegacyStageOutput {
@@ -157,7 +155,7 @@ fn task_and_campaign_use_identical_pure_canonical_reduction_without_another_stor
     let mut ingest = Ingest::new(&mut store, &cas, run_id)
         .unwrap()
         .under_round(&authority.round_event_id);
-    assert_eq!(ingest.round(), 1);
+    assert_eq!(ingest.ledger().round, 1);
     let historical = ingest.add_canonical_stage_outputs(&stages).unwrap();
     assert_eq!(pure.reduction, historical);
     assert_eq!(pure.ledger.finding_views(), ingest.ledger().finding_views());
@@ -335,7 +333,7 @@ fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
         ])
         .unwrap();
 
-    assert_eq!(ingest.ledger().len(), 2);
+    assert_eq!(ingest.ledger().findings().len(), 2);
     let corrupted_key = ingest.ledger().findings()[0].key.clone();
     let corrupted_report_id = ingest.ledger().findings()[0].reports[0].report_id.clone();
     let keys: Vec<_> = ingest
@@ -373,7 +371,7 @@ fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
     let rebuilt = LedgerProjection::rebuild(&store, &cas, run_id)
         .unwrap()
         .into_ledger();
-    assert_eq!(rebuilt.len(), 2);
+    assert_eq!(rebuilt.findings().len(), 2);
 
     let corrupt_path = directory
         .path()
@@ -408,7 +406,7 @@ fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
     assert_eq!(rebuilt.finding_identity_policy(), None);
     assert!(
         rebuilt
-            .convergence(ConvergencePolicy::default())
+            .convergence(support::default_policy())
             .authority_failures_recent
             > 0,
         "unreadable Campaign policy must remain replayable but block convergence"
@@ -579,9 +577,7 @@ fn grouping_is_reversible_and_preserves_each_report_obligation() {
     assert_eq!(views[0].aliases, vec![keys[0].clone()]);
     assert_eq!(views[0].reports.len(), 2);
     assert_eq!(
-        ledger
-            .convergence(ConvergencePolicy::default())
-            .open_blocking,
+        ledger.convergence(support::default_policy()).open_blocking,
         1
     );
 
@@ -780,9 +776,7 @@ fn grouping_is_reversible_and_preserves_each_report_obligation() {
         .unwrap();
     assert_eq!(ledger.finding_views().len(), 2);
     assert_eq!(
-        ledger
-            .convergence(ConvergencePolicy::default())
-            .open_blocking,
+        ledger.convergence(support::default_policy()).open_blocking,
         2
     );
 }
@@ -1520,7 +1514,7 @@ fn admit_flat(findings: &[serde_json::Value]) -> Result<review_store::Ledger, St
     match support::add_flat_results(&mut ingest, &cas, "run", &round, &results) {
         Ok(_) => Ok(ingest.into_projection().into_ledger()),
         Err(error) => {
-            assert!(ingest.ledger().is_empty());
+            assert!(ingest.ledger().findings().is_empty());
             drop(ingest);
             assert_eq!(
                 store.len("run").unwrap(),
@@ -1535,7 +1529,7 @@ fn admit_flat(findings: &[serde_json::Value]) -> Result<review_store::Ledger, St
 #[test]
 fn a_contract_complete_flat_finding_is_ingested() {
     let ledger = admit_flat(&[flat_finding("src/a.rs", "T", "b")]).unwrap();
-    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger.findings().len(), 1);
     assert_eq!(ledger.findings()[0].fix, "bound it");
     assert!(ledger.findings()[0].key.starts_with("sha256:"));
 }
@@ -1622,7 +1616,7 @@ fn reviewers_naming_one_rule_occurrence_share_a_finding_and_keep_every_report() 
     let ledger = LedgerProjection::rebuild(&store, &cas, "run")
         .unwrap()
         .into_ledger();
-    assert_eq!(ledger.len(), 2);
+    assert_eq!(ledger.findings().len(), 2);
     let shared = ledger
         .findings()
         .into_iter()

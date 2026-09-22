@@ -154,10 +154,6 @@ impl<'a> Ingest<'a> {
         &self.ledger
     }
 
-    pub fn round(&self) -> u32 {
-        self.ledger.round
-    }
-
     /// Advance the Ledger's Round counter under the bound Round.
     pub fn advance(&mut self) -> Result<u32, StoreError> {
         let round = self.ledger.round + 1;
@@ -861,8 +857,6 @@ fn canonical_stage_keys(
     }
     let mut candidates: std::collections::BTreeMap<usize, BTreeSet<String>> =
         std::collections::BTreeMap::new();
-    let mut outgoing: std::collections::BTreeMap<usize, BTreeSet<usize>> =
-        std::collections::BTreeMap::new();
     for (index, (report, _, _)) in reports.iter().enumerate() {
         let root = find(&mut parent, index);
         if let (Some(rule_id), Some(occurrence_key)) = (&report.rule_id, &report.occurrence_key) {
@@ -878,110 +872,39 @@ fn canonical_stage_keys(
                     .insert(finding.to_string());
             }
         }
+        // A relation can only corroborate a Finding in the input Finding Set.
         for relation in &report.relations {
-            match (relation.kind, relation.target.kind) {
-                (
-                    review_core::RelationKind::Corroborates,
-                    review_core::finding::ClaimTargetKind::Report,
-                ) => {
-                    let target = by_report.get(relation.target.id.as_str()).ok_or_else(|| {
-                        StoreError::Conflict(format!(
-                            "Report {} corroborates Report `{}` outside its selected attempt",
-                            reports[index].2, relation.target.id
-                        ))
-                    })?;
-                    let target_root = find(&mut parent, *target);
-                    if target_root != root {
-                        outgoing.entry(root).or_default().insert(target_root);
-                    }
-                }
-                (_, review_core::finding::ClaimTargetKind::Report) => {
-                    if !by_report.contains_key(relation.target.id.as_str()) {
-                        return Err(StoreError::Conflict(format!(
-                            "Report {} disputes Report `{}` outside its selected attempt",
-                            reports[index].2, relation.target.id
-                        )));
-                    }
-                }
-                (_, review_core::finding::ClaimTargetKind::Finding) => {
-                    if prior.get(&relation.target.id).is_none() {
-                        return Err(StoreError::Conflict(format!(
-                            "Report {} relates to Finding `{}` outside its input Finding Set",
-                            reports[index].2, relation.target.id
-                        )));
-                    }
-                    if relation.kind == review_core::RelationKind::Corroborates {
-                        candidates
-                            .entry(root)
-                            .or_default()
-                            .insert(relation.target.id.clone());
-                    }
-                }
+            if prior.get(&relation.target.id).is_none() {
+                return Err(StoreError::Conflict(format!(
+                    "Report {} relates to Finding `{}` outside its input Finding Set",
+                    reports[index].2, relation.target.id
+                )));
             }
+            candidates
+                .entry(root)
+                .or_default()
+                .insert(relation.target.id.clone());
         }
     }
 
-    let mut states = std::collections::BTreeMap::new();
-    let mut resolved = std::collections::BTreeMap::new();
     let mut keys = Vec::with_capacity(reports.len());
     for index in 0..reports.len() {
         let root = find(&mut parent, index);
-        keys.push(resolve_canonical_group(
-            root,
-            reports,
-            &first_report,
-            &outgoing,
-            &candidates,
-            &mut states,
-            &mut resolved,
-        )?);
+        let first = &reports[first_report[&root]].2;
+        let group = candidates.get(&root);
+        if group.is_some_and(|group| group.len() > 1) {
+            return Err(StoreError::Conflict(format!(
+                "corroboration and occurrence authority disagree for Report {first}"
+            )));
+        }
+        keys.push(
+            group
+                .and_then(BTreeSet::first)
+                .cloned()
+                .unwrap_or_else(|| canonical_finding_id(first)),
+        );
     }
     Ok(keys)
-}
-
-fn resolve_canonical_group(
-    root: usize,
-    reports: &[(&FindingReport, String, String)],
-    first_report: &std::collections::BTreeMap<usize, usize>,
-    outgoing: &std::collections::BTreeMap<usize, BTreeSet<usize>>,
-    external: &std::collections::BTreeMap<usize, BTreeSet<String>>,
-    states: &mut std::collections::BTreeMap<usize, u8>,
-    resolved: &mut std::collections::BTreeMap<usize, String>,
-) -> Result<String, StoreError> {
-    if let Some(finding) = resolved.get(&root) {
-        return Ok(finding.clone());
-    }
-    if states.get(&root) == Some(&1) {
-        return Err(StoreError::Conflict(
-            "cyclic Report corroboration has no authoritative first Report".into(),
-        ));
-    }
-    states.insert(root, 1);
-    let mut candidates = external.get(&root).cloned().unwrap_or_default();
-    for target in outgoing.get(&root).into_iter().flatten() {
-        candidates.insert(resolve_canonical_group(
-            *target,
-            reports,
-            first_report,
-            outgoing,
-            external,
-            states,
-            resolved,
-        )?);
-    }
-    if candidates.len() > 1 {
-        return Err(StoreError::Conflict(format!(
-            "corroboration and occurrence authority disagree for Report {}",
-            reports[first_report[&root]].2
-        )));
-    }
-    let finding = candidates
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| canonical_finding_id(&reports[first_report[&root]].2));
-    states.insert(root, 2);
-    resolved.insert(root, finding.clone());
-    Ok(finding)
 }
 
 /// Apply a not-yet-persisted event through the authoritative projection. Sequence and identity
@@ -1114,7 +1037,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_occurrence_keys_attach_but_disputes_do_not_collapse_claims() {
+    fn an_exact_occurrence_key_attaches_to_the_prior_finding() {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path()).unwrap();
         let mut prior = Ledger::default();
@@ -1145,24 +1068,6 @@ mod tests {
         )
         .unwrap();
         assert_eq!(keys, ["existing-finding"]);
-
-        let mut disputed = typed_report(None, None);
-        disputed.relations.push(review_core::Relation {
-            kind: review_core::RelationKind::Disputes,
-            target: review_core::finding::RelationTarget {
-                kind: review_core::finding::ClaimTargetKind::Finding,
-                id: "existing-finding".into(),
-            },
-            reason: Some("different evidence".into()),
-        });
-        let disputed_id = format!("sha256:{}", "c".repeat(64));
-        let keys = canonical_stage_keys(
-            &[(&disputed, disputed_id.clone(), disputed_id.clone())],
-            &prior,
-            &std::collections::BTreeMap::new(),
-        )
-        .unwrap();
-        assert_eq!(keys, [canonical_finding_id(&disputed_id)]);
     }
 
     #[test]
@@ -1204,38 +1109,5 @@ mod tests {
         )
         .unwrap();
         assert_eq!(keys, ["existing-finding"]);
-    }
-
-    #[test]
-    fn same_attempt_corroboration_uses_the_target_reports_identity() {
-        let prior = Ledger::default();
-        let target_id = format!("sha256:{}", "f".repeat(64));
-        let source_id = format!("sha256:{}", "0".repeat(64));
-        let target = typed_report(None, None);
-        let mut corroborating = typed_report(None, None);
-        corroborating.relations.push(review_core::Relation {
-            kind: review_core::RelationKind::Corroborates,
-            target: review_core::finding::RelationTarget {
-                kind: review_core::finding::ClaimTargetKind::Report,
-                id: target_id.clone(),
-            },
-            reason: None,
-        });
-        let keys = canonical_stage_keys(
-            &[
-                (&corroborating, source_id.clone(), source_id),
-                (&target, target_id.clone(), target_id.clone()),
-            ],
-            &prior,
-            &std::collections::BTreeMap::new(),
-        )
-        .unwrap();
-        assert_eq!(
-            keys,
-            [
-                canonical_finding_id(&target_id),
-                canonical_finding_id(&target_id)
-            ]
-        );
     }
 }

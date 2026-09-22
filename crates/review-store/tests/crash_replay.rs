@@ -13,9 +13,7 @@ mod support;
 use std::path::Path;
 
 use review_core::LegacyStageOutput;
-use review_store::{
-    Cas, ConvergencePolicy, EventStore, Finding, Ingest, Ledger, LedgerProjection, NewEvent, Status,
-};
+use review_store::{Cas, EventStore, Finding, Ingest, Ledger, LedgerProjection, NewEvent, Status};
 use support::{add_flat_results, opened_round};
 
 fn stage(json: &str) -> LegacyStageOutput {
@@ -133,7 +131,7 @@ fn the_projection_survives_process_death() {
     assert_eq!(live, rebuilt, "rebuild must reproduce the committed state");
     assert_eq!(
         ledger
-            .convergence(ConvergencePolicy::default())
+            .convergence(support::default_policy())
             .authority_failures_recent,
         0,
         "the history is one well-formed Round"
@@ -213,7 +211,7 @@ fn the_report_artifact_not_the_event_copy_is_projection_authority() {
             .unwrap(),
         )
         .unwrap();
-    let key = review_store::canonical_finding_id(&report_id);
+    let key = review_store::legacy::canonical_finding_id(&report_id);
     store
         .append(
             "run",
@@ -275,7 +273,7 @@ fn a_crash_after_publish_but_before_append_leaves_only_garbage() {
     let ledger = LedgerProjection::rebuild(&store, &cas, "run")
         .unwrap()
         .into_ledger();
-    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger.findings().len(), 1);
 
     let referenced: Vec<String> = store
         .replay("run")
@@ -358,8 +356,8 @@ fn runs_are_isolated_in_one_store() {
     let b = LedgerProjection::rebuild(&store, &cas, "run-b")
         .unwrap()
         .into_ledger();
-    assert_eq!(a.len(), 1);
-    assert_eq!(b.len(), 1);
+    assert_eq!(a.findings().len(), 1);
+    assert_eq!(b.findings().len(), 1);
     assert_eq!(a.findings()[0].title, "only in a");
     assert_eq!(b.findings()[0].title, "only in b");
 }

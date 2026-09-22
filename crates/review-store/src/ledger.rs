@@ -192,8 +192,6 @@ pub struct Finding {
     pub aliases: Vec<String>,
     pub status: Status,
     pub severity: Severity,
-    /// When this finding last counted as convergence news, whatever the Report Scope.
-    pub news_round: u32,
     pub last_seen_round: u32,
     pub source: String,
     /// The adopted Report's lowest location path: `(change-wide)` when it has none, empty for an
@@ -222,7 +220,8 @@ pub struct Finding {
     pub convergence_scope: Option<ReportScope>,
     /// Highest active non-out claim severity. `None` means active claims are wholly out.
     pub convergence_severity: Option<Severity>,
-    /// Scope-aware News used by convergence; separate from `news_round`.
+    /// The Round in which this Finding last counted as convergence news under Report Scope.
+    /// `None` while every active claim is out of Scope.
     pub scoped_news_round: Option<u32>,
     /// Every report, in arrival order, duplicates included.
     pub reports: Vec<AttachedReport>,
@@ -395,16 +394,6 @@ pub struct ConvergencePolicy {
     pub clean_rounds: u32,
     pub max_rounds: u32,
     pub gate: Severity,
-}
-
-impl Default for ConvergencePolicy {
-    fn default() -> Self {
-        Self {
-            clean_rounds: 1,
-            max_rounds: 3,
-            gate: Severity::Major,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -737,7 +726,6 @@ impl Ledger {
                     aliases: Vec::new(),
                     status: Status::Open,
                     severity,
-                    news_round: round,
                     last_seen_round: round,
                     source,
                     identity_file,
@@ -776,7 +764,6 @@ impl Ledger {
             existing.authority_diagnostic = false;
             existing.last_seen_round = round;
             existing.status = Status::Open;
-            existing.news_round = round;
             existing.identity_file = identity_file;
             existing.identity_line = identity_line;
             adopt(existing, &report, &source);
@@ -839,11 +826,9 @@ impl Ledger {
             TransitionKind::Duplicate => {}
             TransitionKind::Reopened => {
                 existing.status = Status::Open;
-                existing.news_round = round;
                 adopt(existing, &report, &source);
             }
             TransitionKind::Escalated | TransitionKind::AdoptedWhileDeclined => {
-                existing.news_round = round;
                 adopt(existing, &report, &source);
                 if resolution_challenge.is_some() {
                     existing.status = Status::Contested;
@@ -851,7 +836,6 @@ impl Ledger {
             }
             TransitionKind::Challenged => {
                 existing.status = Status::Contested;
-                existing.news_round = round;
             }
             _ => {}
         }
@@ -1811,11 +1795,6 @@ impl Ledger {
             .map(|finding| finding.last_seen_round)
             .max()
             .unwrap_or(view.last_seen_round);
-        view.news_round = members
-            .iter()
-            .map(|finding| finding.news_round)
-            .max()
-            .unwrap_or(view.news_round);
         view.scoped_news_round = members
             .iter()
             .filter_map(|finding| finding.scoped_news_round)
@@ -2124,14 +2103,6 @@ impl Ledger {
 
     pub fn get(&self, key: &str) -> Option<&Finding> {
         self.findings.get(key)
-    }
-
-    pub fn len(&self) -> usize {
-        self.findings.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.findings.is_empty()
     }
 
     /// Scope failures are diagnostics, not replay failures: affected reports remain unknown.

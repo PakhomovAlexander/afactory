@@ -46,7 +46,8 @@ fn task_wall(attempt: &str, tokens: u128, elapsed_ms: u64) -> TaskAttemptWall {
 
 #[test]
 fn rows_round_trip_ordered_by_start_and_replace_per_attempt() {
-    let store = EventStore::open_in_memory().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
     store.record_attempt_wall(&wall("b", 2_000, 10)).unwrap();
     store.record_attempt_wall(&wall("a", 1_000, 10)).unwrap();
     let mut unmeasured = wall("c", 3_000, 5);
@@ -350,7 +351,8 @@ fn readonly_v1_sidecar_widens_without_migration_or_rewriting_bytes() {
 
 #[test]
 fn narrow_task_and_legacy_writes_share_one_monotonic_floor() {
-    let store = EventStore::open_in_memory().unwrap();
+    let directory = tempfile::tempdir().unwrap();
+    let store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
     store
         .record_task_attempt_wall(&task_wall("a", 3, 1))
         .unwrap();

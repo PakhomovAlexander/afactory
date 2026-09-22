@@ -28,14 +28,11 @@ pub use ledger::{
     ScopeAuthorityFailure, ScopeAuthorityKind, Status, Verdict,
 };
 pub use legacy::{
-    CanonicalReduction, CanonicalStage, Ingest, PreparedReviewReduction, canonical_finding_id,
+    CanonicalReduction, CanonicalStage, Ingest, PreparedReviewReduction,
     prepare_canonical_task_review,
 };
 pub use shared::SharedEventStore;
-pub use store::{
-    AttemptUsage, AttemptWall, EventStore, NewEvent, StoreError, TaskAttemptWall,
-    validate_reviewer_result,
-};
+pub use store::{AttemptUsage, AttemptWall, EventStore, NewEvent, StoreError, TaskAttemptWall};
 pub use subject::{
     ResolvedChangeSet, ResolvedSubject, ResolvedSubjectScope, resolve_subject,
     resolve_subject_scope,

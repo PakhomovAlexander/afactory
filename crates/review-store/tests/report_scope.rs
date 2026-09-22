@@ -106,7 +106,7 @@ fn rename_endpoints_are_in_scope_and_replay_preserves_the_existing_key() {
         "src/other.rs",
     );
 
-    assert_eq!(ledger.len(), 2);
+    assert_eq!(ledger.findings().len(), 2);
     let renamed = ledger.get("renamed-claim").unwrap();
     assert_eq!(renamed.key, "renamed-claim");
     assert_eq!(renamed.reports.len(), 2);
@@ -546,7 +546,7 @@ fn authority_recovery_reopens_a_placeholder_resolution_and_restores_identity() {
 
     let finding = ledger.get("claim").unwrap();
     assert_eq!(finding.status, Status::Open);
-    assert_eq!(finding.news_round, 1);
+    assert_eq!(finding.scoped_news_round, Some(1));
     assert_eq!(finding.identity_file, "src/a.rs");
     assert_eq!(finding.identity_line, Some(1));
     assert!(

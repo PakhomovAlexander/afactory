@@ -243,6 +243,12 @@ or needs a documented hand edit.
   noncanonical location used to leave the claim readable with unknown Scope. A Ledger node's
   `FindingSet@1` output must be an envelope: the untyped `{round, sources, findings}` summary is
   refused.
+- `af review report --json` Finding objects no longer carry `news_round`, a Round counter no
+  decision read; convergence counts news by `scoped_news_round`, as before. A Finding view's ID
+  hashes the view, so view IDs differ from the ones an earlier release computed for the same
+  Finding. A `FindingReport@1` relation only `corroborates` a `finding`: the `disputes` kind and
+  the `report` target, which no release wrote, are gone from `finding-report-v1.json`, and a
+  Report that uses them no longer decodes.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

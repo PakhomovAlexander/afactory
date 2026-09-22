@@ -3,7 +3,7 @@
 //! Each test folds events through `Ledger::apply_event` — `RoundStarted@1` for Scope authority,
 //! `GenerationAdvanced@1` for the Round counter, `FindingReported@1` over an immutable
 //! `FindingReport@1` artifact — and pins the projected Finding and the convergence verdict under
-//! the default policy (one clean Round, at most three, gate `major`).
+//! one clean Round, at most three, gate `major`.
 //!
 //! Status is set with a bare-status `FindingResolved@1`, which drives the fold directly. A Review
 //! host writes that shape only as `contested`, when a reviewer disputes a claim. Operator
@@ -159,12 +159,22 @@ impl Run {
         self.ledger.get(KEY).expect("the claim is projected")
     }
 
+    /// The claim's scoped news Round and last-seen Round.
+    fn rounds(&self) -> (Option<u32>, u32) {
+        let finding = self.finding();
+        (finding.scoped_news_round, finding.last_seen_round)
+    }
+
     fn kinds(&self) -> Vec<TransitionKind> {
         self.finding().history.iter().map(|t| t.kind).collect()
     }
 
     fn convergence(&self) -> Convergence {
-        self.ledger.convergence(ConvergencePolicy::default())
+        self.ledger.convergence(ConvergencePolicy {
+            clean_rounds: 1,
+            max_rounds: 3,
+            gate: Severity::Major,
+        })
     }
 }
 
@@ -197,7 +207,7 @@ fn a_fix_that_did_not_hold_reopens_and_keeps_the_fix_note() {
 
     let finding = run.finding();
     assert_eq!(finding.status, Status::Open);
-    assert_eq!((finding.news_round, finding.last_seen_round), (2, 2));
+    assert_eq!(run.rounds(), (Some(2), 2));
     assert_eq!(finding.source, "deep-r2");
     assert_eq!(finding.body, "r2: the fix only moved the boundary");
     assert_eq!(finding.reports.len(), 2);
@@ -245,7 +255,7 @@ fn a_higher_severity_re_report_escalates_in_place_and_is_news() {
     let finding = run.finding();
     assert_eq!(finding.status, Status::Open);
     assert_eq!(finding.severity, Severity::Blocker);
-    assert_eq!((finding.news_round, finding.last_seen_round), (2, 2));
+    assert_eq!(run.rounds(), (Some(2), 2));
     assert_eq!(finding.source, "cross-r2");
     assert_eq!(finding.body, "r2: the log ships to a third party");
     assert_eq!(
@@ -270,7 +280,7 @@ fn a_same_severity_re_report_in_a_later_round_is_not_news() {
 
     let finding = run.finding();
     assert_eq!(finding.status, Status::Open);
-    assert_eq!((finding.news_round, finding.last_seen_round), (1, 2));
+    assert_eq!(run.rounds(), (Some(1), 2));
     assert_eq!(finding.source, "deep-r1");
     assert_eq!(finding.body, "r1 evidence");
     assert_eq!(finding.reports.len(), 2);
@@ -293,7 +303,7 @@ fn a_same_round_duplicate_keeps_both_reports() {
         "cross: independently found, different evidence",
     );
 
-    assert_eq!(run.ledger.len(), 1, "still one finding");
+    assert_eq!(run.ledger.findings().len(), 1, "still one finding");
     let finding = run.finding();
     assert_eq!(finding.source, "deep-r1");
     assert_eq!(finding.body, "deep: no backoff, no cap");
@@ -329,7 +339,7 @@ fn a_rejected_claim_re_reported_at_the_same_severity_stays_rejected() {
     let finding = run.finding();
     assert_eq!(finding.status, Status::Rejected);
     assert_eq!(finding.severity, Severity::Major);
-    assert_eq!((finding.news_round, finding.last_seen_round), (1, 2));
+    assert_eq!(run.rounds(), (Some(1), 2));
     assert_eq!(finding.source, "deep-r1");
     assert_eq!(finding.body, "r1 evidence");
     assert_eq!(
@@ -365,7 +375,7 @@ fn a_rejected_claim_re_reported_higher_adopts_the_rank_but_stays_rejected() {
     let finding = run.finding();
     assert_eq!(finding.status, Status::Rejected);
     assert_eq!(finding.severity, Severity::Blocker);
-    assert_eq!((finding.news_round, finding.last_seen_round), (2, 2));
+    assert_eq!(run.rounds(), (Some(2), 2));
     assert_eq!(finding.source, "cross-r2");
     assert_eq!(finding.body, "r2: it disables the deadline entirely");
     assert_eq!(
@@ -394,7 +404,7 @@ fn a_wontfix_claim_is_never_reopened_by_a_re_report() {
 
     let finding = run.finding();
     assert_eq!(finding.status, Status::Wontfix);
-    assert_eq!((finding.news_round, finding.last_seen_round), (1, 2));
+    assert_eq!(run.rounds(), (Some(1), 2));
     assert_eq!(finding.source, "deep-r1");
     assert_eq!(finding.body, "r1 evidence");
     assert_eq!(
@@ -432,7 +442,7 @@ fn a_contested_claim_escalates_and_keeps_blocking() {
     let finding = run.finding();
     assert_eq!(finding.status, Status::Contested);
     assert_eq!(finding.severity, Severity::Blocker);
-    assert_eq!((finding.news_round, finding.last_seen_round), (2, 2));
+    assert_eq!(run.rounds(), (Some(2), 2));
     assert_eq!(finding.source, "cross-r2");
     assert_eq!(finding.body, "r2: stale reads are user-visible");
     assert_eq!(
@@ -463,7 +473,7 @@ fn a_fix_in_the_reporting_round_needs_a_clean_round_to_converge() {
     assert_eq!(verdict(run.convergence()), (2, 0, 0, Verdict::Converged));
     let finding = run.finding();
     assert_eq!(finding.status, Status::Fixed);
-    assert_eq!((finding.news_round, finding.last_seen_round), (1, 1));
+    assert_eq!(run.rounds(), (Some(1), 1));
     assert_eq!(finding.current_note(), Some("flush on drop"));
 }
 

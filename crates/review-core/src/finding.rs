@@ -55,14 +55,12 @@ impl Location {
 #[serde(rename_all = "snake_case")]
 pub enum RelationKind {
     Corroborates,
-    Disputes,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClaimTargetKind {
     Finding,
-    Report,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,9 +70,10 @@ pub struct RelationTarget {
     pub id: String,
 }
 
-/// An explicit relation to a Finding in the attempt's input FindingSet, or to a Report from the
-/// same selected attempt. Only explicit relations — or an exact occurrence-key match — may
-/// attach a report; titles and fuzzy fingerprints never prove claim identity.
+/// An explicit corroboration of a Finding in the attempt's input FindingSet. Only explicit
+/// relations — or an exact occurrence-key match — may attach a report; titles and fuzzy
+/// fingerprints never prove claim identity. A reviewer disputes a prior Finding through its
+/// disposition, never through a relation.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Relation {

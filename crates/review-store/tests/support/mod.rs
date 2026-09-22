@@ -8,8 +8,19 @@ use review_core::{
     SubjectKind, SubjectV1,
 };
 use review_store::{
-    CanonicalReduction, CanonicalStage, Cas, EventStore, Ingest, NewEvent, StoreError,
+    CanonicalReduction, CanonicalStage, Cas, ConvergencePolicy, EventStore, Ingest, NewEvent,
+    StoreError,
 };
+
+/// The convergence policy the store tests decide under: one clean Round, at most three, gate
+/// `major`.
+pub fn default_policy() -> ConvergencePolicy {
+    ConvergencePolicy {
+        clean_rounds: 1,
+        max_rounds: 3,
+        gate: review_core::Severity::Major,
+    }
+}
 
 pub struct Authority {
     pub authority: String,

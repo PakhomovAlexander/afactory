@@ -831,7 +831,7 @@ fn overlapping_attempt_walls_merge_within_their_round_epoch() {
 fn a_campaign_without_a_task_keeps_the_review_report_1_label() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
-    let store = EventStore::open_in_memory().unwrap();
+    let store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
     let view = crate::read_report_view(&store, &cas, "empty").unwrap();
     let value = serde_json::to_value(view).unwrap();
     assert_eq!(value["schema"], "af/review-report@1");

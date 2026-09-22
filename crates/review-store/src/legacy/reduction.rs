@@ -243,12 +243,10 @@ pub(super) fn prepare_review_outputs(
             for existing in finding.reports.iter().filter(|report| {
                 report.source == source
                     && report.round == round
-                    && report.relations.iter().any(|relation| {
-                        relation.kind == review_core::RelationKind::Corroborates
-                            && relation.target.kind
-                                == review_core::finding::ClaimTargetKind::Finding
-                            && relation.target.id == key
-                    })
+                    && report
+                        .relations
+                        .iter()
+                        .any(|relation| relation.target.id == key)
             }) {
                 let value = cas.get_json(&existing.report_id).map_err(|error| {
                     StoreError::Artifact(format!(
