@@ -10,8 +10,9 @@ lists the considered options with the reasons each was rejected, records the dec
 with its consequences. A changed decision is a new ADR that names what it supersedes. A partially
 superseded ADR keeps its body as it was and gains a note on its status line linking the new ADR; a
 fully superseded ADR is deleted with its index entry, and git history keeps it. Links to a deleted
-ADR are rewritten to point at the superseding ADR, or to plain text; this is the only edit allowed
-in another accepted ADR's body ([ADR-0113](0113-ga-reads-only-what-ga-writes.md)).
+ADR, or to an internal record deleted at GA, are rewritten to point at the superseding ADR or to
+plain text; this is the only edit allowed in another accepted ADR's body
+([ADR-0113](0113-ga-reads-only-what-ga-writes.md), clauses 6 and 8).
 
 A number is never reissued: a deleted record leaves its number empty, and the index simply skips
 it. Two records were accepted on the same day under the number 0107 — the warm-layer ADR and the
