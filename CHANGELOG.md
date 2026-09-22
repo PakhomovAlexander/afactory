@@ -145,12 +145,13 @@ or needs a documented hand edit.
   fails with "Codex Worker returned no final message"; the usage it reported is still charged.
 - Source Manifests have one path spelling. The `path_encoding` field (`legacy_v1` or
   `percent_v2`) is gone: every path is spelled the way capture already spelled new trees, so a
-  name that starts or ends with whitespace, or holds a space beside a `%` or non-UTF-8 bytes, is
-  percent-escaped (` notes.md` is `%20notes.md`). That now includes a file a reviewer or Worker
-  creates during a run, which a sandbox seal, warm workspace scan or Task delivery spelled
-  literally when the baseline was an ordinary tree. A Snapshot's content digest hashes the stored
-  spelling, so ordinary trees keep their digests, but a tree with such a name gets a different
-  Snapshot digest than an earlier release gave it. ADR-0024 is superseded.
+  path that starts or ends with whitespace, or holds a space together with a `%` or non-UTF-8
+  bytes, is percent-escaped (` notes.md` is `%20notes.md`, `a%b c` is `a%25b%20c`). That now
+  includes a file a reviewer or Worker creates during a run, which a sandbox seal, warm workspace
+  scan or Task delivery spelled literally when the baseline was an ordinary tree. A Snapshot's
+  content digest hashes the stored spelling, so ordinary trees keep their digests, but a tree
+  with such a path gets a different Snapshot digest than an earlier release gave it. ADR-0024 is
+  superseded.
 - `af` builds and runs on Linux and macOS only. A source build for any other host, including
   Windows and the BSDs, now stops with a compile error. It no longer compiles fallbacks that
   skipped read-only sandboxes, process-group kills, symlinks or executable bits. The release

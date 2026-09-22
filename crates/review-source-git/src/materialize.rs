@@ -306,6 +306,7 @@ mod tests {
 
     #[test]
     fn paths_that_leave_the_root_are_refused() {
+        // A literal spelling that is not a valid repository path is already noncanonical.
         for path in [
             "../escape",
             "a/../../escape",
@@ -318,8 +319,30 @@ mod tests {
             "",
         ] {
             assert!(
-                checked_relative_path(path).is_err(),
-                "{path} was not refused"
+                matches!(
+                    checked_relative_path(path),
+                    Err(MaterializeError::Manifest(_))
+                ),
+                "{path} was not refused as noncanonical"
+            );
+        }
+        // A percent-mode spelling is canonical whatever its components are, so only the
+        // component check keeps these inside the root.
+        for path in [
+            "a%FF/../escape",
+            "%FF/../../escape",
+            "/a%FF",
+            "a%FF/./b",
+            "a%FF//b",
+            "a%FF/",
+            "50%25/../x",
+        ] {
+            assert!(
+                matches!(
+                    checked_relative_path(path),
+                    Err(MaterializeError::Escape { path: refused }) if refused == path
+                ),
+                "{path} was not refused as an escape"
             );
         }
         assert!(checked_relative_path("a/b/c.rs").is_ok());
