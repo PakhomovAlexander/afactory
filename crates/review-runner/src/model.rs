@@ -17,24 +17,66 @@
 //!   attempted, so "the model returned garbage" is always an inspectable claim.
 //!
 //! What this module deliberately does not do: parse. A provider's output framing (Codex JSONL,
-//! some other envelope) is the provider adapter's job, behind [`ReviewerAdapter`].
+//! some other envelope) is the provider adapter's job, behind
+//! [`WorkerModelAdapter`](crate::task::WorkerModelAdapter).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use review_broker::BrokerClient;
 use review_core::{
-    BrokerCredentialModeV1, Command, LegacyStageOutput, MAX_CHANGE_SET_BYTES,
-    MAX_PRIOR_FINDINGS_BYTES, ReviewerResultContract,
+    Command, LegacyStageOutput, MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES,
+    ReviewerResultContract,
 };
 use review_store::Cas;
 
-use crate::command_runner::RunnerError;
 use review_process::{
     SupervisedError, run_supervised_captured, run_supervised_captured_cancellable,
 };
+
+/// Why a supervised process yielded no capture, or an input could not be composed. Each is a
+/// typed outcome, never an empty result: a Worker that crashed and a Worker that found nothing
+/// must never be indistinguishable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunnerError {
+    /// The command was refused before execution — an untrusted value in an option position.
+    Refused(String),
+    /// The program could not be started at all.
+    Unavailable(String),
+    /// The reviewer ran and failed.
+    Failed {
+        exit_code: i32,
+        stderr_excerpt: String,
+    },
+    /// The reviewer did not answer by its deadline and was killed. Whatever it spent is gone;
+    /// whether to retry is the kernel's decision, not this layer's.
+    TimedOut {
+        after_ms: u64,
+        raw_artifact: Option<String>,
+    },
+}
+
+impl std::fmt::Display for RunnerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunnerError::Refused(why) => write!(f, "reviewer command refused: {why}"),
+            RunnerError::Unavailable(why) => write!(f, "reviewer unavailable: {why}"),
+            RunnerError::Failed {
+                exit_code,
+                stderr_excerpt,
+            } => write!(f, "reviewer failed (exit {exit_code}): {stderr_excerpt}"),
+            RunnerError::TimedOut { after_ms, .. } => {
+                write!(
+                    f,
+                    "reviewer did not answer within {after_ms}ms and was killed"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RunnerError {}
 
 /// Appended to every package prompt by a model adapter: the exact result contract, kept in
 /// one place, versioned with the parser it feeds.
@@ -432,24 +474,6 @@ pub struct Grant {
     pub value: String,
 }
 
-/// What a reviewer invocation returns when it works: the parsed result, the cost receipt, and
-/// where the raw (redacted) answer lives.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ReviewerReturn {
-    pub output: LegacyStageOutput,
-    /// Optional transport declaration extracted from the same final answer. It is not part of
-    /// the persisted Reviewer Result and has no authority until the kernel verifies it.
-    pub proposal: Result<Option<ReviewerProposalDeclaration>, String>,
-    /// Optional Worker Notes extracted from the same final answer, the ADR-0038 pattern again.
-    /// The kernel bounds and records them; they never enter the persisted Reviewer Result.
-    pub notes: Result<Option<ReviewerNotesDeclaration>, String>,
-    /// Chargeable tokens: uncached input plus output when the provider distinguishes cache
-    /// reads. Zero for a deterministic `command` reviewer.
-    pub cost_tokens: u64,
-    /// CAS id of the redacted raw stdout. Kept whether or not it parsed.
-    pub raw_artifact: String,
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TokenUsage {
@@ -634,7 +658,7 @@ pub enum InputTransport {
     /// A Markdown prompt on stdin: the package instructions, the output contract, then the
     /// labelled inputs.
     Prompt,
-    /// The typed `ReviewerInputs` JSON document on stdin; nothing when it encodes to `{}`.
+    /// The typed `ReviewerInputs` JSON document on stdin.
     Json,
 }
 
@@ -724,8 +748,7 @@ pub fn compose_model_prompt(
     Ok((prompt, manifest))
 }
 
-/// Compose a command Worker's input: the typed document exactly as the command adapter
-/// writes it to stdin (an empty document is `{}`, which the adapter then omits).
+/// Compose a command Worker's input: the typed document exactly as it is written to stdin.
 pub fn compose_command_input(
     inputs: &ReviewerInputs,
 ) -> Result<(Vec<u8>, ContextManifest), String> {
@@ -753,15 +776,6 @@ pub struct ReviewerAttemptContext {
     pub reserved_tokens: Option<u64>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct ReceiptedReviewerReturn {
-    pub returned: ReviewerReturn,
-    pub usage: TokenUsage,
-    pub context_manifest: ContextManifest,
-}
-
-/// One reviewer dispatch behind one contract, whatever runs it — a deterministic command, a
-/// model CLI, or a stub in a test. The kernel holds these and nothing more specific.
 /// What one reviewer attempt is given beyond its sandbox: labelled data artifacts the kernel
 /// resolved for it. Data, never authority — an adapter renders these under an explicit label
 /// so the model weighs them as claims to re-examine, not as instructions to obey.
@@ -814,11 +828,6 @@ pub struct ReviewerInputs {
     /// root and one environment variable, and the manifest lists it so the report can say so.
     #[serde(skip)]
     pub build_cache_artifact_id: Option<String>,
-    /// Sandbox-local environment the kernel resolved for this exact Attempt, such as
-    /// `CARGO_TARGET_DIR` pointing at a cloned Build Cache. Absolute host paths of one
-    /// temporary sandbox: never serialized, never rendered, never durable.
-    #[serde(skip)]
-    pub sandbox_environment: Vec<(String, String)>,
     /// Package P4: the session identity the kernel assigned this Attempt, derived from its
     /// Attempt ID. Present only for an adapter that hosts sessions and a node whose policy asks
     /// for the layer; the adapter passes it as `--session-id` so the transcript is the kernel's
@@ -967,7 +976,7 @@ impl ReviewerInputs {
 
     /// Validate the bound that applies even when the adapter transports the inputs as JSON
     /// instead of rendering them into a model prompt.
-    pub fn validate_refusal_history_bound(&self) -> Result<(), String> {
+    fn validate_refusal_history_bound(&self) -> Result<(), String> {
         self.rendered_refusal_history().map(drop)
     }
 
@@ -1345,29 +1354,12 @@ fn patch_fence(patch: &str) -> String {
     "~".repeat(longest.max(2) + 1)
 }
 
-/// `Send + Sync` is part of the contract: the scheduler dispatches reviewers from worker
-/// threads, and an adapter is plain configuration plus an `invoke` — it holds no mutable
-/// state between calls.
-pub trait ReviewerAdapter: Send + Sync {
-    /// Credential boundary this adapter actually provides. Pipeline v4 compares this fact with
-    /// captured project authority before any reviewer dispatch.
-    fn credential_mode(&self) -> BrokerCredentialModeV1 {
-        BrokerCredentialModeV1::CredentialFree
-    }
-
-    fn invoke(
-        &self,
-        cas: &Cas,
-        sandbox_root: &Path,
-        inputs: &ReviewerInputs,
-    ) -> Result<ReviewerReturn, RunnerError>;
-
-    /// The exact bytes this adapter would send for `inputs`, without sending them. `None` for
-    /// adapters with no fixed input encoding, such as in-process test stubs.
-    fn render_input(&self, inputs: &ReviewerInputs) -> Result<Option<RenderedInput>, RunnerError> {
-        let _ = inputs;
-        Ok(None)
-    }
+/// How a reviewer package's first-Attempt input is shown: `af review render` builds one of these
+/// from the digest-pinned package and asks for the exact bytes, which are the bytes the Task
+/// host composes at dispatch.
+pub trait ReviewerAdapter {
+    /// The exact bytes this adapter's Worker receives for `inputs`, without sending them.
+    fn render_input(&self, inputs: &ReviewerInputs) -> Result<RenderedInput, RunnerError>;
 
     /// The session half of this adapter, or `None` when it cannot host a kernel-assigned
     /// session and resume it forked. The default refuses the layer, which is how every adapter
@@ -1375,144 +1367,21 @@ pub trait ReviewerAdapter: Send + Sync {
     fn session_layer(&self) -> Option<&dyn crate::session::SessionLayer> {
         None
     }
-
-    fn invoke_receipted(
-        &self,
-        cas: &Cas,
-        sandbox_root: &Path,
-        inputs: &ReviewerInputs,
-    ) -> Result<ReceiptedReviewerReturn, RunnerError> {
-        let context_manifest =
-            ContextManifest::command_input(inputs).map_err(RunnerError::Refused)?;
-        let returned = self.invoke(cas, sandbox_root, inputs)?;
-        Ok(ReceiptedReviewerReturn {
-            usage: TokenUsage::charge_only(returned.cost_tokens),
-            returned,
-            context_manifest,
-        })
-    }
-
-    /// Invoke under an optional broker capability. Credential-free and legacy trusted adapters
-    /// retain their existing path; a broker-capable adapter must override this method and consume
-    /// the opaque client without receiving the broker's credential.
-    fn invoke_with_broker(
-        &self,
-        cas: &Cas,
-        sandbox_root: &Path,
-        inputs: &ReviewerInputs,
-        broker: Option<&dyn BrokerClient>,
-    ) -> Result<ReceiptedReviewerReturn, RunnerError> {
-        if broker.is_some() {
-            return Err(RunnerError::Refused(
-                "reviewer adapter does not consume Broker Handles".into(),
-            ));
-        }
-        self.invoke_receipted(cas, sandbox_root, inputs)
-    }
 }
 
-/// The `command` adapter behind the same contract: deterministic, credential-free, cost zero.
-#[derive(Debug, Clone)]
-pub struct CommandAdapter {
-    command: Command,
-    timeout: Duration,
-}
-
-impl CommandAdapter {
-    pub fn new(command: Command, timeout: Duration) -> Self {
-        Self { command, timeout }
-    }
-}
-
-fn invoke_command(
-    command: &Command,
-    runner: crate::CommandRunner<'_>,
-    cas: &Cas,
-    inputs: &ReviewerInputs,
-) -> Result<ReviewerReturn, RunnerError> {
-    inputs
-        .validate_refusal_history_bound()
-        .map_err(RunnerError::Refused)?;
-    let mut runner = runner;
-    for (name, value) in &inputs.sandbox_environment {
-        runner = runner.with_env(name, value);
-    }
-    // The serialized document itself decides whether stdin exists. Adding a future input field
-    // cannot silently create durable AttemptInput authority that this adapter drops.
-    let encoded =
-        serde_json::to_vec(inputs).map_err(|error| RunnerError::Refused(error.to_string()))?;
-    let (output, raw_artifact) = if encoded == b"{}" {
-        runner.invoke_raw(command)?
-    } else {
-        runner.invoke_raw_with_input_for(command, encoded, inputs.result_contract)?
-    };
-    let raw = cas
-        .get(&raw_artifact)
-        .map_err(|error| RunnerError::Unavailable(error.to_string()))?;
-    let proposal = std::str::from_utf8(&raw)
-        .map_err(|error| error.to_string())
-        .and_then(parse_proposal_declaration);
-    let notes = std::str::from_utf8(&raw)
-        .map_err(|error| error.to_string())
-        .and_then(parse_notes_declaration);
-    Ok(ReviewerReturn {
-        output,
-        proposal,
-        notes,
-        cost_tokens: 0,
-        raw_artifact,
-    })
-}
+/// The `command` adapter: a deterministic, credential-free Worker whose input is the typed
+/// `ReviewerInputs` document.
+#[derive(Debug, Clone, Copy)]
+pub struct CommandAdapter;
 
 impl ReviewerAdapter for CommandAdapter {
-    fn render_input(&self, inputs: &ReviewerInputs) -> Result<Option<RenderedInput>, RunnerError> {
+    fn render_input(&self, inputs: &ReviewerInputs) -> Result<RenderedInput, RunnerError> {
         let (bytes, manifest) = compose_command_input(inputs).map_err(RunnerError::Refused)?;
-        Ok(Some(RenderedInput {
+        Ok(RenderedInput {
             transport: InputTransport::Json,
             bytes,
             manifest,
-        }))
-    }
-
-    fn invoke(
-        &self,
-        cas: &Cas,
-        sandbox_root: &Path,
-        inputs: &ReviewerInputs,
-    ) -> Result<ReviewerReturn, RunnerError> {
-        invoke_command(
-            &self.command,
-            crate::CommandRunner::new(cas, sandbox_root).with_timeout(self.timeout),
-            cas,
-            inputs,
-        )
-    }
-}
-
-/// Programmatic callers retain the bounded default; the `af` CLI binds [`CommandAdapter`] with the
-/// exact timeout captured in the Campaign Manifest.
-impl ReviewerAdapter for Command {
-    fn render_input(&self, inputs: &ReviewerInputs) -> Result<Option<RenderedInput>, RunnerError> {
-        let (bytes, manifest) = compose_command_input(inputs).map_err(RunnerError::Refused)?;
-        Ok(Some(RenderedInput {
-            transport: InputTransport::Json,
-            bytes,
-            manifest,
-        }))
-    }
-
-    fn invoke(
-        &self,
-        cas: &Cas,
-        sandbox_root: &Path,
-        inputs: &ReviewerInputs,
-    ) -> Result<ReviewerReturn, RunnerError> {
-        invoke_command(
-            self,
-            crate::CommandRunner::new(cas, sandbox_root),
-            cas,
-            inputs,
-        )
+        })
     }
 }
 
@@ -1520,8 +1389,7 @@ impl ReviewerAdapter for Command {
 ///
 /// A nonzero exit is *in* the capture, not an error: what a provider's failure means — spent
 /// or not spent, retryable or fatal — is the adapter's call, usually made by reading the very
-/// output captured here. [`require_success`](Self::require_success) is the shortcut for
-/// adapters with nothing to read.
+/// output captured here.
 #[derive(Debug, Clone)]
 pub struct RawCapture {
     pub status: std::process::ExitStatus,
@@ -1539,24 +1407,6 @@ pub struct SettledCapture {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub raw_artifact_ids: Vec<String>,
-}
-
-impl RawCapture {
-    /// Map a nonzero exit to [`RunnerError::Failed`] with the last (redacted) stderr line.
-    pub fn require_success(self) -> Result<RawCapture, RunnerError> {
-        if self.status.success() {
-            return Ok(self);
-        }
-        let excerpt = String::from_utf8_lossy(&self.stderr)
-            .lines()
-            .last()
-            .unwrap_or_default()
-            .to_string();
-        Err(RunnerError::Failed {
-            exit_code: self.status.code().unwrap_or(-1),
-            stderr_excerpt: excerpt,
-        })
-    }
 }
 
 pub struct ModelRunner {

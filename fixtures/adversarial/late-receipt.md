@@ -48,13 +48,13 @@ rather than a filter applied at read time.
 `crates/review-attempt/tests/late_receipt.rs`. All three required behaviours hold:
 
 - **Quarantined.** A1's result is recorded with its attempt and epoch, marked quarantined, and
-  excluded from selected outputs — a downstream consumer sees A2's artifact and only A2's.
-- **Charged.** A1's cost is committed to the run and node budgets whether or not anyone reads its
-  answer. A fenced attempt is not a free retry, and a separate test shows a cap bounding a retry
-  loop precisely because the wasted attempts count against it.
+  never selected — only A2's delivery can feed a downstream consumer.
+- **Charged.** A1's cost is committed to the run and fan-out budgets whether or not anyone reads
+  its answer. A fenced attempt is not a free retry, and a separate test shows a cap bounding a
+  retry loop precisely because the wasted attempts count against it.
 - **Replay-stable.** A1's delivery is moved to three positions — before the retry is dispatched,
-  while it runs, and after it answered — and the selected outputs, the total spend, and the
-  quarantine count are identical every time.
+  while it runs, and after it answered — and each attempt's final state and charge, and the total
+  spend, are identical every time.
 
 One behaviour fell out that the case did not ask for and should have: dispatching a retry fences
 its predecessor without an explicit timeout. Otherwise a superseded attempt could win by

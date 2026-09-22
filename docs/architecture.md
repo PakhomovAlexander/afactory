@@ -236,11 +236,12 @@ the header goes to stderr and the raw input to stdout, so `> prompt.md` is exact
 
 A package whose runner is not `claude` or `codex` is a deterministic command Worker. It runs
 inside the materialized sandbox with that sandbox as its working directory, a cleared environment
-(`PATH` and `LC_ALL=C` only), the typed `ReviewerInputs` JSON on stdin (no stdin when the document
-is empty), and its stdout parsed as a `ReviewerResult`. The sandbox is a fresh materialization of
-the Snapshot manifest and has no `.git`: nothing in it can read history, config, or hooks from the
-reviewed repository. Such a Worker needs no Provider binding and spends no tokens, which is what
-makes a small deterministic check the cheapest node in a pipeline.
+(`PATH`, `LC_ALL=C`, and `HOME`, the XDG directories and `TMPDIR` inside a temporary runtime
+directory of its own Attempt), the typed `ReviewerInputs` JSON on stdin, and its stdout parsed as a
+`ReviewerResult`. The sandbox is a fresh materialization of the Snapshot manifest and has no
+`.git`: nothing in it can read history, config, or hooks from the reviewed repository. Such a
+Worker needs no Provider binding and spends no tokens, which is what makes a small deterministic
+check the cheapest node in a pipeline.
 
 ## Sandboxes, and what this provider is not
 
@@ -533,10 +534,10 @@ cannot win by finishing first.
 Budgets **reserve before dispatch**, never account afterwards: a dispatch that cannot reserve does
 not happen, so a retry storm or a wide scatter cannot overrun a cap by the width of one attempt —
 and one attempt on a frontier model at maximum reasoning is not a rounding error. Scopes nest
-(attempt, node, fan-out, run), the tightest one refuses, and the error names itself, because a cap
-that refuses anonymously is one nobody can raise correctly. A reservation is all-or-nothing across
-scopes; an overrun commits rather than being refused, since the work is already paid for, and then
-closes the gate on the next dispatch.
+(named token scopes, such as one node's or one fan-out's cap, inside the run), the tightest one
+refuses, and the error names itself, because a cap that refuses anonymously is one nobody can raise
+correctly. A reservation is all-or-nothing across scopes; an overrun commits rather than being
+refused, since the work is already paid for, and then closes the gate on the next dispatch.
 
 A Worker node may declare its own Attempt cap — `budget = { attempt = 150000 }` on the
 `[[nodes]]` entry — and its dispatch then reserves that amount instead of `[budgets].attempt`,

@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use review_core::task::{TaskLimitsV1, VerificationReserveV1};
 use serde::{Deserialize, Serialize};
 
-use crate::{Budget, BudgetLedger, Reservation, Scope};
+use crate::{Budget, BudgetLedger, BudgetScope, Reservation};
 
 mod scopes;
 pub use scopes::TaskTokenScope;
@@ -120,7 +120,7 @@ impl TaskBudget {
             return Err("Task cannot protect the compiled verifier allocation".into());
         }
         Ok(Self {
-            tokens: BudgetLedger::default().with_limit(Scope::Run, Budget::of(limits.tokens)),
+            tokens: BudgetLedger::default().with_limit(BudgetScope::Run, Budget::of(limits.tokens)),
             limits,
             nodes: allowances
                 .into_iter()
@@ -168,7 +168,7 @@ impl TaskBudget {
     /// Earlier spend and the original absolute deadline remain authoritative.
     pub fn remaining_limits(&self) -> TaskLimitsV1 {
         let mut limits = self.limits.clone();
-        limits.tokens = self.tokens.remaining(&Scope::Run).unwrap_or(0);
+        limits.tokens = self.tokens.remaining(&BudgetScope::Run).unwrap_or(0);
         limits.max_attempts =
             u64::from(limits.max_attempts).saturating_sub(self.begun_attempts()) as u32;
         limits
@@ -199,54 +199,11 @@ impl TaskBudget {
         Ok(())
     }
 
-    /// The single bootstrap-to-execution barrier keeps the token ledger, reservation IDs,
-    /// late-usage authority and all begun Attempts. A caller must separately admit its exact
-    /// compiled graph and generated origins through the common Store.
-    pub fn enter_execution(
-        &mut self,
-        allowances: BTreeMap<String, NodeAllowance>,
-        call_limits: BTreeMap<String, u32>,
-        now_unix_ms: u64,
-    ) -> Result<(), String> {
-        self.install_graph(allowances, call_limits, now_unix_ms, false)
-    }
-
     /// Install a graph only after invalidation or the fixed planning handoff. The Store owns
     /// those barriers and supplies whether this graph is the captured preparation Pipeline.
-    pub fn install_graph(
-        &mut self,
-        allowances: BTreeMap<String, NodeAllowance>,
-        call_limits: BTreeMap<String, u32>,
-        now_unix_ms: u64,
-        preparation: bool,
-    ) -> Result<(), String> {
-        self.install_graph_with_token_scopes(
-            allowances,
-            call_limits,
-            BTreeMap::new(),
-            now_unix_ms,
-            preparation,
-        )
-    }
-
-    pub fn install_graph_with_token_scopes(
-        &mut self,
-        allowances: BTreeMap<String, NodeAllowance>,
-        call_limits: BTreeMap<String, u32>,
-        token_scopes: BTreeMap<String, TaskTokenScope>,
-        now_unix_ms: u64,
-        preparation: bool,
-    ) -> Result<(), String> {
-        self.install_graph_with_owned_templates(
-            allowances,
-            call_limits,
-            token_scopes,
-            BTreeMap::new(),
-            now_unix_ms,
-            preparation,
-        )
-    }
-
+    /// The bootstrap-to-execution barrier keeps the token ledger, reservation IDs, late-usage
+    /// authority and all begun Attempts; a caller must separately admit its exact compiled
+    /// graph and generated origins through the common Store.
     pub fn install_graph_with_owned_templates(
         &mut self,
         allowances: BTreeMap<String, NodeAllowance>,
@@ -446,7 +403,7 @@ impl TaskBudget {
             return Err("Task deadline protects still-required verification".into());
         }
         if add(allowance.tokens_per_attempt, protected.tokens)?
-            > self.tokens.remaining(&Scope::Run).unwrap_or(0)
+            > self.tokens.remaining(&BudgetScope::Run).unwrap_or(0)
         {
             return Err("Task token limit protects still-required verification".into());
         }
@@ -524,10 +481,6 @@ impl TaskBudget {
 
     /// Failures and fenced work use the same settlement as successful work. A reported
     /// overrun stops new dispatch even when the wider Task limit would otherwise have room.
-    pub fn settle(&mut self, id: &str, actual: u64) -> Result<(), String> {
-        self.settle_exact(id, u128::from(actual))
-    }
-
     pub fn settle_exact(&mut self, id: &str, actual: u128) -> Result<(), String> {
         let held = self
             .reservations
@@ -558,16 +511,12 @@ impl TaskBudget {
     }
 
     pub fn committed_tokens(&self) -> u128 {
-        self.tokens.committed(&Scope::Run)
+        self.tokens.committed(&BudgetScope::Run)
     }
 
     /// A Provider observation commits known usage even while its Attempt is running. The
     /// unspent reservation stays held until settlement; an overrun immediately stops dispatch.
     /// After settlement, observations can only increase the charge, including abandoned work.
-    pub fn observe_charge(&mut self, id: &str, actual: u64) -> Result<(), String> {
-        self.observe_charge_exact(id, u128::from(actual))
-    }
-
     pub fn observe_charge_exact(&mut self, id: &str, actual: u128) -> Result<(), String> {
         let held = self
             .reservations
@@ -598,7 +547,7 @@ impl TaskBudget {
         Ok(())
     }
     pub fn reserved_tokens(&self) -> u128 {
-        self.tokens.reserved(&Scope::Run)
+        self.tokens.reserved(&BudgetScope::Run)
     }
     pub fn begun_attempts(&self) -> u64 {
         self.retired_attempts + self.nodes.values().map(|a| u64::from(a.begun)).sum::<u64>()

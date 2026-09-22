@@ -13,13 +13,9 @@ pub type Epoch = u64;
 pub struct AttemptId(pub String);
 
 impl AttemptId {
-    /// Derived from node and epoch, never random: replay must reproduce the same identity, and a
-    /// random ID would make two otherwise identical runs incomparable.
-    pub fn of(node: &str, epoch: Epoch) -> AttemptId {
-        AttemptId(format!("{node}#{epoch}"))
-    }
-
-    /// Schema-conforming identity scoped to one durable Round event.
+    /// Schema-conforming identity scoped to one durable Round event. Derived from the Round,
+    /// node and epoch, never random: replay must reproduce the same identity, and a random ID
+    /// would make two otherwise identical runs incomparable.
     pub fn scoped(round_event_id: &str, node: &str, epoch: Epoch) -> AttemptId {
         let mut hasher = Sha256::new();
         for part in [
@@ -62,19 +58,11 @@ pub struct Attempt {
     pub charged: u128,
 }
 
-/// What an attempt delivered.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Receipt {
-    pub attempt: AttemptId,
-    pub output: String,
-    pub cost: u64,
-}
-
-/// A common Task receipt can include several bounded Provider operations.
+/// An attempt's delivery, admitted with what it cost. A common Task receipt can include
+/// several bounded Provider operations, so its cost is the exact cumulative charge.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExactReceipt {
     pub attempt: AttemptId,
-    pub output: String,
     pub cost: u128,
 }
 
@@ -87,16 +75,16 @@ pub enum Selection {
     Quarantined,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct AttemptLedger {
     attempts: BTreeMap<AttemptId, Attempt>,
-    /// Updated with the same checked mutation as each Attempt's cumulative charge.
+    /// Updated with the same checked mutation as each Attempt's cumulative charge, so a total
+    /// that no longer fits refuses the charge instead of wrapping.
     charged_total: u128,
     /// The current epoch per node. A receipt from any earlier epoch is late.
     current: BTreeMap<String, Epoch>,
-    /// Outputs that may feed downstream, in the order they were selected.
-    selected: Vec<(String, String)>,
-    namespace: Option<String>,
+    /// The durable Round event every Attempt identity is scoped to.
+    namespace: String,
 }
 
 impl AttemptLedger {
@@ -106,20 +94,18 @@ impl AttemptLedger {
         prior_attempt_counts: BTreeMap<String, u64>,
     ) -> Self {
         Self {
+            attempts: BTreeMap::new(),
+            charged_total: 0,
             current: prior_attempt_counts
                 .into_iter()
                 .filter_map(|(node, count)| count.checked_sub(1).map(|epoch| (node, epoch)))
                 .collect(),
-            namespace: Some(namespace.into()),
-            ..Self::default()
+            namespace: namespace.into(),
         }
     }
 
     fn id(&self, node: &str, epoch: Epoch) -> AttemptId {
-        self.namespace.as_deref().map_or_else(
-            || AttemptId::of(node, epoch),
-            |namespace| AttemptId::scoped(namespace, node, epoch),
-        )
+        AttemptId::scoped(&self.namespace, node, epoch)
     }
 
     /// Dispatch a new attempt for a node, superseding any earlier one.
@@ -159,16 +145,10 @@ impl AttemptLedger {
         }
     }
 
-    /// Record spend for an attempt that produced no receipt, such as a timeout or malformed
-    /// provider response. This preserves legacy replacement accounting; common Task callers
-    /// use [`Self::charge_exact`] for cumulative floors. Fencing and accounting are independent.
-    pub fn charge(&mut self, attempt: &AttemptId, amount: u64) {
-        self.set_charge(attempt, u128::from(amount))
-            .expect("legacy charge must fit the exact Attempt ledger");
-    }
-
-    /// Cumulative charge floors cannot refund earlier observations. Check the aggregate
-    /// before mutation so callers can reject an unrepresentable accounting transition.
+    /// Record spend for an attempt, including one that produced no receipt, such as a timeout
+    /// or malformed provider response. Charges are cumulative floors and cannot refund earlier
+    /// observations. The aggregate is checked before mutation so callers can reject an
+    /// unrepresentable accounting transition. Fencing and accounting are independent.
     pub fn charge_exact(&mut self, attempt: &AttemptId, amount: u128) -> Result<(), String> {
         let Some(existing) = self.attempts.get(attempt) else {
             return Ok(());
@@ -197,17 +177,12 @@ impl AttemptLedger {
     /// The single decision that matters: was this attempt still current? A fenced attempt's
     /// output is charged and recorded but never selected — so a late delivery cannot change the
     /// run, whatever it contains.
-    pub fn admit(&mut self, receipt: &Receipt) -> Selection {
-        self.charge(&receipt.attempt, receipt.cost);
-        self.select_receipt(&receipt.attempt, &receipt.output)
-    }
-
     pub fn admit_exact(&mut self, receipt: &ExactReceipt) -> Result<Selection, String> {
         self.charge_exact(&receipt.attempt, receipt.cost)?;
-        Ok(self.select_receipt(&receipt.attempt, &receipt.output))
+        Ok(self.select_receipt(&receipt.attempt))
     }
 
-    fn select_receipt(&mut self, attempt: &AttemptId, output: &str) -> Selection {
+    fn select_receipt(&mut self, attempt: &AttemptId) -> Selection {
         let Some(attempt) = self.attempts.get_mut(attempt) else {
             return Selection::Quarantined;
         };
@@ -217,7 +192,6 @@ impl AttemptLedger {
 
         if is_current {
             attempt.state = AttemptState::Selected;
-            self.selected.push((attempt.node.clone(), output.into()));
             Selection::Selected
         } else {
             attempt.state = AttemptState::Quarantined;
@@ -225,34 +199,8 @@ impl AttemptLedger {
         }
     }
 
-    /// Outputs eligible to feed downstream nodes, in canonical node order.
-    ///
-    /// Sorted rather than in arrival order for the same reason gather is: what a downstream node
-    /// receives must be a property of the pipeline, not of which attempt happened to land first.
-    pub fn selected_outputs(&self) -> Vec<(String, String)> {
-        let mut outputs = self.selected.clone();
-        outputs.sort();
-        outputs
-    }
-
     pub fn attempt(&self, id: &AttemptId) -> Option<&Attempt> {
         self.attempts.get(id)
-    }
-
-    pub fn attempts(&self) -> Vec<&Attempt> {
-        self.attempts.values().collect()
-    }
-
-    /// Everything spent, including on attempts whose output was thrown away.
-    pub fn total_charged(&self) -> u128 {
-        self.charged_total
-    }
-
-    pub fn quarantined(&self) -> Vec<&Attempt> {
-        self.attempts
-            .values()
-            .filter(|a| a.state == AttemptState::Quarantined)
-            .collect()
     }
 }
 
@@ -260,40 +208,30 @@ impl AttemptLedger {
 mod tests {
     use super::*;
 
-    #[test]
-    fn legacy_receipts_keep_their_historical_replacement_accounting() {
-        let mut ledger = AttemptLedger::default();
-        let attempt = ledger.dispatch("reviewer");
-        ledger.charge(&attempt, 20);
-        ledger.charge(&attempt, 7);
-        assert_eq!(ledger.total_charged(), 7);
-        ledger.admit(&Receipt {
+    fn ledger() -> AttemptLedger {
+        AttemptLedger::scoped("round", BTreeMap::new())
+    }
+
+    fn receipt(attempt: &AttemptId, cost: u128) -> ExactReceipt {
+        ExactReceipt {
             attempt: attempt.clone(),
-            output: "legacy".into(),
-            cost: 5,
-        });
-        assert_eq!(ledger.total_charged(), 5);
-        assert_eq!(ledger.attempt(&attempt).unwrap().charged, 5);
+            cost,
+        }
     }
 
     #[test]
     fn exact_late_receipts_keep_the_charge_floor_and_remain_quarantined() {
-        let mut ledger = AttemptLedger::default();
+        let mut ledger = ledger();
         let old = ledger.dispatch("reviewer");
         ledger.charge_exact(&old, u128::from(u64::MAX) + 7).unwrap();
         let current = ledger.dispatch("reviewer");
-        ledger.admit(&Receipt {
-            attempt: current,
-            output: "current".into(),
-            cost: 5,
-        });
+        assert_eq!(
+            ledger.admit_exact(&receipt(&current, 5)).unwrap(),
+            Selection::Selected
+        );
         assert_eq!(
             ledger
-                .admit_exact(&ExactReceipt {
-                    attempt: old.clone(),
-                    output: "late".into(),
-                    cost: u128::from(u64::MAX) + 8,
-                })
+                .admit_exact(&receipt(&old, u128::from(u64::MAX) + 8))
                 .unwrap(),
             Selection::Quarantined
         );
@@ -302,40 +240,54 @@ mod tests {
             ledger.attempt(&old).unwrap().charged,
             u128::from(u64::MAX) + 8
         );
-        assert_eq!(ledger.total_charged(), u128::from(u64::MAX) + 13);
+        assert_eq!(ledger.attempt(&current).unwrap().charged, 5);
         assert_eq!(
-            ledger.selected_outputs(),
-            vec![("reviewer".into(), "current".into())]
+            ledger.attempt(&old).unwrap().state,
+            AttemptState::Quarantined
+        );
+        assert_eq!(
+            ledger.attempt(&current).unwrap().state,
+            AttemptState::Selected
         );
     }
 
     #[test]
     fn exact_attempt_total_overflow_does_not_mutate_charge_or_selection() {
-        let mut ledger = AttemptLedger::default();
+        let mut ledger = ledger();
         let first = ledger.dispatch("first");
         let second = ledger.dispatch("second");
         ledger.charge_exact(&first, u128::MAX).unwrap();
-        assert!(
-            ledger
-                .admit_exact(&ExactReceipt {
-                    attempt: second.clone(),
-                    output: "overflow".into(),
-                    cost: 1,
-                })
-                .is_err()
-        );
-        assert_eq!(ledger.total_charged(), u128::MAX);
+        assert!(ledger.admit_exact(&receipt(&second, 1)).is_err());
+        assert!(ledger.charge_exact(&second, 1).is_err());
+        assert_eq!(ledger.attempt(&first).unwrap().charged, u128::MAX);
         assert_eq!(ledger.attempt(&second).unwrap().charged, 0);
         assert_eq!(
             ledger.attempt(&second).unwrap().state,
             AttemptState::Running
         );
-        assert!(ledger.selected_outputs().is_empty());
+    }
+
+    #[test]
+    fn attempt_identities_are_scoped_to_their_round_and_reconstructed_on_reopen() {
+        let mut first = ledger();
+        let one = first.dispatch("deep");
+        let two = first.dispatch("deep");
+        assert_eq!(one, AttemptId::scoped("round", "deep", 0));
+        assert_eq!(two, AttemptId::scoped("round", "deep", 1));
+        assert_ne!(
+            one,
+            AttemptLedger::scoped("other", BTreeMap::new()).dispatch("deep")
+        );
+
+        let mut reopened = AttemptLedger::scoped("round", BTreeMap::from([("deep".into(), 2)]));
+        let three = reopened.dispatch("deep");
+        assert_eq!(three, AttemptId::scoped("round", "deep", 2));
+        assert_eq!(reopened.attempt(&three).unwrap().epoch, 2);
     }
 
     #[test]
     fn a_second_dispatch_fences_the_first() {
-        let mut ledger = AttemptLedger::default();
+        let mut ledger = ledger();
         let first = ledger.dispatch("deep");
         let second = ledger.dispatch("deep");
 
@@ -349,7 +301,7 @@ mod tests {
 
     #[test]
     fn fencing_is_idempotent() {
-        let mut ledger = AttemptLedger::default();
+        let mut ledger = ledger();
         let id = ledger.dispatch("deep");
         ledger.fence("deep");
         ledger.fence("deep");
@@ -358,20 +310,18 @@ mod tests {
 
     #[test]
     fn fencing_an_unknown_node_is_not_an_error() {
-        let mut ledger = AttemptLedger::default();
+        let mut ledger = ledger();
         ledger.fence("never-dispatched");
-        assert!(ledger.attempts().is_empty());
+        let id = ledger.dispatch("never-dispatched");
+        assert_eq!(ledger.attempt(&id).unwrap().state, AttemptState::Running);
     }
 
     #[test]
     fn a_receipt_for_an_unknown_attempt_is_quarantined() {
-        let mut ledger = AttemptLedger::default();
-        let selection = ledger.admit(&Receipt {
-            attempt: AttemptId("ghost#0".into()),
-            output: "artifact".into(),
-            cost: 10,
-        });
+        let mut ledger = ledger();
+        let ghost = AttemptId::scoped("round", "ghost", 0);
+        let selection = ledger.admit_exact(&receipt(&ghost, 10)).unwrap();
         assert_eq!(selection, Selection::Quarantined);
-        assert!(ledger.selected_outputs().is_empty());
+        assert!(ledger.attempt(&ghost).is_none());
     }
 }

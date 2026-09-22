@@ -1,27 +1,25 @@
-//! Reviewer adapters: command and model runners behind one contract.
+//! Worker runners: the supervised process transport, the pure input composition that
+//! `af review render` and the Task host share, and the Task Worker adapter contract.
 //!
-//! The `command` adapter comes first deliberately: it is the only one whose output is a function
-//! of its input, so every property of the contract can be proved before a model is ever invoked.
-//! A model adapter is then a *different runner behind the same contract*, and nothing above it
-//! has to change.
+//! A `command` Worker is deterministic — its output is a function of its input — so every
+//! property of the Worker contract can be proved before a model is ever invoked. A model
+//! adapter is then a *different runner behind the same contract*, and nothing above it has to
+//! change.
 
-pub mod command_runner;
 pub mod model;
 pub mod session;
 pub mod task;
 
-pub use command_runner::{CommandRunner, RunnerError};
 pub use model::{
     CommandAdapter, ContextEntry, ContextManifest, Grant, InputTransport, ModelRunner,
-    NotesRequest, RESULT_CONTRACT, RESULT_CONTRACT_V2, RawCapture, ReceiptedReviewerReturn,
-    RenderedInput, ReviewerAdapter, ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs,
-    ReviewerNoteHint, ReviewerNotesDeclaration, ReviewerProposalDeclaration, ReviewerReturn,
-    TokenUsage, compose_command_input, compose_model_prompt, estimate_tokens, extract_result,
+    NotesRequest, RESULT_CONTRACT, RESULT_CONTRACT_V2, RawCapture, RenderedInput, ReviewerAdapter,
+    ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs, ReviewerNoteHint,
+    ReviewerNotesDeclaration, ReviewerProposalDeclaration, RunnerError, TokenUsage,
+    compose_command_input, compose_model_prompt, estimate_tokens, extract_result,
     parse_notes_declaration, parse_proposal_declaration, parse_stage_output_for, result_contract,
     unfence,
 };
-pub use review_broker::{BrokerClient, ExactBrokerClient};
-pub use review_core::BrokerCredentialModeV1;
+pub use review_broker::ExactBrokerClient;
 pub use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 pub use review_process::{
     ExitPolicy, SupervisedDuplexOutput, SupervisedError, SupervisedOutput, SupervisedStreamError,

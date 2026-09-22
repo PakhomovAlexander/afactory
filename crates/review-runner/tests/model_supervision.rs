@@ -157,6 +157,54 @@ fn a_model_descendant_holding_only_stderr_preserves_the_complete_answer() {
     );
 }
 
+/// A command Worker may ignore its stdin. The input is larger than an OS pipe, so the child
+/// closes it while the parent is still writing; its complete answer must win over that
+/// expected broken pipe.
+#[test]
+fn a_worker_may_ignore_its_stdin() {
+    let (dir, cas) = workdir();
+    let runner = ModelRunner::new(dir.path(), Duration::from_secs(5));
+    let capture = runner
+        .capture_with_stdin(&cas, &sh("printf answer"), vec![b'x'; 1024 * 1024])
+        .unwrap();
+
+    assert!(capture.status.success());
+    assert_eq!(capture.stdout, b"answer");
+}
+
+#[test]
+fn large_stdin_and_stderr_are_drained_concurrently() {
+    let (dir, cas) = workdir();
+    let runner = ModelRunner::new(dir.path(), Duration::from_secs(5));
+    let capture = runner
+        .capture_with_stdin(
+            &cas,
+            &sh("head -c 1048576 /dev/zero >&2; cat >/dev/null; printf answer"),
+            vec![b'x'; 1024 * 1024],
+        )
+        .unwrap();
+
+    assert!(capture.status.success());
+    assert_eq!(capture.stdout, b"answer");
+    assert_eq!(capture.stderr.len(), 1024 * 1024);
+}
+
+#[test]
+fn a_briefly_lingering_descendant_cannot_truncate_a_large_answer() {
+    let (dir, cas) = workdir();
+    let runner = ModelRunner::new(dir.path(), Duration::from_secs(5));
+    let capture = runner
+        .capture(
+            &cas,
+            &sh("sleep 1 & head -c 1048576 /dev/zero | tr '\\000' x"),
+        )
+        .unwrap();
+
+    assert!(capture.status.success());
+    assert_eq!(capture.stdout, vec![b'x'; 1024 * 1024]);
+    assert_eq!(cas.get(&capture.raw_artifact).unwrap(), capture.stdout);
+}
+
 /// A granted credential reaches the child — and nothing this layer stores or reports. The
 /// fake model does the worst thing a CLI does in practice: echoes its environment into both
 /// streams on failure.
@@ -178,28 +226,20 @@ fn a_granted_secret_is_redacted_from_everything_kept() {
         "the CAS copy is the redacted one"
     );
 
-    // Failure path: the secret lands in stderr and must not reach the error excerpt.
-    let error = runner
+    // Failure path: the secret lands in stderr, which an adapter may quote in a diagnostic.
+    let failed = runner
         .capture(
             &cas,
             &sh("echo \"auth failed for $REVIEW_MODEL_KEY\" >&2; exit 7"),
         )
-        .unwrap()
-        .require_success()
-        .unwrap_err();
-    let RunnerError::Failed {
-        exit_code,
-        stderr_excerpt,
-    } = &error
-    else {
-        panic!("expected Failed, got {error:?}");
-    };
-    assert_eq!(*exit_code, 7);
+        .unwrap();
+    assert_eq!(failed.status.code(), Some(7));
+    let stderr = String::from_utf8_lossy(&failed.stderr);
     assert!(
-        !stderr_excerpt.contains(secret),
-        "the excerpt would put the credential in the event log: {stderr_excerpt}"
+        !stderr.contains(secret),
+        "a quoted diagnostic would put the credential in the event log: {stderr}"
     );
-    assert!(stderr_excerpt.contains("[redacted]"));
+    assert!(stderr.contains("[redacted]"));
 }
 
 /// An ungranted credential simply is not there: the environment is rebuilt, not filtered.

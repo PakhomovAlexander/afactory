@@ -148,7 +148,7 @@ impl CodexTaskAdapter {
             } else {
                 "read-only"
             },
-            Some(&last_message),
+            &last_message,
         );
         let mut runner = ModelRunner::new(workdir, timeout);
         if let Some(home) = &self.codex_home {

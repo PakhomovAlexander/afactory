@@ -1110,19 +1110,16 @@ impl TaskProjection {
                     || attempt.prepared_epoch != self.epoch
                 {
                     execution.ledger.fence(&attempt.reservation.node);
-                } else if let TaskAttemptResultV1::Succeeded { output_id } = result {
-                    if execution
-                        .ledger
-                        .admit_exact(&ExactReceipt {
-                            attempt: AttemptId(attempt_id.clone()),
-                            output: output_id.clone(),
-                            cost: charge,
-                        })
-                        .map_err(conflict)?
-                        != Selection::Selected
-                    {
-                        return Err(conflict("Task settlement was quarantined"));
-                    }
+                } else if execution
+                    .ledger
+                    .admit_exact(&ExactReceipt {
+                        attempt: AttemptId(attempt_id.clone()),
+                        cost: charge,
+                    })
+                    .map_err(conflict)?
+                    != Selection::Selected
+                {
+                    return Err(conflict("Task settlement was quarantined"));
                 }
                 let recorded = execution
                     .attempts

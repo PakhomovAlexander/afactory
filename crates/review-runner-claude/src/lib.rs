@@ -1,14 +1,14 @@
-//! The Claude adapter: a digest-pinned reviewer package driving `claude -p`.
+//! The Claude adapter: a digest-pinned Worker package driving `claude -p`.
 //!
 //! Same shape as the Codex adapter — the package's `reviewer.md` is the prompt, the manifest
 //! args are the model flags (`--model opus --effort xhigh`), and both sit under the lockfile's
-//! content digest — but a different provider surface, pinned by fixtures captured from a real
-//! `claude` 2.1.234 run on 2026-08-18: `-p --output-format json` prints one JSON envelope
-//! with `is_error`, the final text in `result`, and cumulative token usage in `usage`; the
-//! prompt is streamed on stdin so Change Sets are not constrained by the argv ceiling. The
+//! content digest — but a different provider surface: `-p --output-format json` prints one JSON
+//! envelope with `is_error`, the final text in `result`, and cumulative token usage in `usage`;
+//! the prompt is streamed on stdin so Change Sets are not constrained by the argv ceiling. The
 //! adapter appends `--safe-mode --restricted` and an explicit read-only tool grant after package
 //! model flags, so repository settings, Hooks, plugins, MCP servers, and package arguments cannot
-//! widen reviewer authority.
+//! widen Worker authority. [`ClaudeAdapter`] renders a package's input for `af review render`;
+//! [`task::ClaudeTaskAdapter`] runs it.
 //!
 //! **Auth is explicit grants, discovered by bisection against the real CLI.** Keychain auth
 //! needs `USER` (the keychain account) and the real `HOME` (the keychain search path). An
@@ -20,14 +20,15 @@
 //! is redacted from everything stored.
 //!
 //! **Sessions are the kernel's, not the provider's.** When a node's warm policy asks for the
-//! session layer, the adapter passes the kernel-derived `--session-id` for this Attempt, and,
-//! when a Session Snapshot was carried, `--resume <source> --fork-session` so the captured
-//! transcript is read and never mutated. Both flags precede the package's model flags and are
-//! pinned by fixture like the security flags. Without them — every other adapter, Codex
-//! included — no session is assigned, captured, or resumed. See [`session`].
+//! session layer, an Attempt's command carries the kernel-derived `--session-id`, and, when a
+//! Session Snapshot was carried, `--resume <source> --fork-session` so the captured transcript is
+//! read and never mutated ([`ClaudeAdapter::attempt_command`]). Both flags precede the package's
+//! model flags and are pinned by test like the security flags. Without them — every other
+//! adapter, Codex included — no session is assigned, captured, or resumed. The Task host does not
+//! run the session layer yet, so its Attempts carry neither flag. See [`session`].
 //!
 //! **Token mapping, recorded:** cost is uncached input plus cache creation plus output as the CLI
-//! reports them — cache reads excluded. An agentic reviewer re-reads its context
+//! reports them — cache reads excluded. An agentic Worker re-reads its context
 //! through the cache on every turn; counting those would spend the whole attempt cap on
 //! bookkeeping. Codex reports cached reads inside `input_tokens`, so the two adapters differ
 //! exactly where their providers do.
@@ -41,9 +42,8 @@ use std::time::Duration;
 use review_core::{Arg, Command};
 use review_runner::ResolvedReviewer;
 use review_runner::{
-    InputTransport, ModelRunner, ReceiptedReviewerReturn, RenderedInput, ReviewerAdapter,
-    ReviewerInputs, ReviewerReturn, RunnerError, SessionLayer, TokenUsage, compose_model_prompt,
-    parse_notes_declaration, parse_proposal_declaration, parse_stage_output_for,
+    InputTransport, ModelRunner, RenderedInput, ReviewerAdapter, ReviewerInputs, RunnerError,
+    SessionLayer, compose_model_prompt,
 };
 use review_store::Cas;
 
@@ -53,12 +53,9 @@ pub struct ClaudeAdapter {
     program: String,
     model_flags: Vec<String>,
     prompt: String,
-    timeout: Duration,
-    /// (name, value) grants for subscription/keychain auth.
-    grants: Vec<(String, String)>,
-    /// The operator's harness session store, derived from the same explicit grants. Present
-    /// only once auth is granted: without `HOME` there is no directory to address, and the
-    /// adapter refuses the session layer rather than guessing one.
+    /// The operator's harness session store, derived from the explicit auth grants. Absent
+    /// until one is supplied: without `HOME` there is no directory to address, and the adapter
+    /// refuses the session layer rather than guessing one.
     session_store: Option<ClaudeSessionStore>,
 }
 
@@ -66,10 +63,7 @@ impl ClaudeAdapter {
     /// Build from a digest-verified package. The manifest must name `claude` (any path with
     /// that basename, so tests can point at a stub); its args become model flags; the prompt
     /// is the package's `reviewer.md` plus the shared result contract.
-    pub fn from_package(
-        package: &ResolvedReviewer,
-        timeout: Duration,
-    ) -> Result<ClaudeAdapter, String> {
+    pub fn from_package(package: &ResolvedReviewer) -> Result<ClaudeAdapter, String> {
         let basename = Path::new(&package.runner.program)
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
@@ -95,36 +89,16 @@ impl ClaudeAdapter {
             program: package.runner.program.clone(),
             model_flags,
             prompt,
-            timeout,
-            grants: Vec::new(),
             session_store: None,
         })
     }
 
-    /// Explicit auth grants. Values come from the operator's own environment, read by the
-    /// caller — this crate never reads env itself, so what reaches the child is explicit.
-    pub fn with_auth(
-        mut self,
-        config_dir: Option<String>,
-        user: impl Into<String>,
-        home: impl Into<String>,
-    ) -> Self {
-        let home = home.into();
-        // The session store is exactly the directory these grants point the harness at; it is
-        // derived here rather than read from the environment, so the adapter can only ever
-        // capture and delete inside what the operator granted.
-        self.session_store = Some(ClaudeSessionStore::from_grants(
-            config_dir.as_deref(),
-            &home,
-        ));
-        self.grants = vec![
-            ("USER".to_string(), user.into()),
-            ("HOME".to_string(), home),
-        ];
-        if let Some(config_dir) = config_dir {
-            self.grants
-                .push(("CLAUDE_CONFIG_DIR".to_string(), config_dir));
-        }
+    /// Host the session layer in `store`: the directory the operator's auth grants point the
+    /// harness at ([`ClaudeSessionStore::from_grants`]). Built by the caller from those same
+    /// grants rather than read from the environment, so the adapter can only ever capture and
+    /// delete inside what the operator granted.
+    pub fn with_session_store(mut self, store: ClaudeSessionStore) -> Self {
+        self.session_store = Some(store);
         self
     }
 
@@ -138,14 +112,21 @@ impl ClaudeAdapter {
         );
         self
     }
-}
 
-/// Build the adapter-owned capability smoke invocation. It shares the production argument
-/// ordering while disabling tools: admission proves auth/model inference, not filesystem access.
-/// An admission probe never hosts a session: it carries no Attempt and leaves no transcript.
-pub fn smoke_command(runner: &Command) -> Result<Command, String> {
-    let model_flags = claude_model_flags(runner)?;
-    Ok(claude_command(&runner.program, &model_flags, None))
+    /// The `claude -p` command one Attempt runs for `inputs`: the session the kernel assigned
+    /// (and the forked resume of a carried Session Snapshot) first, then the package model
+    /// flags, then the adapter-owned security flags. Kept as the base for running the session
+    /// layer on the Task host (ADR-0110).
+    pub fn attempt_command(&self, inputs: &ReviewerInputs) -> Command {
+        let session = inputs.session_id.as_deref().map(|session_id| SessionArgs {
+            session_id,
+            resume_from: inputs
+                .session_resume
+                .as_ref()
+                .map(|resume| resume.session_id.as_str()),
+        });
+        claude_command(&self.program, &self.model_flags, session)
+    }
 }
 
 /// The session arguments one Attempt runs under: the kernel's own identity for the session this
@@ -237,158 +218,21 @@ fn claude_command(
 }
 
 impl ReviewerAdapter for ClaudeAdapter {
-    fn credential_mode(&self) -> review_runner::BrokerCredentialModeV1 {
-        review_runner::BrokerCredentialModeV1::TrustedUnsafe
-    }
-
-    fn invoke(
-        &self,
-        cas: &Cas,
-        sandbox_root: &Path,
-        inputs: &ReviewerInputs,
-    ) -> Result<ReviewerReturn, RunnerError> {
-        self.invoke_receipted(cas, sandbox_root, inputs)
-            .map(|receipt| receipt.returned)
-    }
-
     fn session_layer(&self) -> Option<&dyn SessionLayer> {
         self.session_store
             .as_ref()
             .map(|store| store as &dyn SessionLayer)
     }
 
-    fn render_input(&self, inputs: &ReviewerInputs) -> Result<Option<RenderedInput>, RunnerError> {
+    /// The package prompt, then this Attempt's labelled inputs — data the kernel resolved,
+    /// rendered under an explicit heading rather than woven into the instructions.
+    fn render_input(&self, inputs: &ReviewerInputs) -> Result<RenderedInput, RunnerError> {
         let (prompt, manifest) =
             compose_model_prompt(&self.prompt, inputs).map_err(RunnerError::Refused)?;
-        Ok(Some(RenderedInput {
+        Ok(RenderedInput {
             transport: InputTransport::Prompt,
             bytes: prompt.into_bytes(),
             manifest,
-        }))
-    }
-
-    fn invoke_receipted(
-        &self,
-        cas: &Cas,
-        sandbox_root: &Path,
-        inputs: &ReviewerInputs,
-    ) -> Result<ReceiptedReviewerReturn, RunnerError> {
-        // The package prompt, then this attempt's labelled inputs — data the kernel resolved,
-        // rendered under an explicit heading rather than woven into the instructions. The same
-        // pure composition backs `render_input`, so what is sent is what can be audited.
-        let (prompt, context_manifest) =
-            compose_model_prompt(&self.prompt, inputs).map_err(RunnerError::Refused)?;
-        let session = inputs.session_id.as_deref().map(|session_id| SessionArgs {
-            session_id,
-            resume_from: inputs
-                .session_resume
-                .as_ref()
-                .map(|resume| resume.session_id.as_str()),
-        });
-        let command = claude_command(&self.program, &self.model_flags, session);
-
-        let mut runner = ModelRunner::new(sandbox_root, self.timeout);
-        for (name, value) in &self.grants {
-            runner = runner.with_env(name, value);
-        }
-        for (name, value) in &inputs.sandbox_environment {
-            runner = runner.with_env(name, value);
-        }
-        let capture = runner.capture_with_stdin(cas, &command, prompt.into_bytes())?;
-
-        let envelope = Envelope::parse(&capture.stdout);
-        let cost = envelope.cost_tokens;
-        if capture.status.success() && !envelope.is_error {
-            let text = envelope
-                .result
-                .filter(|t| !t.trim().is_empty())
-                .ok_or_else(|| RunnerError::MalformedOutput {
-                    raw_artifact: capture.raw_artifact.clone(),
-                    why: "claude -p succeeded but returned no result text".into(),
-                })?;
-            let output = parse_stage_output_for(inputs.result_contract, &text).map_err(|e| {
-                RunnerError::MalformedOutput {
-                    raw_artifact: capture.raw_artifact.clone(),
-                    why: e.to_string(),
-                }
-            })?;
-            let proposal = parse_proposal_declaration(&text);
-            let notes = parse_notes_declaration(&text);
-            return Ok(ReceiptedReviewerReturn {
-                returned: ReviewerReturn {
-                    output,
-                    proposal,
-                    notes,
-                    cost_tokens: cost,
-                    raw_artifact: capture.raw_artifact,
-                },
-                usage: envelope.usage,
-                context_manifest,
-            });
-        }
-
-        // Same accounting rule as codex: usage reported means tokens were spent (Failed, the
-        // kernel charges); none means the model was never reached (Unavailable, released).
-        let message = envelope
-            .result
-            .unwrap_or_else(|| "claude -p failed with no envelope".to_string());
-        Err(if cost > 0 {
-            RunnerError::Failed {
-                exit_code: capture.status.code().unwrap_or(-1),
-                stderr_excerpt: message,
-            }
-        } else {
-            RunnerError::Unavailable(message)
         })
-    }
-}
-
-#[derive(Default)]
-struct Envelope {
-    is_error: bool,
-    result: Option<String>,
-    cost_tokens: u64,
-    usage: TokenUsage,
-}
-
-impl Envelope {
-    /// The `-p --output-format json` envelope: one object on stdout. An unparseable stream
-    /// leaves the default (no usage, no result), which classifies as Unavailable on a failed
-    /// exit and MalformedOutput on a clean one — both honest.
-    fn parse(stdout: &[u8]) -> Envelope {
-        let Ok(value) = serde_json::from_slice::<serde_json::Value>(stdout) else {
-            return Envelope::default();
-        };
-        let usage = value.get("usage");
-        let count = |key: &str| {
-            usage
-                .and_then(|u| u.get(key))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0)
-        };
-        let input = count("input_tokens");
-        let output = count("output_tokens");
-        let cache_read = count("cache_read_input_tokens");
-        let cache_write = count("cache_creation_input_tokens");
-        let cost_tokens = input + cache_write + output;
-        Envelope {
-            is_error: value
-                .get("is_error")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-            result: value
-                .get("result")
-                .and_then(|r| r.as_str())
-                .map(str::to_string),
-            cost_tokens,
-            usage: TokenUsage {
-                input_tokens: Some(input),
-                output_tokens: Some(output),
-                cache_read_tokens: Some(cache_read),
-                cache_write_tokens: Some(cache_write),
-                reasoning_tokens: None,
-                chargeable_tokens: cost_tokens,
-            },
-        }
     }
 }

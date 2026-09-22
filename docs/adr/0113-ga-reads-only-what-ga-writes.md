@@ -143,7 +143,9 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0078](0078-bind-review-conclusions-to-exact-task-accounting.md): readers for historical
   `RunReport` versions and raw provenance.
 - [ADR-0079](0079-retain-exact-cumulative-charge-within-one-task-attempt.md): readers for frozen
-  execution `@1` and `@2`, usage `@1`, and `af/review-report@1` and `@2`.
+  execution `@1` and `@2`, usage `@1`, and `af/review-report@1` and `@2`, and the historical
+  `AttemptLedger` entry points with replacement semantics; every Attempt charge is an exact
+  cumulative floor.
 - [ADR-0080](0080-bind-broker-evidence-to-the-original-task-attempt.md): the
   `LegacyReviewTaskPolicy@1` and `@2` capture generations and the preserved bytes of V1 capture.
 - [ADR-0081](0081-register-owned-review-children-in-the-common-task-runtime.md): earlier execution
@@ -177,8 +179,9 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   proof.
 - [ADR-0102](0102-account-for-every-reported-claude-task-model.md): the default-model
   compatibility of a Claude Task adapter invoked without an explicit model restriction. The
-  adapter now refuses a command without `--model`, which every Task binding passes. The old
-  provider-smoke accounting that it left as follow-up work is gone with the Provider Operation.
+  adapter now refuses a command without `--model`, which every Task binding passes. The legacy
+  Review envelope and the old provider-smoke accounting that it left as follow-up work are gone
+  with the pre-Task Review executor and the Provider Operation.
 - [ADR-0104](0104-preview-captured-task-plans-before-first-execution.md): the preview for the
   legacy goal entry point; `task start` takes only a Task file.
 - [ADR-0106](0106-authorize-experimental-children-separately.md): earlier inspection and execution

@@ -4,7 +4,8 @@ Date: 2026-09-15
 Status: Proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): an
 adapter invoked without an explicit model restriction (its default-model compatibility, and any
 unambiguous entry explaining the top-level summary); the Task adapter now requires `--model`.
-The old provider-smoke accounting left as follow-up work is gone with the Provider Operation.
+The legacy Review envelope and the old provider-smoke accounting left as follow-up work are gone
+with the pre-Task Review executor and the Provider Operation.
 
 ## Context
 

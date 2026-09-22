@@ -42,10 +42,29 @@ fn budget(scopes: BTreeMap<String, TaskTokenScope>) -> TaskBudget {
     .with_token_scopes(scopes)
     .unwrap()
 }
+fn install(
+    budget: &mut TaskBudget,
+    allowances: BTreeMap<String, NodeAllowance>,
+    call_limits: BTreeMap<String, u32>,
+    token_scopes: BTreeMap<String, TaskTokenScope>,
+    now_unix_ms: u64,
+    preparation: bool,
+) -> Result<(), String> {
+    budget.install_graph_with_owned_templates(
+        allowances,
+        call_limits,
+        token_scopes,
+        BTreeMap::new(),
+        now_unix_ms,
+        preparation,
+    )
+}
 fn spent(budget: &mut TaskBudget, node: &str, now: u64, tokens: u64) -> String {
     let reservation = budget.prepare(node, now).unwrap();
     budget.begin(&reservation.id, now).unwrap();
-    budget.settle(&reservation.id, tokens).unwrap();
+    budget
+        .settle_exact(&reservation.id, u128::from(tokens))
+        .unwrap();
     reservation.id
 }
 
@@ -82,16 +101,16 @@ fn parallel_children_share_one_pool_and_running_usage_retains_the_unspent_reserv
     assert!(b.prepare("root.review.a", 1).is_err());
     assert_eq!(b.reserved_tokens(), 80);
     b.begin(&a.id, 1).unwrap();
-    b.settle(&a.id, 7).unwrap();
+    b.settle_exact(&a.id, 7).unwrap();
     let retry = b.prepare("root.review.a", 2).unwrap();
     b.begin(&other.id, 2).unwrap();
-    b.observe_charge(&other.id, 30).unwrap();
+    b.observe_charge_exact(&other.id, 30).unwrap();
     assert_eq!(b.committed_tokens(), 37);
     assert_eq!(b.scope_committed_tokens("round.r1.children"), Some(37));
     assert_eq!(b.scope_reserved_tokens("round.r1.children"), Some(50));
     assert!(b.prepare("root.review.b", 2).is_err());
     b.release(&retry.id).unwrap();
-    b.settle(&other.id, 30).unwrap();
+    b.settle_exact(&other.id, 30).unwrap();
     assert_eq!(b.scope_reserved_tokens("round.r1.children"), Some(0));
     assert_eq!(b.committed_tokens(), 37);
 }
@@ -156,12 +175,11 @@ fn graph_replacement_retains_retired_scope_usage_and_the_original_task_allowance
     let mut b = budget(first.clone());
     let old = spent(&mut b, "root.review.a", 1, 10);
     b.invalidate_plan(2).unwrap();
-    b.install_graph_with_token_scopes(nodes(), BTreeMap::new(), second, 2, false)
-        .unwrap();
+    install(&mut b, nodes(), BTreeMap::new(), second, 2, false).unwrap();
     spent(&mut b, "root.review.a", 3, 5);
-    b.observe_charge(&old, 25).unwrap();
-    b.observe_charge(&old, 25).unwrap();
-    b.observe_charge(&old, 12).unwrap();
+    b.observe_charge_exact(&old, 25).unwrap();
+    b.observe_charge_exact(&old, 25).unwrap();
+    b.observe_charge_exact(&old, 12).unwrap();
     assert_eq!(b.committed_tokens(), 30);
     assert_eq!(b.begun_attempts(), 2);
     assert_eq!(b.scope_committed_tokens("round.r1"), Some(25));
@@ -171,12 +189,11 @@ fn graph_replacement_retains_retired_scope_usage_and_the_original_task_allowance
     let mut changed = first.clone();
     changed.get_mut("round.r1").unwrap().tokens = 90;
     assert!(
-        b.install_graph_with_token_scopes(nodes(), BTreeMap::new(), changed, 4, false)
+        install(&mut b, nodes(), BTreeMap::new(), changed, 4, false)
             .unwrap_err()
             .contains("captured authority")
     );
-    b.install_graph_with_token_scopes(nodes(), BTreeMap::new(), first, 4, false)
-        .unwrap();
+    install(&mut b, nodes(), BTreeMap::new(), first, 4, false).unwrap();
     assert!(
         b.prepare("root.review.a", 5).is_err(),
         "the earlier scope is not replenished by reinstallation"
@@ -192,7 +209,7 @@ fn late_overrun_charges_every_original_scope_and_stops_already_prepared_work() {
     )]));
     let settled = spent(&mut b, "root.review.a", 1, 2);
     let pending = b.prepare("root.review.b", 2).unwrap();
-    b.observe_charge(&settled, 60).unwrap();
+    b.observe_charge_exact(&settled, 60).unwrap();
     assert_eq!(b.committed_tokens(), 60);
     assert_eq!(b.scope_committed_tokens("pool"), Some(60));
     assert_eq!(b.scope_reserved_tokens("pool"), Some(40));
@@ -207,8 +224,7 @@ fn a_scope_ceiling_is_not_compared_to_the_tasks_remaining_token_count() {
     let mut b = budget(scopes.clone());
     spent(&mut b, "root.review.a", 1, 20);
     b.invalidate_plan(2).unwrap();
-    b.install_graph_with_token_scopes(nodes(), BTreeMap::new(), scopes, 2, false)
-        .unwrap();
+    install(&mut b, nodes(), BTreeMap::new(), scopes, 2, false).unwrap();
     spent(&mut b, "root.review.b", 3, 10);
     assert_eq!(b.committed_tokens(), 30);
     assert_eq!(b.scope_committed_tokens("pool"), Some(30));

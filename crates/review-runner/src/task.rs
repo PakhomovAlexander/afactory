@@ -505,7 +505,6 @@ impl ModelWorkerReturn {
     pub fn failed(error: RunnerError) -> Self {
         let raw_artifact_ids = match &error {
             RunnerError::TimedOut { raw_artifact, .. } => raw_artifact.iter().cloned().collect(),
-            RunnerError::MalformedOutput { raw_artifact, .. } => vec![raw_artifact.clone()],
             _ => vec![],
         };
         Self {

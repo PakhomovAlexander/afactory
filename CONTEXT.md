@@ -274,7 +274,8 @@ revoked epoch is quarantined — recorded, charged, and unable to reach the Find
 _Avoid_: treating a fenced Attempt as a free retry; it spent tokens and the budget knows.
 
 **Budget Scope**:
-The accounting boundary charged by one Attempt — attempt, node, reviewer fan-out, and Campaign.
+The accounting boundary charged by one Attempt — each named token scope it belongs to (one
+node's cap, or a reviewer fan-out's) and the Task as a whole.
 _Avoid_: **Report Scope**; Budget Scope governs spend, never whether a claim blocks.
 
 **Execution Binding**:

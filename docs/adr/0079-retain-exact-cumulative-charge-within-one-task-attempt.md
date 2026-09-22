@@ -2,7 +2,8 @@
 
 Date: 2026-09-12
 Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): readers
-for frozen execution `@1` and `@2`, usage `@1`, and `af/review-report@1` and `@2`.
+for frozen execution `@1` and `@2`, usage `@1`, and `af/review-report@1` and `@2`, and the
+historical `AttemptLedger` entry points with replacement semantics.
 
 ## Context
 

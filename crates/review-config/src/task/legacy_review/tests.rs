@@ -641,7 +641,7 @@ fn captured_review_resources_preserve_node_retry_and_round_caps_on_the_task_ledg
     let mut budget = compilation.graph.budget(limits).unwrap();
     let attempt = budget.prepare(first, 1).unwrap();
     budget.begin(&attempt.id, 1).unwrap();
-    budget.settle(&attempt.id, 5).unwrap();
+    budget.settle_exact(&attempt.id, 5).unwrap();
     assert!(
         budget.prepare(first, 2).unwrap_err().contains("scope"),
         "an explicit Node cap bounds the aggregate of retries"
@@ -649,7 +649,7 @@ fn captured_review_resources_preserve_node_retry_and_round_caps_on_the_task_ledg
     for time in [2, 3] {
         let attempt = budget.prepare(second, time).unwrap();
         budget.begin(&attempt.id, time).unwrap();
-        budget.settle(&attempt.id, 100).unwrap();
+        budget.settle_exact(&attempt.id, 100).unwrap();
     }
     assert_eq!(budget.committed_tokens(), 205);
     assert_eq!(budget.scope_committed_tokens("review.round2"), Some(205));

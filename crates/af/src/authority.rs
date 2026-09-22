@@ -529,7 +529,6 @@ pub(super) fn first_attempt_input(
         "attempt authority: Campaign identifiers are bound at dispatch (a model Worker's `## Attempt authority` section, a command Worker's `attempt_context`)"
             .to_string(),
     );
-    let timeout = std::time::Duration::from_secs(1);
     let runner = Path::new(&command.program)
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
@@ -537,16 +536,15 @@ pub(super) fn first_attempt_input(
     let adapter: Box<dyn review_runner::ReviewerAdapter> = match loaded.packages().get(node) {
         Some(package) => match runner.as_str() {
             "claude" => {
-                let mut adapter =
-                    review_runner_claude::ClaudeAdapter::from_package(package, timeout)
-                        .map_err(|error| format!("{node}: {error}"))?;
+                let mut adapter = review_runner_claude::ClaudeAdapter::from_package(package)
+                    .map_err(|error| format!("{node}: {error}"))?;
                 if let Some(focus) = focus {
                     adapter = adapter.with_focus(focus);
                 }
                 Box::new(adapter)
             }
             "codex" => {
-                let mut adapter = review_runner_codex::CodexAdapter::from_package(package, timeout)
+                let mut adapter = review_runner_codex::CodexAdapter::from_package(package)
                     .map_err(|error| format!("{node}: {error}"))?;
                 if let Some(focus) = focus {
                     adapter = adapter.with_focus(focus);
@@ -559,12 +557,11 @@ pub(super) fn first_attempt_input(
                 ));
             }
         },
-        None => Box::new(review_runner::CommandAdapter::new(command.clone(), timeout)),
+        None => Box::new(review_runner::CommandAdapter),
     };
     let rendered = adapter
         .render_input(&inputs)
-        .map_err(|error| error.to_string())?
-        .ok_or_else(|| format!("node `{node}`: this adapter has no fixed input encoding"))?;
+        .map_err(|error| error.to_string())?;
     Ok(FirstAttemptInput {
         rendered,
         runner,

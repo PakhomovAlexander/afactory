@@ -39,10 +39,29 @@ fn budget(attempts: u32, tokens: u64, deadline: u64) -> TaskBudget {
     .unwrap()
 }
 
+fn install(
+    budget: &mut TaskBudget,
+    allowances: BTreeMap<String, NodeAllowance>,
+    call_limits: BTreeMap<String, u32>,
+    now_unix_ms: u64,
+    preparation: bool,
+) -> Result<(), String> {
+    budget.install_graph_with_owned_templates(
+        allowances,
+        call_limits,
+        BTreeMap::new(),
+        BTreeMap::new(),
+        now_unix_ms,
+        preparation,
+    )
+}
+
 fn spend(budget: &mut TaskBudget, node: &str, now: u64, tokens: u64) -> String {
     let reservation = budget.prepare(node, now).unwrap();
     budget.begin(&reservation.id, now).unwrap();
-    budget.settle(&reservation.id, tokens).unwrap();
+    budget
+        .settle_exact(&reservation.id, u128::from(tokens))
+        .unwrap();
     reservation.id
 }
 
@@ -115,26 +134,26 @@ fn running_usage_preserves_other_reservations_and_cannot_be_refunded_at_settleme
     let mut ledger = budget(3, 100, 1000);
     let author = ledger.prepare("implement", 1).unwrap();
     let verifier = ledger.prepare("review.verify", 1).unwrap();
-    assert!(ledger.observe_charge(&author.id, 10).is_err());
+    assert!(ledger.observe_charge_exact(&author.id, 10).is_err());
     ledger.begin(&author.id, 2).unwrap();
     for amount in [12, 12, 4] {
-        ledger.observe_charge(&author.id, amount).unwrap();
+        ledger.observe_charge_exact(&author.id, amount).unwrap();
     }
     assert_eq!(ledger.committed_tokens(), 12);
     assert_eq!(ledger.reserved_tokens(), 58);
     assert_eq!(ledger.remaining_limits().tokens, 30);
     assert!(ledger.prepare("implement", 3).is_err());
     assert!(ledger.release(&author.id).is_err());
-    assert!(ledger.settle(&author.id, 7).is_err());
+    assert!(ledger.settle_exact(&author.id, 7).is_err());
     assert_eq!(ledger.committed_tokens(), 12);
     assert_eq!(ledger.reserved_tokens(), 58);
-    ledger.settle(&author.id, 15).unwrap();
-    ledger.settle(&author.id, 15).unwrap();
+    ledger.settle_exact(&author.id, 15).unwrap();
+    ledger.settle_exact(&author.id, 15).unwrap();
     assert_eq!(ledger.committed_tokens(), 15);
     assert_eq!(ledger.reserved_tokens(), 30);
     ledger.begin(&verifier.id, 4).unwrap();
-    ledger.observe_charge(&verifier.id, 9).unwrap();
-    ledger.settle(&verifier.id, 9).unwrap();
+    ledger.observe_charge_exact(&verifier.id, 9).unwrap();
+    ledger.settle_exact(&verifier.id, 9).unwrap();
     assert_eq!(ledger.committed_tokens(), 24);
     assert_eq!(ledger.reserved_tokens(), 0);
     assert_eq!(ledger.begun_attempts(), 2);
@@ -146,18 +165,18 @@ fn running_overrun_stops_prepared_work_and_remains_payable_after_the_deadline() 
     let author = ledger.prepare("implement", 1).unwrap();
     let verifier = ledger.prepare("review.verify", 1).unwrap();
     ledger.begin(&author.id, 2).unwrap();
-    ledger.observe_charge(&author.id, 55).unwrap();
+    ledger.observe_charge_exact(&author.id, 55).unwrap();
     assert_eq!(ledger.committed_tokens(), 55);
     assert_eq!(ledger.reserved_tokens(), 30);
     assert!(ledger.breached());
     assert!(ledger.begin(&verifier.id, 3).is_err());
     assert!(ledger.prepare("implement", 3).is_err());
     assert!(ledger.invalidate_plan(1001).is_err());
-    ledger.observe_charge(&author.id, 58).unwrap();
-    ledger.settle(&author.id, 58).unwrap();
+    ledger.observe_charge_exact(&author.id, 58).unwrap();
+    ledger.settle_exact(&author.id, 58).unwrap();
     ledger.release(&verifier.id).unwrap();
     ledger.invalidate_plan(1002).unwrap();
-    ledger.observe_charge(&author.id, 63).unwrap();
+    ledger.observe_charge_exact(&author.id, 63).unwrap();
     assert_eq!(ledger.committed_tokens(), 63);
     assert_eq!(ledger.reserved_tokens(), 0);
     assert_eq!(ledger.begun_attempts(), 1);
@@ -168,12 +187,14 @@ fn late_provider_usage_keeps_conservative_spend_and_leaves_other_reservations_in
     let mut ledger = budget(3, 200, 1000);
     let abandoned = ledger.prepare("implement", 1).unwrap();
     ledger.begin(&abandoned.id, 2).unwrap();
-    ledger.settle(&abandoned.id, abandoned.tokens).unwrap();
+    ledger
+        .settle_exact(&abandoned.id, u128::from(abandoned.tokens))
+        .unwrap();
     let verifier = ledger.prepare("review.verify", 3).unwrap();
-    ledger.observe_charge(&abandoned.id, 20).unwrap();
+    ledger.observe_charge_exact(&abandoned.id, 20).unwrap();
     assert_eq!(ledger.committed_tokens(), 40);
-    ledger.observe_charge(&abandoned.id, 60).unwrap();
-    ledger.observe_charge(&abandoned.id, 60).unwrap();
+    ledger.observe_charge_exact(&abandoned.id, 60).unwrap();
+    ledger.observe_charge_exact(&abandoned.id, 60).unwrap();
     assert_eq!(ledger.committed_tokens(), 60);
     assert_eq!(ledger.reserved_tokens(), 30);
     assert!(
@@ -196,8 +217,8 @@ fn concurrent_reservations_protect_tokens_before_either_attempt_begins() {
     assert_eq!(ledger.reserved_tokens(), 70);
     ledger.begin(&first.id, 2).unwrap();
     ledger.begin(&verifier.id, 2).unwrap();
-    ledger.settle(&first.id, 10).unwrap();
-    ledger.settle(&verifier.id, 20).unwrap();
+    ledger.settle_exact(&first.id, 10).unwrap();
+    ledger.settle_exact(&verifier.id, 20).unwrap();
     assert_eq!(ledger.committed_tokens(), 30);
 }
 
@@ -231,9 +252,9 @@ fn only_unstarted_work_can_release_capacity_and_duplicate_settlement_is_exact() 
     assert_ne!(first.id, second.id);
     ledger.begin(&second.id, 2).unwrap();
     assert!(ledger.release(&second.id).is_err());
-    ledger.settle(&second.id, 12).unwrap();
-    ledger.settle(&second.id, 12).unwrap();
-    assert!(ledger.settle(&second.id, 11).is_err());
+    ledger.settle_exact(&second.id, 12).unwrap();
+    ledger.settle_exact(&second.id, 12).unwrap();
+    assert!(ledger.settle_exact(&second.id, 11).is_err());
     assert_eq!(ledger.committed_tokens(), 12);
     assert_eq!(ledger.begun_attempts(), 1);
 }
@@ -244,7 +265,7 @@ fn provider_overrun_is_fully_charged_and_prevents_even_prepared_dispatch() {
     let first = ledger.prepare("implement", 1).unwrap();
     let verifier = ledger.prepare("review.verify", 1).unwrap();
     ledger.begin(&first.id, 1).unwrap();
-    ledger.settle(&first.id, 41).unwrap();
+    ledger.settle_exact(&first.id, 41).unwrap();
     assert!(ledger.breached());
     assert_eq!(ledger.committed_tokens(), 41);
     assert!(ledger.begin(&verifier.id, 2).is_err());
@@ -261,7 +282,9 @@ fn replaying_recorded_transitions_preserves_ids_charges_and_remaining_capacity()
         let abandoned = ledger.prepare("implement", 2).unwrap();
         ledger.begin(&abandoned.id, 2).unwrap();
         // Missing usage after a crash is conservatively charged at the original reservation.
-        ledger.settle(&abandoned.id, abandoned.tokens).unwrap();
+        ledger
+            .settle_exact(&abandoned.id, u128::from(abandoned.tokens))
+            .unwrap();
         (ledger, abandoned.id)
     }
     let (mut live, live_id) = history();
@@ -383,19 +406,25 @@ fn planning_protects_future_verification_and_cannot_reset_spend_at_the_execution
     let planner = spend(&mut budget, "root.nodes.plan", 1, 20);
     assert_eq!(budget.remaining_limits().tokens, 100);
     assert_eq!(budget.remaining_limits().max_attempts, 2);
-    budget
-        .enter_execution(
-            business_allowances(),
-            BTreeMap::from([("root".into(), 3)]),
-            2,
-        )
-        .unwrap();
+    install(
+        &mut budget,
+        business_allowances(),
+        BTreeMap::from([("root".into(), 3)]),
+        2,
+        false,
+    )
+    .unwrap();
     assert_eq!(budget.committed_tokens(), 20);
     assert_eq!(budget.begun_attempts(), 1);
     assert!(
-        budget
-            .enter_execution(business_allowances(), BTreeMap::new(), 3)
-            .is_err()
+        install(
+            &mut budget,
+            business_allowances(),
+            BTreeMap::new(),
+            3,
+            false
+        )
+        .is_err()
     );
     let implementation = spend(&mut budget, "root.nodes.implement", 3, 10);
     assert_ne!(planner, implementation);
@@ -406,7 +435,7 @@ fn planning_protects_future_verification_and_cannot_reset_spend_at_the_execution
     spend(&mut budget, "root.nodes.verify", 4, 5);
     assert_eq!(budget.begun_attempts(), 3);
     assert_eq!(budget.committed_tokens(), 35);
-    budget.observe_charge(&planner, 50).unwrap();
+    budget.observe_charge_exact(&planner, 50).unwrap();
     assert_eq!(budget.committed_tokens(), 65);
     assert!(budget.breached());
 }
@@ -416,36 +445,57 @@ fn planning_barrier_requires_settled_attempts_and_keeps_expiry_and_late_overrun_
     let mut budget = planning_budget(200, 4, 1000);
     let reservation = budget.prepare("root.nodes.plan", 1).unwrap();
     assert!(
-        budget
-            .enter_execution(business_allowances(), BTreeMap::new(), 2)
-            .is_err()
+        install(
+            &mut budget,
+            business_allowances(),
+            BTreeMap::new(),
+            2,
+            false
+        )
+        .is_err()
     );
     budget.begin(&reservation.id, 2).unwrap();
     assert!(
-        budget
-            .enter_execution(business_allowances(), BTreeMap::new(), 3)
-            .is_err()
-    );
-    budget.settle(&reservation.id, 10).unwrap();
-    assert!(
-        budget
-            .enter_execution(business_allowances(), BTreeMap::new(), 1000)
-            .is_err()
-    );
-    assert!(
-        budget
-            .enter_execution(business_allowances(), BTreeMap::new(), 900)
-            .is_err()
-    );
-    budget
-        .enter_execution(
+        install(
+            &mut budget,
             business_allowances(),
-            BTreeMap::from([("root".into(), 3)]),
+            BTreeMap::new(),
             3,
+            false
         )
-        .unwrap();
+        .is_err()
+    );
+    budget.settle_exact(&reservation.id, 10).unwrap();
+    assert!(
+        install(
+            &mut budget,
+            business_allowances(),
+            BTreeMap::new(),
+            1000,
+            false
+        )
+        .is_err()
+    );
+    assert!(
+        install(
+            &mut budget,
+            business_allowances(),
+            BTreeMap::new(),
+            900,
+            false
+        )
+        .is_err()
+    );
+    install(
+        &mut budget,
+        business_allowances(),
+        BTreeMap::from([("root".into(), 3)]),
+        3,
+        false,
+    )
+    .unwrap();
     assert_eq!(budget.remaining_limits().deadline_unix_ms, 1000);
-    budget.observe_charge(&reservation.id, 41).unwrap();
+    budget.observe_charge_exact(&reservation.id, 41).unwrap();
     assert!(
         budget.prepare("root.nodes.implement", 4).is_err(),
         "Late Planner overrun did not fence new work"
@@ -486,11 +536,9 @@ fn source_revision_retains_spend_reservations_late_usage_and_the_original_deadli
             },
         ),
     ]);
-    value
-        .install_graph(allow.clone(), BTreeMap::new(), 4, false)
-        .unwrap();
-    value.observe_charge(&author, 25).unwrap();
-    value.observe_charge(&verify, 15).unwrap();
+    install(&mut value, allow.clone(), BTreeMap::new(), 4, false).unwrap();
+    value.observe_charge_exact(&author, 25).unwrap();
+    value.observe_charge_exact(&verify, 15).unwrap();
     assert_eq!(value.committed_tokens(), 40);
     let next = spend(&mut value, "implement", 5, 10);
     assert_ne!(next, author);
@@ -501,11 +549,7 @@ fn source_revision_retains_spend_reservations_late_usage_and_the_original_deadli
     spend(&mut value, "review.verify", 7, 10);
     assert_eq!(value.begun_attempts(), 5);
     value.invalidate_plan(8).unwrap();
-    assert!(
-        value
-            .install_graph(allow, BTreeMap::new(), 9, false)
-            .is_err()
-    );
+    assert!(install(&mut value, allow, BTreeMap::new(), 9, false).is_err());
     assert_eq!(value.begun_attempts(), 5);
     assert_eq!(value.committed_tokens(), 70);
 }
@@ -516,24 +560,16 @@ fn source_revision_cannot_release_pending_work_overruns_or_expired_resources() {
     assert!(value.invalidate_plan(2).is_err());
     value.begin(&pending.id, 2).unwrap();
     assert!(value.invalidate_plan(3).is_err());
-    value.settle(&pending.id, 40).unwrap();
+    value.settle_exact(&pending.id, 40).unwrap();
     value.invalidate_plan(4).unwrap();
     assert!(value.invalidate_plan(3).is_err());
-    value.observe_charge(&pending.id, 41).unwrap();
+    value.observe_charge_exact(&pending.id, 41).unwrap();
     assert!(value.breached());
-    assert!(
-        value
-            .install_graph(BTreeMap::new(), BTreeMap::new(), 5, true)
-            .is_err()
-    );
+    assert!(install(&mut value, BTreeMap::new(), BTreeMap::new(), 5, true).is_err());
     let mut value = budget(5, 200, 1000);
     spend(&mut value, "implement", 1, 10);
     value.invalidate_plan(1001).unwrap();
-    assert!(
-        value
-            .install_graph(BTreeMap::new(), BTreeMap::new(), 1002, true)
-            .is_err()
-    );
+    assert!(install(&mut value, BTreeMap::new(), BTreeMap::new(), 1002, true).is_err());
     assert_eq!(value.begun_attempts(), 1);
     assert_eq!(value.committed_tokens(), 10);
 }
@@ -546,16 +582,24 @@ fn full_native_usage_is_charged_above_u64_totals_without_releasing_siblings() {
     ledger.begin(&active.id, 2).unwrap();
     let sibling = ledger.prepare("review.verify", 2).unwrap();
     for amount in [u64::MAX, u64::MAX, 1] {
-        ledger.observe_charge(&active.id, amount).unwrap();
+        ledger
+            .observe_charge_exact(&active.id, u128::from(amount))
+            .unwrap();
         assert_eq!(ledger.committed_tokens(), u128::from(u64::MAX) + 7);
         assert_eq!(ledger.reserved_tokens(), 30);
         assert!(ledger.breached());
         assert_eq!(ledger.remaining_limits().tokens, 0);
         assert!(ledger.begin(&sibling.id, 3).is_err());
     }
-    ledger.settle(&active.id, u64::MAX).unwrap();
-    ledger.settle(&active.id, u64::MAX).unwrap();
-    ledger.observe_charge(&active.id, u64::MAX).unwrap();
+    ledger
+        .settle_exact(&active.id, u128::from(u64::MAX))
+        .unwrap();
+    ledger
+        .settle_exact(&active.id, u128::from(u64::MAX))
+        .unwrap();
+    ledger
+        .observe_charge_exact(&active.id, u128::from(u64::MAX))
+        .unwrap();
     assert_eq!(ledger.committed_tokens(), 18_446_744_073_709_551_622_u128);
     assert_eq!(ledger.reserved_tokens(), 30);
     assert!(ledger.release(&active.id).is_err());
@@ -582,13 +626,17 @@ fn exact_attempt_usage_survives_settlement_and_plan_invalidation() {
     let sibling = ledger.prepare("review.verify", 2).unwrap();
     let actual = u128::from(u64::MAX) + 7;
     ledger.observe_charge_exact(&active.id, actual).unwrap();
-    ledger.observe_charge(&active.id, 1).unwrap();
+    ledger.observe_charge_exact(&active.id, 1).unwrap();
     assert_eq!(ledger.committed_tokens(), actual + 7);
     assert_eq!(ledger.reserved_tokens(), 30);
     assert_eq!(active.tokens, 40);
     assert_eq!(active.deadline_unix_ms, 102);
     assert!(ledger.begin(&sibling.id, 3).is_err());
-    assert!(ledger.settle(&active.id, u64::MAX).is_err());
+    assert!(
+        ledger
+            .settle_exact(&active.id, u128::from(u64::MAX))
+            .is_err()
+    );
     ledger.settle_exact(&active.id, actual).unwrap();
     ledger.settle_exact(&active.id, actual).unwrap();
     ledger.release(&sibling.id).unwrap();
@@ -601,11 +649,7 @@ fn exact_attempt_usage_survives_settlement_and_plan_invalidation() {
     assert_eq!(ledger.begun_attempts(), 2);
     assert_eq!(ledger.remaining_limits().deadline_unix_ms, 1000);
     assert!(ledger.breached());
-    assert!(
-        ledger
-            .install_graph(BTreeMap::new(), BTreeMap::new(), 5, true)
-            .is_err()
-    );
+    assert!(install(&mut ledger, BTreeMap::new(), BTreeMap::new(), 5, true).is_err());
 }
 
 #[test]

@@ -4,13 +4,29 @@
 //! fences it and starts A2, A2 completes normally — and *then* A1 delivers. Its finding is a
 //! plausible one from a real reviewer, which is exactly why nothing about it looks wrong.
 //!
-//! Three things must hold, and the case names all three: A1's result is quarantined and cannot
-//! reach anything downstream; its cost is still charged; and replay with A1's delivery moved to
-//! any position produces the same outcome.
+//! Three things must hold, and the case names all three: A1's result is quarantined and can
+//! never be selected; its cost is still charged; and replay with A1's delivery moved to any
+//! position produces the same outcome.
+
+use std::collections::BTreeMap;
 
 use review_attempt::{
-    AttemptLedger, AttemptState, Budget, BudgetLedger, Receipt, Scope, Selection,
+    AttemptId, AttemptLedger, AttemptState, Budget, BudgetLedger, BudgetScope, ExactReceipt,
+    Selection,
 };
+
+fn ledger() -> AttemptLedger {
+    AttemptLedger::scoped("round", BTreeMap::new())
+}
+
+fn deliver(attempts: &mut AttemptLedger, attempt: &AttemptId, cost: u128) -> Selection {
+    attempts
+        .admit_exact(&ExactReceipt {
+            attempt: attempt.clone(),
+            cost,
+        })
+        .unwrap()
+}
 
 /// One delivery in a run's event order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,64 +39,61 @@ enum Step {
     DeliverA1,
 }
 
-/// Play a sequence and return what a downstream node would see, plus what it all cost.
-fn play(steps: &[Step]) -> (Vec<(String, String)>, u128, usize) {
-    let mut attempts = AttemptLedger::default();
-    let mut budget = BudgetLedger::default().with_limit(Scope::Run, Budget::of(1000));
+/// What one Attempt ended as, and what it was charged.
+type Outcome = (AttemptState, u128);
+
+/// Play a sequence and return how each Attempt ended, plus what the run spent.
+fn play(steps: &[Step]) -> (Outcome, Outcome, u128) {
+    let mut attempts = ledger();
+    let mut budget = BudgetLedger::default().with_limit(BudgetScope::Run, Budget::of(1000));
+    let scopes = [BudgetScope::FanOut("deep".into()), BudgetScope::Run];
     let mut a1 = None;
     let mut a2 = None;
 
     for step in steps {
         match step {
             Step::DispatchA1 => {
-                let reservation = budget
-                    .reserve(&[Scope::Node("deep".into()), Scope::Run], 100)
-                    .expect("first dispatch fits");
+                let reservation = budget.reserve(&scopes, 100).expect("first dispatch fits");
                 a1 = Some((attempts.dispatch("deep"), reservation));
             }
             Step::FenceA1 => attempts.fence("deep"),
             Step::DispatchA2 => {
-                let reservation = budget
-                    .reserve(&[Scope::Node("deep".into()), Scope::Run], 100)
-                    .expect("the retry fits");
+                let reservation = budget.reserve(&scopes, 100).expect("the retry fits");
                 a2 = Some((attempts.dispatch("deep"), reservation));
             }
             Step::DeliverA2 => {
                 let (id, reservation) = a2.as_ref().expect("A2 was dispatched");
-                attempts.admit(&Receipt {
-                    attempt: id.clone(),
-                    output: "artifact:A2".into(),
-                    cost: 100,
-                });
-                budget.charge(reservation, 100);
+                deliver(&mut attempts, id, 100);
+                budget.charge_exact(reservation, 100).unwrap();
             }
             Step::DeliverA1 => {
                 let (id, reservation) = a1.as_ref().expect("A1 was dispatched");
-                attempts.admit(&Receipt {
-                    attempt: id.clone(),
-                    output: "artifact:A1".into(),
-                    cost: 100,
-                });
+                deliver(&mut attempts, id, 100);
                 // Charged whether or not anyone reads it: the tokens were spent.
-                budget.charge(reservation, 100);
+                budget.charge_exact(reservation, 100).unwrap();
             }
         }
     }
 
+    let outcome = |slot: &Option<(AttemptId, _)>| {
+        let (id, _) = slot.as_ref().expect("dispatched");
+        let attempt = attempts.attempt(id).expect("recorded");
+        (attempt.state, attempt.charged)
+    };
     (
-        attempts.selected_outputs(),
-        budget.committed(&Scope::Run),
-        attempts.quarantined().len(),
+        outcome(&a1),
+        outcome(&a2),
+        budget.committed(&BudgetScope::Run),
     )
 }
 
 #[test]
-fn a_late_result_is_quarantined_charged_and_invisible_downstream() {
-    let mut attempts = AttemptLedger::default();
-    let mut budget = BudgetLedger::default().with_limit(Scope::Run, Budget::of(1000));
+fn a_late_result_is_quarantined_charged_and_never_selected() {
+    let mut attempts = ledger();
+    let mut budget = BudgetLedger::default().with_limit(BudgetScope::Run, Budget::of(1000));
 
     // A1 dispatched and reserved.
-    let reservation_a1 = budget.reserve(&[Scope::Run], 100).unwrap();
+    let reservation_a1 = budget.reserve(&[BudgetScope::Run], 100).unwrap();
     let a1 = attempts.dispatch("deep");
 
     // It times out. The process behind it is still alive; the kernel stops waiting.
@@ -88,45 +101,29 @@ fn a_late_result_is_quarantined_charged_and_invisible_downstream() {
     assert_eq!(attempts.attempt(&a1).unwrap().state, AttemptState::Fenced);
 
     // A2 runs and answers.
-    let reservation_a2 = budget.reserve(&[Scope::Run], 100).unwrap();
+    let reservation_a2 = budget.reserve(&[BudgetScope::Run], 100).unwrap();
     let a2 = attempts.dispatch("deep");
-    assert_eq!(
-        attempts.admit(&Receipt {
-            attempt: a2.clone(),
-            output: "artifact:A2".into(),
-            cost: 90,
-        }),
-        Selection::Selected
-    );
-    budget.charge(&reservation_a2, 90);
+    assert_eq!(deliver(&mut attempts, &a2, 90), Selection::Selected);
+    budget.charge_exact(&reservation_a2, 90).unwrap();
 
     // ...and then A1 delivers, with a finding that looks entirely reasonable.
-    let selection = attempts.admit(&Receipt {
-        attempt: a1.clone(),
-        output: "artifact:A1-plausible-but-fenced".into(),
-        cost: 100,
-    });
-    budget.charge(&reservation_a1, 100);
+    let selection = deliver(&mut attempts, &a1, 100);
+    budget.charge_exact(&reservation_a1, 100).unwrap();
 
+    // Never selected: only A2's delivery may feed a consumer.
     assert_eq!(selection, Selection::Quarantined);
+    assert_eq!(attempts.attempt(&a2).unwrap().state, AttemptState::Selected);
+
+    // Charged anyway. A fenced attempt is not a free retry.
+    assert_eq!(budget.committed(&BudgetScope::Run), 190);
+    assert_eq!(attempts.attempt(&a1).unwrap().charged, 100);
+    assert_eq!(attempts.attempt(&a2).unwrap().charged, 90);
+
+    // And it is *recorded*, not discarded — an operator can see that a fenced attempt delivered.
     assert_eq!(
         attempts.attempt(&a1).unwrap().state,
         AttemptState::Quarantined
     );
-
-    // Invisible downstream: a consumer sees A2's artifact and only A2's.
-    assert_eq!(
-        attempts.selected_outputs(),
-        vec![("deep".to_string(), "artifact:A2".to_string())]
-    );
-
-    // Charged anyway. A fenced attempt is not a free retry.
-    assert_eq!(budget.committed(&Scope::Run), 190);
-    assert_eq!(attempts.total_charged(), 190);
-
-    // And it is *recorded*, not discarded — an operator can see that a fenced attempt delivered.
-    assert_eq!(attempts.quarantined().len(), 1);
-    assert_eq!(attempts.quarantined()[0].id, a1);
 }
 
 /// The replay property from the case: A1's delivery may land anywhere, and the run is the same.
@@ -151,44 +148,30 @@ fn the_late_delivery_may_arrive_at_any_point_without_changing_the_run() {
         );
     }
 
-    let (selected, spent, quarantined) = &outcomes[0];
-    assert_eq!(
-        selected,
-        &vec![("deep".to_string(), "artifact:A2".to_string())]
-    );
-    assert_eq!(*spent, 200, "both attempts charged");
-    assert_eq!(*quarantined, 1);
+    let (a1, a2, spent) = outcomes[0];
+    assert_eq!(a1, (AttemptState::Quarantined, 100));
+    assert_eq!(a2, (AttemptState::Selected, 100));
+    assert_eq!(spent, 200, "both attempts charged");
 }
 
 /// The reason a retry is dispatched at all is that the first one is no longer wanted — so
 /// dispatching one fences the other, without the caller having to remember.
 #[test]
 fn a_retry_fences_its_predecessor_even_without_an_explicit_timeout() {
-    let mut attempts = AttemptLedger::default();
+    let mut attempts = ledger();
     let a1 = attempts.dispatch("deep");
     let a2 = attempts.dispatch("deep");
 
     // A1 delivers first, having never been explicitly fenced.
     assert_eq!(
-        attempts.admit(&Receipt {
-            attempt: a1,
-            output: "artifact:A1".into(),
-            cost: 10,
-        }),
+        deliver(&mut attempts, &a1, 10),
         Selection::Quarantined,
         "a superseded attempt cannot win by finishing first"
     );
+    assert_eq!(deliver(&mut attempts, &a2, 10), Selection::Selected);
     assert_eq!(
-        attempts.admit(&Receipt {
-            attempt: a2,
-            output: "artifact:A2".into(),
-            cost: 10,
-        }),
-        Selection::Selected
-    );
-    assert_eq!(
-        attempts.selected_outputs(),
-        vec![("deep".to_string(), "artifact:A2".to_string())]
+        attempts.attempt(&a1).unwrap().state,
+        AttemptState::Quarantined
     );
 }
 
@@ -196,45 +179,50 @@ fn a_retry_fences_its_predecessor_even_without_an_explicit_timeout() {
 /// the cap bite. Otherwise a node could retry forever at no recorded cost.
 #[test]
 fn fenced_attempts_consume_the_cap_that_bounds_retries() {
-    let mut attempts = AttemptLedger::default();
-    let mut budget =
-        BudgetLedger::default().with_limit(Scope::Node("deep".into()), Budget::of(250));
+    let mut attempts = ledger();
+    let deep = BudgetScope::FanOut("deep".into());
+    let mut budget = BudgetLedger::default().with_limit(deep.clone(), Budget::of(250));
 
-    let mut dispatched = 0;
-    loop {
-        let Ok(reservation) = budget.reserve(&[Scope::Node("deep".into())], 100) else {
-            break;
-        };
+    let mut dispatched = Vec::new();
+    while let Ok(reservation) = budget.reserve(std::slice::from_ref(&deep), 100) {
         let id = attempts.dispatch("deep");
-        dispatched += 1;
         // Every attempt times out and is charged in full.
         attempts.fence("deep");
-        attempts.admit(&Receipt {
-            attempt: id,
-            output: "never selected".into(),
-            cost: 100,
-        });
-        budget.charge(&reservation, 100);
+        deliver(&mut attempts, &id, 100);
+        budget.charge_exact(&reservation, 100).unwrap();
+        dispatched.push(id);
     }
 
-    assert_eq!(dispatched, 2, "a cap of 250 admits two 100-unit attempts");
+    assert_eq!(
+        dispatched.len(),
+        2,
+        "a cap of 250 admits two 100-unit attempts"
+    );
     assert!(
-        attempts.selected_outputs().is_empty(),
+        dispatched
+            .iter()
+            .all(|id| attempts.attempt(id).unwrap().state == AttemptState::Quarantined),
         "none of them landed"
     );
-    assert_eq!(attempts.quarantined().len(), 2);
-    assert_eq!(budget.committed(&Scope::Node("deep".into())), 200);
+    assert_eq!(budget.committed(&deep), 200);
 }
 
 #[test]
 fn late_native_usage_does_not_overflow_the_total_of_distinct_attempts() {
-    let mut ledger = AttemptLedger::default();
-    let first = ledger.dispatch("review");
-    ledger.charge(&first, 7);
-    ledger.fence("review");
-    let second = ledger.dispatch("review");
-    ledger.charge(&second, u64::MAX);
-    assert_eq!(ledger.total_charged(), 18_446_744_073_709_551_622_u128);
-    ledger.charge(&second, u64::MAX);
-    assert_eq!(ledger.total_charged(), 18_446_744_073_709_551_622_u128);
+    let mut attempts = ledger();
+    let first = attempts.dispatch("review");
+    attempts.charge_exact(&first, 7).unwrap();
+    attempts.fence("review");
+    let second = attempts.dispatch("review");
+    attempts
+        .charge_exact(&second, u128::from(u64::MAX))
+        .unwrap();
+    attempts
+        .charge_exact(&second, u128::from(u64::MAX))
+        .unwrap();
+    assert_eq!(attempts.attempt(&first).unwrap().charged, 7);
+    assert_eq!(
+        attempts.attempt(&second).unwrap().charged,
+        u128::from(u64::MAX)
+    );
 }
