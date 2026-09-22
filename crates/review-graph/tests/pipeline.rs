@@ -64,31 +64,35 @@ impl Dispatch for Recorder {
     }
 }
 
-/// Ports that carry one opaque artifact each: these tests are about topology, not contracts.
-fn opaque(names: &[&str]) -> Vec<PortContract> {
-    names.iter().copied().map(PortContract::opaque).collect()
+/// A port that carries one test artifact: these tests are about topology, not contracts.
+fn port(name: &str) -> PortContract {
+    PortContract::new(name, "test/Artifact@1").with_snapshot_affinity(SnapshotAffinity::Any)
+}
+
+fn ports(names: &[&str]) -> Vec<PortContract> {
+    names.iter().copied().map(port).collect()
 }
 
 fn heavy_pipeline() -> Pipeline {
     let mut pipeline = Pipeline::default()
-        .node(Node::new("gate", NodeKind::Gate).emitting_contracts(opaque(&["decision"])))
+        .node(Node::new("gate", NodeKind::Gate).emitting_contracts(ports(&["decision"])))
         .node(
             Node::new("gather", NodeKind::Gather)
-                .accepting_contracts(opaque(&["architecture", "performance", "tdd"]))
-                .emitting_contracts(opaque(&["reports"])),
+                .accepting_contracts(ports(&["architecture", "performance", "tdd"]))
+                .emitting_contracts(ports(&["reports"])),
         )
         .node(
             Node::new("ledger", NodeKind::Ledger)
-                .accepting_contracts(opaque(&["reports"]))
-                .emitting_contracts(opaque(&["findings"])),
+                .accepting_contracts(ports(&["reports"]))
+                .emitting_contracts(ports(&["findings"])),
         );
 
     for reviewer in ["architecture", "performance", "tdd"] {
         pipeline = pipeline
             .node(
                 Node::new(reviewer, NodeKind::Reviewer)
-                    .accepting_contracts(opaque(&["gate"]))
-                    .emitting_contracts(opaque(&["result"]))
+                    .accepting_contracts(ports(&["gate"]))
+                    .emitting_contracts(ports(&["result"]))
                     .gated_by("gate"),
             )
             .edge(Port::new("gate", "decision"), Port::new(reviewer, "gate"))
@@ -175,13 +179,13 @@ fn planning_refuses_a_cycle_before_anything_runs() {
     let pipeline = Pipeline::default()
         .node(
             Node::new("a", NodeKind::Reviewer)
-                .accepting_contracts(opaque(&["in"]))
-                .emitting_contracts(opaque(&["out"])),
+                .accepting_contracts(ports(&["in"]))
+                .emitting_contracts(ports(&["out"])),
         )
         .node(
             Node::new("b", NodeKind::Reviewer)
-                .accepting_contracts(opaque(&["in"]))
-                .emitting_contracts(opaque(&["out"])),
+                .accepting_contracts(ports(&["in"]))
+                .emitting_contracts(ports(&["out"])),
         )
         .edge(Port::new("a", "out"), Port::new("b", "in"))
         .edge(Port::new("b", "out"), Port::new("a", "in"));
@@ -191,8 +195,8 @@ fn planning_refuses_a_cycle_before_anything_runs() {
 #[test]
 fn planning_refuses_an_edge_to_a_port_that_does_not_exist() {
     let pipeline = Pipeline::default()
-        .node(Node::new("gate", NodeKind::Gate).emitting_contracts(opaque(&["decision"])))
-        .node(Node::new("deep", NodeKind::Reviewer).accepting_contracts(opaque(&["gate"])))
+        .node(Node::new("gate", NodeKind::Gate).emitting_contracts(ports(&["decision"])))
+        .node(Node::new("deep", NodeKind::Reviewer).accepting_contracts(ports(&["gate"])))
         // Typo: the reviewer accepts "gate", not "gates".
         .edge(Port::new("gate", "decision"), Port::new("deep", "gates"));
     assert!(matches!(
@@ -206,10 +210,10 @@ fn planning_refuses_an_edge_to_a_port_that_does_not_exist() {
 #[test]
 fn planning_refuses_an_input_nothing_feeds() {
     let pipeline = Pipeline::default()
-        .node(Node::new("gate", NodeKind::Gate).emitting_contracts(opaque(&["decision"])))
+        .node(Node::new("gate", NodeKind::Gate).emitting_contracts(ports(&["decision"])))
         .node(
             Node::new("deep", NodeKind::Reviewer)
-                .accepting_contracts(opaque(&["gate", "prior_findings"])),
+                .accepting_contracts(ports(&["gate", "prior_findings"])),
         )
         .edge(Port::new("gate", "decision"), Port::new("deep", "gate"));
     match pipeline.plan() {
@@ -223,8 +227,8 @@ fn planning_refuses_an_input_nothing_feeds() {
 #[test]
 fn planning_refuses_an_unknown_node_or_gate() {
     let missing_node = Pipeline::default()
-        .node(Node::new("a", NodeKind::Reviewer).emitting_contracts(opaque(&["out"])))
-        .node(Node::new("b", NodeKind::Reviewer).accepting_contracts(opaque(&["in"])))
+        .node(Node::new("a", NodeKind::Reviewer).emitting_contracts(ports(&["out"])))
+        .node(Node::new("b", NodeKind::Reviewer).accepting_contracts(ports(&["in"])))
         .edge(Port::new("ghost", "out"), Port::new("b", "in"));
     assert!(matches!(
         missing_node.plan(),
@@ -306,16 +310,18 @@ fn child_concurrency_limit_and_task_artifact_order_survive_flattening() {
             Ok(BTreeMap::from([("out".into(), vec![node.id.clone()])]))
         }
     }
-    let many = |name| PortContract::opaque(name).with_cardinality(PortCardinality::Many);
+    let many = |name| port(name).with_cardinality(PortCardinality::Many);
     let plan = Pipeline::default()
         .node(Node::new("root.inputs", NodeKind::Task).emitting_contracts(vec![many("out")]))
         .node(
             Node::new("root.nodes.child.nodes.a", NodeKind::Task)
-                .accepting_contracts(vec![many("in")]),
+                .accepting_contracts(vec![many("in")])
+                .emitting_contracts(vec![port("out")]),
         )
         .node(
             Node::new("root.nodes.child.nodes.b", NodeKind::Task)
-                .accepting_contracts(vec![many("in")]),
+                .accepting_contracts(vec![many("in")])
+                .emitting_contracts(vec![port("out")]),
         )
         .edge(
             Port::new("root.inputs", "out"),

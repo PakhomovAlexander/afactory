@@ -13,7 +13,7 @@ kind = "whole-tree"
 [[nodes]]
 id = "gate"
 kind = "gate"
-outputs = ["decision"]
+outputs = [{{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
 
 [[nodes]]
 id = "generation"
@@ -23,7 +23,7 @@ outputs = [{{ name = "findings", type = "review.kernel/FindingSet@1", cardinalit
 [[nodes]]
 id = "r-alpha"
 kind = "reviewer"
-inputs = ["gate", {{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+inputs = [{{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}, {{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
 outputs = [{{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
 gated_by = "gate"
 runner = {{ program = "/bin/true" }}
@@ -32,7 +32,7 @@ runner = {{ program = "/bin/true" }}
 [[nodes]]
 id = "r-beta"
 kind = "reviewer"
-inputs = ["gate", {{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+inputs = [{{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}, {{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
 outputs = [{{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
 gated_by = "gate"
 runner = {{ program = "/bin/true" }}
@@ -41,13 +41,13 @@ runner = {{ program = "/bin/true" }}
 id = "gather"
 kind = "gather"
 inputs = [{{ name = "r-alpha", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}, {{ name = "r-beta", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
-outputs = ["reports"]
+outputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
 
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
-outputs = ["findings"]
+inputs = [{{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
+outputs = [{{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }}]
 
 [[edges]]
 from = {{ node = "gate", port = "decision" }}

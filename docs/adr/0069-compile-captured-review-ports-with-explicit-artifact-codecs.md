@@ -2,7 +2,9 @@
 
 **Status:** accepted, 2026-09-12; unreleased compatibility frontend checkpoint; superseded in
 part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the compatibility types for pipeline
-format 1 shorthand Generation outputs. Format 1 no longer loads, and no port is typed by its name.
+format 1 shorthand Generation outputs, and the opaque shorthand ports that later formats still
+retyped by node kind. Format 1 no longer loads, no port is typed by its name, and every port
+declares its artifact type.
 
 ## Context
 

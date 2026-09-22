@@ -462,7 +462,7 @@ impl EventStore {
                             Arc::clone(&self.validated_change_sets[digest]),
                         );
                     }
-                    Some(artifact_type) if artifact_type != review_core::contract::OPAQUE_V1 => {
+                    Some(artifact_type) => {
                         let value = cas
                             .get_json_for_publication(digest)
                             .map_err(prepare_error)?;
@@ -707,7 +707,6 @@ struct AuthorityNode {
     demands: Option<review_core::DemandRequirement>,
     #[serde(default)]
     inputs: Vec<AuthorityPort>,
-    #[serde(default = "default_authority_outputs")]
     outputs: Vec<AuthorityPort>,
     #[serde(default)]
     gated_by: Option<String>,
@@ -796,15 +795,8 @@ struct AuthorityReviewerExecution {
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
-#[serde(untagged)]
-enum AuthorityPort {
-    Name(String),
-    Detailed(AuthorityPortDetails),
-}
-
-#[derive(Debug, Clone, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AuthorityPortDetails {
+struct AuthorityPort {
     name: String,
     #[serde(rename = "type")]
     artifact_type: String,
@@ -812,43 +804,6 @@ struct AuthorityPortDetails {
     #[serde(default)]
     optional: bool,
     snapshot_affinity: String,
-}
-
-impl AuthorityPort {
-    fn name(&self) -> &str {
-        match self {
-            Self::Name(name) => name,
-            Self::Detailed(port) => &port.name,
-        }
-    }
-
-    fn artifact_type(&self) -> &str {
-        match self {
-            Self::Name(_) => review_core::contract::OPAQUE_V1,
-            Self::Detailed(port) => &port.artifact_type,
-        }
-    }
-
-    fn cardinality(&self) -> &str {
-        match self {
-            Self::Name(_) => "one",
-            Self::Detailed(port) => &port.cardinality,
-        }
-    }
-
-    fn optional(&self) -> bool {
-        match self {
-            Self::Name(_) => false,
-            Self::Detailed(port) => port.optional,
-        }
-    }
-
-    fn snapshot_affinity(&self) -> &str {
-        match self {
-            Self::Name(_) => "any",
-            Self::Detailed(port) => &port.snapshot_affinity,
-        }
-    }
 }
 
 struct AuthorityPlan {
@@ -953,33 +908,29 @@ fn dynamic_node_authority(
         let mut inputs = scatter
             .inputs
             .iter()
-            .filter(|port| port.artifact_type() != review_core::contract::SLICE_SET_V1)
+            .filter(|port| port.artifact_type != review_core::contract::SLICE_SET_V1)
             .cloned()
             .collect::<Vec<_>>();
-        inputs.push(AuthorityPort::Detailed(AuthorityPortDetails {
+        inputs.push(AuthorityPort {
             name: "slice".into(),
             artifact_type: review_core::contract::REVIEW_SLICE_V1.into(),
             cardinality: "one".into(),
             optional: false,
             snapshot_affinity: "same_subject".into(),
-        }));
+        });
         resolved = Some(DynamicNodeAuthority {
             slice: slice.clone(),
             inputs,
-            outputs: vec![AuthorityPort::Detailed(AuthorityPortDetails {
+            outputs: vec![AuthorityPort {
                 name: "out".into(),
                 artifact_type: review_core::contract::REVIEWER_RESULT_V2.into(),
                 cardinality: "one".into(),
                 optional: false,
                 snapshot_affinity: "same_subject".into(),
-            })],
+            }],
         });
     }
     Ok(resolved)
-}
-
-fn default_authority_outputs() -> Vec<AuthorityPort> {
-    vec![AuthorityPort::Name("out".into())]
 }
 
 fn load_authority_plan(
@@ -1335,10 +1286,10 @@ fn validate_plan_ports(
         .map(|port| (port.port.as_str(), port))
         .collect();
     for expected in expected {
-        let port = actual.get(expected.name()).ok_or_else(|| {
+        let port = actual.get(expected.name.as_str()).ok_or_else(|| {
             StoreError::Conflict(format!(
                 "durable port map omits pinned port '{}'",
-                expected.name()
+                expected.name
             ))
         })?;
         let cardinality = match port.cardinality {
@@ -1350,14 +1301,14 @@ fn validate_plan_ports(
             review_core::SnapshotAffinity::Unbound => "unbound",
             review_core::SnapshotAffinity::Any => "any",
         };
-        if port.artifact_type != expected.artifact_type()
-            || cardinality != expected.cardinality()
-            || port.optional != expected.optional()
-            || affinity != expected.snapshot_affinity()
+        if port.artifact_type != expected.artifact_type
+            || cardinality != expected.cardinality
+            || port.optional != expected.optional
+            || affinity != expected.snapshot_affinity
         {
             return Err(StoreError::Conflict(format!(
                 "durable port '{}' contradicts the pinned contract",
-                expected.name()
+                expected.name
             )));
         }
         if affinity == "same_subject"
@@ -1365,7 +1316,7 @@ fn validate_plan_ports(
         {
             return Err(StoreError::Conflict(format!(
                 "durable port '{}' is bound to the wrong Subject snapshot",
-                expected.name()
+                expected.name
             )));
         }
         let mut validated_change_set = None;
@@ -1426,9 +1377,6 @@ fn validate_artifact_payload(
         return Err(StoreError::Conflict(format!(
             "typed artifact {artifact_id} is absent from the event's verified references"
         )));
-    }
-    if artifact_type == review_core::contract::OPAQUE_V1 {
-        return Ok(None);
     }
     if artifact_type == review_core::contract::CHANGE_SET_V1
         && let Some(change_set) = prepared.change_sets.get(artifact_id)
@@ -2145,11 +2093,10 @@ fn validate_campaign_transition(
                                 cas.get_json(&selected.result_envelope_id)
                                     .map_err(|e| StoreError::Artifact(e.to_string()))?,
                             )?;
-                            let result_type = outputs.first().map(AuthorityPort::artifact_type);
-                            if outputs.len() != 1
-                                || result_type != Some(result.artifact_type.as_str())
-                                || outputs[0].cardinality() != "one"
-                                || outputs[0].optional()
+                            if !matches!(outputs.as_slice(), [output]
+                                if output.artifact_type == result.artifact_type
+                                    && output.cardinality == "one"
+                                    && !output.optional)
                             {
                                 return Err(StoreError::Conflict(
                                     "Selected Task result differs from the pinned Review output contract".into(),

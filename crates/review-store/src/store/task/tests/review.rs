@@ -104,11 +104,7 @@ kind = "reviewer"
 outputs = [{ name = "out", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 runner = { program = "/bin/true" }
 "#;
-    let definition = if contract == review_core::contract::OPAQUE_V1 {
-        definition.replace("[{ name = \"out\", type = \"review.kernel/ReviewerResult@2\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }]", "[\"out\"]")
-    } else {
-        definition.replace(review_core::contract::REVIEWER_RESULT_V2, contract)
-    };
+    let definition = definition.replace(review_core::contract::REVIEWER_RESULT_V2, contract);
     let pipeline = f.cas.put(definition.as_bytes()).unwrap();
     let (authority, head) = if real_source {
         let manifest = f.cas.put_json(&json!({"entries":[]})).unwrap();
@@ -589,7 +585,6 @@ fn typed_review_provenance_binds_exact_attempt_usage_and_unknown_reservation() {
 #[test]
 fn review_selection_accepts_only_the_pinned_reviewer_result_v2_contract() {
     for contract in [
-        review_core::contract::OPAQUE_V1,
         review_core::contract::REVIEWER_RESULT_V2,
         review_core::contract::FINDING_SET_V1,
     ] {

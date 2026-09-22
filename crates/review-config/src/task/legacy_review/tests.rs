@@ -10,7 +10,7 @@ kind = "whole-tree"
 [[nodes]]
 id = "gate"
 kind = "gate"
-outputs = ["decision"]
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 [[nodes]]
 id = "generation"
 kind = "generation"
@@ -33,12 +33,12 @@ runner = { program = "/bin/true" }
 id = "gather"
 kind = "gather"
 inputs = [{ name = "reports", type = "review.kernel/ReviewerResult@2", cardinality = "many", optional = false, snapshot_affinity = "any" }]
-outputs = ["reports"]
+outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
-outputs = ["findings"]
+inputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 [[edges]]
 from = { node = "generation", port = "findings" }
 to = { node = "first/reviewer", port = "prior_findings" }
@@ -233,7 +233,7 @@ fn codecs_follow_the_declared_contract_and_generation_stays_strict() {
         .load()
         .unwrap();
     let compilation = compile_legacy_review(&loaded, context(&loaded)).unwrap();
-    // The shorthand Ledger output still reduces into the canonical-identity envelope.
+    // The Ledger's FindingSet@1 output reduces into the canonical-identity envelope.
     assert_eq!(
         compilation.nodes["ledger"].outputs["o0"].codec,
         ReviewArtifactCodec::Envelope {
@@ -259,26 +259,45 @@ fn codecs_follow_the_declared_contract_and_generation_stays_strict() {
             artifact_type: contract::FINDING_SET_V1.into()
         }
     );
-    // A Generation output is never retyped by its name.
-    let opaque_generation = PIPELINE.replace(
+    // A Generation output is only one of the contracts Generation dispatches.
+    let unsupported_generation = PIPELINE.replace(
         "outputs = [{ name = \"findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = true, snapshot_affinity = \"any\" }]",
-        "outputs = [\"findings\"]",
+        "outputs = [{ name = \"findings\", type = \"review.kernel/ReportSet@1\", cardinality = \"one\", optional = true, snapshot_affinity = \"any\" }]",
     );
-    assert_ne!(opaque_generation, PIPELINE);
-    let error = crate::Definition::from_toml(&opaque_generation)
+    assert_ne!(unsupported_generation, PIPELINE);
+    let error = crate::Definition::from_toml(&unsupported_generation)
         .unwrap()
         .load()
         .map(|_| ())
         .unwrap_err();
     assert!(
-        error.to_string().contains("typed port declaration"),
+        error.to_string().contains("has unsupported type"),
         "{error}"
     );
+    // Nor is a Gate or Ledger output retyped from its node kind.
+    for output in [
+        "{ name = \"decision\", type = \"review.kernel/GateDecision@1\"",
+        "{ name = \"findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = false",
+    ] {
+        let retyped = PIPELINE.replace(
+            output,
+            &output
+                .replace("GateDecision@1", "Opaque@1")
+                .replace("FindingSet@1", "Opaque@1"),
+        );
+        assert_ne!(retyped, PIPELINE);
+        let loaded = crate::Definition::from_toml(&retyped)
+            .unwrap()
+            .load()
+            .unwrap();
+        let error = compile_legacy_review(&loaded, context(&loaded)).unwrap_err();
+        assert!(error.contains("Unsupported Review output"), "{error}");
+    }
     let mut bad = context(&loaded);
     bad.workers.remove("second");
     assert!(compile_legacy_review(&loaded, bad).is_err());
     let mut bad = context(&loaded);
-    bad.inputs.get_mut("round").unwrap().artifact_type = contract::OPAQUE_V1.into();
+    bad.inputs.get_mut("round").unwrap().artifact_type = contract::SOURCE_SNAPSHOT_V1.into();
     assert!(compile_legacy_review(&loaded, bad).is_err());
     let mut bad = context(&loaded);
     bad.outputs.get_mut("findings").unwrap().port = "undeclared".into();

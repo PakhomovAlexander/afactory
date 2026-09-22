@@ -132,7 +132,6 @@ fn port(artifact_type: &str, cardinality: PortCardinality, optional: bool) -> Pi
 fn output_codec(kind: NodeKind, output: &PortContract) -> Result<ReviewArtifactCodec, String> {
     use ReviewArtifactCodec::{Envelope, Flat};
     let ty = output.artifact_type.as_str();
-    let opaque = ty == contract::OPAQUE_V1;
     let flat = |ty: &str| Flat {
         artifact_type: ty.into(),
     };
@@ -145,16 +144,9 @@ fn output_codec(kind: NodeKind, output: &PortContract) -> Result<ReviewArtifactC
             contract::CHANGE_SET_V1 => Ok(flat(ty)),
             _ => Err("Review Generation requires a supported explicit output contract".into()),
         },
-        NodeKind::Gate if opaque || ty == contract::GATE_DECISION_V1 => {
-            Ok(flat(contract::GATE_DECISION_V1))
-        }
+        NodeKind::Gate if ty == contract::GATE_DECISION_V1 => Ok(flat(ty)),
         NodeKind::Reviewer if ty == contract::REVIEWER_RESULT_V2 => Ok(flat(ty)),
-        NodeKind::Gather if opaque || ty == contract::REPORT_SET_V1 => {
-            Ok(flat(contract::REPORT_SET_V1))
-        }
-        NodeKind::Ledger if opaque => Ok(Envelope {
-            artifact_type: contract::FINDING_SET_V1.into(),
-        }),
+        NodeKind::Gather if ty == contract::REPORT_SET_V1 => Ok(flat(ty)),
         NodeKind::Ledger if matches!(ty, contract::FINDING_SET_V1 | contract::DEMAND_SET_V1) => {
             Ok(enveloped())
         }

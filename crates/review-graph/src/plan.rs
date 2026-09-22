@@ -49,13 +49,6 @@ impl PortContract {
         }
     }
 
-    /// Compatibility shorthand for tests and generic graph users. The port is still fully
-    /// declared, but deliberately makes no domain claim beyond carrying one opaque artifact.
-    pub fn opaque(name: impl Into<String>) -> Self {
-        Self::new(name, review_core::contract::OPAQUE_V1)
-            .with_snapshot_affinity(SnapshotAffinity::Any)
-    }
-
     pub fn with_cardinality(mut self, cardinality: PortCardinality) -> Self {
         self.cardinality = cardinality;
         self
@@ -114,7 +107,7 @@ impl Node {
             id: id.into(),
             kind,
             inputs: Vec::new(),
-            outputs: vec![PortContract::opaque("out")],
+            outputs: Vec::new(),
             gated_by: None,
         }
     }

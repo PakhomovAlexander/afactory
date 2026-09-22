@@ -452,9 +452,7 @@ pub(super) fn first_attempt_input(
         .get(node)
         .ok_or_else(|| format!("node `{node}` has no runner"))?;
     let result_contract = match spec.outputs.as_slice() {
-        [review_config::PortContractSpec::Typed(port)] => {
-            review_core::ReviewerResultContract::parse_artifact_type(&port.artifact_type)
-        }
+        [port] => review_core::ReviewerResultContract::parse_artifact_type(&port.artifact_type),
         _ => None,
     }
     .ok_or_else(|| {
@@ -469,14 +467,7 @@ pub(super) fn first_attempt_input(
     };
     let mut not_rendered = Vec::new();
     for port in &spec.inputs {
-        let (name, artifact_type) = match port {
-            review_config::PortContractSpec::Typed(typed) => {
-                (typed.name.as_str(), typed.artifact_type.as_str())
-            }
-            review_config::PortContractSpec::Name(name) => {
-                (name.as_str(), review_core::contract::OPAQUE_V1)
-            }
-        };
+        let (name, artifact_type) = (port.name.as_str(), port.artifact_type.as_str());
         if artifact_type == review_core::contract::CHANGE_SET_V1 {
             let artifact = match &change_set {
                 ChangeSetSource::Resolved(resolved) => {

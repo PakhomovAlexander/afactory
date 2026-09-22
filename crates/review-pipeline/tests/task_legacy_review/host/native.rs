@@ -99,7 +99,7 @@ fn admitted_plan_with_provider(
     let definition = PIPELINE
         .replace("version = 2", "version = 4\n[gate]\nprovider=\"trusted_local\"\nrequired_isolation=\"none\"\nmode=\"ephemeral-write\"")
         .replace("runner = { program = \"/bin/true\" }", &format!("package=\"fixture\"\ngated_by=\"gate\"\nexecution={{credential_mode=\"{mode}\"}}"))
-        + "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[\"decision\"]\n[[checks]]\nname=\"required\"\nprogram=\"/bin/sh\"\nargs=[{value=\"-c\"},{value=\"exit 0\"}]\n";
+        + "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[{name=\"decision\",type=\"review.kernel/GateDecision@1\",cardinality=\"one\",optional=false,snapshot_affinity=\"any\"}]\n[[checks]]\nname=\"required\"\nprogram=\"/bin/sh\"\nargs=[{value=\"-c\"},{value=\"exit 0\"}]\n";
     let package = if provider_kind == "claude" {
         capture::claude_package()
     } else {

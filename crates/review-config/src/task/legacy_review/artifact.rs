@@ -121,7 +121,7 @@ mod tests {
         let raw = json!({"type": "user data", "payload": {}, "producer": "text"});
         let raw_id = cas.put_json(&raw).unwrap();
         let codec = ReviewArtifactCodec::Flat {
-            artifact_type: contract::OPAQUE_V1.into(),
+            artifact_type: contract::GATE_DECISION_V1.into(),
         };
         let task_id = codec
             .capture(&cas, &raw_id, producer("lift@1"), None)
@@ -204,7 +204,7 @@ mod tests {
         }
         let (wrong_type, _) = cas
             .put_artifact(
-                contract::OPAQUE_V1,
+                contract::REPORT_SET_V1,
                 producer("lift@1"),
                 vec![raw.clone()],
                 None,

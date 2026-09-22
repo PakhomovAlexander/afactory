@@ -27,7 +27,7 @@ args = [{ value = "./build.sh" }]
 [[nodes]]
 id = "gate"
 kind = "gate"
-outputs = ["decision"]
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 
 [[nodes]]
 id = "generation"
@@ -37,7 +37,7 @@ outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality
 [[nodes]]
 id = "architecture"
 kind = "reviewer"
-inputs = ["gate", { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }, { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
 outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 runner = { program = "/bin/sh", args = [{ value = "-c" }, { value = "echo hi" }] }
@@ -46,7 +46,7 @@ runner = { program = "/bin/sh", args = [{ value = "-c" }, { value = "echo hi" }]
 id = "ledger"
 kind = "ledger"
 inputs = [{ name = "reports", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
-outputs = ["findings"]
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 
 [[edges]]
 from = { node = "gate", port = "decision" }
@@ -65,7 +65,7 @@ to = { node = "ledger", port = "reports" }
 const GENERATION_OUTPUTS: &str = r#"outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]"#;
 
 /// `MINIMAL`'s reviewer inputs, for tests that extend them.
-const REVIEWER_INPUTS: &str = r#"inputs = ["gate", { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]"#;
+const REVIEWER_INPUTS: &str = r#"inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }, { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]"#;
 
 const DYNAMIC_V5: &str = r#"
 version = 5
@@ -753,7 +753,13 @@ fn graph_validation_applies_to_definitions_too() {
         Err(ConfigError::Plan(PlanError::UnknownPort { .. }))
     ));
 
-    let unwired = MINIMAL.replace(r#"inputs = ["gate", "#, r#"inputs = ["gate", "unwired", "#);
+    let unwired = MINIMAL.replace(
+        REVIEWER_INPUTS,
+        &REVIEWER_INPUTS.replace(
+            "}]",
+            r#"}, { name = "unwired", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]"#,
+        ),
+    );
     assert_ne!(unwired, MINIMAL);
     assert!(matches!(
         Definition::from_toml(&unwired).unwrap().load(),
@@ -1030,7 +1036,7 @@ kind = "whole-tree"
 [[nodes]]
 id = "gate"
 kind = "gate"
-outputs = ["decision"]
+outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 "#;
     let error = Definition::from_toml(text)
         .unwrap()
@@ -1310,21 +1316,22 @@ fn every_reviewer_answers_reviewer_result_v2_against_generations_finding_set() {
     );
     assert_ne!(unwired, MINIMAL);
     refused(&unwired, "must receive generation's exact FindingSet@1");
-    let undeclared = unwired.replace(REVIEWER_INPUTS, r#"inputs = ["gate"]"#);
+    let undeclared = unwired.replace(
+        REVIEWER_INPUTS,
+        r#"inputs = [{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]"#,
+    );
     refused(&undeclared, "must declare exactly one FindingSet@1 input");
     let required = MINIMAL.replace(
         REVIEWER_INPUTS,
         &REVIEWER_INPUTS.replace("optional = true", "optional = false"),
     );
     refused(&required, "must be optional, singular");
-    for output in [
-        r#"outputs = ["result"]"#,
-        r#"outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#,
-    ] {
-        let retired = MINIMAL.replace(r#"outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#, output);
-        assert_ne!(retired, MINIMAL);
-        refused(&retired, "has unsupported result type");
-    }
+    let retired = MINIMAL.replace(
+        "review.kernel/ReviewerResult@2",
+        "review.kernel/ReviewerResult@1",
+    );
+    assert_ne!(retired, MINIMAL);
+    refused(&retired, "has unsupported result type");
     let retired_prior = MINIMAL.replace(
         GENERATION_OUTPUTS,
         r#"outputs = [{ name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]"#,
@@ -1335,22 +1342,39 @@ fn every_reviewer_answers_reviewer_result_v2_against_generations_finding_set() {
     );
 }
 
+/// Every port is a typed table and every node declares its outputs: a bare-string port or a
+/// node without `outputs` is refused when the file is parsed, before anything loads.
 #[test]
-fn an_untyped_generation_output_is_refused_before_execution() {
-    let text = MINIMAL.replace(GENERATION_OUTPUTS, r#"outputs = ["findings"]"#);
-    assert_ne!(text, MINIMAL);
-
-    let error = Definition::from_toml(&text)
-        .unwrap()
-        .load()
+fn an_untyped_port_or_a_node_without_outputs_is_refused_when_parsed() {
+    let untyped_output = MINIMAL.replace(GENERATION_OUTPUTS, r#"outputs = ["findings"]"#);
+    let untyped_input = MINIMAL.replace(
+        REVIEWER_INPUTS,
+        &REVIEWER_INPUTS.replace(
+            r#"{ name = "gate", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }"#,
+            r#""gate""#,
+        ),
+    );
+    for text in [&untyped_output, &untyped_input] {
+        assert_ne!(text, MINIMAL);
+        let error = Definition::from_toml(text).map(|_| ()).unwrap_err();
+        assert!(
+            error.to_string().contains("invalid type: string"),
+            "{error}"
+        );
+    }
+    let without_outputs = MINIMAL.replace(
+        r#"outputs = [{ name = "decision", type = "review.kernel/GateDecision@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+"#,
+        "",
+    );
+    assert_ne!(without_outputs, MINIMAL);
+    let error = Definition::from_toml(&without_outputs)
         .map(|_| ())
         .unwrap_err();
-    assert!(error.to_string().contains("unsupported type"), "{error}");
     assert!(
-        error.to_string().contains("typed port declaration"),
+        error.to_string().contains("missing field `outputs`"),
         "{error}"
     );
-    assert!(error.to_string().contains("FindingSet@1"), "{error}");
 }
 
 #[test]

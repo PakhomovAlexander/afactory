@@ -109,11 +109,11 @@ runner = {program="/bin/true"}
 id = "gather"
 kind = "gather"
 inputs = [{name="reviewer",type="review.kernel/ReviewerResult@2",cardinality="one",optional=false,snapshot_affinity="same_subject"}]
-outputs = ["reports"]
+outputs = [{name="reports",type="review.kernel/ReportSet@1",cardinality="one",optional=false,snapshot_affinity="any"}]
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
+inputs = [{name="reports",type="review.kernel/ReportSet@1",cardinality="one",optional=false,snapshot_affinity="any"}]
 outputs = [
   {name="findings",type="review.kernel/FindingSet@1",cardinality="one",optional=false,snapshot_affinity="same_subject"},
   {name="demands",type="review.kernel/DemandSet@1",cardinality="one",optional=false,snapshot_affinity="same_subject"}

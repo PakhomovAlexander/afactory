@@ -377,7 +377,7 @@ fn captured_gate_records_checks_once_and_blocks_reviewers_when_required_check_fa
             "id = \"reviewer\"",
             "id = \"reviewer\"\ngated_by = \"gate\"",
         ) + &format!(
-            "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[\"decision\"]\n[[checks]]\nname=\"required\"\nprogram=\"/bin/sh\"\nargs=[{{value=\"-c\"}},{{value=\"exit {}\"}}]\n",
+            "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[{{name=\"decision\",type=\"review.kernel/GateDecision@1\",cardinality=\"one\",optional=false,snapshot_affinity=\"any\"}}]\n[[checks]]\nname=\"required\"\nprogram=\"/bin/sh\"\nargs=[{{value=\"-c\"}},{{value=\"exit {}\"}}]\n",
             if pass { 0 } else { 1 }
         );
         let (compiler, lease) = admit(&cas, &mut store, &definition);
@@ -517,7 +517,7 @@ fn cache_receipts_and_failed_gate_observations_survive_store_reopen() {
         let definition = command_pipeline()
             .replace("version = 2", "version = 3\n[gate]\nprovider=\"trusted_local\"\nrequired_isolation=\"none\"\nmode=\"ephemeral-write\"\ncaches=[\"cargo\"]")
             .replace("id = \"reviewer\"", "id = \"reviewer\"\ngated_by=\"gate\"")
-            + "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[\"decision\"]\n[[checks]]\nname=\"required\"\nprogram=\"/bin/sh\"\nargs=[{value=\"-c\"},{value=\"exit 0\"}]\n";
+            + "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[{name=\"decision\",type=\"review.kernel/GateDecision@1\",cardinality=\"one\",optional=false,snapshot_affinity=\"any\"}]\n[[checks]]\nname=\"required\"\nprogram=\"/bin/sh\"\nargs=[{value=\"-c\"},{value=\"exit 0\"}]\n";
         let (compiler, lease) = admit(&cas, &mut store, &definition);
         let cache_root = directory.path().join("cargo-cache");
         let cached = cache_root.join("registry/cache/index/example.crate");
@@ -866,7 +866,7 @@ fn an_expired_review_records_incomplete_without_inventing_unstarted_gate_facts()
                 "version = 3\n[gate]\nprovider=\"trusted_local\"\nrequired_isolation=\"none\"\nmode=\"ephemeral-write\"{}",
                 if mode == "cached" { "\ncaches=[\"cargo\"]" } else { "" }))
                 .replace("id = \"reviewer\"", "id = \"reviewer\"\ngated_by=\"gate\"")
-                + "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[\"decision\"]\n[[checks]]\nname=\"required\"\nprogram=\"/bin/false\"\n"
+                + "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[{name=\"decision\",type=\"review.kernel/GateDecision@1\",cardinality=\"one\",optional=false,snapshot_affinity=\"any\"}]\n[[checks]]\nname=\"required\"\nprogram=\"/bin/false\"\n"
         };
         let millis = || {
             u64::try_from(
@@ -1091,7 +1091,7 @@ fn a_task_hosted_worker_retains_its_build_cache_clone_with_its_own_attempt() {
             ),
         )
         + &format!(
-            "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[\"decision\"]\n[[checks]]\nname=\"build\"\nprogram=\"/bin/sh\"\nargs=[{{value=\"-c\"}},{{value={}}}]\n",
+            "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[{{name=\"decision\",type=\"review.kernel/GateDecision@1\",cardinality=\"one\",optional=false,snapshot_affinity=\"any\"}}]\n[[checks]]\nname=\"build\"\nprogram=\"/bin/sh\"\nargs=[{{value=\"-c\"}},{{value={}}}]\n",
             serde_json::to_string(build).unwrap()
         );
     assert!(

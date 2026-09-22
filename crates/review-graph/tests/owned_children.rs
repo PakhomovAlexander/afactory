@@ -1,6 +1,6 @@
 use review_graph::{
     ArtifactMap, Dispatch, Node, NodeKind, NodeOutcome, OwnedChildDispatch, Pipeline, Port,
-    PortContract, Scheduler,
+    PortContract, Scheduler, SnapshotAffinity,
 };
 use std::collections::BTreeMap;
 use std::sync::{Condvar, Mutex};
@@ -37,6 +37,10 @@ impl Host {
         self.state.lock().unwrap().events.push(event);
     }
 }
+/// A port that carries one test artifact: these tests are about ownership, not contracts.
+fn port(name: &str) -> PortContract {
+    PortContract::new(name, "test/Artifact@1").with_snapshot_affinity(SnapshotAffinity::Any)
+}
 fn output(id: &str) -> ArtifactMap {
     BTreeMap::from([("out".into(), vec![format!("artifact:{id}")])])
 }
@@ -68,7 +72,8 @@ impl Dispatch for Host {
                     },
                     NodeKind::Task,
                 )
-                .accepting_contracts(vec![PortContract::opaque("item")]),
+                .accepting_contracts(vec![port("item")])
+                .emitting_contracts(vec![port("out")]),
                 inputs: BTreeMap::from([("item".into(), vec![format!("item:{index}")])]),
             })
             .collect())
@@ -127,10 +132,11 @@ impl Dispatch for Host {
 }
 fn plan() -> review_graph::Planned {
     Pipeline::default()
-        .node(Node::new("root.owner", NodeKind::Task))
+        .node(Node::new("root.owner", NodeKind::Task).emitting_contracts(vec![port("out")]))
         .node(
             Node::new("root.after", NodeKind::Task)
-                .accepting_contracts(vec![PortContract::opaque("parent")]),
+                .accepting_contracts(vec![port("parent")])
+                .emitting_contracts(vec![port("out")]),
         )
         .edge(
             Port::new("root.owner", "out"),

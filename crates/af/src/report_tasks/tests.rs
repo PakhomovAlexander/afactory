@@ -163,7 +163,7 @@ fn open_round(cas: &Cas, store: &mut EventStore) -> (String, String) {
         "repository_id":"fixture/accounting", "vcs":"git", "capture":{"kind":"committed", "tree_id":"fixture"},
         "source_revision":"fixture", "content_digest":tree.content_digest(), "artifact_manifest":tree_id,
     })).unwrap();
-    let pipeline = cas.put(b"version = 2\n[subject]\nkind = \"whole-tree\"\n[[nodes]]\nid = \"ledger\"\nkind = \"ledger\"\n").unwrap();
+    let pipeline = cas.put(b"version = 2\n[subject]\nkind = \"whole-tree\"\n[[nodes]]\nid = \"ledger\"\nkind = \"ledger\"\noutputs = [{ name = \"findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }]\n").unwrap();
     let lock = cas.put(b"version = 1\n").unwrap();
     let finding_genesis = cas
         .put_json(&json!({"kind":"finding-set-genesis@1", "authority_snapshot_id":head}))

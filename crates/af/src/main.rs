@@ -3648,7 +3648,7 @@ mod option_tests {
 
     fn campaign_manifest(cas: &review_store::Cas, ledger_node: &str) -> (String, String, String) {
         let pipeline = format!(
-            "version = 2\n[subject]\nkind = \"whole-tree\"\n[[nodes]]\nid = \"{ledger_node}\"\nkind = \"ledger\"\n"
+            "version = 2\n[subject]\nkind = \"whole-tree\"\n[[nodes]]\nid = \"{ledger_node}\"\nkind = \"ledger\"\noutputs = [{{ name = \"findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }}]\n"
         );
         let pipeline_id = cas.put(pipeline.as_bytes()).unwrap();
         let opaque = cas.put(b"pinned authority").unwrap();

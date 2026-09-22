@@ -428,6 +428,7 @@ version = 4
 id = "correctness"
 kind = "reviewer"
 package = "correctness"
+# Typed `inputs` and `outputs` as for any reviewer; only the credential boundary is shown.
 execution = { credential_mode = "brokered", operations = [
   { name = "model_inference", destination = "provider.openai", method = "responses.create", max_request_bytes = 1048576, max_response_bytes = 1048576, max_calls = 2, max_usage = 300000 },
 ] }

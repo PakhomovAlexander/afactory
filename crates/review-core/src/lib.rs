@@ -174,7 +174,6 @@ pub mod contract {
     pub const RESOLUTION_CHALLENGE_V1: &str = "review.kernel/ResolutionChallenge@1";
     pub const POLICY_TIME_V1: &str = "review.kernel/PolicyTime@1";
     pub const GATE_DECISION_V1: &str = "review.kernel/GateDecision@1";
-    pub const OPAQUE_V1: &str = "review.kernel/Opaque@1";
     pub const PATCH_PROPOSAL_V1: &str = "review.kernel/PatchProposal@1";
     pub const REPORT_SET_V1: &str = "review.kernel/ReportSet@1";
     pub const REVIEW_SLICE_V1: &str = "review.kernel/ReviewSlice@1";

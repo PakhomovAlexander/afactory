@@ -282,6 +282,17 @@ or needs a documented hand edit.
   `outputs/result.schema.json`, then re-pin the package digest. That includes the `bugs` and
   `correctness` Workers of a starter an earlier `af catalog init --profile software` wrote; run
   it again into a new directory to get the current ones.
+- Every review pipeline port is a typed table, in every pipeline format. The string shorthand
+  (`outputs = ["decision"]`, `inputs = ["reports"]`) is refused when the pipeline is parsed, and so
+  is a node without `outputs`, which used to get an implicit `out` port. A Gate, Gather or Ledger
+  output typed `review.kernel/Opaque@1`, the type the shorthand stood for, is no longer retyped by
+  its node kind: it is refused as an unsupported Review output before the Round's Gate runs, and
+  the Store no longer skips payload validation for Opaque@1 artifacts. Spell each port out as
+  `{ name = "…", type = "…", cardinality = "one", optional = false, snapshot_affinity = "any" }`:
+  a Gate outputs `review.kernel/GateDecision@1`, a Gather `review.kernel/ReportSet@1`, and a
+  Ledger `review.kernel/FindingSet@1` or `review.kernel/DemandSet@1`. `af onboard` and every
+  shipped pipeline already write typed ports. A Campaign whose manifest pinned a pipeline with the
+  shorthand can no longer be resumed or continued.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

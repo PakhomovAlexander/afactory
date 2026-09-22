@@ -28,7 +28,7 @@ runner = { program = "/bin/true" }
 id = "ledger"
 kind = "ledger"
 inputs = [{ name = "reports", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
-outputs = ["findings"]
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 [[edges]]
 from = { node = "generation", port = "history" }
 to = { node = "reviewer", port = "prior_findings" }

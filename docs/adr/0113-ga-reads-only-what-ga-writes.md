@@ -151,7 +151,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0068](0068-retain-inflight-task-usage-in-the-common-budget.md): usage observations and
   settlements encoded as `TaskExecutionRecord@1` with numeric charges.
 - [ADR-0069](0069-compile-captured-review-ports-with-explicit-artifact-codecs.md): the
-  compatibility types that pipeline format 1 shorthand Generation outputs received by port name.
+  compatibility types that pipeline format 1 shorthand Generation outputs received by port name,
+  and the types opaque shorthand Gate, Gather and Ledger ports received by node kind.
 - [ADR-0070](0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md): the
   legacy Kernel that composed `ReviewDomainState` with its own execution and replay owner.
 - [ADR-0071](0071-share-captured-review-authority-and-task-token-scopes.md): readability of
@@ -160,7 +161,7 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   unversioned and numeric-only usage, migration on write, and the execution-record and usage
   version ladders.
 - [ADR-0077](0077-run-captured-review-operations-under-common-task-attempts.md): historical
-  name-only Reviewer outputs meaning `ReviewerResult@1`.
+  name-only Reviewer outputs meaning `ReviewerResult@1`, and the Store's opaque exception for them.
 - [ADR-0078](0078-bind-review-conclusions-to-exact-task-accounting.md): readers for historical
   `RunReport` versions and raw provenance.
 - [ADR-0079](0079-retain-exact-cumulative-charge-within-one-task-attempt.md): readers for frozen

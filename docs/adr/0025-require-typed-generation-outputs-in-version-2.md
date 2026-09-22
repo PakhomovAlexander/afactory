@@ -3,6 +3,7 @@
 **Status:** proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
 untyped port shorthand kept readable for older pipeline files, and `PriorFindings@1` as a
 Generation output. A Generation emits an exact `FindingSet@1`, and a diff Subject's `ChangeSet@1`.
+Every port on every node kind is a typed table.
 
 Pipeline version 2 introduced typed ports but retained the string shorthand for older pipeline
 files. The built-in Generation executor dispatches outputs by artifact contract, so an opaque

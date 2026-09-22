@@ -165,9 +165,8 @@ pub struct NodeSpec {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub demands: Option<review_core::DemandRequirement>,
     #[serde(default)]
-    pub inputs: Vec<PortContractSpec>,
-    #[serde(default = "default_outputs")]
-    pub outputs: Vec<PortContractSpec>,
+    pub inputs: Vec<TypedPortSpec>,
+    pub outputs: Vec<TypedPortSpec>,
     #[serde(default)]
     pub gated_by: Option<String>,
     /// An inline runner command. A reviewer binds exactly one of `runner` or `package`;
@@ -595,10 +594,6 @@ impl ReviewerExecutionSpec {
     }
 }
 
-fn default_outputs() -> Vec<PortContractSpec> {
-    vec![PortContractSpec::Name("out".to_string())]
-}
-
 fn validate_diff_change_set_wiring(
     nodes: &[NodeSpec],
     edges: &[EdgeSpec],
@@ -615,7 +610,7 @@ fn validate_diff_change_set_wiring(
         .flat_map(|node| {
             node.outputs
                 .iter()
-                .map(PortContractSpec::build)
+                .map(TypedPortSpec::build)
                 .filter(|port| port.artifact_type == review_core::contract::CHANGE_SET_V1)
                 .map(move |port| (node, port))
         })
@@ -638,7 +633,7 @@ fn validate_diff_change_set_wiring(
         let inputs: Vec<_> = reviewer
             .inputs
             .iter()
-            .map(PortContractSpec::build)
+            .map(TypedPortSpec::build)
             .filter(|port| port.artifact_type == review_core::contract::CHANGE_SET_V1)
             .collect();
         let [reviewer_port] = inputs.as_slice() else {
@@ -674,7 +669,7 @@ fn validate_generation_output_contracts(
         .filter(|node| node.kind == NodeKindSpec::Generation)
     {
         let mut prior_findings = 0_usize;
-        for port in node.outputs.iter().map(PortContractSpec::build) {
+        for port in node.outputs.iter().map(TypedPortSpec::build) {
             match port.artifact_type.as_str() {
                 review_core::contract::FINDING_SET_V1 => {
                     if port.cardinality != review_core::PortCardinality::One
@@ -701,7 +696,7 @@ fn validate_generation_output_contracts(
                 }
                 artifact_type => {
                     return Err(ConfigError::Binding(format!(
-                        "generation node `{}` output `{}` has unsupported type `{artifact_type}`; Generation outputs require a typed port declaration for `{}` or `{}`",
+                        "generation node `{}` output `{}` has unsupported type `{artifact_type}`; a Generation output is `{}` or `{}`",
                         node.id,
                         port.name,
                         review_core::contract::FINDING_SET_V1,
@@ -738,7 +733,7 @@ fn validate_disposition_wiring(nodes: &[NodeSpec], edges: &[EdgeSpec]) -> Result
         .flat_map(|node| {
             node.outputs
                 .iter()
-                .map(PortContractSpec::build)
+                .map(TypedPortSpec::build)
                 .filter(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
                 .map(move |port| (node, port))
         })
@@ -753,11 +748,7 @@ fn validate_disposition_wiring(nodes: &[NodeSpec], edges: &[EdgeSpec]) -> Result
             "reviewer"
         };
         if reviewer.kind == NodeKindSpec::Reviewer {
-            let outputs: Vec<_> = reviewer
-                .outputs
-                .iter()
-                .map(PortContractSpec::build)
-                .collect();
+            let outputs: Vec<_> = reviewer.outputs.iter().map(TypedPortSpec::build).collect();
             let [output] = outputs.as_slice() else {
                 return Err(ConfigError::Binding(format!(
                     "reviewer `{}` must declare exactly one result output",
@@ -777,7 +768,7 @@ fn validate_disposition_wiring(nodes: &[NodeSpec], edges: &[EdgeSpec]) -> Result
         let inputs: Vec<_> = reviewer
             .inputs
             .iter()
-            .map(PortContractSpec::build)
+            .map(TypedPortSpec::build)
             .filter(|port| port.artifact_type == review_core::contract::FINDING_SET_V1)
             .collect();
         let [input] = inputs.as_slice() else {
@@ -884,13 +875,13 @@ fn validate_dynamic_wiring(
         let slice_outputs: Vec<_> = node
             .outputs
             .iter()
-            .map(PortContractSpec::build)
+            .map(TypedPortSpec::build)
             .filter(|port| port.artifact_type == review_core::contract::SLICE_SET_V1)
             .collect();
         let slice_inputs: Vec<_> = scatter
             .inputs
             .iter()
-            .map(PortContractSpec::build)
+            .map(TypedPortSpec::build)
             .filter(|port| port.artifact_type == review_core::contract::SLICE_SET_V1)
             .collect();
         let ([slice_output], [slice_input]) = (slice_outputs.as_slice(), slice_inputs.as_slice())
@@ -921,7 +912,7 @@ fn validate_dynamic_wiring(
         let shard_outputs: Vec<_> = scatter
             .outputs
             .iter()
-            .map(PortContractSpec::build)
+            .map(TypedPortSpec::build)
             .filter(|port| port.artifact_type == review_core::contract::SHARD_SET_V1)
             .collect();
         let [shard_output] = shard_outputs.as_slice() else {
@@ -937,7 +928,7 @@ fn validate_dynamic_wiring(
             candidate
                 .inputs
                 .iter()
-                .map(PortContractSpec::build)
+                .map(TypedPortSpec::build)
                 .filter(|port| port.artifact_type == review_core::contract::SHARD_SET_V1)
                 .any(|input| {
                     input.cardinality == PortCardinality::One
@@ -971,7 +962,7 @@ fn validate_dynamic_wiring(
                 let shard_inputs: Vec<_> = reviewer
                     .inputs
                     .iter()
-                    .map(PortContractSpec::build)
+                    .map(TypedPortSpec::build)
                     .filter(|port| port.artifact_type == review_core::contract::SHARD_SET_V1)
                     .collect();
                 let [shard_input] = shard_inputs.as_slice() else {
@@ -1009,16 +1000,8 @@ fn validate_dynamic_wiring(
     Ok(())
 }
 
-/// A port declaration. The string arm is shorthand for an explicit opaque/one/required/any
-/// contract. It is never valid for a Generation output or a reviewer's result, which require the
-/// typed arm because execution dispatches by contract.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum PortContractSpec {
-    Name(String),
-    Typed(TypedPortSpec),
-}
-
+/// A port declaration: every port names its artifact type, cardinality and snapshot affinity,
+/// because execution dispatches by contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TypedPortSpec {
@@ -1031,20 +1014,15 @@ pub struct TypedPortSpec {
     pub snapshot_affinity: SnapshotAffinity,
 }
 
-impl PortContractSpec {
+impl TypedPortSpec {
     fn build(&self) -> PortContract {
-        match self {
-            Self::Name(name) => PortContract::opaque(name),
-            Self::Typed(port) => {
-                let contract = PortContract::new(&port.name, &port.artifact_type)
-                    .with_cardinality(port.cardinality)
-                    .with_snapshot_affinity(port.snapshot_affinity);
-                if port.optional {
-                    contract.optional()
-                } else {
-                    contract
-                }
-            }
+        let contract = PortContract::new(&self.name, &self.artifact_type)
+            .with_cardinality(self.cardinality)
+            .with_snapshot_affinity(self.snapshot_affinity);
+        if self.optional {
+            contract.optional()
+        } else {
+            contract
         }
     }
 }
@@ -1854,8 +1832,8 @@ impl Definition {
                 closeouts.insert(scatter.clone(), spec.id.clone());
             }
             let mut node = Node::new(&spec.id, spec.kind.into())
-                .accepting_contracts(spec.inputs.iter().map(PortContractSpec::build).collect())
-                .emitting_contracts(spec.outputs.iter().map(PortContractSpec::build).collect());
+                .accepting_contracts(spec.inputs.iter().map(TypedPortSpec::build).collect())
+                .emitting_contracts(spec.outputs.iter().map(TypedPortSpec::build).collect());
             if let Some(gate) = &spec.gated_by {
                 node = node.gated_by(gate);
             }

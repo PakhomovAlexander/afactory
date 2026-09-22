@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use review_config::lock::{AfPin, Lockfile, Pin, Registry};
 use review_config::{
     ArgSpec, BudgetSpec, BudgetUnit, CheckSpec, CommandSpec, ConvergenceSpec, Definition, EdgeSpec,
-    GateExecutionSpec, GateModeSpec, IsolationSpec, NodeKindSpec, NodeSpec, PortContractSpec,
-    PortSpec, ProvenanceSpec, SandboxProviderSpec, SeveritySpec, SubjectSpec, TypedPortSpec,
+    GateExecutionSpec, GateModeSpec, IsolationSpec, NodeKindSpec, NodeSpec, PortSpec,
+    ProvenanceSpec, SandboxProviderSpec, SeveritySpec, SubjectSpec, TypedPortSpec,
 };
 use review_core::{PortCardinality, SnapshotAffinity, SubjectKind, contract};
 use serde::Serialize;
@@ -857,24 +857,24 @@ fn build_definition(gates: &[Gate]) -> Definition {
     }
 }
 
-fn typed_port(name: &str, artifact_type: &str) -> PortContractSpec {
-    PortContractSpec::Typed(TypedPortSpec {
+fn typed_port(name: &str, artifact_type: &str) -> TypedPortSpec {
+    TypedPortSpec {
         name: name.to_string(),
         artifact_type: artifact_type.to_string(),
         cardinality: PortCardinality::One,
         optional: false,
         snapshot_affinity: SnapshotAffinity::SameSubject,
-    })
+    }
 }
 
-fn prior_finding_set_port(name: &str) -> PortContractSpec {
-    PortContractSpec::Typed(TypedPortSpec {
+fn prior_finding_set_port(name: &str) -> TypedPortSpec {
+    TypedPortSpec {
         name: name.to_string(),
         artifact_type: contract::FINDING_SET_V1.to_string(),
         cardinality: PortCardinality::One,
         optional: true,
         snapshot_affinity: SnapshotAffinity::Any,
-    })
+    }
 }
 
 fn edge(from_node: &str, from_port: &str, to_node: &str, to_port: &str) -> EdgeSpec {

@@ -102,7 +102,7 @@ impl Captured {
             .replace("runner = { program = \"/bin/true\" }", r#"package="fixture"
 gated_by="gate"
 execution={credential_mode="brokered",operations=[{name="inference",destination="fixture.test",method="respond",max_request_bytes=4096,max_response_bytes=4096,max_calls=1,max_usage=10}]}"#)
-            + "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[\"decision\"]\n[[checks]]\nname=\"required\"\nprogram=\"/bin/sh\"\nargs=[{value=\"-c\"},{value=\"exit 0\"}]\n";
+            + "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[{name=\"decision\",type=\"review.kernel/GateDecision@1\",cardinality=\"one\",optional=false,snapshot_affinity=\"any\"}]\n[[checks]]\nname=\"required\"\nprogram=\"/bin/sh\"\nargs=[{value=\"-c\"},{value=\"exit 0\"}]\n";
         let round = capture::open_round_with_package(cas, store, &definition);
         let mut settings = plan::settings();
         settings.resources.uncapped_attempt_tokens = 2048;
