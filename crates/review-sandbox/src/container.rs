@@ -19,9 +19,9 @@
 //! the *plumbing*: the right flags, the right mount, nothing extra.
 //!
 //! It does **not** prove containment. Only a real runtime can do that, and
-//! `tests/container_probes.rs` does exactly that — the `malicious-check.md` probes that need
-//! isolation, run against a live daemon locally and in CI, each paired with a control proving
-//! the container genuinely runs work.
+//! `tests/container_probes.rs` does exactly that — the containment probes that need isolation
+//! (`docs/security/containment-probes.md`), run against a live daemon locally and in CI, each
+//! paired with a control proving the container genuinely runs work.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -263,7 +263,7 @@ impl ContainerProvider {
             // provider stop that workload if supervision kills the client on its deadline.
             "--name".to_string(),
             execution_name.to_string(),
-            // No undeclared network. This is the probe malicious-check.md cannot otherwise close.
+            // No undeclared network. This is the containment probe no weaker provider can close.
             "--network=none".to_string(),
             // No ambient host environment crosses in. Only the kernel-owned allowlist below is
             // reintroduced explicitly.

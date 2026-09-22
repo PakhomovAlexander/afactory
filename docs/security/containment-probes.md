@@ -1,14 +1,13 @@
-# Case: malicious check
+# Containment probes: the malicious check
 
-**Phase 2.** Discharges: *"Every executable node uses a safe Execution Binding; a malicious
-check/helper cannot touch a host marker, credentials, the canonical checkout, or undeclared
-network"* and *"Safe bindings expose no reusable credential bytes."*
+The record of which containment probes are discharged and which are still open, kept so that a
+probe nobody has run is never mistaken for a probe that passed.
+[`non-goals.md`](../non-goals.md) relies on it for the claim that the open probes are recorded
+as open rather than claimed covered.
 
-## Why there is nothing to capture
-
-The retired shell harness ran `bash -c "$cmd"` in the working directory with the caller's full
-environment, so every command in a check list had whatever the operator has. There is no boundary to
-test, so this case describes one the kernel must create.
+It discharges *"Every executable node uses a safe Execution Binding; a malicious check/helper
+cannot touch a host marker, credentials, the canonical checkout, or undeclared network"* and
+*"Safe bindings expose no reusable credential bytes."*
 
 ## Setup
 

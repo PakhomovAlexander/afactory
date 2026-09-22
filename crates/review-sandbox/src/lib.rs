@@ -22,12 +22,12 @@
 //! installed and neither daemon is reachable, so a provider that stopped at `which` would have
 //! declared containment and delivered none.
 //!
-//! So `fixtures/adversarial/malicious-check.md` is only **partly** discharged here. Its probes
-//! for the canonical checkout, inherited credentials (by the check runner's cleared environment)
-//! and argument injection are covered. Its probes for a host marker outside the sandbox and for
-//! undeclared network are *not*, and cannot be by a provider of this kind. They close only when
-//! the container provider runs against a live daemon, and the case says so rather than being
-//! quietly narrowed to what passes.
+//! So the containment probes recorded in `docs/security/containment-probes.md` are only
+//! **partly** discharged here. The probes for the canonical checkout, inherited credentials (by
+//! the check runner's cleared environment) and argument injection are covered. The probes for a
+//! host marker outside the sandbox and for undeclared network are *not*, and cannot be by a
+//! provider of this kind. They close only when the container provider runs against a live daemon,
+//! and that record says so rather than being quietly narrowed to what passes.
 
 pub mod build_cache;
 pub mod cache;

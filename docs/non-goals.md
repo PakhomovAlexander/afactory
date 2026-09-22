@@ -62,7 +62,7 @@ A safe pipeline never receives direct host-cache access; caches are sandbox-loca
 Reviewer-authored Proposals raise what a compromised reviewer can place before an operator for
 application. That risk is accepted while the tool reviews first-party code only; the containment
 probes that remain open are recorded as open in
-[`fixtures/adversarial/malicious-check.md`](../fixtures/adversarial/malicious-check.md) rather
+[`security/containment-probes.md`](security/containment-probes.md) rather
 than claimed covered. Pointing the tool at untrusted code requires revisiting that acceptance
 first ([ADR-0010](adr/0010-proposals-are-exported-by-id-and-base-bound.md)).
 

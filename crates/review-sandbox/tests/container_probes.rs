@@ -1,5 +1,6 @@
-//! The three `malicious-check.md` probes that need real isolation, run against a live daemon.
+//! The three containment probes that need real isolation, run against a live daemon.
 //!
+//! The record of which probes are discharged is `docs/security/containment-probes.md`.
 //! `trusted_local` could honestly answer three of the case's five probes; these are the other
 //! two plus the absolute-write half of the checkout probe — the ones where "nothing stops a
 //! process" was the whole finding. Here something does: the container has one bind (the

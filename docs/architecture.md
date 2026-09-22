@@ -42,7 +42,6 @@ crates/
   review-source-task/ read-only capture of external issue sources into typed data
   af/            the `af` binary: onboarding, review, task, provider and self-management
 fixtures/
-  adversarial/   four attack cases, each specified before its test
   task-contracts/ the additive Task contract corpus
   task-runtime/  Task runtime scenarios (review, embedded review, bounded repair)
 ```
@@ -145,11 +144,9 @@ providers, because the problem differs:
   never existed. A `CaptureObserver` seam lets the tests mutate the worktree *between* passes,
   which is the only honest way to show the boundary catches what it claims to.
 
-### The hostile-configuration case, made executable
+### The hostile-configuration case
 
-`crates/review-source-git/tests/hostile_git_config.rs` is
-[the adversarial spec](../fixtures/adversarial/hostile-git-config.md)
-turned into a test, and it found a real hole on its first run.
+`crates/review-source-git/tests/hostile_git_config.rs` found a real hole on its first run.
 
 The premise is that the repository *is* the attacker: `.git/config`, `.gitattributes` and hooks
 are all candidate-controlled, and capture runs before any sandbox exists, with the operator's

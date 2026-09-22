@@ -1,4 +1,4 @@
-//! The adversarial case from `fixtures/adversarial/hostile-git-config.md`, made executable.
+//! Hostile Git configuration during capture.
 //!
 //! The premise: the repository being reviewed is the attacker. Its `.git/config`, its
 //! `.gitattributes` and its hooks are all candidate-controlled, and capture runs *before* any

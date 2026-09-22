@@ -1,6 +1,7 @@
-//! `fixtures/adversarial/malicious-check.md`, to the extent this provider can discharge it.
+//! The containment probes, to the extent this provider can discharge them.
 //!
-//! The case assumes a check that does its job *and* attacks. Five probes: host marker, canonical
+//! Which of them are open is recorded in `docs/security/containment-probes.md`. The case assumes
+//! a check that does its job *and* attacks. Five probes: host marker, canonical
 //! checkout, credentials, undeclared network, argument injection. `trusted_local` can genuinely
 //! answer three of them. It cannot answer the other two, and this file says which rather than
 //! narrowing the case until it passes — a green test that has quietly redefined the threat is
@@ -64,7 +65,7 @@ fn a_check_cannot_reach_the_checkout_it_is_reviewing() {
         // Documented, not swallowed: this is precisely the probe that needs a container.
         eprintln!(
             "note: the working tree changed — trusted_local does not contain an absolute-path \
-             write, which is why malicious-check.md stays open for a container provider"
+             write, which is why this probe stays open for a container provider"
         );
     }
     drop(dir);

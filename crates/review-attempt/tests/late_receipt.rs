@@ -1,12 +1,11 @@
-//! `fixtures/adversarial/late-receipt.md`, made executable.
+//! A late receipt from a fenced attempt.
 //!
-//! The scenario from the case: attempt A1 times out while its process is still alive, the kernel
-//! fences it and starts A2, A2 completes normally — and *then* A1 delivers. Its finding is a
-//! plausible one from a real reviewer, which is exactly why nothing about it looks wrong.
+//! The scenario: attempt A1 times out while its process is still alive, the kernel fences it and
+//! starts A2, A2 completes normally — and *then* A1 delivers. Its finding is a plausible one from
+//! a real reviewer, which is exactly why nothing about it looks wrong.
 //!
-//! Three things must hold, and the case names all three: A1's result is quarantined and can
-//! never be selected; its cost is still charged; and replay with A1's delivery moved to any
-//! position produces the same outcome.
+//! Three things must hold: A1's result is quarantined and can never be selected; its cost is
+//! still charged; and replay with A1's delivery moved to any position produces the same outcome.
 
 use std::collections::BTreeMap;
 
@@ -126,7 +125,7 @@ fn a_late_result_is_quarantined_charged_and_never_selected() {
     );
 }
 
-/// The replay property from the case: A1's delivery may land anywhere, and the run is the same.
+/// The replay property: A1's delivery may land anywhere, and the run is the same.
 #[test]
 fn the_late_delivery_may_arrive_at_any_point_without_changing_the_run() {
     use Step::*;
@@ -136,7 +135,7 @@ fn the_late_delivery_may_arrive_at_any_point_without_changing_the_run() {
         vec![DispatchA1, FenceA1, DeliverA1, DispatchA2, DeliverA2],
         // While the retry is running.
         vec![DispatchA1, FenceA1, DispatchA2, DeliverA1, DeliverA2],
-        // After the retry answered — the case's own ordering.
+        // After the retry answered — the scenario's own ordering.
         vec![DispatchA1, FenceA1, DispatchA2, DeliverA2, DeliverA1],
     ];
 
