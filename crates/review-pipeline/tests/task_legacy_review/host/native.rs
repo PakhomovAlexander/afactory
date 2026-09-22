@@ -260,25 +260,17 @@ fn check_native_provider_reuse(provider_only: bool) {
                 )
                 .unwrap();
                 let frame = cas.get_artifact(&metadata.provenance_artifact_id).unwrap();
-                assert_eq!(
-                    frame.artifact_type,
-                    if wide {
-                        TASK_REVIEW_ATTEMPT_PROVENANCE_V2
-                    } else {
-                        TASK_REVIEW_ATTEMPT_PROVENANCE_V1
-                    }
-                );
-                let provenance: TaskReviewAttemptProvenanceV2 = if wide {
-                    serde_json::from_value(frame.payload).unwrap()
-                } else {
-                    serde_json::from_value::<TaskReviewAttemptProvenanceV1>(frame.payload)
-                        .unwrap()
-                        .into()
-                };
+                assert_eq!(frame.artifact_type, TASK_REVIEW_ATTEMPT_PROVENANCE_V2);
+                let provenance: TaskReviewAttemptProvenanceV2 =
+                    serde_json::from_value(frame.payload).unwrap();
                 assert_eq!(provenance.charged_tokens.get(), 11);
                 let usage = cas
                     .get_artifact(provenance.usage_id.as_ref().unwrap())
                     .unwrap();
+                assert_eq!(
+                    usage.artifact_type,
+                    review_core::task::usage::TASK_TOKEN_USAGE_V3
+                );
                 assert_eq!(usage.payload["chargeable_tokens"], "11");
                 let evidence = host.selected_attempt_evidence().unwrap();
                 assert_eq!(
@@ -703,7 +695,9 @@ fn captured_review_refuses_credential_mode_and_account_substitution_before_dispa
             shared
                 .lock()
                 .unwrap()
-                .attempt_wall(&review_store::store::task::task_run_id(lease.task_id()).unwrap())
+                .task_attempt_wall(
+                    &review_store::store::task::task_run_id(lease.task_id()).unwrap()
+                )
                 .unwrap()
                 .is_empty()
         );
@@ -782,13 +776,10 @@ fn review_report_binds_wide_task_charge_and_freezes_its_accounting_prefix() {
         (provider, reviewer)
     };
     let observe = |store: &mut EventStore, attempt: &str, charge: u64| {
-        let usage = review_core::task::usage::TaskTokenUsageV1 {
-            chargeable_tokens: charge.into(),
-            ..Default::default()
-        };
+        let usage = review_core::task::usage::TaskTokenUsageV3::charge_only(u128::from(charge));
         let usage_id = cas
             .put_artifact(
-                review_core::task::usage::TASK_TOKEN_USAGE_V1,
+                review_core::task::usage::TASK_TOKEN_USAGE_V3,
                 review_core::Producer::KernelOperation {
                     run_id: review_store::store::task::task_run_id(lease.task_id()).unwrap(),
                     node_id: None,
@@ -1023,13 +1014,10 @@ fn late_provider_usage_after_doctor_blocks_business_without_reprobing() {
             execution.outputs,
         )
     };
-    let usage = review_core::task::usage::TaskTokenUsageV1 {
-        chargeable_tokens: u64::MAX.into(),
-        ..Default::default()
-    };
+    let usage = review_core::task::usage::TaskTokenUsageV3::charge_only(u128::from(u64::MAX));
     let usage_id = cas
         .put_artifact(
-            review_core::task::usage::TASK_TOKEN_USAGE_V1,
+            review_core::task::usage::TASK_TOKEN_USAGE_V3,
             review_core::Producer::KernelOperation {
                 run_id: review_store::store::task::task_run_id(lease.task_id()).unwrap(),
                 node_id: None,

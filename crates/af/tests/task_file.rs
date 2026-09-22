@@ -379,11 +379,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
         let id = settled["record"]["usage_id"].as_str().unwrap();
         assert_eq!(
             cas.get_artifact(id).unwrap().artifact_type,
-            if codex {
-                review_core::task::usage::TASK_TOKEN_USAGE_V3
-            } else {
-                review_core::task::usage::TASK_TOKEN_USAGE_V2
-            }
+            review_core::task::usage::TASK_TOKEN_USAGE_V3
         );
         assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
         return;

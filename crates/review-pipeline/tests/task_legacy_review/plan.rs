@@ -245,7 +245,7 @@ fn captured_review_plan_admits_reopens_and_refuses_changed_or_missing_authority(
         .unwrap();
     store.admit_task_plan(&cas, &lease, &authority).unwrap();
     let run = review_store::store::task::task_run_id(&task.task_id).unwrap();
-    assert!(store.attempt_wall(&run).unwrap().is_empty());
+    assert!(store.task_attempt_wall(&run).unwrap().is_empty());
     assert_eq!(store.len("review").unwrap(), 2);
     let events = store.len(&run).unwrap();
     let reopened = LegacyReviewPlanCompiler::reopen(
@@ -310,7 +310,7 @@ fn captured_review_plan_admits_reopens_and_refuses_changed_or_missing_authority(
         reopened.validate_plan(&cas, &task, &plan).unwrap();
     }
     assert_eq!(store.len(&run).unwrap(), events);
-    assert!(store.attempt_wall(&run).unwrap().is_empty());
+    assert!(store.task_attempt_wall(&run).unwrap().is_empty());
     let store = EventStore::open(&store_path).unwrap();
     assert!(
         store

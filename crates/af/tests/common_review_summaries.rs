@@ -216,7 +216,12 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
     assert_eq!(attempts.iter().filter(|a| a.started).count(), 4);
     let before_task = store.replay(&task_run).unwrap();
     let before_review = store.replay("campaign-timing").unwrap();
-    assert!(store.attempt_wall("campaign-timing").unwrap().is_empty());
+    assert!(
+        store
+            .task_attempt_wall("campaign-timing")
+            .unwrap()
+            .is_empty()
+    );
     assert!(
         !before_review
             .iter()
@@ -267,7 +272,7 @@ fn common_two_round_timing_and_attempt_summaries_reopen_without_synthetic_legacy
         .stdout,
     )
     .unwrap();
-    assert_eq!(report["schema"], "af/review-report@3");
+    assert_eq!(report["schema"], "af/review-report@4");
     assert_eq!(report["wall_ms"], expected_wall);
     assert_eq!(report["task_accounting"][0]["attempts_started"], "4");
     assert_eq!(

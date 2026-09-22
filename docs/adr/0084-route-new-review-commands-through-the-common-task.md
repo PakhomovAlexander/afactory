@@ -3,6 +3,7 @@
 Date: 2026-09-12
 Status: Proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
 original executor for historical paid Campaigns, and historical readers and output generations.
+`af review run --json` always emits `af/review-outcome@3`.
 
 ## Context
 

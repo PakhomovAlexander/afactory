@@ -1,7 +1,7 @@
 //! Common Review presentation reads the original Round and the Campaign's one Task budget.
 //! Selected transport observations never stand in for retries, Provider or late usage charges.
 
-use review_core::task::usage::{DecimalU64, DecimalU128, TaskTokenUsageV1, TaskTokenUsageV3};
+use review_core::task::usage::{DecimalU64, DecimalU128, TaskTokenUsageV3};
 use review_core::task::{
     TaskAcceptanceV1, TaskExecutionV1, TaskLimitsV1, TaskPhaseV1, TaskResultV1,
 };
@@ -385,15 +385,8 @@ impl Presentation<'_> {
         } else {
             Vec::new()
         };
-        let schema = if self.attempts.iter().any(|a| {
-            a.cost_tokens > u128::from(u64::MAX) || TaskTokenUsageV1::try_from(&a.usage).is_err()
-        }) {
-            "af/review-outcome@3"
-        } else {
-            "af/review-outcome@2"
-        };
         Ok((
-            json!({"schema":schema,"campaign_mode":self.mode.as_str(),"candidate":self.candidate,
+            json!({"schema":"af/review-outcome@3","campaign_mode":self.mode.as_str(),"candidate":self.candidate,
             "run_id":self.run_id,"authority":self.authority,"task":self.task,
             "node_outcomes":nodes,"blocked_gates":self.report.blocked_gates,"attempts":attempts,
             "totals":{"selected_attempts":selected_totals(self.attempts)?,"open_required_demands":u64::try_from(demands.len()).map_err(|_|"Demand count exceeds u64")?.to_string(),"open_or_stale_demand_ids":demands},
@@ -576,20 +569,14 @@ mod tests {
         task.result.as_ref().unwrap().validate().unwrap();
     }
     fn validator() -> &'static jsonschema::Validator {
-        validator_for(false)
-    }
-    fn validator_for(wide: bool) -> &'static jsonschema::Validator {
         static VALIDATOR: OnceLock<jsonschema::Validator> = OnceLock::new();
-        static WIDE: OnceLock<jsonschema::Validator> = OnceLock::new();
-        (if wide { &WIDE } else { &VALIDATOR }).get_or_init(|| {
+        VALIDATOR.get_or_init(|| {
             let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../schemas");
             let mut registry = jsonschema::Registry::new();
             for name in [
                 "task-contracts-v1.json",
                 "task-phase-v1.json",
                 "task-result-v1.json",
-                "task-token-usage-v1.json",
-                "task-token-usage-v2.json",
                 "task-token-usage-v3.json",
             ] {
                 let value: Value =
@@ -599,15 +586,9 @@ mod tests {
                     .add(id, jsonschema::Resource::from_contents(value))
                     .unwrap();
             }
-            let schema: Value = serde_json::from_slice(
-                &std::fs::read(dir.join(if wide {
-                    "review-outcome-v3.json"
-                } else {
-                    "review-outcome-v2.json"
-                }))
-                .unwrap(),
-            )
-            .unwrap();
+            let schema: Value =
+                serde_json::from_slice(&std::fs::read(dir.join("review-outcome-v3.json")).unwrap())
+                    .unwrap();
             {
                 let registry = registry.prepare().unwrap();
                 jsonschema::options()
@@ -781,6 +762,10 @@ mod tests {
         };
         let (value, returned) = view.value(&cas).unwrap();
         valid(&value);
+        assert_eq!(
+            value["schema"], "af/review-outcome@3",
+            "u64-sized usage has the same single version"
+        );
         assert_eq!(returned, verdict);
         assert_eq!(
             value["task"]["committed_tokens"],
@@ -837,7 +822,7 @@ mod tests {
             ("/task/begun_attempts", json!("18446744073709551616")),
             (
                 "/attempts/0/usage/chargeable_tokens",
-                json!("18446744073709551616"),
+                json!("340282366920938463463374607431768211456"),
             ),
             (
                 "/totals/selected_attempts/context/rendered_bytes",
@@ -846,6 +831,7 @@ mod tests {
             ("/task/limits/tokens", json!(9_007_199_254_740_992_u64)),
             ("/authority/subject_id", json!("ambient-head")),
             ("/schema", json!("af/review-outcome@1")),
+            ("/schema", json!("af/review-outcome@2")),
             ("/next_action/kind", json!("done")),
         ] {
             let mut invalid = value.clone();
@@ -905,11 +891,7 @@ mod tests {
         view.ledger_production = "not_produced_upstream_missing";
         let (wide, _) = view.value(&cas).unwrap();
         assert_eq!(wide["schema"], "af/review-outcome@3");
-        assert!(
-            validator_for(true).is_valid(&wide),
-            "{:?}",
-            validator_for(true).iter_errors(&wide).collect::<Vec<_>>()
-        );
+        valid(&wide);
         assert_eq!(
             wide["totals"]["selected_attempts"]["cost_tokens"],
             (selected + 40).to_string()
@@ -918,15 +900,9 @@ mod tests {
             wide["attempts"][0]["usage"]["input_tokens"],
             (u128::from(u64::MAX) + 20).to_string()
         );
-        let mut invalid = wide.clone();
-        invalid["schema"] = json!("af/review-outcome@2");
-        assert!(
-            !validator().is_valid(&invalid),
-            "old per-Attempt range stays frozen"
-        );
-        invalid = wide;
+        let mut invalid = wide;
         invalid["attempts"][0]["usage"]["input_tokens"] =
             json!("340282366920938463463374607431768211456");
-        assert!(!validator_for(true).is_valid(&invalid));
+        assert!(!validator().is_valid(&invalid));
     }
 }

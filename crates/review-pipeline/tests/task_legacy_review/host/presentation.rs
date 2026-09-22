@@ -68,7 +68,7 @@ fn presentation_retains_original_review_ports_and_selected_transport_fields_with
         .unwrap();
     let selection: review_core::task::review_compat::TaskReviewResultSelectedV1 =
         serde_json::from_value(selected.payload.clone()).unwrap();
-    let provenance: review_core::task::review_compat::TaskReviewAttemptProvenanceV1 =
+    let provenance: review_core::task::review_compat::TaskReviewAttemptProvenanceV2 =
         serde_json::from_value(
             cas.get_artifact(&selection.provenance_artifact_id)
                 .unwrap()

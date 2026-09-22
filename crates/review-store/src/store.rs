@@ -192,33 +192,16 @@ fn remember_validated_change_set(
     cache.insert(artifact_id, change_set);
 }
 
-/// Provider usage for one Attempt as the adapter reported it, per token kind. Absent kinds are
-/// ones the Provider did not expose, never zero.
-#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct AttemptUsage {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_read_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_write_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_tokens: Option<u64>,
-    pub chargeable_tokens: u64,
-}
-
-/// Wall-clock and provider usage for one reviewer Attempt.
+/// Wall-clock and exact cumulative usage for one Task Attempt.
 ///
 /// This is a **sidecar**, not an event: Review replay, the Finding Ledger and convergence
 /// do not read it. Common Task recovery may raise an abandoned Attempt's canonical charge
 /// from its durable usage floor before permitting further work. It also lets a person see
-/// how long a review took and what it consumed, through
-/// `af review report`, `af review campaigns`, and `af review ledger`. An absent row means "not
-/// recorded", never "zero".
+/// how long an Attempt took and what it consumed, through `af review report` and the
+/// `attempt_walls` section of Task inspection. An absent row means "not recorded", never
+/// "zero". Native turn components and the charge keep their full aggregate range.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct AttemptWall<U = AttemptUsage> {
+pub struct TaskAttemptWall {
     pub run_id: String,
     pub attempt_id: String,
     pub node_id: String,
@@ -227,11 +210,8 @@ pub struct AttemptWall<U = AttemptUsage> {
     pub started_unix_ms: u64,
     pub elapsed_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub usage: Option<U>,
+    pub usage: Option<review_core::task::usage::TaskTokenUsageV3>,
 }
-
-/// Common Task usage may aggregate several native Provider counters in one Attempt.
-pub type TaskAttemptWall = AttemptWall<review_core::task::usage::TaskTokenUsageV3>;
 
 impl EventStore {
     pub fn open(path: impl AsRef<Path>) -> Result<Self, StoreError> {
@@ -282,16 +262,11 @@ impl EventStore {
                  epoch              INTEGER NOT NULL,
                  started_unix_ms    INTEGER NOT NULL,
                  elapsed_ms         INTEGER NOT NULL,
-                 input_tokens       INTEGER,
-                 output_tokens      INTEGER,
-                 cache_read_tokens  INTEGER,
-                 cache_write_tokens INTEGER,
-                 reasoning_tokens   INTEGER,
-                 chargeable_tokens  INTEGER,
+                 usage_v3_json      TEXT,
+                 usage_observation_v1_json TEXT,
                  PRIMARY KEY (run_id, attempt_id)
              );",
         )?;
-        attempt_wall::migrate(&conn)?;
         Ok(Self {
             conn,
             task_cache: std::cell::RefCell::new(None),

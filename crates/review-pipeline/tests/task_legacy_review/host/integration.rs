@@ -377,11 +377,8 @@ fn late_usage_before_checks_retains_a_failed_phase_without_dispatch_or_false_acc
         .attempt_accounting();
     let usage = plan::artifact(
         &cas,
-        review_core::task::usage::TASK_TOKEN_USAGE_V1,
-        review_core::task::usage::TaskTokenUsageV1 {
-            chargeable_tokens: u64::MAX.into(),
-            ..Default::default()
-        },
+        review_core::task::usage::TASK_TOKEN_USAGE_V3,
+        review_core::task::usage::TaskTokenUsageV3::charge_only(u128::from(u64::MAX)),
     );
     shared
         .lock()
@@ -692,11 +689,8 @@ fn late_usage_after_successful_checks_seals_a_new_resource_observation_without_p
     let attempts = state.execution.as_ref().unwrap().attempt_accounting();
     let usage = plan::artifact(
         &cas,
-        review_core::task::usage::TASK_TOKEN_USAGE_V1,
-        review_core::task::usage::TaskTokenUsageV1 {
-            chargeable_tokens: u64::MAX.into(),
-            ..Default::default()
-        },
+        review_core::task::usage::TASK_TOKEN_USAGE_V3,
+        review_core::task::usage::TaskTokenUsageV3::charge_only(u128::from(u64::MAX)),
     );
     shared
         .lock()

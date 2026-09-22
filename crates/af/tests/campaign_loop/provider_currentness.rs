@@ -90,7 +90,7 @@ fn review_account_change_after_admission_refuses_private_context_and_keeps_admis
         String::from_utf8_lossy(&output.stderr)
     );
     let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    contracts::valid("review-outcome-v2.json", &value);
+    contracts::valid("review-outcome-v3.json", &value);
     assert_eq!(value["task"]["committed_tokens"], "2");
     let id = value["task"]["task_id"].as_str().unwrap();
     let cas = Cas::open(Path::new(&state).join("cas")).unwrap();

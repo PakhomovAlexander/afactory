@@ -279,15 +279,12 @@ fn review_round_publication_refuses_pending_and_stale_task_prefix_then_reopens_e
     let usage_id = f
         .cas
         .put_artifact(
-            review_core::task::usage::TASK_TOKEN_USAGE_V2,
+            review_core::task::usage::TASK_TOKEN_USAGE_V3,
             producer(),
             vec![],
             None,
-            serde_json::to_value(review_core::task::usage::TaskTokenUsageV2 {
-                chargeable_tokens: 9_u128.into(),
-                ..Default::default()
-            })
-            .unwrap(),
+            serde_json::to_value(review_core::task::usage::TaskTokenUsageV3::charge_only(9))
+                .unwrap(),
         )
         .unwrap()
         .0;

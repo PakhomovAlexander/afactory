@@ -1,4 +1,4 @@
-use review_core::{Arg, Command, Producer, task::usage::TaskTokenUsageV2};
+use review_core::{Arg, Command, Producer, task::usage::TASK_TOKEN_USAGE_V3};
 use review_runner::task::{
     WorkerModelAdapter,
     usage::{persist_task_usage_exact, read_task_usage_exact},
@@ -158,34 +158,16 @@ fn synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage() 
 }
 
 #[test]
-fn old_top_level_artifact_identity_and_reopened_new_charge_remain_exact() {
+fn top_level_and_model_usage_charges_persist_and_reopen_exact() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("cas");
     let cas = Cas::open(&path).unwrap();
     let context = cas.put(b"original captured context").unwrap();
     let producer = Producer::KernelOperation {
-        run_id: "synthetic-usage-compatibility".into(),
+        run_id: "synthetic-usage".into(),
         node_id: None,
         operation_id: "capture@1".into(),
     };
-    let old = TaskTokenUsageV2 {
-        input_tokens: Some(2.into()),
-        output_tokens: Some(9451.into()),
-        cache_write_tokens: Some(132688.into()),
-        chargeable_tokens: 142141.into(),
-        ..Default::default()
-    };
-    let old_id = cas
-        .put_artifact(
-            "af/TaskTokenUsage@2",
-            producer.clone(),
-            vec![context.clone()],
-            None,
-            serde_json::to_value(&old).unwrap(),
-        )
-        .unwrap()
-        .0;
-    let old_bytes = cas.get(&old_id).unwrap();
     let mut ids = vec![];
     for expanded in [false, true] {
         let mut native = json!({"is_error":false,"result":"OK","usage":{"input_tokens":2,"output_tokens":9451,"cache_creation_input_tokens":132688}});
@@ -231,10 +213,14 @@ fn old_top_level_artifact_identity_and_reopened_new_charge_remain_exact() {
                 .unwrap(),
         );
     }
-    assert_eq!(ids[0], old_id);
     drop(cas);
     let reopened = Cas::open(&path).unwrap();
-    assert_eq!(reopened.get(&old_id).unwrap(), old_bytes);
+    for id in &ids {
+        assert_eq!(
+            reopened.get_artifact(id).unwrap().artifact_type,
+            TASK_TOKEN_USAGE_V3
+        );
+    }
     assert_eq!(
         read_task_usage_exact(&reopened, &ids[0])
             .unwrap()

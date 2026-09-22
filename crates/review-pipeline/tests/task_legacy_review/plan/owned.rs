@@ -91,5 +91,5 @@ fn owned_scatter_children_are_captured_in_the_plan_and_reopen_exactly() {
         !graph_path.exists(),
         "read-only admission recreated a missing compiled graph"
     );
-    assert!(store.attempt_wall("review").unwrap().is_empty());
+    assert!(store.task_attempt_wall("review").unwrap().is_empty());
 }

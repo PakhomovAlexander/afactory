@@ -133,7 +133,7 @@ fn integration_is_captured_only_for_heavy_rounds_with_its_original_dormant_allow
                 .graph,
             *graph
         );
-        assert!(store.attempt_wall("review").unwrap().is_empty());
+        assert!(store.task_attempt_wall("review").unwrap().is_empty());
     }
 }
 
@@ -248,6 +248,6 @@ fn heavy_review_bounds_check_evidence_and_light_review_ignores_it() {
                 assert!(compiled.compilation.graph.review_integration.is_none());
             }
         }
-        assert!(store.attempt_wall("review").unwrap().is_empty());
+        assert!(store.task_attempt_wall("review").unwrap().is_empty());
     }
 }

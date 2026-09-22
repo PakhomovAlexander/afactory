@@ -22,7 +22,7 @@
           "pattern": "^[A-Za-z0-9]{26}$"
         },
         "charged_tokens": {
-          "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+          "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
         },
         "result": {
           "oneOf": [
@@ -111,7 +111,7 @@
           "pattern": "^[A-Za-z0-9]{26}$"
         },
         "charged_tokens": {
-          "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+          "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
         },
         "usage_id": {
           "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"

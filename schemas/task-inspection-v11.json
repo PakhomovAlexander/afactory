@@ -41,7 +41,7 @@
       ]
     },
     "chargeable_tokens": {
-      "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+      "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
     },
     "attempts": {
       "type": "integer",

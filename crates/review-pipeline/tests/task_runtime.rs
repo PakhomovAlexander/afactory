@@ -1574,13 +1574,13 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
     drop(runtime);
     let wall = f
         .store
-        .attempt_wall(&review_store::store::task::task_run_id(lease.task_id()).unwrap())
+        .task_attempt_wall(&review_store::store::task::task_run_id(lease.task_id()).unwrap())
         .unwrap();
     assert_eq!(wall.len(), 2);
     assert_eq!(
         wall.iter()
-            .map(|a| a.usage.as_ref().unwrap().chargeable_tokens)
-            .sum::<u64>(),
+            .map(|a| a.usage.as_ref().unwrap().chargeable_tokens.get())
+            .sum::<u128>(),
         50
     );
 }

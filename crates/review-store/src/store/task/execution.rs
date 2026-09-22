@@ -1243,11 +1243,7 @@ impl EventStore {
                     .and_then(|wall| wall.usage.as_ref())
                     .map(|usage| {
                         cas.put_artifact(
-                            if review_core::task::usage::TaskTokenUsageV2::try_from(usage).is_ok() {
-                                review_core::task::usage::TASK_TOKEN_USAGE_V2
-                            } else {
-                                review_core::task::usage::TASK_TOKEN_USAGE_V3
-                            },
+                            review_core::task::usage::TASK_TOKEN_USAGE_V3,
                             review_core::Producer::Attempt {
                                 run_id: task_run_id(&lease.task_id)?,
                                 node_id: attempt.reservation.node.clone(),

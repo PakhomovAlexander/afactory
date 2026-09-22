@@ -490,8 +490,8 @@ fn final_local_review_uses_af_authority_and_one_json_result() {
 
     assert_eq!(code, 3, "{stderr}");
     let outcome: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    contracts::valid("review-outcome-v2.json", &outcome);
-    assert_eq!(outcome["schema"], "af/review-outcome@2");
+    contracts::valid("review-outcome-v3.json", &outcome);
+    assert_eq!(outcome["schema"], "af/review-outcome@3");
     assert_eq!(outcome["campaign_mode"], "light");
     assert_eq!(outcome["next_action"]["kind"], "fix_then_gate");
     assert_eq!(outcome["next_action"]["start_another_campaign"], false);
@@ -1079,7 +1079,8 @@ fn a_campaign_converges_after_a_scoped_nonfixed_resolution() {
     );
     assert_eq!(code, 0, "{report_json}\n{report_err}");
     let report: serde_json::Value = serde_json::from_str(&report_json).unwrap();
-    assert_eq!(report["schema"], "af/review-report@3");
+    contracts::valid("review-report-v4.json", &report);
+    assert_eq!(report["schema"], "af/review-report@4");
     assert_eq!(report["rounds"][0]["round"], 1);
     assert!(report.get("spend").is_none(), "{report_json}");
     let task = &report["task_accounting"][0];

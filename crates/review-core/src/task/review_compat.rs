@@ -10,51 +10,6 @@ pub const TASK_REVIEW_CONTEXT_V1: &str = "af/TaskReviewContext@1";
 pub const LEGACY_REVIEW_ROUND_V1: &str = "af/LegacyReviewRound@1";
 pub const LEGACY_REVIEW_GATE_OUTCOME_V1: &str = "af/LegacyReviewGateOutcome@1";
 pub const TASK_REVIEW_GATE_FACTS_V1: &str = "af/TaskReviewGateFacts@1";
-pub const TASK_REVIEW_ATTEMPT_PROVENANCE_V1: &str = "af/TaskReviewAttemptProvenance@1";
-
-/// Transport observations bound to a real common Attempt; settlement remains charge authority.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TaskReviewAttemptProvenanceV1 {
-    pub context_id: String,
-    pub task_invocation_id: String,
-    pub attempt_id: String,
-    pub review_node: String,
-    pub result_artifact_id: String,
-    pub mutations_artifact_id: String,
-    pub raw_artifact_id: String,
-    pub charged_tokens: super::usage::DecimalU64,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "super::present_option"
-    )]
-    pub usage_id: Option<String>,
-}
-
-impl TaskReviewAttemptProvenanceV1 {
-    pub fn artifact_refs(&self) -> Vec<&str> {
-        let mut refs = vec![
-            self.context_id.as_str(),
-            &self.task_invocation_id,
-            &self.result_artifact_id,
-            &self.mutations_artifact_id,
-            &self.raw_artifact_id,
-        ];
-        refs.extend(self.usage_id.as_deref());
-        refs
-    }
-    pub fn validate(&self) -> Result<(), String> {
-        require(
-            self.artifact_refs().into_iter().all(crate::is_digest)
-                && event_id(&self.attempt_id)
-                && !self.review_node.trim().is_empty()
-                && self.review_node.chars().count() <= 256,
-            "Task Review provenance requires exact captured identities",
-        )
-    }
-}
-
 pub const TASK_REVIEW_ATTEMPT_PROVENANCE_V2: &str = "af/TaskReviewAttemptProvenance@2";
 
 /// Transport observations bound to a real common Attempt; settlement remains charge authority.
@@ -97,22 +52,6 @@ impl TaskReviewAttemptProvenanceV2 {
                 && self.review_node.chars().count() <= 256,
             "Task Review provenance requires exact captured identities",
         )
-    }
-}
-
-impl From<TaskReviewAttemptProvenanceV1> for TaskReviewAttemptProvenanceV2 {
-    fn from(value: TaskReviewAttemptProvenanceV1) -> Self {
-        Self {
-            context_id: value.context_id,
-            task_invocation_id: value.task_invocation_id,
-            attempt_id: value.attempt_id,
-            review_node: value.review_node,
-            result_artifact_id: value.result_artifact_id,
-            mutations_artifact_id: value.mutations_artifact_id,
-            raw_artifact_id: value.raw_artifact_id,
-            charged_tokens: u128::from(value.charged_tokens.get()).into(),
-            usage_id: value.usage_id,
-        }
     }
 }
 

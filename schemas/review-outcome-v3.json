@@ -255,19 +255,19 @@
                       "minLength": 1
                     },
                     "rendered_bytes": {
-                      "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+                      "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU64"
                     },
                     "estimated_tokens": {
-                      "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+                      "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU64"
                     }
                   }
                 }
               },
               "rendered_bytes": {
-                "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+                "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU64"
               },
               "estimated_tokens": {
-                "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+                "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU64"
               }
             }
           },
@@ -300,7 +300,7 @@
           ],
           "properties": {
             "count": {
-              "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+              "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU64"
             },
             "cost_tokens": {
               "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
@@ -314,10 +314,10 @@
               ],
               "properties": {
                 "rendered_bytes": {
-                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                  "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
                 },
                 "estimated_tokens": {
-                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                  "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
                 }
               }
             },
@@ -329,29 +329,29 @@
               ],
               "properties": {
                 "input_tokens": {
-                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                  "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
                 },
                 "output_tokens": {
-                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                  "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
                 },
                 "cache_read_tokens": {
-                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                  "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
                 },
                 "cache_write_tokens": {
-                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                  "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
                 },
                 "reasoning_tokens": {
-                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                  "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
                 },
                 "chargeable_tokens": {
-                  "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+                  "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
                 }
               }
             }
           }
         },
         "open_required_demands": {
-          "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+          "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU64"
         },
         "open_or_stale_demand_ids": {
           "type": "array",
@@ -683,10 +683,10 @@
           "$ref": "urn:af:schema:task-contracts:1#/$defs/limits"
         },
         "committed_tokens": {
-          "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+          "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
         },
         "begun_attempts": {
-          "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+          "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU64"
         },
         "budget_breached": {
           "type": "boolean"

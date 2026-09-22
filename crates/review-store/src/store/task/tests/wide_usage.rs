@@ -117,15 +117,11 @@ fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery(
         let first_usage_id = f
             .cas
             .put_artifact(
-                TASK_TOKEN_USAGE_V1,
+                TASK_TOKEN_USAGE_V3,
                 producer(),
                 vec![],
                 None,
-                serde_json::to_value(TaskTokenUsageV1 {
-                    chargeable_tokens: 3.into(),
-                    ..Default::default()
-                })
-                .unwrap(),
+                serde_json::to_value(TaskTokenUsageV3::charge_only(3)).unwrap(),
             )
             .unwrap()
             .0;
@@ -196,8 +192,8 @@ fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery(
             .unwrap();
         assert_eq!(active.reservation().tokens, 10);
         assert_eq!(sibling.reservation().tokens, 10);
-        let usage = TaskTokenUsageV2 {
-            input_tokens: Some(u64::MAX.into()),
+        let usage = TaskTokenUsageV3 {
+            input_tokens: Some(u128::from(u64::MAX).into()),
             chargeable_tokens: actual.into(),
             ..Default::default()
         };
@@ -210,14 +206,14 @@ fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery(
                 epoch: 1,
                 started_unix_ms: now().unwrap(),
                 elapsed_ms: 1,
-                usage: Some(usage.clone().into()),
+                usage: Some(usage.clone()),
             })
             .unwrap();
         f.store = EventStore::open(&f.path).unwrap();
         let usage_id = f
             .cas
             .put_artifact(
-                TASK_TOKEN_USAGE_V2,
+                TASK_TOKEN_USAGE_V3,
                 producer(),
                 vec![],
                 None,
@@ -399,9 +395,8 @@ fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery(
         else {
             panic!("missing recovered usage");
         };
-        let exact: TaskTokenUsageV2 = payload(&f.cas, usage_id, TASK_TOKEN_USAGE_V2).unwrap();
-        assert_eq!(exact.chargeable_tokens.get(), actual);
-        assert_eq!(exact.input_tokens.map(DecimalU64::get), Some(u64::MAX));
+        let exact: TaskTokenUsageV3 = payload(&f.cas, usage_id, TASK_TOKEN_USAGE_V3).unwrap();
+        assert_eq!(exact, usage);
     }
 }
 

@@ -79,13 +79,6 @@ pub(super) struct TaskAccountingReport {
 }
 
 impl TaskAccountingReport {
-    pub fn has_wide_usage(&self) -> bool {
-        self.wall_rows
-            .iter()
-            .filter_map(|w| w.usage.as_ref())
-            .any(|u| review_core::task::usage::TaskTokenUsageV2::try_from(u).is_err())
-    }
-
     /// Merge raw Attempt intervals by their original Round/epoch. Neither cumulative report
     /// snapshots nor overlapping intervals are added as separate durations.
     pub fn wall_ms(&self) -> Option<u64> {

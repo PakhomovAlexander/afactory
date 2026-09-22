@@ -32,7 +32,7 @@ pub use legacy::{
     prepare_canonical_task_review,
 };
 pub use shared::SharedEventStore;
-pub use store::{AttemptUsage, AttemptWall, EventStore, NewEvent, StoreError, TaskAttemptWall};
+pub use store::{EventStore, NewEvent, StoreError, TaskAttemptWall};
 pub use subject::{
     ResolvedChangeSet, ResolvedSubject, ResolvedSubjectScope, resolve_subject,
     resolve_subject_scope,

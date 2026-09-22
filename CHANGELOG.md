@@ -160,12 +160,9 @@ or needs a documented hand edit.
   longer list it), text output drops its `Spend:` block, and Markdown drops its `## Spend` table
   and `### Attempts` list. They described only Attempts of the pre-Task executor, so for a Round
   a Task hosts they were empty or held a zero-token placeholder row; `task_accounting` reports
-  those Rounds' Attempts, usage, wall-clock and caps. A Campaign without a Task, whose first Task
-  capture failed, keeps the `af/review-report@1` label. `RunReport@1` and `RunReport@2` events
+  those Rounds' Attempts, usage, wall-clock and caps. `RunReport@1` and `RunReport@2` events
   are neither written nor read, so a Campaign whose log holds one can no longer be run, reported
-  or listed. The unused `run-report-v2.json` and `review-report-v2.json` schemas are gone, and
-  `review-report-v3.json` now has its own `$id`, `urn:af:schema:review-report-view:3`, instead of
-  repeating `@2`'s.
+  or listed. The unused `run-report-v2.json` and `review-report-v2.json` schemas are gone.
 - The retired shell review harness is gone from the repository: `compat/legacy-harness/`, the
   `fixtures/synthetic/` corpus generated from it, and the `fixtures/legacy/` private-corpus
   tests. `make fixtures` and `make review-kernel-test-corpus` no longer exist, and `make check`
@@ -203,7 +200,7 @@ or needs a documented hand edit.
   `af review campaigns` lists it as a problem. Every event log that holds an event type this
   release does not know fails with the same message. `af review report` no longer carries the
   optional `recorded_not_gathered` field, or prints its "Recorded, not gathered" section, which
-  only such events filled; the field is gone from `review-report-v3.json` and `-v4.json`.
+  only such events filled; the field is gone from `review-report-v4.json`.
   `af review run` still lists recorded, not gathered results from the Round's Task Attempts. The
   `af review ledger` notice for an absent latest-Round Ledger drops its
   "(N admitted result(s) remain recorded, not gathered)" clause, which always counted 0.
@@ -221,14 +218,14 @@ or needs a documented hand edit.
   lists it as a problem, and a new event for the Round such a report concluded is refused with
   the unknown event type message. The Round rows of `af review report` drop `reported_tokens`,
   which only those reports' plain numeric spend filled. Every row now carries
-  `task_chargeable_tokens_at_report` and `task_accounting`, and the `review-report-v3.json` and
-  `-v4.json` schemas require both.
+  `task_chargeable_tokens_at_report` and `task_accounting`, which `review-report-v4.json`
+  requires.
 - The `gate_blocked` suppression reason is gone; only the pre-Task executor's scheduler wrote it.
   A Review Gate is a Task condition, so a node behind a Gate that did not pass reads
-  `branch_not_selected` in `af/TaskRunReport@1` and in `af/review-outcome@2` and `@3` node
+  `branch_not_selected` in `af/TaskRunReport@1` and in `af/review-outcome@3` node
   outcomes, or `upstream_missing` once its predecessors were suppressed, and `RunReport@6`
   records both as `upstream_missing`, as before. `task-run-report-v1.json`, `run-report-v6.json`
-  and the `review-outcome-v2.json` and `-v3.json` schemas no longer list `gate_blocked`, and the
+  and `review-outcome-v3.json` no longer list `gate_blocked`, and the
   review-outcome `ledger_production` no longer lists `not_produced_gate_blocked`. A stored report
   that carries `gate_blocked` no longer decodes.
 - A Campaign manifest records only the canonical `report-derived@1` Finding identity policy, and
@@ -329,6 +326,31 @@ or needs a documented hand edit.
   `af/task-inspection@11` receipts, so a receipt an earlier release exported is refused. A script,
   skill or hub check that matches another `af/task-inspection@N`, or validates against a deleted
   schema, must switch to `@11`.
+- Task usage and Review provenance have one encoding each. Every usage artifact is
+  `af/TaskTokenUsage@3` and every Task Review provenance artifact is
+  `af/TaskReviewAttemptProvenance@2`, whatever the width of their counters; narrow values no
+  longer select `af/TaskTokenUsage@1` or `@2` or `af/TaskReviewAttemptProvenance@1`. The
+  payload bytes are unchanged, but the artifact types and content IDs of new usage and
+  provenance artifacts differ from those an earlier release wrote. A Task Review selection whose
+  provenance or usage artifact carries a retired type, or no artifact envelope at all, is
+  refused, and the `task-token-usage-v1.json`, `task-token-usage-v2.json` and
+  `task-review-attempt-provenance-v1.json` schemas are deleted: every other schema now refers to
+  `urn:af:schema:task-token-usage:3` for its decimal counters.
+- The Attempt wall sidecar in `events.sqlite` keeps one exact usage column, `usage_v3_json`,
+  beside `usage_observation_v1_json`; both are created with the `attempt_wall` table. The numeric
+  token columns, `usage_v1_json`, `usage_v2_json` and the `ALTER TABLE` migration that ran on
+  every open are gone, as is the Campaign-keyed narrowing view only the removed pre-Task executor
+  wrote. Wall rows an earlier release recorded in the retired columns are no longer read, so
+  finish in-flight Tasks before upgrading: recovery raises an abandoned Attempt's charge from its
+  recorded wall usage, and without it the Attempt settles at its reservation floor.
+- `af review run --json` always emits `af/review-outcome@3`, instead of `@2` when every selected
+  Attempt's usage fitted u64, and `review-outcome-v2.json` is deleted.
+- `af review report --json` always emits `af/review-report@4`, instead of `@3` for narrow usage or
+  `@1` for a Campaign with no Task. `task_accounting` is always present; it is empty exactly for a
+  Campaign whose first Task capture failed, which has no Rounds either, and
+  `review-report-v4.json` describes that case. `review-report-v3.json` is deleted. A script, skill
+  or hub check that matches `af/review-outcome@2`, `af/review-report@1` or `af/review-report@3`,
+  or validates against a deleted schema, must switch to the single version.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

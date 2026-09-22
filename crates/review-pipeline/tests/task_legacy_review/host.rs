@@ -162,7 +162,7 @@ fn captured_command_review_uses_common_attempt_selection_and_replays_canonical_o
         expected_outputs = Some(execution.outputs);
         let run = review_store::store::task::task_run_id(&task.task_id).unwrap();
         let locked = shared.lock().unwrap();
-        assert_eq!(locked.attempt_wall(&run).unwrap().len(), 1);
+        assert_eq!(locked.task_attempt_wall(&run).unwrap().len(), 1);
         let events = locked.replay("review").unwrap();
         assert_eq!(
             events
@@ -1012,11 +1012,8 @@ fn late_usage_fences_task_finish_while_preserving_its_prior_review_conclusion() 
         .settled_artifacts();
     assert_eq!(attempts.len(), 1);
     let attempt_id = attempts.keys().next().unwrap();
-    let usage = review_core::task::usage::TaskTokenUsageV1 {
-        chargeable_tokens: u64::MAX.into(),
-        ..Default::default()
-    };
-    let usage_id = plan::artifact(&cas, review_core::task::usage::TASK_TOKEN_USAGE_V1, usage);
+    let usage = review_core::task::usage::TaskTokenUsageV3::charge_only(u128::from(u64::MAX));
+    let usage_id = plan::artifact(&cas, review_core::task::usage::TASK_TOKEN_USAGE_V3, usage);
     shared
         .lock()
         .unwrap()

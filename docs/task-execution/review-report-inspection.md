@@ -1,10 +1,9 @@
 # Review accounting inspection
 
-`af review report --format json` uses
-[`af/review-report@3`](../../schemas/review-report-v3.json), or
-[`af/review-report@4`](../../schemas/review-report-v4.json) when a native usage component
-requires the wider representation. A Campaign whose first Task capture failed has no Task
-accounting and keeps the `af/review-report@1` label. The `task_accounting` array reads each
+`af review report --format json` always uses
+[`af/review-report@4`](../../schemas/review-report-v4.json). A Campaign whose first Task capture
+failed has no Task: its report is the same document, with an empty `task_accounting` array and no
+Rounds. The `task_accounting` array reads each
 distinct Task's validated common execution ledger, including failures before the first
 canonical report or selected Reviewer output. Inspection opens the Store and CAS read-only and
 does not create events, receipts or missing artifacts.
@@ -12,9 +11,8 @@ does not create events, receipts or missing artifacts.
 Each Task entry reports current cumulative `chargeable_tokens`, outstanding `reserved_tokens`,
 and started Attempt counts. Token totals and per-Attempt cumulative charges are canonical
 u128 decimal strings. Attempt counts and original
-reservation caps remain canonical u64 decimal strings. Native usage components retain u64 bounds
-in generation 3; generation 4 also permits exact u128 components accumulated across native turns.
-Sequence numbers and wall-clock fields are JSON numbers.
+reservation caps remain canonical u64 decimal strings. Native usage components are exact u128
+counters accumulated across native turns. Sequence numbers and wall-clock fields are JSON numbers.
 
 Counts include failed, abandoned and fenced work, and exclude reservations released before
 starting. The three categories add up to the common budget's started Attempt count. A Provider

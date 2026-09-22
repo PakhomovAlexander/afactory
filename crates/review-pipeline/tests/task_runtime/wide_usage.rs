@@ -170,11 +170,17 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
             u128::from(u64::MAX) + if overrun_at == 1 { 7 } else { 0 }
         );
         let run = review_store::store::task::task_run_id(task_id).unwrap();
-        let walls = f.store.attempt_wall(&run).unwrap();
+        let walls = f.store.task_attempt_wall(&run).unwrap();
         assert_eq!(walls.len(), overrun_at + 1);
-        assert!(walls.iter().any(|wall| wall.usage.as_ref().is_some_and(
-            |usage| usage.input_tokens == Some(u64::MAX) && usage.chargeable_tokens == u64::MAX
-        )));
+        let max = u128::from(u64::MAX);
+        assert!(
+            walls
+                .iter()
+                .any(|wall| wall.usage.as_ref().is_some_and(|usage| {
+                    usage.input_tokens.map(|n| n.get()) == Some(max)
+                        && usage.chargeable_tokens.get() == max
+                }))
+        );
         let mut wide_receipts = 0;
         for event in f.store.replay(&run).unwrap() {
             let transition: review_core::task::event::TaskTransitionV1 =
@@ -293,7 +299,6 @@ fn one_attempt_retains_aggregate_charge_above_u64_through_failure_and_reopen() {
     let usage = walls[0].usage.as_ref().unwrap();
     assert_eq!(usage.chargeable_tokens.get(), exact);
     assert_eq!(usage.input_tokens.map(|n| n.get()), Some(exact));
-    assert!(f.store.attempt_wall(&run).is_err());
     let state = f
         .store
         .task_projection(&f.cas, &f.task.task_id)

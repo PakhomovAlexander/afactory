@@ -156,16 +156,20 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0075](0075-retain-exact-task-usage-with-versioned-decimal-counters.md): readers for
   unversioned and numeric-only usage, migration on write, and the execution-record, usage and
   inspection version ladders. Every Task inspection is `af/task-inspection@11`, whose sections
-  are each present only when the Task recorded them.
+  are each present only when the Task recorded them. Every usage artifact is
+  `af/TaskTokenUsage@3`, and the Attempt wall sidecar holds one exact usage column and one
+  observation column, both created with the table.
 - [ADR-0077](0077-run-captured-review-operations-under-common-task-attempts.md): historical
   name-only Reviewer outputs meaning `ReviewerResult@1`, and the Store's opaque exception for them.
 - [ADR-0078](0078-bind-review-conclusions-to-exact-task-accounting.md): readers for historical
-  `RunReport` versions and raw provenance.
+  `RunReport` versions and raw provenance. Task Review provenance is
+  `TaskReviewAttemptProvenance@2`, whatever the width of its counters.
 - [ADR-0079](0079-retain-exact-cumulative-charge-within-one-task-attempt.md): readers for frozen
-  execution `@1` and `@2`, usage `@1`, and `af/review-report@1` and `@2`, and the historical
-  `AttemptLedger` entry points with replacement semantics; every Attempt charge is an exact
-  cumulative floor. Its Broker operations, with `BrokerOperationReceipt@2`, are gone with the
-  Broker; the exact u128 cumulative charge they motivated stays.
+  execution `@1` and `@2`, usage `@1` and `@2`, and `af/review-report@1`, `@2` and `@3`, and the
+  historical `AttemptLedger` entry points with replacement semantics; every Attempt charge is an
+  exact cumulative floor, and `af review report --json` is one document, `af/review-report@4`.
+  Its Broker operations, with `BrokerOperationReceipt@2`, are gone with the Broker; the exact
+  u128 cumulative charge they motivated stays.
 - [ADR-0081](0081-register-owned-review-children-in-the-common-task-runtime.md): earlier execution
   and inspection generations, and the Review Task policy generations before
   `LegacyReviewTaskPolicy@4` that compiled without owned children.
@@ -174,9 +178,11 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0083](0083-run-post-round-integration-within-the-original-task.md): earlier inspection
   generations.
 - [ADR-0084](0084-route-new-review-commands-through-the-common-task.md): the original executor for
-  historical paid Campaigns, and historical readers and output generations.
+  historical paid Campaigns, and historical readers and output generations. `af review run --json`
+  always emits `af/review-outcome@3`.
 - [ADR-0085](0085-retain-exact-native-task-usage-across-multiple-turns.md): the frozen Kernel's
-  separate `AttemptEvidence`; the exact Task Attempt evidence now carries that name.
+  separate `AttemptEvidence`, whose name the exact Task Attempt evidence now carries, and the
+  width-selected usage, provenance and output generations.
 - [ADR-0086](0086-record-expired-review-publication-without-restarting-work.md): earlier transition
   and inspection generations.
 - [ADR-0087](0087-control-native-task-invocations-through-the-shared-supervisor.md): the Worker

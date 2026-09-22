@@ -442,26 +442,13 @@ fn validate_attempt_provenance(
     reserved_tokens: u64,
     committed_tokens: u128,
 ) -> Result<(), StoreError> {
-    let value = cas
-        .get_json(&metadata.provenance_artifact_id)
-        .map_err(|e| conflict(e.to_string()))?;
-    if value.get("type").is_none() {
-        return validate_legacy_provenance(cas, &value, metadata, context, committed_tokens);
-    }
     let frame = cas
         .get_artifact(&metadata.provenance_artifact_id)
         .map_err(|e| conflict(e.to_string()))?;
-    let legacy = frame.artifact_type == TASK_REVIEW_ATTEMPT_PROVENANCE_V1;
-    let provenance: TaskReviewAttemptProvenanceV2 = match frame.artifact_type.as_str() {
-        TASK_REVIEW_ATTEMPT_PROVENANCE_V1 => {
-            let value: TaskReviewAttemptProvenanceV1 =
-                serde_json::from_value(frame.payload.clone())?;
-            value.validate().map_err(conflict)?;
-            value.into()
-        }
-        TASK_REVIEW_ATTEMPT_PROVENANCE_V2 => serde_json::from_value(frame.payload.clone())?,
-        _ => return Err(conflict("Unsupported Task Review provenance version")),
-    };
+    if frame.artifact_type != TASK_REVIEW_ATTEMPT_PROVENANCE_V2 {
+        return Err(conflict("Unsupported Task Review provenance version"));
+    }
+    let provenance: TaskReviewAttemptProvenanceV2 = serde_json::from_value(frame.payload.clone())?;
     provenance.validate().map_err(conflict)?;
     if provenance.charged_tokens.get() > committed_tokens {
         return Err(conflict(
@@ -491,20 +478,12 @@ fn validate_attempt_provenance(
     if let Some(id) = provenance.usage_id {
         use review_core::task::usage::*;
         let usage = cas.get_artifact(&id).map_err(|e| conflict(e.to_string()))?;
-        let value: TaskTokenUsageV3 = match usage.artifact_type.as_str() {
-            TASK_TOKEN_USAGE_V1 if legacy => {
-                serde_json::from_value::<TaskTokenUsageV1>(usage.payload.clone())?.into()
-            }
-            TASK_TOKEN_USAGE_V2 if !legacy => {
-                serde_json::from_value::<TaskTokenUsageV2>(usage.payload.clone())?.into()
-            }
-            TASK_TOKEN_USAGE_V3 if !legacy => serde_json::from_value(usage.payload.clone())?,
-            _ => {
-                return Err(conflict(
-                    "Task Review provenance has another usage generation",
-                ));
-            }
-        };
+        if usage.artifact_type != TASK_TOKEN_USAGE_V3 {
+            return Err(conflict(
+                "Task Review provenance has another usage generation",
+            ));
+        }
+        let value: TaskTokenUsageV3 = serde_json::from_value(usage.payload.clone())?;
         if &usage.producer != producer
             || usage.input_artifacts != [context_id]
             || usage.subject_snapshot_id.is_some()
@@ -566,80 +545,6 @@ pub(in crate::store) fn validate_proposal(
         return Err(conflict(
             "Canonical Proposal differs from the selected Task's disposition",
         ));
-    }
-    Ok(())
-}
-
-fn validate_legacy_provenance(
-    cas: &Cas,
-    value: &serde_json::Value,
-    metadata: &TaskReviewResultMetadataV1,
-    context: &TaskReviewContextV1,
-    committed_tokens: u128,
-) -> Result<(), StoreError> {
-    let fields = [
-        "node",
-        "attempt",
-        "result_artifact",
-        "cost_tokens",
-        "usage",
-        "context_manifest",
-        "raw",
-        "sandbox_mutations",
-    ];
-    let object = value
-        .as_object()
-        .ok_or_else(|| conflict("Expected historical Review provenance object"))?;
-    if object.len() != fields.len()
-        || fields.iter().any(|key| !object.contains_key(*key))
-        || value["node"] != context.review_node
-        || value["attempt"] != context.attempt_id
-        || value["result_artifact"] != metadata.result_artifact_id
-        || value["context_manifest"]
-            != cas
-                .get_json(&context.context_manifest_id)
-                .map_err(|e| conflict(e.to_string()))?
-    {
-        return Err(conflict(
-            "Historical Review provenance changed its Attempt, result or context",
-        ));
-    }
-    let usage = value["usage"]
-        .as_object()
-        .ok_or_else(|| conflict("Historical Review provenance has no usage"))?;
-    let safe_counter = |value: &serde_json::Value| {
-        value
-            .as_u64()
-            .filter(|value| *value <= review_core::json::SAFE_INTEGER_MAX as u64)
-    };
-    let charge = safe_counter(&value["cost_tokens"])
-        .ok_or_else(|| conflict("Historical Review charge is not exact"))?;
-    if u128::from(charge) > committed_tokens
-        || safe_counter(&value["usage"]["chargeable_tokens"]) != Some(charge)
-        || usage.iter().any(|(name, value)| {
-            !matches!(
-                name.as_str(),
-                "chargeable_tokens"
-                    | "input_tokens"
-                    | "output_tokens"
-                    | "cache_read_tokens"
-                    | "cache_write_tokens"
-                    | "reasoning_tokens"
-            ) || safe_counter(value).is_none()
-        })
-    {
-        return Err(conflict(
-            "Historical Review provenance changed its exact usage",
-        ));
-    }
-    for value in [&value["raw"], &value["sandbox_mutations"]["artifact"]] {
-        let id = value
-            .as_str()
-            .filter(|id| review_core::is_digest(id))
-            .ok_or_else(|| {
-                conflict("Historical Review provenance has an invalid observation reference")
-            })?;
-        cas.verify(id).map_err(|e| conflict(e.to_string()))?;
     }
     Ok(())
 }

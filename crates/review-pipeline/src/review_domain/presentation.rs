@@ -48,17 +48,11 @@ fn task_evidence(
     let frame = cas
         .get_artifact(&selected.provenance_artifact_id)
         .map_err(|error| error.to_string())?;
-    let provenance: TaskReviewAttemptProvenanceV2 = match frame.artifact_type.as_str() {
-        TASK_REVIEW_ATTEMPT_PROVENANCE_V1 => {
-            serde_json::from_value::<TaskReviewAttemptProvenanceV1>(frame.payload)
-                .map_err(|e| e.to_string())?
-                .into()
-        }
-        TASK_REVIEW_ATTEMPT_PROVENANCE_V2 => {
-            serde_json::from_value(frame.payload).map_err(|e| e.to_string())?
-        }
-        _ => return Err("selected Task Attempt has another provenance type".into()),
-    };
+    if frame.artifact_type != TASK_REVIEW_ATTEMPT_PROVENANCE_V2 {
+        return Err("selected Task Attempt has another provenance type".into());
+    }
+    let provenance: TaskReviewAttemptProvenanceV2 =
+        serde_json::from_value(frame.payload).map_err(|e| e.to_string())?;
     provenance.validate()?;
     let frame = cas
         .get_artifact(&selected.context_id)

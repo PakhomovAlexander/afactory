@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 167] = [
+const SCHEMAS: [&str; 163] = [
     "session-snapshot-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -66,7 +66,6 @@ const SCHEMAS: [&str; 167] = [
     "optimization-package-repin-v1.json",
     "harness-materialization-v1.json",
     "provider-doctor-v2.json",
-    "review-outcome-v2.json",
     "review-outcome-v3.json",
     "review-report-v4.json",
     "task-context-v1.json",
@@ -82,10 +81,8 @@ const SCHEMAS: [&str; 167] = [
     "task-execution-record-v3.json",
     "task-execution-record-v4.json",
     "task-owned-child-set-v1.json",
-    "task-token-usage-v2.json",
     "task-token-usage-v3.json",
     "task-usage-observation-v1.json",
-    "task-review-attempt-provenance-v1.json",
     "task-review-attempt-provenance-v2.json",
     "task-review-accounting-v1.json",
     "run-report-v6.json",
@@ -153,7 +150,6 @@ const SCHEMAS: [&str; 167] = [
     "task-run-report-v1.json",
     "task-diagnostic-v1.json",
     "task-execution-record-v1.json",
-    "task-token-usage-v1.json",
     "task-revision-v1.json",
     "task-result-v1.json",
     "task-phase-v1.json",
@@ -612,8 +608,6 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     .chain([
                         "finding-report-v1.json",
                         "task-contracts-v1.json",
-                        "task-token-usage-v1.json",
-                        "task-token-usage-v2.json",
                         "task-review-accounting-v1.json",
                         "task-operator-signature-v1.json",
                         "task-kind-v1.json",
@@ -2274,42 +2268,6 @@ fn task_review_metadata_retains_typed_canonical_results_and_closed_proposal_disp
             }
             assert!(!validator("task-review-result-metadata-v1.json").is_valid(&wrong));
             assert!(serde_json::from_value::<TaskReviewResultMetadataV1>(wrong).is_err());
-        }
-    }
-}
-
-#[test]
-fn task_review_attempt_provenance_preserves_wide_charge_and_unknown_usage() {
-    use review_core::task::review_compat::TaskReviewAttemptProvenanceV1;
-    let id = format!("sha256:{}", "a".repeat(64));
-    let schema = "task-review-attempt-provenance-v1.json";
-    for known in [false, true] {
-        let mut value = json!({"context_id":id, "task_invocation_id":id,
-            "attempt_id":"b".repeat(26), "review_node":"reviewer", "result_artifact_id":id,
-            "mutations_artifact_id":id, "raw_artifact_id":id, "charged_tokens":u64::MAX.to_string()});
-        if known {
-            value["usage_id"] = json!(id);
-        }
-        assert_valid(schema, &value);
-        let typed: TaskReviewAttemptProvenanceV1 = serde_json::from_value(value.clone()).unwrap();
-        typed.validate().unwrap();
-        assert_eq!(typed.charged_tokens.get(), u64::MAX);
-        assert_eq!(typed.usage_id.is_some(), known);
-        for (field, bad) in [
-            ("charged_tokens", json!(1)),
-            ("charged_tokens", json!("18446744073709551616")),
-            ("charged_tokens", json!("01")),
-            ("usage_id", json!(null)),
-            ("result_artifact_id", json!("missing")),
-            ("extra", json!(true)),
-        ] {
-            let mut bad_value = value.clone();
-            bad_value[field] = bad;
-            assert_invalid(schema, &bad_value, "closed exact provenance");
-            assert!(
-                serde_json::from_value::<TaskReviewAttemptProvenanceV1>(bad_value)
-                    .map_or(true, |v| v.validate().is_err())
-            );
         }
     }
 }

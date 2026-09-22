@@ -2527,7 +2527,7 @@ struct ReviewReportView {
     ledger_round: u32,
     final_verdict: Option<String>,
     rounds: Vec<ReportRoundView>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    /// Empty only for a Campaign whose first Task capture failed, which has no Rounds either.
     task_accounting: Vec<report_tasks::TaskAccountingView>,
     demands: Vec<review_core::DemandSetEntryV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2627,7 +2627,7 @@ fn findings_summary_line(summary: &FindingsSummaryView) -> String {
 
 /// Wall-clock a set of Rounds took: per (round, epoch), first Attempt start to last Attempt end,
 /// summed across Rounds. `None` when nothing was recorded.
-fn wall_span_ms<U>(rows: &[review_store::AttemptWall<U>]) -> Option<u64> {
+fn wall_span_ms(rows: &[review_store::TaskAttemptWall]) -> Option<u64> {
     wall_spans_ms(rows.iter().map(|row| {
         (
             (row.round, row.epoch),
@@ -2747,13 +2747,7 @@ fn read_report_view(
     let wall_ms = task_accounting.wall_ms();
     let findings = ledger.finding_views();
     Ok(ReviewReportView {
-        schema: if task_accounting.tasks.is_empty() {
-            "af/review-report@1"
-        } else if task_accounting.has_wide_usage() {
-            "af/review-report@4"
-        } else {
-            "af/review-report@3"
-        },
+        schema: "af/review-report@4",
         campaign: campaign.into(),
         runs_recorded: reports.len(),
         ledger_round: ledger.round,

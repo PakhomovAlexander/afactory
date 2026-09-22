@@ -104,24 +104,14 @@ pub(super) fn capture_task_result(
         if context.attempt_id != reply.attempt_id || context.review_node != reply.node_id {
             return Err("Task Review provenance changed its actual Attempt".into());
         }
-        let narrow = review_runner::TokenUsage::try_from(usage).ok();
         let usage_id = usage_known
             .then(|| {
-                if let Some(usage) = &narrow {
-                    review_runner::task::usage::persist_task_usage(
-                        cas,
-                        envelope.producer.clone(),
-                        context_id,
-                        usage,
-                    )
-                } else {
-                    review_runner::task::usage::persist_task_usage_exact(
-                        cas,
-                        envelope.producer.clone(),
-                        context_id,
-                        usage,
-                    )
-                }
+                review_runner::task::usage::persist_task_usage_exact(
+                    cas,
+                    envelope.producer.clone(),
+                    context_id,
+                    usage,
+                )
             })
             .transpose()?;
         let provenance = TaskReviewAttemptProvenanceV2 {
@@ -136,19 +126,9 @@ pub(super) fn capture_task_result(
             usage_id,
         };
         provenance.validate()?;
-        let mut payload = serde_json::to_value(&provenance).map_err(|e| e.to_string())?;
-        let kind = if narrow.is_some() {
-            // The decimal representation is identical, but retain the frozen typed validator.
-            let old: TaskReviewAttemptProvenanceV1 =
-                serde_json::from_value(payload).map_err(|e| e.to_string())?;
-            old.validate()?;
-            payload = serde_json::to_value(old).map_err(|e| e.to_string())?;
-            TASK_REVIEW_ATTEMPT_PROVENANCE_V1
-        } else {
-            TASK_REVIEW_ATTEMPT_PROVENANCE_V2
-        };
+        let payload = serde_json::to_value(&provenance).map_err(|e| e.to_string())?;
         cas.put_artifact(
-            kind,
+            TASK_REVIEW_ATTEMPT_PROVENANCE_V2,
             envelope.producer,
             provenance
                 .artifact_refs()

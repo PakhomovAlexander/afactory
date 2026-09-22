@@ -273,11 +273,8 @@ pub(super) fn observe_charge(
 ) {
     let usage_id = plan::artifact(
         cas,
-        review_core::task::usage::TASK_TOKEN_USAGE_V1,
-        review_core::task::usage::TaskTokenUsageV1 {
-            chargeable_tokens: charge.into(),
-            ..Default::default()
-        },
+        review_core::task::usage::TASK_TOKEN_USAGE_V3,
+        review_core::task::usage::TaskTokenUsageV3::charge_only(u128::from(charge)),
     );
     store
         .observe_task_usage(

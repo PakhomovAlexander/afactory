@@ -100,10 +100,10 @@
           "$ref": "urn:af:schema:task-contracts:1#/$defs/limits"
         },
         "committed_tokens": {
-          "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
+          "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU128"
         },
         "begun_attempts": {
-          "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU64"
+          "$ref": "urn:af:schema:task-token-usage:3#/$defs/decimalU64"
         },
         "budget_breached": {
           "type": "boolean"
