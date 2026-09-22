@@ -1,7 +1,8 @@
 # Containment probes: the malicious check
 
-The record of which containment probes are discharged and which are still open, kept so that a
-probe nobody has run is never mistaken for a probe that passed.
+The record of which containment probes are discharged, which do not apply to what GA ships, and
+which are still open, kept so that a probe nobody has run is never mistaken for a probe that
+passed.
 [`non-goals.md`](../non-goals.md) relies on it for the claim that the open probes are recorded
 as open rather than claimed covered.
 
@@ -19,19 +20,19 @@ pass/fail sees nothing wrong.
 |---|---|
 | host marker | read and modify a file planted outside the sandbox root (`$HOME/.review-host-marker`) |
 | canonical checkout | write to the source checkout the review targets |
-| credentials | read the token used for authenticated acquisition; re-emit it base64'd and split across two artifacts |
-| undeclared network | connect to a host not in the binding's allowlist, and exfiltrate over an allowed one |
+| credentials | read the token used for authenticated acquisition |
+| undeclared network | connect to a host outside the sandbox |
 | escape via argument | pass `--config`, a leading option, and `@response-file` through an untrusted artifact value |
 
 ## Required behavior
 
 - Every probe **fails at the boundary**, not by convention: the host marker is unreadable and
   unmodified, the checkout is unwritable, the undeclared connection is refused.
-- The credential is never present as reusable bytes inside the sandbox. The transformed-secret
-  attempt produces no artifact containing it in any encoding, and the allowed-egress attempt
-  carries no derivative of it.
-- The privileged operation the check legitimately needs is performed by the **broker**, which
-  emits a receipt proving only allowed operations ran.
+- The credential never exists as reusable bytes inside the sandbox, so there is nothing in there
+  to read, re-encode or carry out.
+- GA performs no brokered privileged operation: GA ships without a Broker
+  ([ADR-0113](../adr/0113-ga-reads-only-what-ga-writes.md)), so no credential is held outside the
+  sandbox on a check's behalf and no receipt stands in for one.
 - Argument injection is rejected by the typed argument slots — `--config`, leading options and
   `@...` are refused as *option* positions while the same bytes remain acceptable as a value.
 - The check's own pass/fail result is still recorded normally. Containment is not a verdict.
@@ -44,7 +45,7 @@ A green run. The check passes, the review converges, and the only evidence of th
 a host nobody inspects. This is the case that decides whether project-supplied check commands
 can be treated as data.
 
-## Status — provider boundary discharged; Gate live routing and broker still open
+## Status — provider boundary discharged; live Gate routing still open
 
 Two test files carry this case. `crates/review-sandbox/tests/malicious_check.rs` runs against
 the `trusted_local` provider — a materialized copy of a snapshot in a temporary directory,
@@ -66,6 +67,8 @@ daemon is a hard failure, never a skip — an unrun probe must not look like a p
 | argument injection | **discharged** | typed slots refuse an untrusted value in an option position, asserted end-to-end through the check runner |
 | host marker | **discharged (container)** | a marker planted outside the sandbox is unreadable and unmodified — the absolute path names nothing inside the container |
 | undeclared network | **discharged (container)** | `--network=none` leaves no route out and no resolver, so the refusal is immediate rather than a timeout |
+| transformed secret | **not applicable at GA** | the half that re-emits a credential base64'd across two artifacts was written for a Broker holding it outside the sandbox; GA ships without a Broker ([ADR-0113](../adr/0113-ga-reads-only-what-ga-writes.md)), and a check's environment carries no token to transform |
+| exfiltration over allowed egress | **not applicable at GA** | there is no allowed-egress allowlist to exfiltrate over: a container run is `--network=none`, so every connection is undeclared and refused |
 
 Each container probe is paired with a control: the same provider runs a typed check command —
 resolved exactly as the check runner validates it — inside the container, the check does its
@@ -74,11 +77,7 @@ because the container runs nothing.
 
 What "discharged (container)" claims is the *provider boundary*, no more. `trusted_local`
 still provides none of it, and `admit` still refuses a safe pipeline on that provider — that
-refusal remains tested. Open here, by name:
-
-- **The broker half.** The transformed-secret probe (re-emit the token base64'd across two
-  artifacts) and exfiltration-over-allowed-egress need a broker that holds credentials outside
-  the sandbox and emits receipts. There is no broker yet.
+refusal remains tested.
 
 Pipeline format v3 now routes every root Gate through its explicit Execution Binding. Container
 bindings require a project image pinned by digest. Provider usability and isolation admission are
@@ -89,12 +88,13 @@ reaping name. A timed-out runtime client is followed by bounded `rm -f`; if clea
 confirmed, the Gate reports the preserved sandbox path and returns incomplete without sealing a
 possibly live bind. The
 ignored live pipeline control and lower-level probes use `CheckRunner::run_with`; the new CI job
-must turn that wiring into live evidence before Gate routing is called discharged. Brokered
-credentials and allowed egress remain M6.3 and are not claimed here. Open here, by name:
+must turn that wiring into live evidence before Gate routing is called discharged. Open here, by
+name — one item:
 
 - **Live Gate routing.** The target and CI job exist, but this candidate has not run them on a
   usable daemon yet. A green `container-probes` job closes this item.
 
-**Do not weaken this case as the wiring lands.** Marking the routing or broker rows satisfied
-on the strength of the provider probes would be exactly the quiet redefinition this file warns
-about.
+**Do not weaken this case as the wiring lands.** Marking the live-routing row satisfied on the
+strength of the provider probes would be exactly the quiet redefinition this file warns about.
+A probe recorded as not applicable stays that way only while GA has no Broker and no allowed
+egress; whichever lands first reopens its half here.
