@@ -21,7 +21,9 @@ subprocesses compete with the rest of the repository suite. Three tests —
 `generated_implementation_embeds_review_and_adds_only_its_admitted_history_constructor` and
 `generated_nested_plan_waits_for_exact_approval_then_resumes_with_shared_accounting` — therefore
 failed intermittently on a correct refusal: the kernel was protecting a reserve it could no
-longer honor, because the test had spent the Task's wall budget on scheduling latency.
+longer honor, because the test had spent the Task's wall budget on scheduling latency. The same
+loaded full gate later exposed the identical assumption in `task_catalog` after its real catalog
+sync, Git mutation and offline-resume sequence.
 
 The defect is in the fixture's resource envelope, not in the enforcement. A Task whose deadline
 is consumed by the wall clock must refuse new work, and a reserve that cannot be honored must
@@ -51,7 +53,9 @@ not be quietly released.
 CLI Task fixtures that hold one Task across a chain of subprocesses are budgeted for the slowest
 machine the gate runs on, not the fastest. `crates/af/tests/task_planning.rs` starts every Task
 it creates — including the second developer's consuming Task — with a documented ten-minute wall
-(`PLANNING_WALL_MS`), replacing the fixture tickets' 60s.
+(`PLANNING_WALL_MS`), replacing the fixture tickets' 60s. The long catalog sync and offline-resume
+test applies the same test-local total (`CATALOG_TASK_WALL_MS`) after copying its shared fixture;
+the committed reusable fixture remains unchanged for tests that need its original limits.
 
 The margin is added to the total budget and taken from nothing. Per-Attempt walls (5s in every
 fixture Worker manifest and in the fixture code policy), Attempt counts, token budgets and the
@@ -75,5 +79,7 @@ does not read ten minutes as a slow test and collapse it back toward a sequence'
 - `crates/af/tests/task_planning.rs` pins the margin itself: the admitted Task limits must leave
   every Attempt the Task may start, plus the whole reserve, with the documented slack to spare,
   and the reserve, token and Attempt limits must still be the fixture's own.
+- `crates/af/tests/task_catalog.rs` pins that its local override changes only the total Task wall;
+  the shared fixture's tokens, Attempt count and complete verification reserve remain exact.
 - Other CLI Task suites keep their fixture budgets. If the same symptom appears there, the same
   remedy applies — raise that suite's wall budget with the same documentation, never its reserve.
