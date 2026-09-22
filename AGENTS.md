@@ -47,7 +47,7 @@ review corpora belong in consuming repositories, not here.
 - A source Manifest spells every path one way, with `review_core::encode_path`, and Snapshot
   content identity hashes that stored spelling; never add a second path alphabet or a spelling
   that differs by baseline ([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)).
-- Built-in Generation outputs are explicitly typed even in pipeline version 2; never restore an
+- Built-in Generation outputs are explicitly typed in every pipeline format; never restore an
   opaque output shape that the executor cannot dispatch
   ([ADR-0025](docs/adr/0025-require-typed-generation-outputs-in-version-2.md)).
 - Process supervision shared across architectural layers lives in the dependency-neutral

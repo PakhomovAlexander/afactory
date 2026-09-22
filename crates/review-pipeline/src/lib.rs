@@ -66,11 +66,8 @@ use review_store::{
 
 type CacheSourceResolver = dyn Fn(CacheKind) -> Result<CacheSource, CacheError> + Send + Sync;
 
-fn is_generation_prior_findings_output(port: &PortContract, pipeline_version: u32) -> bool {
+fn is_generation_prior_findings_output(port: &PortContract) -> bool {
     port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1
-        || pipeline_version == 1
-            && port.artifact_type == review_core::contract::OPAQUE_V1
-            && port.name == "findings"
 }
 
 fn is_generation_finding_set_output(port: &PortContract) -> bool {
@@ -81,19 +78,16 @@ fn is_demand_set_port(port: &PortContract) -> bool {
     port.artifact_type == review_core::contract::DEMAND_SET_V1
 }
 
-fn is_reviewer_prior_findings_input(port: &PortContract, pipeline_version: u32) -> bool {
+fn is_reviewer_prior_findings_input(port: &PortContract) -> bool {
     port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1
-        || pipeline_version == 1
-            && port.artifact_type == review_core::contract::OPAQUE_V1
-            && port.name == "prior_findings"
 }
 
 fn is_reviewer_finding_set_input(port: &PortContract) -> bool {
     port.artifact_type == review_core::contract::FINDING_SET_V1
 }
 
-fn is_reviewer_prior_set_input(port: &PortContract, pipeline_version: u32) -> bool {
-    is_reviewer_prior_findings_input(port, pipeline_version) || is_reviewer_finding_set_input(port)
+fn is_reviewer_prior_set_input(port: &PortContract) -> bool {
+    is_reviewer_prior_findings_input(port) || is_reviewer_finding_set_input(port)
 }
 
 fn reviewer_result_contract(node: &Node) -> Result<ReviewerResultContract, String> {
@@ -116,11 +110,8 @@ fn reviewer_result_contract(node: &Node) -> Result<ReviewerResultContract, Strin
         })
 }
 
-fn is_change_set_port(port: &PortContract, pipeline_version: u32) -> bool {
+fn is_change_set_port(port: &PortContract) -> bool {
     port.artifact_type == review_core::contract::CHANGE_SET_V1
-        || pipeline_version == 1
-            && port.artifact_type == review_core::contract::OPAQUE_V1
-            && port.name == "change_set"
 }
 
 fn run_isolation(isolation: Isolation) -> RunIsolationV4 {
@@ -933,13 +924,12 @@ fn validate_generation_outputs(
     authority: &RoundAuthority,
     node: &Node,
     outputs: &ArtifactMap,
-    pipeline_version: u32,
 ) -> Result<(), String> {
     if node.kind != NodeKind::Generation {
         return Ok(());
     }
     for port in &node.outputs {
-        let expected = if is_generation_prior_findings_output(port, pipeline_version) {
+        let expected = if is_generation_prior_findings_output(port) {
             vec![authority.prior_finding_set_id.clone()]
         } else if is_generation_finding_set_output(port) {
             if authority.prior_reduction_finding_set_id == authority.finding_genesis_id {
@@ -947,7 +937,7 @@ fn validate_generation_outputs(
             } else {
                 vec![authority.prior_reduction_finding_set_id.clone()]
             }
-        } else if is_change_set_port(port, pipeline_version) {
+        } else if is_change_set_port(port) {
             authority.change_set_id.iter().cloned().collect()
         } else {
             return Err(format!(

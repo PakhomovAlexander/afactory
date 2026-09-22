@@ -37,12 +37,11 @@ pub(super) struct ReviewDomainState<'a> {
     /// The immutable subject. Every node is materialized from this, so they all inspect the
     /// same content by construction rather than by discipline.
     pub(super) snapshot: Manifest,
-    pub(super) pipeline_version: u32,
     pub(super) authority: RoundAuthority,
     pub(super) checks: Vec<CheckDefinition>,
     pub(super) check_timeout: Duration,
-    /// Absent only for frozen v1/v2 pipeline semantics. V3 resolves this exact Gate binding from
-    /// captured authority before any candidate check executes.
+    /// Absent only for pipeline format v2. V3 resolves this exact Gate binding from captured
+    /// authority before any candidate check executes.
     pub(super) gate_execution: Option<review_config::GateExecutionSpec>,
     /// Optional machine-resolved provider. The CLI normally lets the kernel probe locally;
     /// embedding callers and deterministic boundary tests may bind an already-probed provider.
@@ -142,7 +141,7 @@ impl<'a> ReviewDomainState<'a> {
         outputs: &ArtifactMap,
         recorded: Option<&DurableReceipt>,
     ) -> Result<(), String> {
-        validate_generation_outputs(&self.authority, node, outputs, self.pipeline_version)?;
+        validate_generation_outputs(&self.authority, node, outputs)?;
         if let Some(recorded) = recorded {
             let expected = NodeOutputReceiptPayloadV1 {
                 node: node.id.clone(),
@@ -258,7 +257,6 @@ impl<'a> ReviewDomainState<'a> {
         run_id: String,
         snapshot: Manifest,
         subject: review_core::SubjectKind,
-        pipeline_version: u32,
         authority: RoundAuthority,
     ) -> Result<Self, String> {
         if authority.run_id != run_id {
@@ -277,7 +275,6 @@ impl<'a> ReviewDomainState<'a> {
             store,
             run_id,
             snapshot,
-            pipeline_version,
             authority,
             checks: Vec::new(),
             check_timeout: Duration::from_secs(3600),
@@ -316,12 +313,7 @@ impl<'a> ReviewDomainState<'a> {
     /// prior state, so an empty finding set is emitted; the edge is satisfied either way, and
     /// nothing about delivery depends on ambient kernel state.
     pub(super) fn run_generation(&self, node: &Node) -> Result<ArtifactMap, String> {
-        generation_outputs(
-            &self.authority,
-            self.pipeline_version,
-            self.prior_findings.as_deref(),
-            node,
-        )
+        generation_outputs(&self.authority, self.prior_findings.as_deref(), node)
     }
 
     /// `gate_attempt` is the common Task Attempt the Gate runs under, when the Task runtime
@@ -1968,14 +1960,13 @@ impl<'a> ReviewDomainState<'a> {
 /// One raw Generation algorithm for both legacy execution and the typed Task codec adapter.
 pub(crate) fn generation_outputs(
     authority: &RoundAuthority,
-    pipeline_version: u32,
     prior_findings: Option<&str>,
     node: &Node,
 ) -> Result<ArtifactMap, String> {
     let mut outputs = ArtifactMap::new();
     for port in &node.outputs {
         let artifacts =
-            if is_generation_prior_findings_output(port, pipeline_version) {
+            if is_generation_prior_findings_output(port) {
                 vec![prior_findings.map(str::to_owned).ok_or(
                     "campaign execution has no exact prior Finding Set from RoundStarted@1",
                 )?]
@@ -1985,7 +1976,7 @@ pub(crate) fn generation_outputs(
                 } else {
                     vec![authority.prior_reduction_finding_set_id.clone()]
                 }
-            } else if is_change_set_port(port, pipeline_version) {
+            } else if is_change_set_port(port) {
                 vec![
                     authority
                         .change_set_id

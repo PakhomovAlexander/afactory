@@ -87,8 +87,9 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0011](0011-silence-is-not-a-drop.md): the `RunReport@2` it names; GA writes only
   `RunReport@6`.
 - [ADR-0015](0015-safe-attempts-receive-handles-not-secrets.md): the pre-Task reviewer's
-  `ReviewerExecutionBound@1` binding and `BrokerOperationCompleted@1` receipts in the Campaign log;
-  a Task Attempt records its Broker binding and receipts in the Task log.
+  `ReviewerExecutionBound@1` binding and `BrokerOperationCompleted@1` receipts in the Campaign log,
+  and pipeline format 1 among the formats that keep their captured credential behavior; a Task
+  Attempt records its Broker binding and receipts in the Task log.
 - [ADR-0019](0019-report-authority-failures-explicitly.md): the permanent `RunReport@1` and `@2`
   readers, and `RunReport@3` itself; its `authority_unavailable` reason is part of `RunReport@6`.
 - [ADR-0021](0021-keep-reviewer-result-wire-shape-flat.md): the permanence of `ReviewerResult@1`,
@@ -105,6 +106,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   `RunReport@6` records as its `cached` execution, and the permanence of pipeline format 1.
 - [ADR-0037](0037-default-campaigns-to-one-round-light-review.md): the explicit `--light` flag;
   light review stays the default.
+- [ADR-0039](0039-own-dynamic-shards-inside-a-typed-scatter-node.md): pipeline format 1 among the
+  static formats that keep their frozen semantics.
 - [ADR-0041](0041-make-review-selectors-explicit-and-refuse-empty-diffs.md): the compatibility
   spelling `--authority REV`.
 - [ADR-0042](0042-require-provider-bindings-and-isolate-claude-reviewers.md): the durable, fenced,
@@ -140,6 +143,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   selection from `AttemptAdmitted@1`.
 - [ADR-0068](0068-retain-inflight-task-usage-in-the-common-budget.md): usage observations and
   settlements encoded as `TaskExecutionRecord@1` with numeric charges.
+- [ADR-0069](0069-compile-captured-review-ports-with-explicit-artifact-codecs.md): the
+  compatibility types that pipeline format 1 shorthand Generation outputs received by port name.
 - [ADR-0070](0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md): the
   legacy Kernel that composed `ReviewDomainState` with its own execution and replay owner.
 - [ADR-0071](0071-share-captured-review-authority-and-task-token-scopes.md): readability of

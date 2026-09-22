@@ -249,6 +249,11 @@ or needs a documented hand edit.
   Finding. A `FindingReport@1` relation only `corroborates` a `finding`: the `disputes` kind and
   the `report` target, which no release wrote, are gone from `finding-report-v1.json`, and a
   Report that uses them no longer decodes.
+- Review pipeline format 1 is gone. A pipeline that declares `version = 1`, the format without
+  `[subject]` whose untyped `findings`, `prior_findings` and `change_set` ports were typed by their
+  names, is refused as an unsupported version; formats 2 through 5 are unchanged. Declare
+  `version = 2` with `[subject]` and typed `PriorFindings@1` or `ChangeSet@1` ports instead. A
+  Campaign whose manifest pinned a format 1 pipeline can no longer be resumed or continued.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

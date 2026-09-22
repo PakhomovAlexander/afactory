@@ -224,12 +224,13 @@ fn restored_fan_in_sorts_original_ids_and_refuses_missing_or_extra_lanes() {
 }
 
 #[test]
-fn v1_opaque_generation_is_explicitly_adapted_but_v2_stays_strict() {
-    let v1 = PIPELINE.replace("version = 2\n[subject]\nkind = \"whole-tree\"", "version = 1")
-        .replace("outputs = [{ name = \"findings\", type = \"review.kernel/PriorFindings@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }]", "outputs = [\"findings\"]")
-        .replace("inputs = [{ name = \"prior_findings\", type = \"review.kernel/PriorFindings@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }]", "inputs = [\"prior_findings\"]");
-    let loaded = crate::Definition::from_toml(&v1).unwrap().load().unwrap();
+fn codecs_follow_the_declared_contract_and_generation_stays_strict() {
+    let loaded = crate::Definition::from_toml(PIPELINE)
+        .unwrap()
+        .load()
+        .unwrap();
     let compilation = compile_legacy_review(&loaded, context(&loaded)).unwrap();
+    // The shorthand Ledger output still reduces into the canonical-identity envelope.
     assert_eq!(
         compilation.nodes["ledger"].outputs["o0"].codec,
         ReviewArtifactCodec::Envelope {
@@ -255,11 +256,26 @@ fn v1_opaque_generation_is_explicitly_adapted_but_v2_stays_strict() {
             artifact_type: contract::PRIOR_FINDINGS_V1.into()
         }
     );
-    let v2 = v1.replace(
-        "version = 1",
-        "version = 2\n[subject]\nkind = \"whole-tree\"",
+    // A Generation output is never retyped by its name.
+    let opaque_generation = PIPELINE
+        .replace(
+            "outputs = [{ name = \"findings\", type = \"review.kernel/PriorFindings@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }]",
+            "outputs = [\"findings\"]",
+        )
+        .replace(
+            "inputs = [{ name = \"prior_findings\", type = \"review.kernel/PriorFindings@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }]",
+            "inputs = [\"prior_findings\"]",
+        );
+    assert_ne!(opaque_generation, PIPELINE);
+    let error = crate::Definition::from_toml(&opaque_generation)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("typed port declaration"),
+        "{error}"
     );
-    assert!(crate::Definition::from_toml(&v2).unwrap().load().is_err());
     let mut bad = context(&loaded);
     bad.workers.remove("second");
     assert!(compile_legacy_review(&loaded, bad).is_err());

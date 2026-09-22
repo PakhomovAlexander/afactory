@@ -284,8 +284,8 @@ requirement. Gate checks then execute through that admitted provider in an indep
 pristine template. Each resolution attempt is durable before its Gate receipt; same-Round retry
 uses the latest observation while the append-only log retains failed admissions. `RunReport@6`
 records that latest provider, pinned image when applicable, required and provided isolation,
-mode, and admission result for every Gate node. Formats v1/v2 permanently retain their captured
-local, read-only behavior. `GateDecision@1` also references a bounded mutation summary plus the
+mode, and admission result for every Gate node. Format v2 keeps its captured local, read-only
+behavior. `GateDecision@1` also references a bounded mutation summary plus the
 CAS digest of the complete v3 Gate mutation set, so permitted disposable writes remain observable
 after the clone is discarded without becoming graph output.
 
@@ -413,7 +413,7 @@ max_files = 250000
 max_copy_bytes = 536870912
 ```
 
-Pipeline format v4 also makes every reviewer credential boundary explicit. Formats v1–v3 keep
+Pipeline format v4 also makes every reviewer credential boundary explicit. Formats v2 and v3 keep
 their captured behavior and cannot acquire this claim retroactively:
 
 ```toml

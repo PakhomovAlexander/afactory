@@ -134,7 +134,6 @@ impl LegacyReviewTaskHost<'_, '_> {
         let mut inputs = crate::reviewer_inputs::prepare(
             cas,
             &self.domain.authority,
-            self.domain.pipeline_version,
             &node,
             &self.raw_inputs(cas, input, &mapping)?,
         )?;

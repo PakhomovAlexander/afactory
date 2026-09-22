@@ -42,7 +42,6 @@ pub(super) fn bind_attempt(
 pub(super) fn prepare(
     cas: &Cas,
     authority: &RoundAuthority,
-    pipeline_version: u32,
     node: &Node,
     node_inputs: &ArtifactMap,
 ) -> Result<ReviewerInputs, String> {
@@ -55,7 +54,7 @@ pub(super) fn prepare(
     let prior_findings_contract = node
         .inputs
         .iter()
-        .find(|port| is_reviewer_prior_set_input(port, pipeline_version));
+        .find(|port| is_reviewer_prior_set_input(port));
     let exact_finding_set = prior_findings_contract.is_some_and(is_reviewer_finding_set_input);
     if (result_contract == ReviewerResultContract::V2) != exact_finding_set {
         let error = format!(
@@ -79,10 +78,10 @@ pub(super) fn prepare(
                 .iter()
                 .find(|contract| contract.name == *port)
                 .ok_or_else(|| format!("reviewer input port '{port}' has no declared contract"))?;
-            if is_reviewer_prior_set_input(contract, pipeline_version) {
+            if is_reviewer_prior_set_input(contract) {
                 continue;
             }
-            let is_change_set = is_change_set_port(contract, pipeline_version);
+            let is_change_set = is_change_set_port(contract);
             let mut resolved = Vec::with_capacity(artifacts.len());
             for artifact in artifacts {
                 if is_change_set && authority.change_set_id.as_deref() == Some(artifact.as_str()) {

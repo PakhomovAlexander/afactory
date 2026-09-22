@@ -1,6 +1,8 @@
 # ADR-0069 — Compile captured Review ports with explicit artifact codecs
 
-**Status:** accepted, 2026-09-12; unreleased compatibility frontend checkpoint.
+**Status:** accepted, 2026-09-12; unreleased compatibility frontend checkpoint; superseded in
+part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the compatibility types for pipeline
+format 1 shorthand Generation outputs. Format 1 no longer loads, and no port is typed by its name.
 
 ## Context
 

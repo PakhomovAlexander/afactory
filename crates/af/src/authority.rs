@@ -482,11 +482,7 @@ pub(super) fn first_attempt_input(
                 (name.as_str(), review_core::contract::OPAQUE_V1)
             }
         };
-        let is_change_set = artifact_type == review_core::contract::CHANGE_SET_V1
-            || (definition.version == 1
-                && artifact_type == review_core::contract::OPAQUE_V1
-                && name == "change_set");
-        if is_change_set {
+        if artifact_type == review_core::contract::CHANGE_SET_V1 {
             let artifact = match &change_set {
                 ChangeSetSource::Resolved(resolved) => {
                     review_runner::ReviewerInputArtifact::from_resolved_change_set(

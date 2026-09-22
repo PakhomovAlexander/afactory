@@ -940,39 +940,6 @@ fn a_definition_round_trips() {
 }
 
 #[test]
-fn a_version_one_pipeline_remains_a_whole_tree_pipeline() {
-    let legacy = MINIMAL
-        .replace("version = 2", "version = 1")
-        .replace("\n[subject]\nkind = \"whole-tree\"\n", "\n");
-    let loaded = Definition::from_toml(&legacy).unwrap().load().unwrap();
-    assert_eq!(loaded.subject_kind(), SubjectKind::WholeTree);
-}
-
-#[test]
-fn a_version_one_generation_keeps_its_name_keyed_output() {
-    let legacy = r#"
-version = 1
-
-[[nodes]]
-id = "generation"
-kind = "generation"
-outputs = ["findings"]
-
-[[nodes]]
-id = "reviewer"
-kind = "reviewer"
-inputs = ["findings"]
-runner = { program = "/bin/true" }
-
-[[edges]]
-from = { node = "generation", port = "findings" }
-to = { node = "reviewer", port = "findings" }
-"#;
-
-    Definition::from_toml(legacy).unwrap().load().unwrap();
-}
-
-#[test]
 fn a_diff_pipeline_cannot_omit_the_change_set_port() {
     let diff = MINIMAL.replace("kind = \"whole-tree\"", "kind = \"diff\"");
     let error = Definition::from_toml(&diff)
@@ -993,13 +960,14 @@ fn subject_format_transitions_are_explicit() {
         .unwrap_err();
     assert!(error.to_string().contains("version 2 requires `[subject]`"));
 
-    let legacy_with_subject = MINIMAL.replace("version = 2", "version = 1");
-    let error = Definition::from_toml(&legacy_with_subject)
-        .unwrap()
-        .load()
-        .map(|_| ())
-        .unwrap_err();
-    assert!(error.to_string().contains("version 1 has no `[subject]`"));
+    // Format 1, with or without `[subject]`, is no longer a pipeline format.
+    for retired in [missing.as_str(), MINIMAL] {
+        let retired = retired.replace("version = 2", "version = 1");
+        assert!(matches!(
+            Definition::from_toml(&retired).unwrap().load(),
+            Err(ConfigError::UnknownVersion(1))
+        ));
+    }
 }
 
 #[test]

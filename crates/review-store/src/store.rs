@@ -1032,7 +1032,7 @@ fn load_authority_plan_id(
         .map_err(|error| StoreError::Conflict(format!("pinned pipeline is not UTF-8: {error}")))?;
     let definition: AuthorityDefinition = toml::from_str(pipeline)
         .map_err(|error| StoreError::Conflict(format!("pinned pipeline is invalid: {error}")))?;
-    if !(1..=5).contains(&definition.version) {
+    if !(2..=5).contains(&definition.version) {
         return Err(StoreError::Conflict(
             "pinned pipeline has no supported version".into(),
         ));

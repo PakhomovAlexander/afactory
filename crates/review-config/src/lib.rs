@@ -51,7 +51,7 @@ impl std::fmt::Display for ConfigError {
             ConfigError::Binding(e) => write!(f, "pipeline definition: {e}"),
             ConfigError::UnknownVersion(v) => write!(
                 f,
-                "pipeline definition: unsupported version {v}; this kernel understands versions 1 through 5"
+                "pipeline definition: unsupported version {v}; this kernel understands versions 2 through 5"
             ),
             ConfigError::Lock(e) => write!(f, "pipeline definition: {e}"),
         }
@@ -667,11 +667,7 @@ fn validate_diff_change_set_wiring(
 fn validate_generation_output_contracts(
     nodes: &[NodeSpec],
     subject: review_core::SubjectKind,
-    version: u32,
 ) -> Result<(), ConfigError> {
-    if version == 1 {
-        return Ok(());
-    }
     let mut change_sets = 0_usize;
     for node in nodes
         .iter()
@@ -993,9 +989,9 @@ fn validate_dynamic_wiring(
     Ok(())
 }
 
-/// A port declaration. The string arm keeps v1 pipeline files readable and expands to an
-/// explicit opaque/one/required/any contract. It remains valid for non-Generation nodes;
-/// built-in Generation outputs require the typed arm because execution dispatches by contract.
+/// A port declaration. The string arm is shorthand for an explicit opaque/one/required/any
+/// contract. It is valid only for non-Generation nodes; built-in Generation outputs require the
+/// typed arm because execution dispatches by contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum PortContractSpec {
@@ -1250,8 +1246,8 @@ pub struct Definition {
     /// the authority layer and persisted in CampaignManifest@1.
     #[serde(default)]
     pub check_timeout_seconds: Option<u64>,
-    /// Required by pipeline format v3. Formats v1/v2 permanently retain their legacy local,
-    /// read-only Gate behavior so pinned Campaign replay does not acquire new execution policy.
+    /// Required from pipeline format v3. Format v2 keeps its local, read-only Gate, so a pinned
+    /// v2 Campaign does not acquire new execution policy.
     #[serde(default)]
     pub gate: Option<GateExecutionSpec>,
     pub nodes: Vec<NodeSpec>,
@@ -1267,7 +1263,6 @@ pub struct Definition {
 
 /// A validated definition: the plan, the checks, and the reviewer bindings.
 pub struct Loaded {
-    version: u32,
     subject: SubjectSpec,
     plan: Planned,
     checks: Vec<CheckDefinition>,
@@ -1295,10 +1290,6 @@ pub struct Loaded {
 }
 
 impl Loaded {
-    pub fn version(&self) -> u32 {
-        self.version
-    }
-
     pub fn subject_kind(&self) -> review_core::SubjectKind {
         self.subject.kind
     }
@@ -1522,21 +1513,9 @@ impl Definition {
     ) -> Result<Loaded, ConfigError> {
         let integration = self.integration.clone();
         let (subject, gate) = match (self.version, self.subject, self.gate) {
-            (1, None, None) => (
-                SubjectSpec {
-                    kind: review_core::SubjectKind::WholeTree,
-                },
-                None,
-            ),
-            (1, Some(_), _) => {
+            (2, _, Some(_)) => {
                 return Err(ConfigError::Binding(
-                    "pipeline format version 1 has no `[subject]`; use version 2 to declare it"
-                        .to_string(),
-                ));
-            }
-            (1 | 2, _, Some(_)) => {
-                return Err(ConfigError::Binding(
-                    "pipeline formats 1 and 2 have no `[gate]` Execution Binding; use version 3"
+                    "pipeline format version 2 has no `[gate]` Execution Binding; use version 3"
                         .to_string(),
                 ));
             }
@@ -1639,7 +1618,7 @@ impl Definition {
                 ));
             }
         }
-        validate_generation_output_contracts(&self.nodes, subject.kind, self.version)?;
+        validate_generation_output_contracts(&self.nodes, subject.kind)?;
         validate_disposition_wiring(&self.nodes, &self.edges)?;
         validate_dynamic_wiring(self.version, &self.nodes, &self.edges)?;
         if subject.kind == review_core::SubjectKind::Diff {
@@ -1967,7 +1946,6 @@ impl Definition {
             .filter_map(|node| node.budget.map(|budget| (node.id.clone(), budget.attempt)))
             .collect();
         Ok(Loaded {
-            version: self.version,
             subject,
             plan,
             checks,

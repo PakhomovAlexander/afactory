@@ -98,7 +98,6 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
             round.run_id.clone(),
             manifest,
             round.subject_kind,
-            captured.loaded.version(),
             round.clone(),
         )?;
         domain.configure(&captured.loaded)?;

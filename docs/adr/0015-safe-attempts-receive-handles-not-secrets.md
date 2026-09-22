@@ -5,6 +5,8 @@
 binding and `BrokerOperationCompleted@1` receipts in the Campaign log. A Task Attempt's Broker
 binding and receipts are Task-log evidence: `TaskBrokerTransition@1` names its
 `af/TaskBrokerBinding@1` or an `af/TaskBrokerOperation@1` carrying a `BrokerOperationReceipt@2`.
+Pipeline format 1 no longer loads, so only formats v2 and v3 keep their captured credential
+behavior.
 
 Safe Execution Bindings never place reusable provider or service credential bytes inside an
 executable sandbox. External operations use a non-secret broker handle bound to Campaign, node,

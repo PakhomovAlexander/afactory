@@ -129,11 +129,7 @@ fn port(artifact_type: &str, cardinality: PortCardinality, optional: bool) -> Pi
     }
 }
 
-fn output_codec(
-    version: u32,
-    kind: NodeKind,
-    output: &PortContract,
-) -> Result<ReviewArtifactCodec, String> {
+fn output_codec(kind: NodeKind, output: &PortContract) -> Result<ReviewArtifactCodec, String> {
     use ReviewArtifactCodec::{Envelope, Flat};
     let ty = output.artifact_type.as_str();
     let opaque = ty == contract::OPAQUE_V1;
@@ -147,12 +143,6 @@ fn output_codec(
         NodeKind::Generation => match ty {
             contract::FINDING_SET_V1 => Ok(enveloped()),
             contract::PRIOR_FINDINGS_V1 | contract::CHANGE_SET_V1 => Ok(flat(ty)),
-            contract::OPAQUE_V1 if version == 1 && output.name == "findings" => {
-                Ok(flat(contract::PRIOR_FINDINGS_V1))
-            }
-            contract::OPAQUE_V1 if version == 1 && output.name == "change_set" => {
-                Ok(flat(contract::CHANGE_SET_V1))
-            }
             _ => Err("Review Generation requires a supported explicit output contract".into()),
         },
         NodeKind::Gate if opaque || ty == contract::GATE_DECISION_V1 => {
@@ -178,10 +168,7 @@ fn output_codec(
         }
         NodeKind::Slicer if ty == contract::SLICE_SET_V1 => Ok(enveloped()),
         NodeKind::Scatter if ty == contract::SHARD_SET_V1 => Ok(enveloped()),
-        _ => Err(format!(
-            "Unsupported Review output {}.{} ({ty})",
-            output.name, version
-        )),
+        _ => Err(format!("Unsupported Review output {} ({ty})", output.name)),
     }
 }
 
@@ -290,7 +277,7 @@ pub fn compile_legacy_review(
         let mut outputs = BTreeMap::new();
         for (index, original) in node.outputs.iter().enumerate() {
             let output_name = format!("o{index}");
-            let codec = output_codec(loaded.version(), node.kind, original)?;
+            let codec = output_codec(node.kind, original)?;
             let mut contract = port(
                 codec.artifact_type(),
                 original.cardinality,
