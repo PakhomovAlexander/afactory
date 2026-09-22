@@ -681,7 +681,7 @@ fn review_report_binds_wide_task_charge_and_freezes_its_accounting_prefix() {
         "plan",
         "report",
         "refs",
-        "version",
+        "type",
         "execution",
         "bindings",
         "verdict",
@@ -734,7 +734,8 @@ fn review_report_binds_wide_task_charge_and_freezes_its_accounting_prefix() {
             "refs" => candidate
                 .artifact_refs
                 .retain(|id| id != &report.task_accounting.plan_id),
-            "version" => candidate.event_type = EventType::RunReportV4,
+            // The only other event the Task Review entry point publishes.
+            "type" => candidate.event_type = EventType::TaskReviewResultSelectedV1,
             "execution" => candidate.payload["execution"] = serde_json::json!({"kind":"unbound"}),
             "bindings" => {
                 candidate.payload["execution"]["execution_bindings"][0]["admitted"] =

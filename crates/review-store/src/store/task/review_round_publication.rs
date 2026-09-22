@@ -194,11 +194,6 @@ impl EventStore {
         let mut integrated = None;
         let evidence;
         let (next_round, next_epoch, prior_demand_set_id) = if let Some(terminal) = terminal {
-            if terminal.event_type != EventType::RunReportV6 {
-                return Err(conflict(
-                    "Common Review continuation requires its canonical Task conclusion",
-                ));
-            }
             let report: RunReportPayloadV6 = serde_json::from_value(terminal.payload.clone())?;
             report.validate().map_err(conflict)?;
             if report.task_accounting.task_id != state.task_id

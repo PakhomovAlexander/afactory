@@ -83,7 +83,7 @@ refusal remains tested. Open here, by name:
 
 Pipeline format v3 now routes every root Gate through its explicit Execution Binding. Container
 bindings require a project image pinned by digest. Provider usability and isolation admission are
-recorded durably before `RunReport@4`; either failure stops the Gate before a project command
+recorded durably before `RunReport@6`; either failure stops the Gate before a project command
 runs. A recording runtime asserts that Gate dispatch builds the exact container invocation:
 portable declared environment without the host `PATH`, the caller's numeric UID:GID, and a unique
 reaping name. A timed-out runtime client is followed by bounded `rm -f`; if cleanup cannot be

@@ -387,45 +387,66 @@ fn a_task_captured_after_a_pre_task_restart_of_a_changed_candidate_resumes() {
     );
 }
 
-/// A Round closed by a pre-Task report (`RunReport@3`) is history no GA command writes: the
-/// Campaign is refused by name before preparation, capture or any Provider call.
+/// A Round closed by a pre-Task report (`RunReport@3`, no longer an event type) is history no GA
+/// command writes: the Campaign is refused by name before preparation, capture or any Provider
+/// call.
 #[test]
 fn a_campaign_with_pre_task_executor_history_is_refused() {
+    use sha2::{Digest, Sha256};
     let f = Fixture::new(5712, Some(52767));
     assert!(!f.cli(&["review", "run"], NEW).status.success());
-    let mut store = EventStore::open(Path::new(&f.state).join("events.sqlite")).unwrap();
-    let cas = Cas::open_existing(Path::new(&f.state).join("cas")).unwrap();
+    let events = Path::new(&f.state).join("events.sqlite");
     let campaign = "campaign-admission-cost";
-    let round = store.latest_round_started(campaign).unwrap().unwrap();
-    let report = review_core::RunReportPayloadV3 {
-        outcomes: ["generation", "reviewer", "gather", "ledger"]
-            .into_iter()
-            .map(|node| review_core::RunNodeReportV2 {
-                node: node.into(),
-                outcome: review_core::RunNodeOutcomeV2::Failed {
-                    error: "resource limit reached before dispatch".into(),
-                },
-            })
-            .collect(),
-        blocked_gates: vec![],
-        verdict: review_core::RunVerdictV3::Fail {
-            reason: review_core::RunFailureReasonV3::Exhausted,
-        },
-        spent_tokens: Some(0),
-    };
-    store
-        .append(
-            campaign,
-            &cas,
-            review_store::NewEvent::new(
-                review_core::EventType::RunReportV3,
-                serde_json::to_value(report).unwrap(),
-            )
-            .caused_by(&round.event_id),
+    let round = EventStore::open_read_only(&events)
+        .unwrap()
+        .latest_round_started(campaign)
+        .unwrap()
+        .unwrap();
+    let connection = rusqlite::Connection::open(&events).unwrap();
+    let sequence: i64 = connection
+        .query_row(
+            "SELECT MAX(sequence) + 1 FROM events WHERE run_id = ?1",
+            [campaign],
+            |row| row.get(0),
         )
         .unwrap();
-    let before = store.replay(campaign).unwrap();
-    drop(store);
+    let mut id = Sha256::new();
+    id.update(b"review.kernel/event-id/v1\0");
+    id.update(campaign.as_bytes());
+    id.update(b"\0");
+    id.update(sequence.to_string().as_bytes());
+    let outcomes = ["generation", "reviewer", "gather", "ledger"].map(|node| {
+        json!({
+            "node": node,
+            "outcome": {"kind": "failed", "error": "resource limit reached before dispatch"},
+        })
+    });
+    let report = json!({
+        "outcomes": outcomes,
+        "blocked_gates": [],
+        "verdict": {"kind": "fail", "reason": "exhausted"},
+        "spent_tokens": 0,
+    });
+    connection
+        .execute(
+            "INSERT INTO events (run_id, sequence, event_id, type, occurred_at, causation_id,
+                                 artifact_refs, payload)
+             VALUES (?1, ?2, ?3, 'RunReport@3', '2026-08-16T12:00:00Z', ?4, '[]', ?5)",
+            rusqlite::params![
+                campaign,
+                sequence,
+                &review_core::hex::encode(&id.finalize())[..26],
+                round.event_id,
+                report.to_string(),
+            ],
+        )
+        .unwrap();
+    let count = || -> i64 {
+        connection
+            .query_row("SELECT COUNT(*) FROM events", [], |row| row.get(0))
+            .unwrap()
+    };
+    let before = count();
     for mode in [["review", "run"], ["provider", "doctor"]] {
         let out = f.cli(&mode, NEW);
         assert_eq!(out.status.code(), Some(1));
@@ -437,8 +458,9 @@ fn a_campaign_with_pre_task_executor_history_is_refused() {
             String::from_utf8_lossy(&out.stderr)
         );
     }
-    let store = EventStore::open_read_only(Path::new(&f.state).join("events.sqlite")).unwrap();
-    assert_eq!(store.replay(campaign).unwrap(), before);
+    assert_eq!(count(), before);
+    let cas = Cas::open_existing(Path::new(&f.state).join("cas")).unwrap();
+    let store = EventStore::open_read_only(&events).unwrap();
     assert!(store.task_ids(&cas).unwrap().is_empty());
     assert!(f.calls().is_empty());
 }

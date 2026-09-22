@@ -193,11 +193,6 @@ impl EventStore {
                 "Task Review conclusion changed its captured Round or report",
             ));
         }
-        if event.event_type != review_core::EventType::RunReportV6 {
-            return Err(conflict(
-                "New Task Review conclusions require RunReport@6 accounting",
-            ));
-        }
         let conclusion: review_core::RunReportPayloadV6 =
             serde_json::from_value(event.payload.clone())?;
         conclusion.validate().map_err(conflict)?;

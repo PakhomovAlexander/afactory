@@ -90,7 +90,7 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   `ReviewerExecutionBound@1` binding and `BrokerOperationCompleted@1` receipts in the Campaign log;
   a Task Attempt records its Broker binding and receipts in the Task log.
 - [ADR-0019](0019-report-authority-failures-explicitly.md): the permanent `RunReport@1` and `@2`
-  readers.
+  readers, and `RunReport@3` itself; its `authority_unavailable` reason is part of `RunReport@6`.
 - [ADR-0021](0021-keep-reviewer-result-wire-shape-flat.md): the permanence of `ReviewerResult@1`,
   and the new-version rule for pre-GA reviewer-result shapes.
 - [ADR-0025](0025-require-typed-generation-outputs-in-version-2.md): the untyped port shorthand
@@ -101,7 +101,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0035](0035-address-campaign-state-by-opaque-id.md): the permanent compatibility path for
   label-named Campaign directories.
 - [ADR-0036](0036-resolve-gate-caches-through-machine-local-bounded-policy.md): the permanent
-  `RunReport@1`–`@4` readers and the permanence of pipeline format 1.
+  `RunReport@1`–`@4` readers, the `RunReport@5` event, whose Cache Snapshot receipts
+  `RunReport@6` records as its `cached` execution, and the permanence of pipeline format 1.
 - [ADR-0037](0037-default-campaigns-to-one-round-light-review.md): the explicit `--light` flag;
   light review stays the default.
 - [ADR-0041](0041-make-review-selectors-explicit-and-refuse-empty-diffs.md): the compatibility

@@ -602,9 +602,8 @@ fn frozen_cumulative_reports_are_not_summed_and_late_usage_remains_exact() {
     assert_eq!(attempt.chargeable_tokens.get(), u128::from(u64::MAX));
     assert_eq!(attempt.reserved_tokens.get(), 10);
     let rows = crate::report_rounds(&history.iter().collect::<Vec<_>>(), &BTreeMap::new()).unwrap();
-    assert_eq!(rows[0].task_chargeable_tokens_at_report.unwrap().get(), 7);
-    assert_eq!(rows[1].task_chargeable_tokens_at_report.unwrap().get(), 9);
-    assert_eq!(rows[1].reported_tokens, None);
+    assert_eq!(rows[0].task_chargeable_tokens_at_report.get(), 7);
+    assert_eq!(rows[1].task_chargeable_tokens_at_report.get(), 9);
     assert_eq!(serde_json::to_value(&history).unwrap(), before);
     for markdown in [false, true] {
         let text = render(&report.tasks, markdown);
@@ -838,35 +837,6 @@ fn a_campaign_without_a_task_keeps_the_review_report_1_label() {
     assert_eq!(value["schema"], "af/review-report@1");
     assert!(value.get("task_accounting").is_none());
     assert!(value.get("spend").is_none());
-}
-
-/// RunReport@3-@5 carry a plain `u64` spend, which the Round row reports as `reported_tokens`
-/// rather than as a Task cumulative charge.
-#[test]
-fn a_numeric_run_report_spend_is_shown_as_reported_tokens() {
-    let event = review_core::RunEvent {
-        event_type: review_core::EventType::RunReportV3,
-        payload: serde_json::to_value(review_core::RunReportPayloadV3 {
-            outcomes: vec![review_core::RunNodeReportV2 {
-                node: "reviewer".into(),
-                outcome: review_core::RunNodeOutcomeV2::Completed {
-                    output_artifacts: vec![],
-                },
-            }],
-            blocked_gates: vec![],
-            verdict: review_core::RunVerdictV3::Pass,
-            spent_tokens: Some(9),
-        })
-        .unwrap(),
-        ..event()
-    };
-    let rows = crate::report_rounds(&[&event], &BTreeMap::new()).unwrap();
-    assert_eq!(rows[0].tokens_label(), "reported tokens 9");
-    assert_eq!(rows[0].tokens_cell(), "9");
-    assert_eq!(
-        serde_json::to_value(&rows[0]).unwrap(),
-        json!({"run":1, "verdict":"pass", "reported_tokens":9})
-    );
 }
 
 #[test]

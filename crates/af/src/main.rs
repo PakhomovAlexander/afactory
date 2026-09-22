@@ -25,10 +25,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use review_core::{
-    EventType, RunFailureReasonV3, RunReportPayloadV3, RunReportPayloadV4, RunReportPayloadV5,
-    RunReportPayloadV6, RunVerdictV3, Severity,
-};
+use review_core::{EventType, RunFailureReasonV3, RunReportPayloadV6, RunVerdictV3, Severity};
 use review_pipeline::RunVerdict;
 use review_source_git::Repo;
 use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status, Verdict};
@@ -2547,26 +2544,22 @@ struct ReportRoundView {
     #[serde(skip_serializing_if = "Option::is_none")]
     epoch: Option<u32>,
     verdict: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reported_tokens: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    task_chargeable_tokens_at_report: Option<review_core::task::usage::DecimalU128>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    task_accounting: Option<review_core::TaskReviewAccountingV1>,
+    task_chargeable_tokens_at_report: review_core::task::usage::DecimalU128,
+    task_accounting: review_core::TaskReviewAccountingV1,
 }
 
 impl ReportRoundView {
     fn tokens_label(&self) -> String {
-        self.task_chargeable_tokens_at_report.map_or_else(
-            || format!("reported tokens {}", optional_tokens(self.reported_tokens)),
-            |tokens| format!("Task cumulative charge at report {}", tokens.get()),
+        format!(
+            "Task cumulative charge at report {}",
+            self.task_chargeable_tokens_at_report.get()
         )
     }
 
     fn tokens_cell(&self) -> String {
-        self.task_chargeable_tokens_at_report.map_or_else(
-            || optional_tokens(self.reported_tokens),
-            |tokens| format!("{} (Task cumulative at report)", tokens.get()),
+        format!(
+            "{} (Task cumulative at report)",
+            self.task_chargeable_tokens_at_report.get()
         )
     }
 }
@@ -2766,7 +2759,7 @@ fn read_report_view(
         ledger_round: ledger.round,
         final_verdict: reports
             .last()
-            .map(|event| report_verdict(event))
+            .map(|event| run_report(event).map(|report| render_verdict_v3(report.verdict)))
             .transpose()?,
         rounds,
         task_accounting: task_accounting.tasks,
@@ -2789,20 +2782,14 @@ fn report_rounds(
                 .causation_id
                 .as_deref()
                 .and_then(|causation| round_authority.get(causation));
-            let task_report = (event.event_type == EventType::RunReportV6)
-                .then(|| serde_json::from_value::<RunReportPayloadV6>(event.payload.clone()))
-                .transpose()
-                .map_err(|error| error.to_string())?;
+            let report = run_report(event)?;
             Ok(ReportRoundView {
                 run: index + 1,
                 round: authority.map(|(round, _)| *round),
                 epoch: authority.map(|(_, epoch)| *epoch),
-                verdict: report_verdict(event)?,
-                reported_tokens: event.payload.get("spent_tokens").and_then(|v| v.as_u64()),
-                task_chargeable_tokens_at_report: task_report
-                    .as_ref()
-                    .map(|report| report.spent_tokens),
-                task_accounting: task_report.map(|report| report.task_accounting),
+                verdict: render_verdict_v3(report.verdict),
+                task_chargeable_tokens_at_report: report.spent_tokens,
+                task_accounting: report.task_accounting,
             })
         })
         .collect()
@@ -3082,10 +3069,6 @@ fn transition_label(kind: review_store::ledger::TransitionKind) -> String {
     }
 }
 
-fn optional_tokens(tokens: Option<u64>) -> String {
-    tokens.map_or_else(|| "-".to_string(), |tokens| tokens.to_string())
-}
-
 fn optional_number(number: Option<u32>) -> String {
     number.map_or_else(|| "-".to_string(), |number| number.to_string())
 }
@@ -3108,30 +3091,11 @@ fn one_line(value: &str) -> String {
     value.lines().collect::<Vec<_>>().join(" ")
 }
 
-fn report_verdict(event: &review_core::RunEvent) -> Result<String, String> {
-    match event.event_type {
-        EventType::RunReportV3 => {
-            let report: RunReportPayloadV3 =
-                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(render_verdict_v3(report.verdict))
-        }
-        EventType::RunReportV4 => {
-            let report: RunReportPayloadV4 =
-                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(render_verdict_v3(report.verdict))
-        }
-        EventType::RunReportV5 => {
-            let report: RunReportPayloadV5 =
-                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(render_verdict_v3(report.verdict))
-        }
-        EventType::RunReportV6 => {
-            let report: RunReportPayloadV6 =
-                serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())?;
-            Ok(render_verdict_v3(report.verdict))
-        }
-        _ => Err(format!("{} is not a run report", event.event_type)),
+fn run_report(event: &review_core::RunEvent) -> Result<RunReportPayloadV6, String> {
+    if !event.event_type.is_run_report() {
+        return Err(format!("{} is not a run report", event.event_type));
     }
+    serde_json::from_value(event.payload.clone()).map_err(|e| e.to_string())
 }
 
 fn render_verdict_v3(verdict: RunVerdictV3) -> String {
@@ -3537,35 +3501,6 @@ fn ledger_node_id(round_event: &review_core::RunEvent, cas: &Cas) -> Result<Stri
     Ok(node.id.clone())
 }
 
-fn run_report_outcomes(
-    event: &review_core::RunEvent,
-) -> Result<Vec<review_core::RunNodeReportV2>, String> {
-    let outcomes = match event.event_type {
-        EventType::RunReportV3 => {
-            serde_json::from_value::<RunReportPayloadV3>(event.payload.clone())
-                .map_err(|error| error.to_string())?
-                .outcomes
-        }
-        EventType::RunReportV4 => {
-            serde_json::from_value::<RunReportPayloadV4>(event.payload.clone())
-                .map_err(|error| error.to_string())?
-                .outcomes
-        }
-        EventType::RunReportV5 => {
-            serde_json::from_value::<RunReportPayloadV5>(event.payload.clone())
-                .map_err(|error| error.to_string())?
-                .outcomes
-        }
-        EventType::RunReportV6 => {
-            serde_json::from_value::<RunReportPayloadV6>(event.payload.clone())
-                .map_err(|error| error.to_string())?
-                .outcomes
-        }
-        _ => return Err(format!("{} is not a Run Report", event.event_type)),
-    };
-    Ok(outcomes)
-}
-
 fn latest_round_evidence(
     events: &[review_core::RunEvent],
     cas: &Cas,
@@ -3625,7 +3560,7 @@ fn latest_round_evidence(
     let Some(report) = report else {
         return Ok(None);
     };
-    let outcomes = run_report_outcomes(report)?;
+    let outcomes = run_report(report)?.outcomes;
     let outcome = outcomes
         .iter()
         .find(|outcome| outcome.node == ledger_node_id)

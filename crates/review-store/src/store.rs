@@ -1217,18 +1217,6 @@ fn typed_json_artifacts(
                 }
                 continue;
             }
-            EventType::RunReportV5 => {
-                let report: review_core::RunReportPayloadV5 =
-                    serde_json::from_value(event.payload.clone())?;
-                for snapshot in report.cache_snapshots {
-                    insert_artifact_type(
-                        &mut artifacts,
-                        snapshot.source_digest,
-                        review_core::contract::CACHE_MANIFEST_V1.into(),
-                    )?;
-                }
-                continue;
-            }
             EventType::SliceSetAcceptedV1 => {
                 let payload: review_core::SliceSetAcceptedPayloadV1 =
                     serde_json::from_value(event.payload.clone())?;
@@ -1758,84 +1746,24 @@ fn is_digest(value: &str) -> bool {
         .is_some_and(|hex| hex.len() == 64 && hex.bytes().all(|byte| byte.is_ascii_hexdigit()))
 }
 
-fn task_report_execution(payload: &Value) -> Result<(EventType, Value), StoreError> {
+/// A RunReport@6 payload that satisfies its own contract.
+fn task_report(payload: &Value) -> Result<review_core::RunReportPayloadV6, StoreError> {
     let report: review_core::RunReportPayloadV6 = serde_json::from_value(payload.clone())?;
     report.validate().map_err(StoreError::Conflict)?;
-    let mut facts = serde_json::json!({"outcomes": report.outcomes,
-        "blocked_gates": report.blocked_gates, "verdict": report.verdict});
-    let event_type = match report.execution {
-        review_core::RunReportExecutionV6::Unbound {} => EventType::RunReportV3,
-        review_core::RunReportExecutionV6::Bound { execution_bindings } => {
-            facts["execution_bindings"] = serde_json::to_value(execution_bindings)?;
-            EventType::RunReportV4
-        }
-        review_core::RunReportExecutionV6::Cached {
-            execution_bindings,
-            cache_snapshots,
-            cache_failures,
-        } => {
-            facts["execution_bindings"] = serde_json::to_value(execution_bindings)?;
-            facts["cache_snapshots"] = serde_json::to_value(cache_snapshots)?;
-            facts["cache_failures"] = serde_json::to_value(cache_failures)?;
-            EventType::RunReportV5
-        }
-    };
-    Ok((event_type, facts))
-}
-
-fn report_outcomes(
-    event_type: EventType,
-    payload: &Value,
-) -> Result<Vec<review_core::RunNodeReportV2>, StoreError> {
-    match event_type {
-        EventType::RunReportV3 => Ok(serde_json::from_value::<review_core::RunReportPayloadV3>(
-            payload.clone(),
-        )?
-        .outcomes),
-        EventType::RunReportV4 => Ok(serde_json::from_value::<review_core::RunReportPayloadV4>(
-            payload.clone(),
-        )?
-        .outcomes),
-        EventType::RunReportV5 => Ok(serde_json::from_value::<review_core::RunReportPayloadV5>(
-            payload.clone(),
-        )?
-        .outcomes),
-        EventType::RunReportV6 => Ok(serde_json::from_value::<review_core::RunReportPayloadV6>(
-            payload.clone(),
-        )?
-        .outcomes),
-        _ => Err(StoreError::Conflict(format!(
-            "{event_type} has no structural run-report outcomes"
-        ))),
-    }
+    Ok(report)
 }
 
 fn validate_report_plan(
     plan: &AuthorityPlan,
-    event_type: EventType,
-    payload: &Value,
+    report: &review_core::RunReportPayloadV6,
 ) -> Result<(), StoreError> {
-    if event_type == EventType::RunReportV6 {
-        let (kind, facts) = task_report_execution(payload)?;
-        let incomplete = facts["verdict"]["kind"] == "incomplete";
-        return validate_report_plan_facts(plan, kind, &facts, incomplete);
-    }
-    validate_report_plan_facts(plan, event_type, payload, false)
-}
-
-fn validate_report_plan_facts(
-    plan: &AuthorityPlan,
-    event_type: EventType,
-    payload: &Value,
-    incomplete_task: bool,
-) -> Result<(), StoreError> {
-    let outcomes = report_outcomes(event_type, payload)?;
+    let incomplete = matches!(report.verdict, review_core::RunVerdictV3::Incomplete { .. });
     let required_gates: std::collections::BTreeSet<String> = plan
         .gate_nodes
         .iter()
         .filter(|node| {
-            !incomplete_task
-                || outcomes.iter().any(|entry| {
+            !incomplete
+                || report.outcomes.iter().any(|entry| {
                     &entry.node == *node
                         && matches!(
                             entry.outcome,
@@ -1847,64 +1775,67 @@ fn validate_report_plan_facts(
         .collect();
     let expected: std::collections::BTreeSet<&str> =
         plan.nodes.keys().map(String::as_str).collect();
-    let actual: std::collections::BTreeSet<&str> = outcomes
+    let actual: std::collections::BTreeSet<&str> = report
+        .outcomes
         .iter()
         .map(|outcome| outcome.node.as_str())
         .collect();
-    if expected != actual || actual.len() != outcomes.len() {
-        return Err(StoreError::Conflict(format!(
-            "{event_type} does not cover exactly the pinned Campaign plan"
-        )));
+    if expected != actual || actual.len() != report.outcomes.len() {
+        return Err(StoreError::Conflict(
+            "RunReport@6 does not cover exactly the pinned Campaign plan".into(),
+        ));
     }
-    let reports_bindings = matches!(event_type, EventType::RunReportV4 | EventType::RunReportV5);
+    let reports_bindings = !matches!(
+        report.execution,
+        review_core::RunReportExecutionV6::Unbound {}
+    );
     if reports_bindings != plan.gate_bound {
-        return Err(StoreError::Conflict(format!(
-            "{event_type} does not match the pinned pipeline's Gate Execution Binding version"
-        )));
+        return Err(StoreError::Conflict(
+            "RunReport@6 does not match the pinned pipeline's Gate Execution Binding version"
+                .into(),
+        ));
     }
-    let reports_caches = event_type == EventType::RunReportV5;
-    if reports_caches == plan.cache_kinds.is_empty() {
-        return Err(StoreError::Conflict(format!(
-            "{event_type} does not match the pinned pipeline's Cache Snapshot authority"
-        )));
+    let caches = match &report.execution {
+        review_core::RunReportExecutionV6::Cached {
+            cache_snapshots,
+            cache_failures,
+            ..
+        } => Some((cache_snapshots, cache_failures)),
+        _ => None,
+    };
+    if caches.is_some() == plan.cache_kinds.is_empty() {
+        return Err(StoreError::Conflict(
+            "RunReport@6 does not match the pinned pipeline's Cache Snapshot authority".into(),
+        ));
     }
     if reports_bindings {
-        let bindings = match event_type {
-            EventType::RunReportV4 => {
-                serde_json::from_value::<review_core::RunReportPayloadV4>(payload.clone())?
-                    .execution_bindings
-            }
-            EventType::RunReportV5 => {
-                serde_json::from_value::<review_core::RunReportPayloadV5>(payload.clone())?
-                    .execution_bindings
-            }
-            _ => unreachable!("reports_bindings accepted only RunReport@4/@5"),
-        };
-        let binding_nodes: std::collections::BTreeSet<String> =
-            bindings.into_iter().map(|binding| binding.node).collect();
+        let binding_nodes: std::collections::BTreeSet<String> = report
+            .execution
+            .bindings()
+            .iter()
+            .map(|binding| binding.node.clone())
+            .collect();
         if !required_gates.is_subset(&binding_nodes) || !binding_nodes.is_subset(&plan.gate_nodes) {
             return Err(StoreError::Conflict(
-                "RunReport@4 does not cover exactly the pinned Gate nodes".into(),
+                "RunReport@6 does not cover exactly the pinned Gate nodes".into(),
             ));
         }
     }
-    if event_type == EventType::RunReportV5 {
-        let report: review_core::RunReportPayloadV5 = serde_json::from_value(payload.clone())?;
-        let actual: std::collections::BTreeSet<(String, String)> = report
-            .cache_snapshots
-            .into_iter()
-            .map(|snapshot| {
-                let kind = match snapshot.kind {
+    if let Some((cache_snapshots, cache_failures)) = caches {
+        let actual: std::collections::BTreeSet<(String, String)> = cache_snapshots
+            .iter()
+            .map(|snapshot| (snapshot.node.clone(), snapshot.kind))
+            .chain(
+                cache_failures
+                    .iter()
+                    .map(|failure| (failure.node.clone(), failure.kind)),
+            )
+            .map(|(node, kind)| {
+                let kind = match kind {
                     review_core::RunCacheKindV5::Cargo => "cargo",
                 };
-                (snapshot.node, kind.to_string())
+                (node, kind.to_string())
             })
-            .chain(report.cache_failures.into_iter().map(|failure| {
-                let kind = match failure.kind {
-                    review_core::RunCacheKindV5::Cargo => "cargo",
-                };
-                (failure.node, kind.to_string())
-            }))
             .collect();
         let expected: std::collections::BTreeSet<(String, String)> = plan
             .gate_nodes
@@ -1922,7 +1853,7 @@ fn validate_report_plan_facts(
             .collect();
         if !required.is_subset(&actual) || !actual.is_subset(&expected) {
             return Err(StoreError::Conflict(
-                "RunReport@5 does not cover exactly the pinned Gate cache requests".into(),
+                "RunReport@6 does not cover exactly the pinned Gate cache requests".into(),
             ));
         }
     }
@@ -1933,27 +1864,11 @@ fn validate_report_gate_bindings(
     tx: &rusqlite::Transaction<'_>,
     run_id: &str,
     round_event_id: &str,
-    event_type: EventType,
-    payload: &Value,
+    bindings: &[review_core::RunExecutionBindingV4],
 ) -> Result<(), StoreError> {
-    let bindings = match event_type {
-        EventType::RunReportV4 => {
-            serde_json::from_value::<review_core::RunReportPayloadV4>(payload.clone())?
-                .execution_bindings
-        }
-        EventType::RunReportV5 => {
-            serde_json::from_value::<review_core::RunReportPayloadV5>(payload.clone())?
-                .execution_bindings
-        }
-        _ => {
-            return Err(StoreError::Conflict(format!(
-                "{event_type} has no Gate Execution Bindings"
-            )));
-        }
-    };
     let reported: std::collections::BTreeMap<_, _> = bindings
-        .into_iter()
-        .map(|binding| (binding.node.clone(), binding))
+        .iter()
+        .map(|binding| (binding.node.clone(), binding.clone()))
         .collect();
     let mut statement = tx.prepare(
         "SELECT node_id, payload FROM events
@@ -1975,9 +1890,9 @@ fn validate_report_gate_bindings(
         durable.insert(node, binding);
     }
     if durable != reported {
-        return Err(StoreError::Conflict(format!(
-            "{event_type} bindings differ from the durable Gate execution facts"
-        )));
+        return Err(StoreError::Conflict(
+            "RunReport@6 bindings differ from the durable Gate execution facts".into(),
+        ));
     }
     Ok(())
 }
@@ -1986,26 +1901,27 @@ fn validate_report_cache_snapshots(
     tx: &rusqlite::Transaction<'_>,
     run_id: &str,
     round_event_id: &str,
-    payload: &Value,
+    (cache_snapshots, cache_failures): (
+        &[review_core::RunCacheSnapshotV5],
+        &[review_core::RunCacheFailureV5],
+    ),
     artifact_refs: &[String],
     prepared: &PreparedArtifacts,
 ) -> Result<(), StoreError> {
-    let report: review_core::RunReportPayloadV5 = serde_json::from_value(payload.clone())?;
-    let expected_refs: std::collections::BTreeSet<_> = report
-        .cache_snapshots
+    let expected_refs: std::collections::BTreeSet<_> = cache_snapshots
         .iter()
         .map(|snapshot| snapshot.source_digest.clone())
         .collect();
     let reported_refs: std::collections::BTreeSet<_> = artifact_refs.iter().cloned().collect();
     if artifact_refs.len() != reported_refs.len() || !expected_refs.is_subset(&reported_refs) {
         return Err(StoreError::Conflict(
-            "RunReport@5 must reference each successful Cache Snapshot manifest exactly once"
+            "RunReport@6 must reference each successful Cache Snapshot manifest exactly once"
                 .into(),
         ));
     }
-    for snapshot in &report.cache_snapshots {
+    for snapshot in cache_snapshots {
         let manifest = prepared.json.get(&snapshot.source_digest).ok_or_else(|| {
-            StoreError::Conflict("RunReport@5 Cache Snapshot manifest was not prepared".into())
+            StoreError::Conflict("RunReport@6 Cache Snapshot manifest was not prepared".into())
         })?;
         let manifest: review_core::CacheManifestV1 = serde_json::from_value(manifest.clone())?;
         manifest.validate().map_err(StoreError::Conflict)?;
@@ -2014,19 +1930,17 @@ fn validate_report_cache_snapshots(
             || manifest.bytes() != snapshot.bytes
         {
             return Err(StoreError::Conflict(
-                "RunReport@5 Cache Snapshot receipt contradicts CacheManifest@1".into(),
+                "RunReport@6 Cache Snapshot receipt contradicts CacheManifest@1".into(),
             ));
         }
     }
-    let failed: std::collections::BTreeSet<_> = report
-        .cache_failures
+    let failed: std::collections::BTreeSet<_> = cache_failures
         .iter()
         .map(|failure| (failure.node.clone(), failure.kind))
         .collect();
-    let reported: std::collections::BTreeMap<_, _> = report
-        .cache_snapshots
-        .into_iter()
-        .map(|snapshot| ((snapshot.node.clone(), snapshot.kind), snapshot))
+    let reported: std::collections::BTreeMap<_, _> = cache_snapshots
+        .iter()
+        .map(|snapshot| ((snapshot.node.clone(), snapshot.kind), snapshot.clone()))
         .collect();
     let mut statement = tx.prepare(
         "SELECT node_id, payload FROM events
@@ -2051,7 +1965,7 @@ fn validate_report_cache_snapshots(
     }
     if durable != reported {
         return Err(StoreError::Conflict(
-            "RunReport@5 Cache Snapshots differ from the durable materialization facts".into(),
+            "RunReport@6 Cache Snapshots differ from the durable materialization facts".into(),
         ));
     }
     Ok(())
@@ -2948,58 +2862,37 @@ fn validate_campaign_transition(
                         _ => {}
                     }
                     if event_type.is_run_report() {
-                        let closes = report_closes(event_type, &event.payload)?;
-                        // RunReport@5 is the first incomplete report that carries new execution
-                        // authority. Validate its plan, binding, cache, and receipt claims even
-                        // when it keeps the Round open; frozen report versions retain their
-                        // existing closing-report admission behavior.
-                        if closes
-                            || matches!(event_type, EventType::RunReportV5 | EventType::RunReportV6)
-                        {
-                            if let Some(plan) = plan {
-                                validate_report_plan(plan, event_type, &event.payload)?;
+                        // Even an incomplete report that keeps the Round open carries execution
+                        // authority: its plan, binding, cache and receipt claims are validated.
+                        let report = task_report(&event.payload)?;
+                        if let Some(plan) = plan {
+                            validate_report_plan(plan, &report)?;
+                        }
+                        let bindings = report.execution.bindings();
+                        match &report.execution {
+                            review_core::RunReportExecutionV6::Unbound {} => {}
+                            review_core::RunReportExecutionV6::Bound { .. } => {
+                                validate_report_gate_bindings(tx, run_id, active_id, bindings)?;
                             }
-                            let task_execution = if event_type == EventType::RunReportV6 {
-                                Some(task_report_execution(&event.payload)?)
-                            } else {
-                                None
-                            };
-                            let (execution_type, execution_payload) = task_execution
-                                .as_ref()
-                                .map_or((event_type, &event.payload), |(kind, facts)| {
-                                    (*kind, facts)
-                                });
-                            if matches!(
-                                execution_type,
-                                EventType::RunReportV4 | EventType::RunReportV5
-                            ) {
-                                validate_report_gate_bindings(
-                                    tx,
-                                    run_id,
-                                    active_id,
-                                    execution_type,
-                                    execution_payload,
-                                )?;
-                            }
-                            if execution_type == EventType::RunReportV5 {
+                            review_core::RunReportExecutionV6::Cached {
+                                cache_snapshots,
+                                cache_failures,
+                                ..
+                            } => {
+                                validate_report_gate_bindings(tx, run_id, active_id, bindings)?;
                                 validate_report_cache_snapshots(
                                     tx,
                                     run_id,
                                     active_id,
-                                    execution_payload,
+                                    (cache_snapshots, cache_failures),
                                     &event.artifact_refs,
                                     prepared,
                                 )?;
                             }
-                            validate_report_receipts(
-                                tx,
-                                cas,
-                                run_id,
-                                active_id,
-                                event_type,
-                                &event.payload,
-                            )?;
                         }
+                        validate_report_receipts(tx, cas, run_id, active_id, &report.outcomes)?;
+                        let closes =
+                            !matches!(report.verdict, review_core::RunVerdictV3::Incomplete { .. });
                         if closes {
                             if terminal {
                                 return Err(StoreError::Conflict(
@@ -4184,9 +4077,8 @@ fn latest_round(
         .transpose()
 }
 
-const ROUND_TERMINAL_REPORT_SQL: &str = "SELECT type, payload FROM events
-     WHERE run_id = ?1 AND causation_id = ?2
-       AND type >= 'RunReport@' AND type < 'RunReportA'
+const ROUND_TERMINAL_REPORT_SQL: &str = "SELECT payload FROM events
+     WHERE run_id = ?1 AND causation_id = ?2 AND type = 'RunReport@6'
      ORDER BY sequence";
 
 fn round_has_terminal_report(
@@ -4196,16 +4088,10 @@ fn round_has_terminal_report(
 ) -> Result<bool, StoreError> {
     let mut statement = tx.prepare(ROUND_TERMINAL_REPORT_SQL)?;
     let rows = statement.query_map(params![run_id, round_event_id], |row| {
-        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        row.get::<_, String>(0)
     })?;
-    for row in rows {
-        let (event_type, payload) = row?;
-        let event_type = event_type
-            .parse::<EventType>()
-            .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        if event_type.is_run_report()
-            && report_closes(event_type, &serde_json::from_str(&payload)?)?
-        {
+    for payload in rows {
+        if report_closes(EventType::RunReportV6, &serde_json::from_str(&payload?)?)? {
             return Ok(true);
         }
     }
@@ -4724,10 +4610,8 @@ fn validate_report_receipts(
     cas: &Cas,
     run_id: &str,
     round_event_id: &str,
-    event_type: EventType,
-    payload: &Value,
+    outcomes: &[review_core::RunNodeReportV2],
 ) -> Result<(), StoreError> {
-    let outcomes = report_outcomes(event_type, payload)?;
     let reported_outputs: std::collections::BTreeMap<String, Vec<String>> = outcomes
         .iter()
         .filter_map(|outcome| match &outcome.outcome {
@@ -4752,20 +4636,18 @@ fn validate_report_receipts(
         let node =
             node.ok_or_else(|| StoreError::Conflict("NodeOutputReceipt@1 has no node ID".into()))?;
         if node != receipt.node || receipts.insert(node, receipt).is_some() {
-            return Err(StoreError::Conflict(format!(
-                "{event_type} has ambiguous durable output receipts"
-            )));
+            return Err(StoreError::Conflict(
+                "RunReport@6 has ambiguous durable output receipts".into(),
+            ));
         }
     }
     for outcome in outcomes {
-        if let review_core::RunNodeOutcomeV2::Completed {
-            mut output_artifacts,
-        } = outcome.outcome
-        {
+        if let review_core::RunNodeOutcomeV2::Completed { output_artifacts } = &outcome.outcome {
+            let mut output_artifacts = output_artifacts.clone();
             output_artifacts.sort();
             let receipt = receipts.remove(&outcome.node).ok_or_else(|| {
                 StoreError::Conflict(format!(
-                    "{event_type} completed node '{}' without a durable receipt",
+                    "RunReport@6 completed node '{}' without a durable receipt",
                     outcome.node,
                 ))
             })?;
@@ -4777,13 +4659,13 @@ fn validate_report_receipts(
             durable.sort();
             if durable != output_artifacts {
                 return Err(StoreError::Conflict(format!(
-                    "{event_type} contradicts the receipt for node '{}'",
+                    "RunReport@6 contradicts the receipt for node '{}'",
                     outcome.node,
                 )));
             }
         } else if receipts.contains_key(&outcome.node) {
             return Err(StoreError::Conflict(format!(
-                "{event_type} suppresses or fails node '{}' after it published a receipt",
+                "RunReport@6 suppresses or fails node '{}' after it published a receipt",
                 outcome.node,
             )));
         }
@@ -4798,7 +4680,7 @@ fn validate_report_receipts(
             let authority = dynamic_node_authority(tx, cas, run_id, round_event_id, &plan, &node)?
                 .ok_or_else(|| {
                     StoreError::Conflict(format!(
-                        "{event_type} omits static node `{node}` with a durable output receipt"
+                        "RunReport@6 omits static node `{node}` with a durable output receipt"
                     ))
                 })?;
             let owner = node
@@ -5030,8 +4912,8 @@ mod tests {
         assert!(
             details
                 .iter()
-                .any(|detail| detail.contains("type>? AND type<?")),
-            "query plan did not seek the report type range: {details:?}"
+                .any(|detail| detail.contains("causation_id=? AND type=?")),
+            "query plan did not seek the report type: {details:?}"
         );
     }
 

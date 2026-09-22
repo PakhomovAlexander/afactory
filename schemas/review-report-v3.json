@@ -26,18 +26,12 @@
     "decimalU128": {"$ref": "urn:af:schema:task-review-accounting:1#/$defs/decimalU128"},
     "round": {
       "type": "object", "additionalProperties": false,
-      "required": ["run", "verdict"],
-      "dependentRequired": {
-        "task_chargeable_tokens_at_report": ["task_accounting"],
-        "task_accounting": ["task_chargeable_tokens_at_report"]
-      },
-      "not": {"required": ["reported_tokens", "task_chargeable_tokens_at_report"]},
+      "required": ["run", "verdict", "task_chargeable_tokens_at_report", "task_accounting"],
       "properties": {
         "run": {"$ref": "#/$defs/count"},
         "round": {"$ref": "#/$defs/count"},
         "epoch": {"$ref": "#/$defs/count"},
         "verdict": {"type": "string"},
-        "reported_tokens": {"$ref": "#/$defs/count"},
         "task_chargeable_tokens_at_report": {"$ref": "#/$defs/decimalU128"},
         "task_accounting": {"$ref": "urn:af:schema:task-review-accounting:1"}
       }

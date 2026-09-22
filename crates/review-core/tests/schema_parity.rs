@@ -21,16 +21,16 @@ use review_core::{
     ReviewerPackageV1, RunCacheFailureReasonV5, RunCacheFailureV5, RunCacheKindV5,
     RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
     RunExecutionProviderV4, RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2,
-    RunReportPayloadV3, RunReportPayloadV4, RunReportPayloadV5, RunSandboxModeV4,
-    RunSuppressionReasonV2, RunVerdictV3, SemanticClosureV1, SemanticDispositionV1, ShardOutcomeV1,
-    ShardReceiptV1, ShardSetV1, SliceCoverageV1, SliceSetV1, SnapshotAffinity, SourceSnapshot,
-    SubjectKind, SubjectV1,
+    RunReportExecutionV6, RunReportPayloadV6, RunSandboxModeV4, RunSuppressionReasonV2,
+    RunVerdictV3, SemanticClosureV1, SemanticDispositionV1, ShardOutcomeV1, ShardReceiptV1,
+    ShardSetV1, SliceCoverageV1, SliceSetV1, SnapshotAffinity, SourceSnapshot, SubjectKind,
+    SubjectV1, TaskReviewAccountingV1,
     finding::{ClaimTargetKind, Relation, RelationKind, RelationTarget},
     snapshot::{Capture, DirtyBoundary, Submodule, Vcs},
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 186] = [
+const SCHEMAS: [&str; 183] = [
     "session-snapshot-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -209,9 +209,6 @@ const SCHEMAS: [&str; 186] = [
     "round-input-superseded-v1.json",
     "round-started-v1.json",
     "run-event-v1.json",
-    "run-report-v3.json",
-    "run-report-v4.json",
-    "run-report-v5.json",
     "semantic-closure-v1.json",
     "shard-set-v1.json",
     "slice-set-v1.json",
@@ -631,7 +628,6 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     .chain([
                         "finding-report-v1.json",
                         "reviewer-result-v1.json",
-                        "run-report-v5.json",
                         "task-contracts-v1.json",
                         "task-token-usage-v1.json",
                         "task-token-usage-v2.json",
@@ -1595,10 +1591,59 @@ fn bootstrap_event_payloads_are_semantically_validated() {
     assert_valid("run-event-v1.json", &serde_json::to_value(event).unwrap());
 }
 
+/// A structurally valid RunReport@6 around `outcomes`, `verdict` and `execution`.
+fn run_report(
+    outcomes: Vec<RunNodeReportV2>,
+    blocked_gates: Vec<String>,
+    verdict: RunVerdictV3,
+    execution: RunReportExecutionV6,
+) -> RunReportPayloadV6 {
+    let id = format!("sha256:{}", "a".repeat(64));
+    RunReportPayloadV6 {
+        outcomes,
+        blocked_gates,
+        verdict,
+        spent_tokens: 42u128.into(),
+        task_accounting: TaskReviewAccountingV1 {
+            task_id: "review-task".into(),
+            task_revision_id: id.clone(),
+            plan_id: id.clone(),
+            task_report_id: id,
+            through_sequence: 43,
+        },
+        execution,
+    }
+}
+
 #[test]
-fn run_reports_are_structural_and_every_report_version_remains_readable() {
-    let report = RunReportPayloadV3 {
-        outcomes: vec![
+fn run_reports_are_structural_and_close_a_round_only_with_a_terminal_verdict() {
+    let closes = |report: &RunReportPayloadV6| {
+        report.validate().unwrap();
+        let value = serde_json::to_value(report).unwrap();
+        assert_valid("run-report-v6.json", &value);
+        assert_eq!(
+            &serde_json::from_value::<RunReportPayloadV6>(value.clone()).unwrap(),
+            report
+        );
+        review_core::run_report_closes_round(&RunEvent {
+            event_id: "01jd8m4qz9k7v3n2p6r8t0w1xy".into(),
+            run_id: "01jd8m4qz9k7v3n2p6r8t0w1xz".into(),
+            sequence: 1,
+            event_type: EventType::RunReportV6,
+            occurred_at: "2026-08-16T12:00:00Z".into(),
+            node_id: None,
+            attempt_id: None,
+            causation_id: None,
+            correlation_id: None,
+            artifact_refs: vec![],
+            payload: value,
+        })
+        .unwrap()
+        .unwrap()
+    };
+    // A blocked Gate suppresses what it guards, and the Round stays open.
+    let blocked = run_report(
+        vec![
             RunNodeReportV2 {
                 node: "architecture".into(),
                 outcome: RunNodeOutcomeV2::Suppressed {
@@ -1612,171 +1657,119 @@ fn run_reports_are_structural_and_every_report_version_remains_readable() {
                 },
             },
         ],
-        blocked_gates: vec!["gate".into()],
-        verdict: RunVerdictV3::Incomplete {
+        vec!["gate".into()],
+        RunVerdictV3::Incomplete {
             missing_nodes: vec![MissingNodeV2 {
                 node: "architecture".into(),
                 reason: "gate blocked".into(),
             }],
         },
-        spent_tokens: Some(42),
-    };
-    report.validate().unwrap();
-    let value = serde_json::to_value(&report).unwrap();
-    assert_valid("run-report-v3.json", &value);
-    assert_eq!(
-        serde_json::from_value::<RunReportPayloadV3>(value).unwrap(),
-        report
+        RunReportExecutionV6::Unbound {},
     );
-
-    let mut event = RunEvent {
-        event_id: "01jd8m4qz9k7v3n2p6r8t0w1xy".into(),
-        run_id: "01jd8m4qz9k7v3n2p6r8t0w1xz".into(),
-        sequence: 1,
-        event_type: EventType::RunReportV3,
-        occurred_at: "2026-08-16T12:00:00Z".into(),
-        node_id: None,
-        attempt_id: None,
-        causation_id: None,
-        correlation_id: None,
-        artifact_refs: vec![],
-        payload: serde_json::to_value(report).unwrap(),
-    };
-    assert_eq!(
-        review_core::run_report_closes_round(&event).unwrap(),
-        Some(false)
-    );
-
-    event.payload = serde_json::to_value(RunReportPayloadV3 {
-        outcomes: vec![RunNodeReportV2 {
+    assert!(!closes(&blocked));
+    let exhausted = run_report(
+        vec![RunNodeReportV2 {
             node: "review".into(),
             outcome: RunNodeOutcomeV2::Failed {
                 error: "run budget exhausted".into(),
             },
         }],
-        blocked_gates: vec![],
-        verdict: RunVerdictV3::Fail {
+        vec![],
+        RunVerdictV3::Fail {
             reason: RunFailureReasonV3::Exhausted,
         },
-        spent_tokens: None,
-    })
-    .unwrap();
-    assert_eq!(
-        review_core::run_report_closes_round(&event).unwrap(),
-        Some(true)
+        RunReportExecutionV6::Unbound {},
     );
-
-    let report_v3 = RunReportPayloadV3 {
-        outcomes: vec![RunNodeReportV2 {
-            node: "review".into(),
-            outcome: RunNodeOutcomeV2::Completed {
-                output_artifacts: vec![],
-            },
-        }],
-        blocked_gates: vec![],
-        verdict: RunVerdictV3::Fail {
-            reason: RunFailureReasonV3::AuthorityUnavailable,
-        },
-        spent_tokens: Some(43),
+    assert!(closes(&exhausted));
+    let binding = RunExecutionBindingV4 {
+        node: "review".into(),
+        provider: RunExecutionProviderV4::TrustedLocal,
+        image: None,
+        required_isolation: RunIsolationV4::None,
+        provided_isolation: RunIsolationV4::None,
+        mode: RunSandboxModeV4::EphemeralWrite,
+        admitted: true,
     };
-    let value = serde_json::to_value(&report_v3).unwrap();
-    assert_valid("run-report-v3.json", &value);
-    assert_eq!(
-        serde_json::from_value::<RunReportPayloadV3>(value.clone()).unwrap(),
-        report_v3
-    );
-    event.event_type = EventType::RunReportV3;
-    event.payload = value;
-    assert_eq!(
-        review_core::run_report_closes_round(&event).unwrap(),
-        Some(true)
-    );
-
-    let report_v4 = RunReportPayloadV4 {
-        outcomes: report_v3.outcomes.clone(),
-        blocked_gates: report_v3.blocked_gates.clone(),
-        verdict: report_v3.verdict.clone(),
-        spent_tokens: report_v3.spent_tokens,
-        execution_bindings: vec![RunExecutionBindingV4 {
-            node: "review".into(),
-            provider: RunExecutionProviderV4::TrustedLocal,
-            image: None,
-            required_isolation: RunIsolationV4::None,
-            provided_isolation: RunIsolationV4::None,
-            mode: RunSandboxModeV4::EphemeralWrite,
-            admitted: true,
-        }],
-    };
-    report_v4.validate().unwrap();
-    let value = serde_json::to_value(&report_v4).unwrap();
-    assert_valid("run-report-v4.json", &value);
-    assert_eq!(
-        serde_json::from_value::<RunReportPayloadV4>(value.clone()).unwrap(),
-        report_v4
-    );
-    event.event_type = EventType::RunReportV4;
-    event.payload = value;
-    assert_eq!(
-        review_core::run_report_closes_round(&event).unwrap(),
-        Some(true)
-    );
-
-    let report_v5 = RunReportPayloadV5 {
-        outcomes: report_v4.outcomes.clone(),
-        blocked_gates: report_v4.blocked_gates.clone(),
-        verdict: report_v4.verdict.clone(),
-        spent_tokens: report_v4.spent_tokens,
-        execution_bindings: report_v4.execution_bindings.clone(),
-        cache_snapshots: vec![RunCacheSnapshotV5 {
-            node: "review".into(),
-            kind: RunCacheKindV5::Cargo,
-            source_digest: format!("sha256:{}", "d".repeat(64)),
-            bytes: 42,
-            files: 2,
-            materialization: RunCacheMaterializationV5::Reflink,
-        }],
-        cache_failures: vec![],
-    };
-    report_v5.validate().unwrap();
-    let value = serde_json::to_value(&report_v5).unwrap();
-    assert_valid("run-report-v5.json", &value);
-    assert_eq!(
-        serde_json::from_value::<RunReportPayloadV5>(value.clone()).unwrap(),
-        report_v5
-    );
-    event.event_type = EventType::RunReportV5;
-    event.payload = value;
-    assert_eq!(
-        review_core::run_report_closes_round(&event).unwrap(),
-        Some(true)
-    );
-
-    let mut dishonest_cache = report_v5;
-    dishonest_cache.cache_snapshots[0].node = "missing".into();
-    assert!(dishonest_cache.validate().is_err());
-
-    let mut failed_cache = dishonest_cache;
-    failed_cache.cache_snapshots.clear();
-    failed_cache.cache_failures = vec![RunCacheFailureV5 {
+    let snapshot = RunCacheSnapshotV5 {
         node: "review".into(),
         kind: RunCacheKindV5::Cargo,
-        reason: RunCacheFailureReasonV5::GateSetupFailed,
+        source_digest: format!("sha256:{}", "d".repeat(64)),
+        bytes: 42,
+        files: 2,
+        materialization: RunCacheMaterializationV5::Reflink,
+    };
+    let completed = vec![RunNodeReportV2 {
+        node: "review".into(),
+        outcome: RunNodeOutcomeV2::Completed {
+            output_artifacts: vec![],
+        },
     }];
-    assert!(failed_cache.validate().is_err());
-    failed_cache.outcomes[0].outcome = RunNodeOutcomeV2::Failed {
+    let unavailable = RunVerdictV3::Fail {
+        reason: RunFailureReasonV3::AuthorityUnavailable,
+    };
+    for execution in [
+        RunReportExecutionV6::Unbound {},
+        RunReportExecutionV6::Bound {
+            execution_bindings: vec![binding.clone()],
+        },
+        RunReportExecutionV6::Cached {
+            execution_bindings: vec![binding.clone()],
+            cache_snapshots: vec![snapshot.clone()],
+            cache_failures: vec![],
+        },
+    ] {
+        let report = run_report(completed.clone(), vec![], unavailable.clone(), execution);
+        assert!(closes(&report));
+    }
+
+    let mut dishonest_isolation = binding.clone();
+    dishonest_isolation.provided_isolation = RunIsolationV4::Container;
+    let dishonest = run_report(
+        completed.clone(),
+        vec![],
+        unavailable.clone(),
+        RunReportExecutionV6::Bound {
+            execution_bindings: vec![dishonest_isolation],
+        },
+    );
+    assert!(dishonest.validate().is_err());
+    let dishonest_cache = run_report(
+        completed.clone(),
+        vec![],
+        unavailable.clone(),
+        RunReportExecutionV6::Cached {
+            execution_bindings: vec![binding.clone()],
+            cache_snapshots: vec![RunCacheSnapshotV5 {
+                node: "missing".into(),
+                ..snapshot
+            }],
+            cache_failures: vec![],
+        },
+    );
+    assert!(dishonest_cache.validate().is_err());
+    // A Cache failure fails its Gate: a completed outcome cannot carry one, and the failed
+    // Gate leaves the Round incomplete.
+    let failed_cache = RunReportExecutionV6::Cached {
+        execution_bindings: vec![binding],
+        cache_snapshots: vec![],
+        cache_failures: vec![RunCacheFailureV5 {
+            node: "review".into(),
+            kind: RunCacheKindV5::Cargo,
+            reason: RunCacheFailureReasonV5::GateSetupFailed,
+        }],
+    };
+    let mut failed = run_report(completed, vec![], unavailable, failed_cache);
+    assert!(failed.validate().is_err());
+    failed.outcomes[0].outcome = RunNodeOutcomeV2::Failed {
         error: "provider unavailable".into(),
     };
-    failed_cache.verdict = RunVerdictV3::Incomplete {
+    failed.verdict = RunVerdictV3::Incomplete {
         missing_nodes: vec![MissingNodeV2 {
             node: "review".into(),
             reason: "provider unavailable".into(),
         }],
     };
-    failed_cache.validate().unwrap();
-
-    let mut dishonest = report_v4;
-    dishonest.execution_bindings[0].provided_isolation = RunIsolationV4::Container;
-    assert!(dishonest.validate().is_err());
+    assert!(!closes(&failed));
 }
 
 #[test]
@@ -1875,15 +1868,21 @@ fn node_invocation_and_output_receipt_roundtrip() {
 
 #[test]
 fn event_validation_rejects_semantically_malformed_run_reports() {
+    let report = |outcomes: Value, verdict: Value| {
+        let mut report = serde_json::to_value(run_report(
+            vec![],
+            vec![],
+            RunVerdictV3::Pass,
+            RunReportExecutionV6::Unbound {},
+        ))
+        .unwrap();
+        report["outcomes"] = outcomes;
+        report["verdict"] = verdict;
+        report
+    };
     // Only an exhausted budget may conclude a Round with unresolved nodes; every other terminal
     // verdict, including an authority failure, contradicts a failed or suppressed outcome.
-    let unresolved = |verdict: Value| {
-        json!({
-            "outcomes": [{"node":"reviewer", "outcome":{"kind":"failed", "error":"crashed"}}],
-            "blocked_gates": [],
-            "verdict": verdict
-        })
-    };
+    let unresolved = json!([{"node":"reviewer", "outcome":{"kind":"failed", "error":"crashed"}}]);
     for contradictory in [
         json!({"kind":"pass"}),
         json!({"kind":"fail", "reason":"not_converged"}),
@@ -1891,26 +1890,28 @@ fn event_validation_rejects_semantically_malformed_run_reports() {
     ] {
         assert!(
             review_core::event::validate_event_payload(
-                EventType::RunReportV3,
-                &unresolved(contradictory.clone())
+                EventType::RunReportV6,
+                &report(unresolved.clone(), contradictory.clone())
             )
             .is_err(),
             "{contradictory}"
         );
     }
     review_core::event::validate_event_payload(
-        EventType::RunReportV3,
-        &unresolved(json!({"kind":"fail", "reason":"exhausted"})),
+        EventType::RunReportV6,
+        &report(
+            unresolved.clone(),
+            json!({"kind":"fail", "reason":"exhausted"}),
+        ),
     )
     .unwrap();
 
-    let empty_reason = json!({
-        "outcomes": [{"node":"reviewer", "outcome":{"kind":"failed", "error":"x"}}],
-        "blocked_gates": [],
-        "verdict": {"kind":"incomplete", "missing_nodes":[{"node":"reviewer", "reason":""}]}
-    });
+    let empty_reason = report(
+        unresolved,
+        json!({"kind":"incomplete", "missing_nodes":[{"node":"reviewer", "reason":""}]}),
+    );
     assert!(
-        review_core::event::validate_event_payload(EventType::RunReportV3, &empty_reason).is_err()
+        review_core::event::validate_event_payload(EventType::RunReportV6, &empty_reason).is_err()
     );
 }
 
@@ -3303,7 +3304,6 @@ mod task_usage_observation;
 
 #[test]
 fn task_review_conclusions_preserve_exact_cumulative_charge_and_execution_contracts() {
-    use review_core::{RunReportExecutionV6, RunReportPayloadV6, TaskReviewAccountingV1};
     let id = format!("sha256:{}", "a".repeat(64));
     let accounting = TaskReviewAccountingV1 {
         task_id: "review-task".into(),
@@ -3522,7 +3522,7 @@ fn task_review_conclusions_preserve_exact_cumulative_charge_and_execution_contra
         unknown["execution"][field][0]["unknown"] = json!(true);
         assert_invalid("run-report-v6.json", &unknown, "closed execution entries");
         assert!(!read(unknown));
-        // Cross-entry identities and node relations are semantic Core checks, as in V4/V5.
+        // Cross-entry identities and node relations are semantic Core checks, not schema rules.
         let mut duplicate = value.clone();
         let entry = duplicate["execution"][field][0].clone();
         duplicate["execution"][field]

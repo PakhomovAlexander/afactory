@@ -2,8 +2,7 @@ use review_core::{
     AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1, EventType,
     NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1, PortCardinality,
     ProposalRefusalReasonV1, ProposalRefusedPayloadV1, RoundInputSupersededPayloadV1,
-    RoundStartedPayloadV1, RunNodeOutcomeV2, RunNodeReportV2, RunReportPayloadV3, RunVerdictV3,
-    SnapshotAffinity, SubjectKind, SubjectV1,
+    RoundStartedPayloadV1, SnapshotAffinity, SubjectKind, SubjectV1,
 };
 use review_store::{Cas, EventStore, NewEvent};
 
@@ -368,44 +367,6 @@ fn a_superseded_epoch_cannot_publish_late_output() {
         error
             .to_string()
             .contains("NodeInvocation@1 is not bound to the active Round epoch"),
-        "{error}"
-    );
-}
-
-#[test]
-fn a_terminal_report_requires_matching_output_receipts() {
-    let directory = tempfile::tempdir().unwrap();
-    let cas = Cas::open(directory.path().join("cas")).unwrap();
-    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
-    let ids = authority(&cas, "report");
-    let round = opened_round(&mut store, &cas, "run", &ids);
-    let output = cas.put(b"unreceipted output").unwrap();
-    let report = RunReportPayloadV3 {
-        outcomes: vec![RunNodeReportV2 {
-            node: "reviewer".into(),
-            outcome: RunNodeOutcomeV2::Completed {
-                output_artifacts: vec![output],
-            },
-        }],
-        blocked_gates: vec![],
-        verdict: RunVerdictV3::Pass,
-        spent_tokens: None,
-    };
-
-    let error = store
-        .append(
-            "run",
-            &cas,
-            NewEvent::new(
-                EventType::RunReportV3,
-                serde_json::to_value(report).unwrap(),
-            )
-            .caused_by(round.event_id),
-        )
-        .unwrap_err();
-
-    assert!(
-        error.to_string().contains("without a durable receipt"),
         "{error}"
     );
 }

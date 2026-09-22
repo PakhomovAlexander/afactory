@@ -29,7 +29,7 @@
             "minLength": 1
           },
           "outcome": {
-            "$ref": "urn:review-kernel:schema:run-report:5#/$defs/outcome"
+            "$ref": "#/$defs/outcome"
           }
         }
       }
@@ -43,7 +43,7 @@
       }
     },
     "verdict": {
-      "$ref": "urn:review-kernel:schema:run-report:5#/$defs/verdict"
+      "$ref": "#/$defs/verdict"
     },
     "spent_tokens": {
       "$ref": "urn:af:schema:task-review-accounting:1#/$defs/decimalU128"
@@ -79,7 +79,7 @@
             "execution_bindings": {
               "type": "array",
               "items": {
-                "$ref": "urn:review-kernel:schema:run-report:5#/$defs/execution_binding"
+                "$ref": "#/$defs/execution_binding"
               }
             }
           }
@@ -100,83 +100,19 @@
             "execution_bindings": {
               "type": "array",
               "items": {
-                "$ref": "urn:review-kernel:schema:run-report:5#/$defs/execution_binding"
+                "$ref": "#/$defs/execution_binding"
               }
             },
             "cache_snapshots": {
               "type": "array",
               "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "node",
-                  "kind",
-                  "source_digest",
-                  "bytes",
-                  "files",
-                  "materialization"
-                ],
-                "properties": {
-                  "node": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "kind": {
-                    "const": "cargo"
-                  },
-                  "source_digest": {
-                    "$ref": "urn:review-kernel:schema:run-report:5#/$defs/artifact_id"
-                  },
-                  "bytes": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "maximum": 9007199254740991
-                  },
-                  "files": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "maximum": 9007199254740991
-                  },
-                  "materialization": {
-                    "enum": [
-                      "reflink",
-                      "copy"
-                    ]
-                  }
-                }
+                "$ref": "#/$defs/cache_snapshot"
               }
             },
             "cache_failures": {
               "type": "array",
               "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": [
-                  "node",
-                  "kind",
-                  "reason"
-                ],
-                "properties": {
-                  "node": {
-                    "type": "string",
-                    "minLength": 1
-                  },
-                  "kind": {
-                    "const": "cargo"
-                  },
-                  "reason": {
-                    "enum": [
-                      "gate_setup_failed",
-                      "policy_unavailable",
-                      "source_unavailable",
-                      "unsafe_content",
-                      "limit_exceeded",
-                      "copy_limit_exceeded",
-                      "concurrent_change",
-                      "materialization_failed"
-                    ]
-                  }
-                }
+                "$ref": "#/$defs/cache_failure"
               }
             }
           }
@@ -226,6 +162,261 @@
                 }
               }
             }
+          ]
+        }
+      }
+    }
+  },
+  "$defs": {
+    "artifact_id": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "execution_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "provider",
+        "required_isolation",
+        "provided_isolation",
+        "mode",
+        "admitted"
+      ],
+      "properties": {
+        "node": {
+          "type": "string",
+          "minLength": 1
+        },
+        "provider": {
+          "enum": [
+            "trusted_local",
+            "container"
+          ]
+        },
+        "image": {
+          "type": "string",
+          "pattern": "^[^-\\s].*@sha256:[0-9a-f]{64}$"
+        },
+        "required_isolation": {
+          "enum": [
+            "none",
+            "container"
+          ]
+        },
+        "provided_isolation": {
+          "enum": [
+            "none",
+            "container"
+          ]
+        },
+        "mode": {
+          "const": "ephemeral-write"
+        },
+        "admitted": {
+          "type": "boolean"
+        }
+      }
+    },
+    "outcome": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "output_artifacts"
+          ],
+          "properties": {
+            "kind": {
+              "const": "completed"
+            },
+            "output_artifacts": {
+              "type": "array",
+              "items": {
+                "$ref": "#/$defs/artifact_id"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "error"
+          ],
+          "properties": {
+            "kind": {
+              "const": "failed"
+            },
+            "error": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "properties": {
+            "kind": {
+              "const": "suppressed"
+            },
+            "reason": {
+              "enum": [
+                "gate_blocked",
+                "upstream_missing"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "missing_node": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "reason"
+      ],
+      "properties": {
+        "node": {
+          "type": "string",
+          "minLength": 1
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "verdict": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "pass"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "reason"
+          ],
+          "properties": {
+            "kind": {
+              "const": "fail"
+            },
+            "reason": {
+              "enum": [
+                "not_converged",
+                "authority_unavailable",
+                "exhausted"
+              ]
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "missing_nodes"
+          ],
+          "properties": {
+            "kind": {
+              "const": "incomplete"
+            },
+            "missing_nodes": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/missing_node"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "cache_snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "kind",
+        "source_digest",
+        "bytes",
+        "files",
+        "materialization"
+      ],
+      "properties": {
+        "node": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "cargo"
+        },
+        "source_digest": {
+          "$ref": "#/$defs/artifact_id"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "files": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "materialization": {
+          "enum": [
+            "reflink",
+            "copy"
+          ]
+        }
+      }
+    },
+    "cache_failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "node",
+        "kind",
+        "reason"
+      ],
+      "properties": {
+        "node": {
+          "type": "string",
+          "minLength": 1
+        },
+        "kind": {
+          "const": "cargo"
+        },
+        "reason": {
+          "enum": [
+            "gate_setup_failed",
+            "policy_unavailable",
+            "source_unavailable",
+            "unsafe_content",
+            "limit_exceeded",
+            "copy_limit_exceeded",
+            "concurrent_change",
+            "materialization_failed"
           ]
         }
       }

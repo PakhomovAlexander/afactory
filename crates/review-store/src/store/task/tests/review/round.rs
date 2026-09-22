@@ -146,6 +146,47 @@ pub(in crate::store::task::tests) fn supersede(f: &Fixture, round: &LegacyReview
         .unwrap();
 }
 
+/// Record a structurally valid RunReport@6 for `round` whose one reviewer failed with
+/// `error`. The fence reads Round closure from the Campaign log alone, so the report is written
+/// below the Task publication entry point, whose own authority checks are tested elsewhere.
+fn record_round_report(
+    store: &mut EventStore,
+    round: &LegacyReviewRoundV1,
+    verdict: review_core::RunVerdictV3,
+    error: &str,
+) {
+    let id = format!("sha256:{}", "a".repeat(64));
+    let report = review_core::RunReportPayloadV6 {
+        outcomes: vec![review_core::RunNodeReportV2 {
+            node: "reviewer".into(),
+            outcome: review_core::RunNodeOutcomeV2::Failed {
+                error: error.into(),
+            },
+        }],
+        blocked_gates: vec![],
+        verdict,
+        spent_tokens: 0u128.into(),
+        task_accounting: review_core::TaskReviewAccountingV1 {
+            task_id: "review-task".into(),
+            task_revision_id: id.clone(),
+            plan_id: id.clone(),
+            task_report_id: id,
+            through_sequence: 0,
+        },
+        execution: review_core::RunReportExecutionV6::Unbound {},
+    };
+    let event = NewEvent::new(
+        EventType::RunReportV6,
+        serde_json::to_value(report).unwrap(),
+    )
+    .caused_by(&round.round_event_id);
+    let first = store.len(&round.campaign_id).unwrap();
+    let tx = store.conn.transaction().unwrap();
+    crate::store::insert_events(&tx, &round.campaign_id, &[event], first as i64).unwrap();
+    tx.commit().unwrap();
+    store.replay(&round.campaign_id).unwrap();
+}
+
 #[test]
 fn closed_review_round_refuses_prepared_start_and_keeps_credit_release_available() {
     let (mut f, round) = round_fixture();
@@ -164,62 +205,22 @@ fn closed_review_round_refuses_prepared_start_and_keeps_credit_release_available
         .unwrap()
         .unwrap();
     let mut other = EventStore::open(&f.path).unwrap();
-    other
-        .append(
-            &round.campaign_id,
-            &f.cas,
-            NewEvent::new(
-                EventType::RunReportV3,
-                serde_json::to_value(review_core::RunReportPayloadV3 {
-                    outcomes: vec![review_core::RunNodeReportV2 {
-                        node: "reviewer".into(),
-                        outcome: review_core::RunNodeOutcomeV2::Failed {
-                            error: "worker unavailable".into(),
-                        },
-                    }],
-                    blocked_gates: vec![],
-                    verdict: review_core::RunVerdictV3::Incomplete {
-                        missing_nodes: vec![review_core::MissingNodeV2 {
-                            node: "reviewer".into(),
-                            reason: "worker unavailable".into(),
-                        }],
-                    },
-                    spent_tokens: Some(0),
-                })
-                .unwrap(),
-            )
-            .caused_by(&round.round_event_id),
-        )
-        .unwrap();
+    let incomplete = review_core::RunVerdictV3::Incomplete {
+        missing_nodes: vec![review_core::MissingNodeV2 {
+            node: "reviewer".into(),
+            reason: "worker unavailable".into(),
+        }],
+    };
+    record_round_report(&mut other, &round, incomplete, "worker unavailable");
     // An Incomplete report leaves this exact Round open for recovery.
     fence.validate(&f.store.conn).unwrap();
     f.store
         .check_task_dispatch(&f.cas, &lease, &f.authority)
         .unwrap();
-    other
-        .append(
-            &round.campaign_id,
-            &f.cas,
-            NewEvent::new(
-                EventType::RunReportV3,
-                serde_json::to_value(review_core::RunReportPayloadV3 {
-                    outcomes: vec![review_core::RunNodeReportV2 {
-                        node: "reviewer".into(),
-                        outcome: review_core::RunNodeOutcomeV2::Failed {
-                            error: "budget exhausted".into(),
-                        },
-                    }],
-                    blocked_gates: vec![],
-                    verdict: review_core::RunVerdictV3::Fail {
-                        reason: review_core::RunFailureReasonV3::Exhausted,
-                    },
-                    spent_tokens: Some(0),
-                })
-                .unwrap(),
-            )
-            .caused_by(&round.round_event_id),
-        )
-        .unwrap();
+    let exhausted = review_core::RunVerdictV3::Fail {
+        reason: review_core::RunFailureReasonV3::Exhausted,
+    };
+    record_round_report(&mut other, &round, exhausted, "budget exhausted");
     let before = f.state().next_sequence;
     assert!(
         f.store

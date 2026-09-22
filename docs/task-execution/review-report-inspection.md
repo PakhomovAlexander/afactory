@@ -25,12 +25,13 @@ and Review Round attribution use that plan's captured graph and inputs, includin
 plan replaces the active graph. Wall-clock sidecars contribute display details; their Task-local
 Round and epoch fields do not replace captured Review Round authority.
 
-For RunReport@6 history rows, `task_chargeable_tokens_at_report` and `task_accounting` preserve
-the recorded cumulative total and exact Task log prefix. These are snapshots, not Round costs.
-Reports of 100 and 150 tokens for one Task contribute one current Task total of 150, not 250.
-Late usage can raise that current total to 170 while both reports remain unchanged. Inspection
-reads the ledger's effective charge, which can exceed the original terminal receipt, and never
-subtracts snapshots to infer Round costs or changes an original reservation cap.
+Each Round row's `task_chargeable_tokens_at_report` and `task_accounting` preserve the
+cumulative total and exact Task log prefix its RunReport@6 recorded. These are snapshots, not
+Round costs. Reports of 100 and 150 tokens for one Task contribute one current Task total of
+150, not 250. Late usage can raise that current total to 170 while both reports remain
+unchanged. Inspection reads the ledger's effective charge, which can exceed the original
+terminal receipt, and never subtracts snapshots to infer Round costs or changes an original
+reservation cap.
 
 Text and Markdown distinguish “Task cumulative charge at report” from current “Task accounting”.
 The same historical snapshot label is used by Campaign listing.

@@ -134,8 +134,8 @@ or needs a documented hand edit.
   carries; a manifest from a release that predates them no longer loads. The schemas also drop
   values that no release ever wrote. A dirty `SourceSnapshot@1` capture `boundary` is always
   `revalidated` (`filesystem_snapshot` is gone), and a Gate Execution Binding's
-  `provided_isolation` in `run-report-v4.json`, `run-report-v5.json` and `run-event-v1.json` is
-  `none` or `container` (`process` is gone). In `task-contracts-v1.json`, and every schema that
+  `provided_isolation` in `run-report-v6.json` and `run-event-v1.json` is `none` or `container`
+  (`process` is gone). In `task-contracts-v1.json`, and every schema that
   embeds its Task phase or result, a Task phase is never `resolving`, `planning` or `verifying`, a
   Task result's `execution` is `completed`, `incomplete` or `exhausted` (never `blocked` or
   `cancelled`), and the unreferenced `reviewConclusion` definition is gone.
@@ -207,6 +207,18 @@ or needs a documented hand edit.
   `af review ledger` notice for an absent latest-Round Ledger drops its
   "(N admitted result(s) remain recorded, not gathered)" clause, which always counted 0.
   ADR-0022 and ADR-0023 are superseded.
+- `RunReport@3`, `@4` and `@5`, the run conclusions only the pre-Task executor wrote, are gone
+  from the event vocabulary and `run-event-v1.json`, with the `run-report-v3.json`, `-v4.json`
+  and `-v5.json` schemas. `RunReport@6` is the only run conclusion. `run-report-v6.json` now
+  defines its outcome, verdict, binding and cache shapes itself, and
+  `task-review-gate-facts-v1.json` takes its Cache failure shape from it. A Campaign log that
+  holds a retired report, `RunReport@1` to `@5`, no longer replays: `af review run` and
+  `af provider doctor` refuse it with "Campaign predates the common Task runtime (af < 0.9);
+  start a new Campaign", `af review report`, `ledger` and `show` fail on it, and
+  `af review campaigns` lists it as a problem. The Round rows of `af review report` drop
+  `reported_tokens`, which only those reports' plain numeric spend filled. Every row now carries
+  `task_chargeable_tokens_at_report` and `task_accounting`, and the `review-report-v3.json` and
+  `-v4.json` schemas require both.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

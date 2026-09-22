@@ -84,12 +84,6 @@ pub enum EventType {
     ProposalPreparedV1,
     #[serde(rename = "ProposalRefused@1")]
     ProposalRefusedV1,
-    #[serde(rename = "RunReport@3")]
-    RunReportV3,
-    #[serde(rename = "RunReport@4")]
-    RunReportV4,
-    #[serde(rename = "RunReport@5")]
-    RunReportV5,
     #[serde(rename = "RunReport@6")]
     RunReportV6,
     #[serde(rename = "RoundInputSuperseded@1")]
@@ -121,7 +115,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 53] = [
+    pub const ALL: [Self; 50] = [
         Self::TaskTransitionV1,
         Self::TaskTransitionV2,
         Self::TaskTransitionV3,
@@ -158,9 +152,6 @@ impl EventType {
         Self::ProposalAcceptedV1,
         Self::ProposalPreparedV1,
         Self::ProposalRefusedV1,
-        Self::RunReportV3,
-        Self::RunReportV4,
-        Self::RunReportV5,
         Self::RunReportV6,
         Self::RoundInputSupersededV1,
         Self::RoundStartedV1,
@@ -215,9 +206,6 @@ impl EventType {
             Self::ProposalAcceptedV1 => "ProposalAccepted@1",
             Self::ProposalPreparedV1 => "ProposalPrepared@1",
             Self::ProposalRefusedV1 => "ProposalRefused@1",
-            Self::RunReportV3 => "RunReport@3",
-            Self::RunReportV4 => "RunReport@4",
-            Self::RunReportV5 => "RunReport@5",
             Self::RunReportV6 => "RunReport@6",
             Self::RoundInputSupersededV1 => "RoundInputSuperseded@1",
             Self::RoundStartedV1 => "RoundStarted@1",
@@ -235,12 +223,9 @@ impl EventType {
         }
     }
 
-    /// Whether this event is any readable generation of the durable run conclusion.
+    /// Whether this event is the durable run conclusion.
     pub const fn is_run_report(self) -> bool {
-        matches!(
-            self,
-            Self::RunReportV3 | Self::RunReportV4 | Self::RunReportV5 | Self::RunReportV6
-        )
+        matches!(self, Self::RunReportV6)
     }
 
     pub const fn typed(self) -> (&'static str, u32) {
@@ -281,9 +266,6 @@ impl EventType {
             Self::ProposalAcceptedV1 => ("ProposalAccepted", 1),
             Self::ProposalPreparedV1 => ("ProposalPrepared", 1),
             Self::ProposalRefusedV1 => ("ProposalRefused", 1),
-            Self::RunReportV3 => ("RunReport", 3),
-            Self::RunReportV4 => ("RunReport", 4),
-            Self::RunReportV5 => ("RunReport", 5),
             Self::RunReportV6 => ("RunReport", 6),
             Self::RoundInputSupersededV1 => ("RoundInputSuperseded", 1),
             Self::RoundStartedV1 => ("RoundStarted", 1),
@@ -372,9 +354,6 @@ impl std::str::FromStr for EventType {
             "ProposalAccepted@1" => Ok(Self::ProposalAcceptedV1),
             "ProposalPrepared@1" => Ok(Self::ProposalPreparedV1),
             "ProposalRefused@1" => Ok(Self::ProposalRefusedV1),
-            "RunReport@3" => Ok(Self::RunReportV3),
-            "RunReport@4" => Ok(Self::RunReportV4),
-            "RunReport@5" => Ok(Self::RunReportV5),
             "RunReport@6" => Ok(Self::RunReportV6),
             "RoundInputSuperseded@1" => Ok(Self::RoundInputSupersededV1),
             "RoundStarted@1" => Ok(Self::RoundStartedV1),
@@ -433,7 +412,7 @@ impl RunEvent {
     }
 }
 
-/// Stable reasons a completed RunReport@3 can fail its convergence gate.
+/// Stable reasons a completed run report can fail its convergence gate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunFailureReasonV3 {
@@ -478,16 +457,6 @@ pub enum RunVerdictV3 {
     Pass,
     Fail { reason: RunFailureReasonV3 },
     Incomplete { missing_nodes: Vec<MissingNodeV2> },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunReportPayloadV3 {
-    pub outcomes: Vec<RunNodeReportV2>,
-    pub blocked_gates: Vec<String>,
-    pub verdict: RunVerdictV3,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spent_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -575,19 +544,6 @@ fn is_pinned_container_image(image: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-/// RunReport@4 adds only resolved Gate Execution Bindings. All prior structural and verdict
-/// rules remain those of the frozen RunReport@3 contract.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunReportPayloadV4 {
-    pub outcomes: Vec<RunNodeReportV2>,
-    pub blocked_gates: Vec<String>,
-    pub verdict: RunVerdictV3,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spent_tokens: Option<u64>,
-    pub execution_bindings: Vec<RunExecutionBindingV4>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunCacheKindV5 {
@@ -652,228 +608,6 @@ impl RunCacheSnapshotV5 {
             || self.files > 9_007_199_254_740_991
         {
             return Err("Cache Snapshot has invalid identity, digest, or bounds".into());
-        }
-        Ok(())
-    }
-}
-
-/// RunReport@5 adds bounded sandbox-local Cache Snapshot receipts. RunReport@4 stays frozen for
-/// v3 pipelines that do not request caches.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RunReportPayloadV5 {
-    pub outcomes: Vec<RunNodeReportV2>,
-    pub blocked_gates: Vec<String>,
-    pub verdict: RunVerdictV3,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub spent_tokens: Option<u64>,
-    pub execution_bindings: Vec<RunExecutionBindingV4>,
-    pub cache_snapshots: Vec<RunCacheSnapshotV5>,
-    pub cache_failures: Vec<RunCacheFailureV5>,
-}
-
-impl RunReportPayloadV3 {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.outcomes.is_empty() {
-            return Err("a run report must contain at least one node outcome".into());
-        }
-        let mut nodes = std::collections::BTreeSet::new();
-        for outcome in &self.outcomes {
-            if outcome.node.trim().is_empty() {
-                return Err("a run report contains an empty node id".into());
-            }
-            if !nodes.insert(outcome.node.as_str()) {
-                return Err(format!(
-                    "a run report contains duplicate outcome for node `{}`",
-                    outcome.node
-                ));
-            }
-            match &outcome.outcome {
-                RunNodeOutcomeV2::Completed { output_artifacts } => {
-                    let unique: std::collections::BTreeSet<&str> =
-                        output_artifacts.iter().map(String::as_str).collect();
-                    if unique.len() != output_artifacts.len() {
-                        return Err(format!(
-                            "completed node `{}` contains duplicate output artifacts",
-                            outcome.node
-                        ));
-                    }
-                    if let Some(artifact) = output_artifacts.iter().find(|id| !crate::is_digest(id))
-                    {
-                        return Err(format!(
-                            "completed node `{}` contains invalid artifact id `{artifact}`",
-                            outcome.node
-                        ));
-                    }
-                }
-                RunNodeOutcomeV2::Failed { error } if error.trim().is_empty() => {
-                    return Err(format!("failed node `{}` has an empty error", outcome.node));
-                }
-                _ => {}
-            }
-        }
-        if let Some(gate) = self
-            .blocked_gates
-            .iter()
-            .find(|gate| gate.trim().is_empty())
-        {
-            return Err(format!("a run report contains empty blocked gate `{gate}`"));
-        }
-        let blocked: std::collections::BTreeSet<&str> =
-            self.blocked_gates.iter().map(String::as_str).collect();
-        if blocked.len() != self.blocked_gates.len() {
-            return Err("a run report contains duplicate blocked gates".into());
-        }
-        if let Some(gate) = blocked.iter().find(|gate| !nodes.contains(**gate)) {
-            return Err(format!(
-                "blocked gate `{gate}` has no corresponding node outcome"
-            ));
-        }
-        let unresolved: std::collections::BTreeSet<&str> = self
-            .outcomes
-            .iter()
-            .filter_map(|outcome| match &outcome.outcome {
-                RunNodeOutcomeV2::Completed { .. } => None,
-                RunNodeOutcomeV2::Failed { .. } | RunNodeOutcomeV2::Suppressed { .. } => {
-                    Some(outcome.node.as_str())
-                }
-            })
-            .collect();
-        let verdict_validation: Result<(), String> = match &self.verdict {
-            // Only an exhausted budget may conclude with unresolved nodes. Every other terminal
-            // verdict, including an authority failure, must have resolved each node.
-            RunVerdictV3::Pass
-            | RunVerdictV3::Fail {
-                reason: RunFailureReasonV3::NotConverged | RunFailureReasonV3::AuthorityUnavailable,
-            } if !unresolved.is_empty() => {
-                Err("a terminal pass/fail report cannot contain failed or suppressed nodes".into())
-            }
-            RunVerdictV3::Pass if !self.blocked_gates.is_empty() => {
-                Err("a passing report cannot contain blocked gates".into())
-            }
-            RunVerdictV3::Incomplete { missing_nodes } => {
-                if missing_nodes.is_empty() {
-                    return Err("an incomplete report must name at least one missing node".into());
-                }
-                if let Some(missing) = missing_nodes
-                    .iter()
-                    .find(|missing| missing.reason.trim().is_empty())
-                {
-                    return Err(format!(
-                        "missing node `{}` has an empty reason",
-                        missing.node
-                    ));
-                }
-                let missing: std::collections::BTreeSet<&str> = missing_nodes
-                    .iter()
-                    .map(|missing| missing.node.as_str())
-                    .collect();
-                if missing.len() != missing_nodes.len() {
-                    return Err("an incomplete report contains duplicate missing nodes".into());
-                }
-                if missing != unresolved {
-                    return Err(
-                        "an incomplete report's missing nodes must match failed and suppressed outcomes"
-                            .into(),
-                    );
-                }
-                Ok(())
-            }
-            _ => Ok(()),
-        };
-        verdict_validation?;
-        if self.spent_tokens.unwrap_or(0) > 9_007_199_254_740_991 {
-            return Err("spent_tokens exceeds the JSON safe-integer bound".into());
-        }
-        Ok(())
-    }
-}
-
-impl RunReportPayloadV4 {
-    pub fn validate(&self) -> Result<(), String> {
-        RunReportPayloadV3 {
-            outcomes: self.outcomes.clone(),
-            blocked_gates: self.blocked_gates.clone(),
-            verdict: self.verdict.clone(),
-            spent_tokens: self.spent_tokens,
-        }
-        .validate()?;
-        if self.execution_bindings.is_empty() {
-            return Err("RunReport@4 must contain at least one resolved execution binding".into());
-        }
-        let outcome_nodes: std::collections::BTreeSet<&str> = self
-            .outcomes
-            .iter()
-            .map(|outcome| outcome.node.as_str())
-            .collect();
-        let mut binding_nodes = std::collections::BTreeSet::new();
-        for binding in &self.execution_bindings {
-            binding.validate()?;
-            if !binding_nodes.insert(binding.node.as_str()) {
-                return Err("RunReport@4 contains an empty or duplicate binding node".into());
-            }
-            if !outcome_nodes.contains(binding.node.as_str()) {
-                return Err(format!(
-                    "RunReport@4 binding node `{}` has no corresponding outcome",
-                    binding.node
-                ));
-            }
-        }
-        Ok(())
-    }
-}
-
-impl RunReportPayloadV5 {
-    pub fn validate(&self) -> Result<(), String> {
-        RunReportPayloadV4 {
-            outcomes: self.outcomes.clone(),
-            blocked_gates: self.blocked_gates.clone(),
-            verdict: self.verdict.clone(),
-            spent_tokens: self.spent_tokens,
-            execution_bindings: self.execution_bindings.clone(),
-        }
-        .validate()?;
-        if self.cache_snapshots.is_empty() && self.cache_failures.is_empty() {
-            return Err("RunReport@5 must contain Cache Snapshot or failure evidence".into());
-        }
-        let binding_nodes: std::collections::BTreeSet<&str> = self
-            .execution_bindings
-            .iter()
-            .map(|binding| binding.node.as_str())
-            .collect();
-        let mut identities = std::collections::BTreeSet::new();
-        for snapshot in &self.cache_snapshots {
-            snapshot.validate()?;
-            if !binding_nodes.contains(snapshot.node.as_str()) {
-                return Err(format!(
-                    "RunReport@5 Cache Snapshot node `{}` has no execution binding",
-                    snapshot.node
-                ));
-            }
-            if !identities.insert((snapshot.node.as_str(), snapshot.kind)) {
-                return Err("RunReport@5 contains a duplicate Cache Snapshot identity".into());
-            }
-        }
-        for failure in &self.cache_failures {
-            failure.validate()?;
-            if !binding_nodes.contains(failure.node.as_str()) {
-                return Err(format!(
-                    "RunReport@5 Cache failure node `{}` has no execution binding",
-                    failure.node
-                ));
-            }
-            if !identities.insert((failure.node.as_str(), failure.kind)) {
-                return Err("RunReport@5 contains a duplicate Cache result identity".into());
-            }
-            if !self.outcomes.iter().any(|outcome| {
-                outcome.node == failure.node
-                    && matches!(&outcome.outcome, RunNodeOutcomeV2::Failed { .. })
-            }) {
-                return Err(format!(
-                    "RunReport@5 Cache failure node `{}` does not have a failed outcome",
-                    failure.node
-                ));
-            }
         }
         Ok(())
     }
@@ -1103,27 +837,6 @@ pub fn validate_event_payload(
             refused
                 .validate()
                 .map_err(|error| format!("ProposalRefused@1: {error}"))
-        }
-        EventType::RunReportV3 => {
-            let report = serde_json::from_value::<RunReportPayloadV3>(payload.clone())
-                .map_err(|error| format!("RunReport@3: {error}"))?;
-            report
-                .validate()
-                .map_err(|error| format!("RunReport@3: {error}"))
-        }
-        EventType::RunReportV4 => {
-            let report = serde_json::from_value::<RunReportPayloadV4>(payload.clone())
-                .map_err(|error| format!("RunReport@4: {error}"))?;
-            report
-                .validate()
-                .map_err(|error| format!("RunReport@4: {error}"))
-        }
-        EventType::RunReportV5 => {
-            let report = serde_json::from_value::<RunReportPayloadV5>(payload.clone())
-                .map_err(|error| format!("RunReport@5: {error}"))?;
-            report
-                .validate()
-                .map_err(|error| format!("RunReport@5: {error}"))
         }
         EventType::RunReportV6 => {
             let report = serde_json::from_value::<RunReportPayloadV6>(payload.clone())
@@ -1440,36 +1153,6 @@ impl NodeOutputReceiptPayloadV1 {
 /// A malformed report is an error, not a closed round.
 pub fn run_report_closes_round(event: &RunEvent) -> Result<Option<bool>, serde_json::Error> {
     match event.event_type {
-        EventType::RunReportV3 => {
-            let report: RunReportPayloadV3 = serde_json::from_value(event.payload.clone())?;
-            report
-                .validate()
-                .map_err(<serde_json::Error as serde::de::Error>::custom)?;
-            Ok(Some(!matches!(
-                report.verdict,
-                RunVerdictV3::Incomplete { .. }
-            )))
-        }
-        EventType::RunReportV4 => {
-            let report: RunReportPayloadV4 = serde_json::from_value(event.payload.clone())?;
-            report
-                .validate()
-                .map_err(<serde_json::Error as serde::de::Error>::custom)?;
-            Ok(Some(!matches!(
-                report.verdict,
-                RunVerdictV3::Incomplete { .. }
-            )))
-        }
-        EventType::RunReportV5 => {
-            let report: RunReportPayloadV5 = serde_json::from_value(event.payload.clone())?;
-            report
-                .validate()
-                .map_err(<serde_json::Error as serde::de::Error>::custom)?;
-            Ok(Some(!matches!(
-                report.verdict,
-                RunVerdictV3::Incomplete { .. }
-            )))
-        }
         EventType::RunReportV6 => {
             let report: RunReportPayloadV6 = serde_json::from_value(event.payload.clone())?;
             report

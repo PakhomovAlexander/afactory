@@ -696,16 +696,11 @@ fn a_cargo_cache_is_offline_bounded_and_replayed_into_the_round_conclusion() {
     // The Store admits only the durable materialization facts: a well-formed conclusion that
     // names another Cache Manifest for the same Gate cache is refused.
     let forged = forged_cache_manifest(&cas);
-    let error = refuse_forged_conclusion(
-        &cas,
-        &backup,
-        &compiler,
-        &lease,
-        &event,
-        |execution, refs| {
+    let error =
+        refuse_forged_conclusion(&cas, &backup, &compiler, &lease, &event, |report, refs| {
             let review_core::RunReportExecutionV6::Cached {
                 cache_snapshots, ..
-            } = execution
+            } = &mut report.execution
             else {
                 unreachable!()
             };
@@ -716,10 +711,57 @@ fn a_cargo_cache_is_offline_bounded_and_replayed_into_the_round_conclusion() {
                 ..cache_snapshots[0].clone()
             };
             refs.push(forged.clone());
-        },
-    );
+        });
     assert!(
         error.contains("Cache Snapshots differ from the durable materialization facts"),
+        "{error}"
+    );
+}
+
+/// A Round conclusion reports exactly the outputs each node's durable receipt recorded: the
+/// Store refuses one that claims any other output for a completed node.
+#[test]
+fn a_round_conclusion_must_match_every_durable_output_receipt() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let reader = clean_reader();
+    let (compiler, lease) = admit_source(
+        &cas,
+        &mut store,
+        &gated_review(&reader, &reader, None),
+        source(),
+        &["architecture", "performance"],
+        false,
+    );
+    let backup = directory.path().join("before-conclusion.sqlite");
+    let shared = SharedEventStore::new(&mut store);
+    hosted(
+        &cas,
+        &shared,
+        &compiler,
+        &lease,
+        |h| h,
+        |host, _, report| {
+            assert!(report.complete(), "{report:?}");
+            snapshot_store(directory.path(), &backup);
+            host.assemble_recorded_result(&cas).unwrap();
+        },
+    );
+    let (event, _) = run_report(&shared);
+    let unreceipted = cas.put(b"unreceipted output").unwrap();
+    let error = refuse_forged_conclusion(&cas, &backup, &compiler, &lease, &event, |report, _| {
+        let architecture = report
+            .outcomes
+            .iter_mut()
+            .find(|outcome| outcome.node == "architecture")
+            .unwrap();
+        architecture.outcome = review_core::RunNodeOutcomeV2::Completed {
+            output_artifacts: vec![unreceipted.clone()],
+        };
+    });
+    assert!(
+        error.contains("RunReport@6 contradicts the receipt for node 'architecture'"),
         "{error}"
     );
 }
@@ -747,16 +789,16 @@ fn forged_cache_manifest(cas: &Cas) -> String {
         .unwrap()
 }
 
-/// Publish `forge`d execution facts of the recorded Round conclusion `honest` through the
-/// trusted Task entry point, on `backup`: the Campaign store as it was before that conclusion
-/// was published. Returns the refusal and checks that nothing was appended.
+/// Publish a `forge`d copy of the recorded Round conclusion `honest` through the trusted Task
+/// entry point, on `backup`: the Campaign store as it was before that conclusion was published.
+/// Returns the refusal and checks that nothing was appended.
 fn refuse_forged_conclusion(
     cas: &Cas,
     backup: &std::path::Path,
     compiler: &LegacyReviewPlanCompiler,
     lease: &TaskLease,
     honest: &review_core::RunEvent,
-    forge: impl FnOnce(&mut review_core::RunReportExecutionV6, &mut Vec<String>),
+    forge: impl FnOnce(&mut review_core::RunReportPayloadV6, &mut Vec<String>),
 ) -> String {
     let mut store = EventStore::open(backup).unwrap();
     let shared = SharedEventStore::new(&mut store);
@@ -772,7 +814,7 @@ fn refuse_forged_conclusion(
     let mut payload: review_core::RunReportPayloadV6 =
         serde_json::from_value(honest.payload.clone()).unwrap();
     let mut refs = honest.artifact_refs.clone();
-    forge(&mut payload.execution, &mut refs);
+    forge(&mut payload, &mut refs);
     let report_id = payload.task_accounting.task_report_id.clone();
     let mut event = review_store::NewEvent::new(
         EventType::RunReportV6,
@@ -901,18 +943,13 @@ fn cache_failures_keep_their_reason_and_never_record_the_host_detail() {
             continue;
         }
         let forged = forged_cache_manifest(&cas);
-        let error = refuse_forged_conclusion(
-            &cas,
-            &backup,
-            &compiler,
-            &lease,
-            &event,
-            |execution, refs| {
+        let error =
+            refuse_forged_conclusion(&cas, &backup, &compiler, &lease, &event, |report, refs| {
                 let review_core::RunReportExecutionV6::Cached {
                     cache_snapshots,
                     cache_failures,
                     ..
-                } = execution
+                } = &mut report.execution
                 else {
                     unreachable!()
                 };
@@ -926,8 +963,7 @@ fn cache_failures_keep_their_reason_and_never_record_the_host_detail() {
                     materialization: review_core::RunCacheMaterializationV5::Copy,
                 });
                 refs.push(forged.clone());
-            },
-        );
+            });
         assert!(
             error.contains("differs from its settled Gate cache failures"),
             "{error}"
