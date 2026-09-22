@@ -580,11 +580,11 @@ fn validate_events(
         }
     }
     // Supersession retains the exact original prior artifact, including its original Subject
-    // header. Only a new numeric Round builds a fresh bounded raw legacy view.
+    // header. Only a new numeric Round builds a fresh bounded raw view.
     if permit.is_restart() {
         return Ok(());
     }
-    // A prior FindingSet slot is the bounded raw legacy view, not the canonical set envelope.
+    // A prior FindingSet slot is the bounded raw flat view, not the canonical set envelope.
     let prior = cas
         .get_json(&started.prior_finding_set_id)
         .map_err(|e| StoreError::Artifact(e.to_string()))?;

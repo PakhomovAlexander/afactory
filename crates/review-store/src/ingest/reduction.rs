@@ -1,4 +1,4 @@
-//! Pure canonical Review reduction, shared by the historical Campaign and Task domain hosts.
+//! Pure canonical Review reduction, shared by the Campaign and Task Review domain hosts.
 //! No Store, Attempt budget or scheduler is created here. The caller admits/persists the result.
 use super::*;
 

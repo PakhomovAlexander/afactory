@@ -242,7 +242,7 @@ impl EventStore {
 
     /// Publish the canonical Review identity of an already selected and published Task output.
     /// Routing comes from that Attempt's admitted context, never from caller-supplied Round IDs.
-    /// An exact replay is idempotent. There are no synthetic legacy Attempt lifecycle events.
+    /// An exact replay is idempotent. No Attempt lifecycle event is synthesized here.
     pub fn publish_task_review_result(
         &mut self,
         cas: &Cas,

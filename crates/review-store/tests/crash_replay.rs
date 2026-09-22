@@ -209,7 +209,7 @@ fn the_report_artifact_not_the_event_copy_is_projection_authority() {
             .unwrap(),
         )
         .unwrap();
-    let key = review_store::legacy::canonical_finding_id(&report_id);
+    let key = review_store::ingest::canonical_finding_id(&report_id);
     store
         .append(
             "run",

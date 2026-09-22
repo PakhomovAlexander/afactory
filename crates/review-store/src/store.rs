@@ -4838,11 +4838,11 @@ mod tests {
                 "dispositions": [],
             })
         };
-        let legacy = json!({
+        let flat = json!({
             "severity": "major",
             "file": "src/a.rs",
             "line": 1,
-            "title": "legacy",
+            "title": "flat",
             "body": "body",
             "fix": "fix",
             "confidence": 0.9,
@@ -4856,7 +4856,7 @@ mod tests {
             "confidence": 0.9,
         });
 
-        assert!(review_core::validate_reviewer_result_v2(&result(legacy)).is_ok());
+        assert!(review_core::validate_reviewer_result_v2(&result(flat)).is_ok());
         assert!(review_core::validate_reviewer_result_v2(&result(typed)).is_err());
     }
 

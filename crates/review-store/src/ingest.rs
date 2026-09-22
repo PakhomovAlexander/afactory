@@ -1,5 +1,6 @@
-//! Ledger ingestion: reducing flat reviewer results into Finding events, and the operator
-//! transitions (resolution, grouping, Demand evidence) that follow them.
+//! The Findings Ledger writer: canonical reduction of selected reviewer results into Finding
+//! events, the Round-bound generation advance, and the operator adjudication transitions
+//! (resolution, grouping, Demand evidence) that follow them.
 //!
 //! [`Ingest`] appends to one run's log under its active Round and keeps the Ledger projection
 //! folded in step. The pure reduction it shares with the Task Review host lives in
@@ -138,12 +139,13 @@ impl<'a> Ingest<'a> {
         self
     }
 
-    /// The store refuses a Round-runtime event that no Round is bound to.
-    fn bind_round(&self, event: NewEvent) -> NewEvent {
-        match &self.round_event_id {
-            Some(round) => event.caused_by(round),
-            None => event,
-        }
+    /// Reduction and generation events are Round-runtime facts, so the caller must have bound
+    /// the durable Round epoch first. The operator adjudication verbs run without one.
+    fn bind_round(&self, event: NewEvent) -> Result<NewEvent, StoreError> {
+        let round = self.round_event_id.as_deref().ok_or_else(|| {
+            StoreError::Conflict("Ledger reduction needs a bound Round epoch".into())
+        })?;
+        Ok(event.caused_by(round))
     }
 
     pub fn ledger(&self) -> &Ledger {
@@ -159,7 +161,7 @@ impl<'a> Ingest<'a> {
             self.bind_round(NewEvent::new(
                 EVENT_GENERATION_ADVANCED,
                 json!({ "round": round }),
-            )),
+            ))?,
         )?;
         self.validate_watermark(&event)?;
         self.ledger.apply_event(&event, self.cas)?;
@@ -193,7 +195,7 @@ impl<'a> Ingest<'a> {
             .events
             .into_iter()
             .map(|event| self.bind_round(event))
-            .collect();
+            .collect::<Result<Vec<_>, _>>()?;
         let appended = self.store.append_batch(&self.run_id, self.cas, &events)?;
         for event in &appended {
             self.advance_watermark(event)?;

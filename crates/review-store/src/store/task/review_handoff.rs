@@ -267,7 +267,7 @@ pub(super) fn validate_evidence_with_replays(
             }
             let (_, demands) =
                 selected_prior_sets(cas, &value.predecessor_plan_id, &old, &task_report)?;
-            // prior_finding_set_id is the legacy raw PriorFindings view, which may include
+            // prior_finding_set_id is the flat raw PriorFindings view, which may include
             // intervening dispositions. The captured compiler resolves the canonical FindingSet
             // separately. DemandSet is an envelope ID, including a common-only companion port.
             if new_started.prior_demand_set_id != demands {

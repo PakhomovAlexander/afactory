@@ -267,7 +267,7 @@ pub struct Ledger {
     resolutions: BTreeMap<String, RecordedResolution>,
     resolution_authority: BTreeMap<String, String>,
     resolution_history: Vec<ResolutionEvidence>,
-    /// Task-only projection evidence. Never serialized as legacy FindingResolution authority.
+    /// Task-only projection evidence. Never serialized as Campaign Resolution authority.
     task_fixed_subjects: BTreeMap<String, String>,
     policy_time: u64,
     pub round: u32,
