@@ -287,11 +287,13 @@ makes a small deterministic check the cheapest node in a pipeline.
 read-only. **It is not security isolation.** A process running as the same user can `chmod` its
 way out of read-only mode, read what the user can read, and open any socket.
 
-It buys three real things: the review's *input* is immutable (a node runs against a copy, and
+It buys two real things: the review's *input* is immutable (a node runs against a copy, and
 capture already happened, so the snapshot under review cannot be altered by anything the node
-does), the environment is rebuilt from an allowlist rather than filtered, and every mutation is
-captured. Note what that is not — an absolute-path write to the checkout on disk is not
-prevented, and the case records that as open rather than calling it covered.
+does), and every mutation is captured. Note what that is not — an absolute-path write to the
+checkout on disk is not prevented, and the case records that as open rather than calling it
+covered. The environment a check runs with is not the sandbox's doing: the check runner
+(`review_check::CheckRunner`) clears it and rebuilds it from an allowlist, and a container run
+starts from `--env-file /dev/null` plus the declared variables.
 
 A `ContainerProvider` also exists for hosts with a usable runtime. Finding `docker` on `PATH`
 proves nothing: detection runs the runtime's own `info` and requires it to succeed. An

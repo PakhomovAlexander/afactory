@@ -117,6 +117,18 @@ fn a_stable_root_is_materialized_once_rebased_per_head_and_reused_unchanged() {
     );
     assert_eq!(first.verified_digest, head_one.content_digest());
     assert_eq!(first.entries_touched, 3);
+    // The template is the stable tree itself, not an equal copy elsewhere: a file dropped into
+    // `root.tree()` shows up in the next clone.
+    let sentinel = root.tree().join("sentinel.txt");
+    std::fs::write(&sentinel, b"stable root\n").unwrap();
+    let probe = Sandbox::from_template(&first.template, Mode::EphemeralWrite).unwrap();
+    assert_eq!(
+        std::fs::read(probe.root().join("sentinel.txt")).unwrap(),
+        b"stable root\n",
+        "the template is rooted at the stable workspace tree"
+    );
+    drop(probe);
+    std::fs::remove_file(&sentinel).unwrap();
     let clone = Sandbox::from_template(&first.template, Mode::EphemeralWrite).unwrap();
     assert_eq!(
         clone.baseline(),

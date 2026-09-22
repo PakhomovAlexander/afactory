@@ -30,8 +30,8 @@ allowlist of git subcommands that cannot transform content. That is what these c
 
 `malicious-check` is partly implemented: three of its five probes are discharged on the
 `trusted_local` provider (credentials by the check runner's cleared environment), and the two
-that need real isolation stay open — with a tested refusal
-in place of a weakened test, so a pipeline needing them cannot run on a directory instead.
+that need real isolation stay open — with a tested refusal in place of a weakened test, so a
+pipeline needing them cannot run on a directory instead.
 
 `late-receipt` is implemented, minus its broker half — there is no broker yet, and the file says
 so rather than being marked closed on the strength of the parts that are.
