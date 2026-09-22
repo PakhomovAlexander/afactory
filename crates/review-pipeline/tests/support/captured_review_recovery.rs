@@ -119,14 +119,8 @@ pub fn run_expired_waiting(
         .unwrap()
         .resume_task_for_recording(&cas, &lease, &authority)
         .unwrap();
-    assert_eq!(transition.event_type, EventType::TaskTransitionV4);
+    assert_eq!(transition.event_type, EventType::TaskTransitionV5);
     assert_eq!(transition.payload["change"]["kind"], "recording_resumed");
-    assert!(
-        serde_json::from_value::<review_core::task::event::TaskTransitionV1>(
-            transition.payload.clone()
-        )
-        .is_err()
-    );
     assert!(
         shared
             .lock()

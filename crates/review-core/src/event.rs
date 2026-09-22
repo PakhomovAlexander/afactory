@@ -12,14 +12,6 @@ use serde::{Deserialize, Serialize};
 /// arbitrary strings cannot enter a new log through the typed API.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum EventType {
-    #[serde(rename = "TaskTransition@1")]
-    TaskTransitionV1,
-    #[serde(rename = "TaskTransition@2")]
-    TaskTransitionV2,
-    #[serde(rename = "TaskTransition@3")]
-    TaskTransitionV3,
-    #[serde(rename = "TaskTransition@4")]
-    TaskTransitionV4,
     #[serde(rename = "TaskTransition@5")]
     TaskTransitionV5,
     #[serde(rename = "TaskReviewResultSelected@1")]
@@ -113,11 +105,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 49] = [
-        Self::TaskTransitionV1,
-        Self::TaskTransitionV2,
-        Self::TaskTransitionV3,
-        Self::TaskTransitionV4,
+    pub const ALL: [Self; 45] = [
         Self::TaskTransitionV5,
         Self::TaskReviewResultSelectedV1,
         Self::CheckCompletedV1,
@@ -167,10 +155,6 @@ impl EventType {
 
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::TaskTransitionV1 => "TaskTransition@1",
-            Self::TaskTransitionV2 => "TaskTransition@2",
-            Self::TaskTransitionV3 => "TaskTransition@3",
-            Self::TaskTransitionV4 => "TaskTransition@4",
             Self::TaskTransitionV5 => "TaskTransition@5",
             Self::TaskReviewResultSelectedV1 => "TaskReviewResultSelected@1",
             Self::CheckCompletedV1 => "CheckCompleted@1",
@@ -226,11 +210,7 @@ impl EventType {
 
     pub const fn typed(self) -> (&'static str, u32) {
         match self {
-            Self::TaskTransitionV1 => ("TaskTransition", 1),
-            Self::TaskTransitionV2 => ("TaskTransition", 2),
-            Self::TaskTransitionV3 => ("TaskTransition", 3),
-            Self::TaskTransitionV4 => ("TaskTransition", 4),
-            Self::TaskTransitionV5 => ("TaskTransition", 5),
+            Self::TaskTransitionV5 => ("TaskTransition", 1),
             Self::TaskReviewResultSelectedV1 => ("TaskReviewResultSelected", 1),
             Self::CheckCompletedV1 => ("CheckCompleted", 1),
             Self::CampaignOpenedV1 => ("CampaignOpened", 1),
@@ -318,10 +298,6 @@ impl std::str::FromStr for EventType {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "TaskTransition@1" => Ok(Self::TaskTransitionV1),
-            "TaskTransition@2" => Ok(Self::TaskTransitionV2),
-            "TaskTransition@3" => Ok(Self::TaskTransitionV3),
-            "TaskTransition@4" => Ok(Self::TaskTransitionV4),
             "TaskTransition@5" => Ok(Self::TaskTransitionV5),
             "TaskReviewResultSelected@1" => Ok(Self::TaskReviewResultSelectedV1),
             "CheckCompleted@1" => Ok(Self::CheckCompletedV1),
@@ -664,32 +640,12 @@ pub fn validate_event_payload(
     payload: &serde_json::Value,
 ) -> Result<(), String> {
     match event_type {
-        EventType::TaskTransitionV5 => {
-            serde_json::from_value::<crate::task::event::TaskTransitionV5>(payload.clone())
-                .map_err(|e| e.to_string())?
-                .validate()
-        }
         EventType::TaskReviewResultSelectedV1 => serde_json::from_value::<
             crate::task::review_compat::TaskReviewResultSelectedV1,
         >(payload.clone())
         .map_err(|e| e.to_string())?
         .validate(),
-        EventType::TaskTransitionV4 => {
-            serde_json::from_value::<crate::task::event::TaskTransitionV4>(payload.clone())
-                .map_err(|e| e.to_string())?
-                .validate()
-        }
-        EventType::TaskTransitionV3 => {
-            serde_json::from_value::<crate::task::event::TaskTransitionV3>(payload.clone())
-                .map_err(|e| e.to_string())?
-                .validate()
-        }
-        EventType::TaskTransitionV2 => {
-            serde_json::from_value::<crate::task::event::TaskTransitionV2>(payload.clone())
-                .map_err(|e| e.to_string())?
-                .validate()
-        }
-        EventType::TaskTransitionV1 => {
+        EventType::TaskTransitionV5 => {
             serde_json::from_value::<crate::task::event::TaskTransitionV1>(payload.clone())
                 .map_err(|e| e.to_string())?
                 .validate()

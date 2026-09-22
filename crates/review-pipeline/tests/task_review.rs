@@ -780,7 +780,7 @@ fn export_fixture(
         toml::to_string(code).unwrap(),
     )
     .unwrap();
-    let catalog = json!({"schema":"af.task-catalog/1","code_policy":".af/code-policy.toml","packages":pins,"independence":IndependencePolicyV1::default(),
+    let catalog = json!({"schema":"af.task-catalog/2","code_policy":".af/code-policy.toml","packages":pins,"independence":IndependencePolicyV1::default(),
         "review":{"generation":2,"reviewers":review.reviewers,"gate":review.gate,"clean_rounds":review.clean_rounds,"max_rounds":review.max_rounds}});
     std::fs::write(
         destination.join(".af/task-catalog.toml"),

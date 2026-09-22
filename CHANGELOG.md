@@ -91,13 +91,10 @@ or needs a documented hand edit.
   `af/TaskReviewSubject@1` or `review.kernel/ReviewerResult@1` ports, or without an assignment, is
   refused at planning, so update it together with its pin. The `af/TaskReviewSubject@1` contract
   and its `task-review-subject-v1.json` schema are gone.
-- Task execution records have one encoding per record kind. The `task-execution-record-v2.json`
-  schema is gone, and `task-execution-record-v1.json` no longer describes `prepared`, `settled` or
-  `usage_observed` records: this release writes settlements and usage observations only as
-  `af/TaskExecutionRecord@3`, with decimal-string charges, and binds an Attempt's context through
-  separate `reserved` and `context_bound` records. The `af/task-inspection` schema no longer lists
-  `af/TaskExecutionRecord@2`, so inspection output, which could match two record schemas at once,
-  now validates. `task-transition-v1.json` drops `revision_recorded`, which no release wrote, and
+- Task execution records have one encoding per record kind: the combined `prepared` record is
+  gone, and an Attempt's context is bound through separate `reserved` and `context_bound`
+  records. Settlements and usage observations carry decimal-string charges.
+  `af/TaskTransition` drops `revision_recorded`, which no release wrote, and
   requires `revocation_id` on `approval_revoked`, which this release always writes.
 - `af self optimize` history sources: the `af` adapter reads only the `af/task-inspection`
   receipts that `af task show --json` prints and refuses any other line, including the
@@ -222,9 +219,9 @@ or needs a documented hand edit.
   requires.
 - The `gate_blocked` suppression reason is gone; only the pre-Task executor's scheduler wrote it.
   A Review Gate is a Task condition, so a node behind a Gate that did not pass reads
-  `branch_not_selected` in `af/TaskRunReport@1` and in `af/review-outcome@3` node
+  `branch_not_selected` in `af/TaskRunReport@2` and in `af/review-outcome@3` node
   outcomes, or `upstream_missing` once its predecessors were suppressed, and `RunReport@6`
-  records both as `upstream_missing`, as before. `task-run-report-v1.json`, `run-report-v6.json`
+  records both as `upstream_missing`, as before. `task-run-report-v2.json`, `run-report-v6.json`
   and `review-outcome-v3.json` no longer list `gate_blocked`, and the
   review-outcome `ledger_production` no longer lists `not_produced_gate_blocked`. A stored report
   that carries `gate_blocked` no longer decodes.
@@ -317,7 +314,7 @@ or needs a documented hand edit.
   happened to have. Each section beyond the core (`owned_child_sets`, `review_handoffs`,
   `review_integrations`, `attempt_walls` with `runtime_observations`, `experiments` and
   `adoption_observations`) appears only when the Task recorded it, and `history` holds
-  `TaskTransition@1` to `@5` payloads. `task-inspection-v11.json` is now self-contained and
+  `TaskTransition@5` payloads. `task-inspection-v11.json` is now self-contained and
   describes all of it; it no longer requires `experiments` and `adoption_observations`, and a
   Failed settlement's `diagnostic` must be a JSON object, as this release always writes it. The
   `task-inspection-v3.json` and `-v5.json` to `-v10.json` schemas are deleted, and
@@ -336,6 +333,33 @@ or needs a documented hand edit.
   refused, and the `task-token-usage-v1.json`, `task-token-usage-v2.json` and
   `task-review-attempt-provenance-v1.json` schemas are deleted: every other schema now refers to
   `urn:af:schema:task-token-usage:3` for its decimal counters.
+- Task records have one version per name. `TaskTransition@1` to `@5` collapse to
+  `TaskTransition@5`, `af/TaskExecutionRecord@1`, `@3`, `@4` and `@5` to
+  `af/TaskExecutionRecord@5`, `af/TaskRunReport@1` and `@2` to `af/TaskRunReport@2`, and
+  `af/TaskReviewHandoff@1` and `@2` to `af/TaskReviewHandoff@2`. Every change kind, record kind
+  and field is kept: the new versions are supersets of the old ones, so a transition now carries
+  `review_continued`, `review_integration_selected`, `review_integration_finished`,
+  `recording_resumed` or `adoption_observation_recorded` under the same number as `opened` or
+  `finished`; a settlement or usage observation carries its decimal-text `charged_tokens`, and
+  the owned-child and experiment kinds travel in the same record type. An Integration phase
+  report is `af/TaskRunReport@2` with a `phase_id`; a Round report is the same type without one.
+  The `task-transition-v1.json` to `-v4.json`, `task-execution-record-v1.json`, `-v3.json` and
+  `-v4.json`, `task-run-report-v1.json` and `task-review-handoff-v1.json` schemas are deleted,
+  and `run-event-v1.json` and `task-inspection-v11.json` name only the surviving versions. This
+  is a wire break: a `.af/state` Task log or CAS record an earlier release wrote no longer
+  decodes, and `af task list` and `af self optimize` fail for the whole store while one remains,
+  rather than skipping it. Finish or delete in-flight Tasks before upgrading. The
+  `execution_records[].artifact_type` and `review_handoffs[].artifact_type` values in
+  `af task show --json` each collapse to one string.
+- A Task catalog and its captured run authority have one schema each: `af.task-catalog/2` and
+  `af.task-run-authority/2`. `provider_admission` is now optional in a catalog; omitting it means
+  the fixed 4,096-token, 45-second admission allowance that `af.task-catalog/1` had, and
+  declaring it keeps the explicit bounded cost. A committed `.af/task-catalog.toml` that still
+  says `schema = "af.task-catalog/1"` is refused with `Task catalog requires schema
+  af.task-catalog/2`; change that one line by hand (nothing else about the file changes).
+  `af catalog init` now writes `af.task-catalog/2` for every profile. The captured run
+  authority always records the resulting admission cost and re-checks it against the captured
+  catalog bytes, and `task-catalog-v1.json` is deleted.
 - The Attempt wall sidecar in `events.sqlite` keeps one exact usage column, `usage_v3_json`,
   beside `usage_observation_v1_json`; both are created with the `attempt_wall` table. The numeric
   token columns, `usage_v1_json`, `usage_v2_json` and the `ALTER TABLE` migration that ran on

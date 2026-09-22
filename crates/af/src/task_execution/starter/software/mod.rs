@@ -1107,7 +1107,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
         developers.validate()?;
     }
     let catalog = TaskCatalog {
-        schema: "af.task-catalog/1".into(),
+        schema: "af.task-catalog/2".into(),
         provider_admission: None,
         code_policy: Some(".af/code-policy.toml".into()),
         document_policy: None,

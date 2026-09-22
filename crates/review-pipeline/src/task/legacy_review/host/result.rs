@@ -74,16 +74,19 @@ impl LegacyReviewTaskHost<'_, '_> {
         if !execution.pending_attempts().is_empty() {
             return Err("Review Task cannot conclude with outstanding Attempts".into());
         }
-        // A phase report @2 is additional evidence; it cannot replace the Round's original
-        // scheduler report or change already published RunReport@6 bytes.
+        // An Integration phase report is additional evidence; it cannot replace the Round's
+        // original scheduler report or change already published RunReport@6 bytes.
         let mut selected_report = None;
         for id in state.run_reports.iter().rev() {
             let artifact = cas.get_artifact(id).map_err(|e| e.to_string())?;
-            if artifact.artifact_type != TASK_RUN_REPORT_V1 {
+            if artifact.artifact_type != TASK_RUN_REPORT_V2 {
                 continue;
             }
             let value: TaskRunReportV1 =
                 serde_json::from_value(artifact.payload).map_err(|e| e.to_string())?;
+            if value.phase_id.is_some() {
+                continue;
+            }
             if value.task_revision_id == state.revision_id && value.plan_id == self.plan_id {
                 selected_report = Some((id, value));
                 break;

@@ -336,14 +336,14 @@ fn review_round_write_fence_compares_other_campaign_changes_inside_transaction()
         },
     };
     let value = serde_json::to_value(&transition).unwrap();
-    let event = NewEvent::new(EventType::TaskTransitionV1, value.clone())
+    let event = NewEvent::new(EventType::TaskTransitionV5, value.clone())
         .referencing(references(&f.cas, &transition.change, Some(&state)).unwrap());
     let run = task_run_id(lease.task_id()).unwrap();
     let permit = WritePermit {
         run_id: run.clone(),
         first: state.next_sequence,
         payloads: vec![value],
-        event_type: EventType::TaskTransitionV1,
+        event_type: EventType::TaskTransitionV5,
         valid_until: None,
         review_round: ReviewRoundFence::capture(&f.cas, &state.revision).unwrap(),
         review_prefix: None,

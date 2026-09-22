@@ -24,11 +24,12 @@ part of the exact binding. Bare model-family aliases and `-latest` selectors are
 
 Planning performs no model inference. The compiler adds a visible internal capability node
 for each distinct effective Model binding and invocation policy. Slots with the same capability
-share that node. Catalog V1 reserves **4,096 tokens, one Attempt and 45 seconds** inside the Task's
-limits. Admission serving a required verifier is protected alongside that verifier. Pipeline
-and Task limits must have room for these Attempts; children do not create another allowance.
+share that node. A catalog that declares no explicit cost reserves **4,096 tokens, one Attempt
+and 45 seconds** inside the Task's limits. Admission serving a required verifier is protected
+alongside that verifier. Pipeline and Task limits must have room for these Attempts; children
+do not create another allowance.
 
-Catalog V2 requires an explicit finite admission cost:
+A catalog may declare an explicit finite admission cost instead:
 
 ```toml
 schema = "af.task-catalog/2"
@@ -41,8 +42,8 @@ wall_ms = 45000
 Both values must be integers from 1 through 9,007,199,254,740,991 and fit the Task's original
 resources. Each distinct capability still has one Attempt. This example is a project choice,
 not a default: size the whole Task for this cost, business work and protected verification.
-V1 forbids this field and retains its original allowance. The captured V2 authority records the
-cost and original catalog bytes; changing local files after planning cannot change either.
+The captured run authority records the cost and the original catalog bytes; changing local
+files after planning cannot change either.
 See [ADR-0091](../adr/0091-capture-explicit-task-provider-admission-costs.md).
 
 ```text

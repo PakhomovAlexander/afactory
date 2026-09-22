@@ -126,8 +126,9 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0046](0046-add-versioned-task-contracts-with-exact-plan-approval.md): retained
   `tasks.sqlite` histories and the idempotent linking of historical Stores.
 - [ADR-0048](0048-compile-task-ports-and-fence-developer-plan-decisions.md): the legacy-link
-  obligation, and the scheduler's own Gate suppression, which only the pre-Task Review executor
-  used. A Review Gate is a Task condition, so a node it blocks is suppressed as an unselected
+  obligation, the additive transition generations it started, and the scheduler's own Gate
+  suppression, which only the pre-Task Review executor used. Every Task lifecycle change is one
+  ordinary `TaskTransition@5` event. A Review Gate is a Task condition, so a node it blocks is suppressed as an unselected
   branch, and no report records a `gate_blocked` suppression.
 - [ADR-0049](0049-run-task-workers-through-shared-durable-attempts.md): retained legacy
   implementation Stores, the common Store's read-only links to legacy histories, the historical
@@ -139,13 +140,15 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0063](0063-require-goal-acceptance-alongside-embedded-review.md): persisted legacy
   contracts, the frozen v0.8.0 fixtures and the compatibility gate.
 - [ADR-0065](0065-persist-task-run-diagnostics-and-recover-domain-publication.md): readability of
-  older Tasks without run reports.
+  older Tasks without run reports. Every run report is `af/TaskRunReport@2`; an Integration phase
+  report is the same contract with a `phase_id`.
 - [ADR-0066](0066-reserve-task-attempts-before-binding-exact-context.md): the historical combined
   `Prepared` record and its Store API.
 - [ADR-0067](0067-project-common-task-selections-into-canonical-review.md): the legacy Store's
   selection from `AttemptAdmitted@1`.
 - [ADR-0068](0068-retain-inflight-task-usage-in-the-common-budget.md): usage observations and
-  settlements encoded as `TaskExecutionRecord@1` with numeric charges.
+  settlements encoded with numeric charges. Every execution record is
+  `af/TaskExecutionRecord@5`, and its charges are canonical decimal text.
 - [ADR-0069](0069-compile-captured-review-ports-with-explicit-artifact-codecs.md): the
   compatibility types that pipeline format 1 shorthand Generation outputs received by port name,
   and the types opaque shorthand Gate, Gather and Ledger ports received by node kind.
@@ -157,7 +160,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   unversioned and numeric-only usage, migration on write, and the execution-record, usage and
   inspection version ladders. Every Task inspection is `af/task-inspection@11`, whose sections
   are each present only when the Task recorded them. Every usage artifact is
-  `af/TaskTokenUsage@3`, and the Attempt wall sidecar holds one exact usage column and one
+  `af/TaskTokenUsage@3`, every execution record is `af/TaskExecutionRecord@5`, and the Attempt
+  wall sidecar holds one exact usage column and one
   observation column, both created with the table.
 - [ADR-0077](0077-run-captured-review-operations-under-common-task-attempts.md): historical
   name-only Reviewer outputs meaning `ReviewerResult@1`, and the Store's opaque exception for them.
@@ -167,16 +171,21 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0079](0079-retain-exact-cumulative-charge-within-one-task-attempt.md): readers for frozen
   execution `@1` and `@2`, usage `@1` and `@2`, and `af/review-report@1`, `@2` and `@3`, and the
   historical `AttemptLedger` entry points with replacement semantics; every Attempt charge is an
-  exact cumulative floor, and `af review report --json` is one document, `af/review-report@4`.
+  exact cumulative floor, `af review report --json` is one document, `af/review-report@4`, and
+  every execution record is `af/TaskExecutionRecord@5`.
   Its Broker operations, with `BrokerOperationReceipt@2`, are gone with the Broker; the exact
   u128 cumulative charge they motivated stays.
 - [ADR-0081](0081-register-owned-review-children-in-the-common-task-runtime.md): earlier execution
   and inspection generations, and the Review Task policy generations before
-  `LegacyReviewTaskPolicy@4` that compiled without owned children.
+  `LegacyReviewTaskPolicy@4` that compiled without owned children. The owned lifecycle is
+  ordinary `af/TaskExecutionRecord@5` data.
 - [ADR-0082](0082-continue-captured-review-rounds-within-the-original-task.md): earlier
-  `TaskTransition` generations and inspection@6.
-- [ADR-0083](0083-run-post-round-integration-within-the-original-task.md): earlier inspection
-  generations.
+  `TaskTransition` and `TaskReviewHandoff` generations, and inspection@6. A continuation is an
+  ordinary change of `TaskTransition@5`, and a handoff is `af/TaskReviewHandoff@2`.
+- [ADR-0083](0083-run-post-round-integration-within-the-original-task.md): earlier inspection,
+  transition, run-report and handoff generations. Selection and completion are ordinary changes
+  of `TaskTransition@5`, a phase report is `af/TaskRunReport@2` carrying its `phase_id`, and an
+  integrated handoff is `af/TaskReviewHandoff@2`.
 - [ADR-0084](0084-route-new-review-commands-through-the-common-task.md): the original executor for
   historical paid Campaigns, and historical readers and output generations. `af review run --json`
   always emits `af/review-outcome@3`.
@@ -184,7 +193,7 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   separate `AttemptEvidence`, whose name the exact Task Attempt evidence now carries, and the
   width-selected usage, provenance and output generations.
 - [ADR-0086](0086-record-expired-review-publication-without-restarting-work.md): earlier transition
-  and inspection generations.
+  and inspection generations. Recording recovery is an ordinary change of `TaskTransition@5`.
 - [ADR-0087](0087-control-native-task-invocations-through-the-shared-supervisor.md): the Worker
   entry points without a control, and the forwarding that kept their previous behavior. Every
   native Task call is controlled; an adapter honors or refuses each supplied control, and a model
@@ -192,7 +201,10 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0089](0089-interrupt-task-work-when-its-writer-heartbeat-fails.md): the Broker
   accounting, calls and late receipts that the runtime kept outside Worker invocation.
 - [ADR-0091](0091-capture-explicit-task-provider-admission-costs.md): the V1 catalog and
-  run-authority generation beside V2.
+  run-authority generation beside V2, and `provider_admission` being mandatory in V2.
+  `af.task-catalog/2` is the only catalog and `af.task-run-authority/2` the only run authority;
+  a catalog that omits `provider_admission` gets the fixed 4,096-token, 45-second allowance, and
+  the captured authority always records the resulting cost.
 - [ADR-0094](0094-bind-task-review-assignments-and-readable-inputs.md): Review catalog and policy
   generation one as compatibility formats.
 - [ADR-0095](0095-bind-legacy-task-context-and-retry-output-admission.md): the *Explicit legacy
@@ -215,7 +227,7 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0104](0104-preview-captured-task-plans-before-first-execution.md): the preview for the
   legacy goal entry point; `task start` takes only a Task file.
 - [ADR-0106](0106-authorize-experimental-children-separately.md): earlier inspection and execution
-  generations.
+  generations. Experimental children are ordinary `af/TaskExecutionRecord@5` data.
 - [ADR-0107](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md): the legacy path
   that recorded the Warm Set before the node's first `AttemptDispatched@1`.
 - [ADR-0108](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md): the legacy

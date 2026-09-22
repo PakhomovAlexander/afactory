@@ -363,7 +363,7 @@ impl TaskDomain for ProviderTaskDomain<'_> {
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
-        report: &review_core::task::report::TaskRunReportV2,
+        report: &review_core::task::report::TaskRunReportV1,
         events: &[review_store::NewEvent],
         evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {

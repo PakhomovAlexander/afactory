@@ -5,7 +5,7 @@ use crate::review_domain::integration::{
     IntegrationSelection, IntegrationViews, PreparedIntegration,
 };
 use review_config::task::legacy_review::artifact::ReviewArtifactCodec;
-use review_core::task::report::{TASK_RUN_REPORT_V2, TaskNodeOutcomeV1, TaskRunReportV2};
+use review_core::task::report::{TASK_RUN_REPORT_V2, TaskNodeOutcomeV1, TaskRunReportV1};
 use review_core::task::review_integration::*;
 use review_store::store::task::review_integration::{
     RegisteredTaskReviewIntegration, TaskReviewIntegrationEvidence,
@@ -380,9 +380,12 @@ impl LegacyReviewTaskHost<'_, '_> {
         if value.artifact_type != TASK_RUN_REPORT_V2 {
             return Err("Integration requires its phase report".into());
         }
-        let report: TaskRunReportV2 =
+        let report: TaskRunReportV1 =
             serde_json::from_value(value.payload).map_err(|e| e.to_string())?;
         report.validate()?;
+        if report.phase_id.is_none() {
+            return Err("Integration requires its phase report".into());
+        }
         let mut events = Vec::new();
         if let TaskNodeOutcomeV1::Completed { output_id } = &report.nodes[0].outcome {
             let output: TaskOutputV1 = serde_json::from_value(
@@ -586,7 +589,7 @@ impl LegacyReviewTaskHost<'_, '_> {
         }
         if let Some(id) = phase.report_id() {
             result.evidence.insert(id.into());
-            let report: TaskRunReportV2 =
+            let report: TaskRunReportV1 =
                 serde_json::from_value(cas.get_artifact(id).map_err(|e| e.to_string())?.payload)
                     .map_err(|e| e.to_string())?;
             match &report.nodes[0].outcome {

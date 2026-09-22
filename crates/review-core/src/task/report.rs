@@ -1,5 +1,7 @@
 //! Host observations of one scheduler run. These records explain failures (including failures
 //! before an Attempt exists); they never substitute for acceptance or selected output receipts.
+//! A report for one activated post-Round Integration phase names that phase; a Round report,
+//! which carries the whole original graph, never does.
 
 use std::collections::BTreeSet;
 
@@ -8,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use super::{is_name, require, safe_number};
 use crate::is_digest;
 
-pub const TASK_RUN_REPORT_V1: &str = "af/TaskRunReport@1";
+pub const TASK_RUN_REPORT_V2: &str = "af/TaskRunReport@2";
 pub const TASK_DIAGNOSTIC_V1: &str = "af/TaskDiagnostic@1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +80,14 @@ pub struct TaskRunReportV1 {
     pub plan_id: String,
     /// Next Task event sequence observed before publishing this report.
     pub through_sequence: u64,
+    /// Present only on a report for one activated post-Round Integration phase node. An
+    /// ordinary Round report has no phase and carries the whole original Round graph.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "super::present_option"
+    )]
+    pub phase_id: Option<String>,
     /// Every compiled node in plan order, including nodes that never received an Attempt.
     pub nodes: Vec<TaskNodeReportV1>,
 }
@@ -85,6 +95,7 @@ pub struct TaskRunReportV1 {
 impl TaskRunReportV1 {
     pub fn references(&self) -> Vec<&str> {
         let mut refs = vec![self.task_revision_id.as_str(), self.plan_id.as_str()];
+        refs.extend(self.phase_id.as_deref());
         for entry in &self.nodes {
             match &entry.outcome {
                 TaskNodeOutcomeV1::Completed { output_id } => refs.push(output_id),
@@ -117,53 +128,13 @@ impl TaskRunReportV1 {
                 "Invalid or duplicate Task report node",
             )?;
         }
+        if self.phase_id.is_some() {
+            require(
+                self.nodes.len() == 1
+                    && !matches!(self.nodes[0].outcome, TaskNodeOutcomeV1::Suppressed { .. }),
+                "Integration report requires its exact phase and one executed or failed node",
+            )?;
+        }
         Ok(())
-    }
-}
-
-/// A report for the exact activated post-Round sequence. Frozen ordinary report membership
-/// remains every node in the original Round graph; this generation has one phase node.
-pub const TASK_RUN_REPORT_V2: &str = "af/TaskRunReport@2";
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct TaskRunReportV2 {
-    pub task_revision_id: String,
-    pub plan_id: String,
-    pub through_sequence: u64,
-    pub phase_id: String,
-    pub nodes: Vec<TaskNodeReportV1>,
-}
-impl TaskRunReportV2 {
-    pub fn as_report(&self) -> TaskRunReportV1 {
-        TaskRunReportV1 {
-            task_revision_id: self.task_revision_id.clone(),
-            plan_id: self.plan_id.clone(),
-            through_sequence: self.through_sequence,
-            nodes: self.nodes.clone(),
-        }
-    }
-    pub fn references(&self) -> Vec<&str> {
-        let mut refs = vec![
-            self.task_revision_id.as_str(),
-            self.plan_id.as_str(),
-            self.phase_id.as_str(),
-        ];
-        for n in &self.nodes {
-            match &n.outcome {
-                TaskNodeOutcomeV1::Completed { output_id } => refs.push(output_id),
-                TaskNodeOutcomeV1::Failed { diagnostic_id, .. } => refs.push(diagnostic_id),
-                TaskNodeOutcomeV1::Suppressed { .. } => {}
-            }
-        }
-        refs
-    }
-    pub fn validate(&self) -> Result<(), String> {
-        self.as_report().validate()?;
-        require(
-            is_digest(&self.phase_id)
-                && self.nodes.len() == 1
-                && !matches!(self.nodes[0].outcome, TaskNodeOutcomeV1::Suppressed { .. }),
-            "Integration report requires its exact phase and one executed or failed node",
-        )
     }
 }

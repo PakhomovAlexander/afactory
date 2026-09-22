@@ -1,7 +1,5 @@
 use super::{assert_invalid, assert_valid};
-use review_core::task::execution::{
-    TaskExecutionRecordV1, TaskExecutionRecordV4, TaskExecutionRecordV5,
-};
+use review_core::task::execution::TaskExecutionRecordV1;
 use review_core::task::owned_children::{TaskOwnedChildSetV1, TaskOwnedChildV1};
 use serde_json::json;
 
@@ -10,16 +8,16 @@ fn id(c: char) -> String {
 }
 
 #[test]
-fn experimental_execution_records_have_a_distinct_generation() {
+fn experimental_execution_records_round_trip_on_the_one_record_wire() {
     for record in [
-        TaskExecutionRecordV5::ExperimentPrepared {
+        TaskExecutionRecordV1::ExperimentPrepared {
             prepared_id: id('1'),
         },
-        TaskExecutionRecordV5::ExperimentPlanDecided {
+        TaskExecutionRecordV1::ExperimentPlanDecided {
             prepared_id: id('1'),
             decision_id: id('2'),
         },
-        TaskExecutionRecordV5::ExperimentChildrenRegistered {
+        TaskExecutionRecordV1::ExperimentChildrenRegistered {
             prepared_id: id('1'),
             decision_id: id('2'),
             child_plan_id: id('3'),
@@ -28,7 +26,21 @@ fn experimental_execution_records_have_a_distinct_generation() {
         record.validate().unwrap();
         let value = serde_json::to_value(&record).unwrap();
         assert_valid("task-execution-record-v5.json", &value);
-        assert!(serde_json::from_value::<TaskExecutionRecordV1>(value).is_err());
+        assert_eq!(
+            serde_json::from_value::<TaskExecutionRecordV1>(value.clone()).unwrap(),
+            record
+        );
+        let mut bad = value;
+        bad["prepared_id"] = json!("not-a-digest");
+        assert_invalid(
+            "task-execution-record-v5.json",
+            &bad,
+            "invalid experiment identity",
+        );
+        assert!(
+            serde_json::from_value::<TaskExecutionRecordV1>(bad)
+                .map_or(true, |r| r.validate().is_err())
+        );
     }
 }
 
@@ -39,8 +51,8 @@ fn owned_inspection_pairs_each_execution_record_with_its_exact_type() {
         "phase":{"kind":"running"}, "plan_id":id('2'), "chargeable_tokens":"7", "attempts":1,
         "history":[], "run_reports":[],
         "execution_records":[
-            {"artifact_id":id('3'),"artifact_type":"af/TaskExecutionRecord@1","record":{"kind":"invocation","invocation_id":id('4')}},
-            {"artifact_id":id('5'),"artifact_type":"af/TaskExecutionRecord@4","record":{"kind":"owned_children_registered","child_set_id":id('6')}}
+            {"artifact_id":id('3'),"artifact_type":"af/TaskExecutionRecord@5","record":{"kind":"invocation","invocation_id":id('4')}},
+            {"artifact_id":id('5'),"artifact_type":"af/TaskExecutionRecord@5","record":{"kind":"owned_children_registered","child_set_id":id('6')}}
         ],
         "owned_child_sets":[{"artifact_id":id('6'),"artifact_type":"af/TaskOwnedChildSet@1","record":{
             "plan_id":id('2'), "parent_invocation_id":id('4'), "source_artifact_id":id('7'),
@@ -51,11 +63,11 @@ fn owned_inspection_pairs_each_execution_record_with_its_exact_type() {
     for (pointer, bad_value) in [
         (
             "/execution_records/1/artifact_type",
-            json!("af/TaskExecutionRecord@1"),
+            json!("af/TaskExecutionRecord@4"),
         ),
         (
-            "/execution_records/0/artifact_type",
-            json!("af/TaskExecutionRecord@4"),
+            "/execution_records/0/record/kind",
+            json!("owned_children_registered"),
         ),
         (
             "/owned_child_sets/0/artifact_type",
@@ -143,66 +155,55 @@ fn owned_registration_data_preserves_exact_items_without_granting_authority() {
 }
 
 #[test]
-fn owned_lifecycle_requires_v4_and_cannot_be_smuggled_through_frozen_v1() {
+fn owned_lifecycle_records_round_trip_on_the_one_record_wire() {
     for record in [
-        TaskExecutionRecordV4::OwnedChildrenRegistered {
+        TaskExecutionRecordV1::OwnedChildrenRegistered {
             child_set_id: id('a'),
         },
-        TaskExecutionRecordV4::OwnedChildPublished {
+        TaskExecutionRecordV1::OwnedChildPublished {
             child_set_id: id('a'),
             output_id: id('b'),
             attempt_id: "x".repeat(26),
         },
-        TaskExecutionRecordV4::OwnedChildrenCompleted {
+        TaskExecutionRecordV1::OwnedChildrenCompleted {
             child_set_id: id('a'),
             output_id: id('b'),
         },
     ] {
         record.validate().unwrap();
-        let normalized = record.clone().into_record();
+        let value = serde_json::to_value(&record).unwrap();
+        assert_valid("task-execution-record-v5.json", &value);
         assert_eq!(
-            TaskExecutionRecordV4::from_owned(&normalized),
-            Some(record.clone())
+            serde_json::from_value::<TaskExecutionRecordV1>(value.clone()).unwrap(),
+            record
         );
-        assert!(normalized.validate().is_err());
-        assert!(serde_json::to_value(&normalized).is_err());
-        let value = serde_json::to_value(record).unwrap();
-        assert_valid("task-execution-record-v4.json", &value);
-        assert_invalid("task-execution-record-v1.json", &value, "frozen v1");
-        assert!(serde_json::from_value::<TaskExecutionRecordV1>(value.clone()).is_err());
         for invalid in [json!(null), json!("not-a-digest")] {
             let mut bad = value.clone();
             bad["child_set_id"] = invalid;
             assert_invalid(
-                "task-execution-record-v4.json",
+                "task-execution-record-v5.json",
                 &bad,
                 "invalid child identity",
             );
             assert!(
-                serde_json::from_value::<TaskExecutionRecordV4>(bad)
+                serde_json::from_value::<TaskExecutionRecordV1>(bad)
                     .map_or(true, |r| r.validate().is_err())
             );
         }
         let mut bad = value;
         bad["reserved_tokens"] = json!(1);
         assert_invalid(
-            "task-execution-record-v4.json",
+            "task-execution-record-v5.json",
             &bad,
             "no reservation authority",
         );
-        assert!(serde_json::from_value::<TaskExecutionRecordV4>(bad).is_err());
+        assert!(serde_json::from_value::<TaskExecutionRecordV1>(bad).is_err());
     }
-    let legacy = TaskExecutionRecordV1::Invocation {
+    let invocation = TaskExecutionRecordV1::Invocation {
         invocation_id: id('a'),
     };
     assert_eq!(
-        serde_json::to_value(&legacy).unwrap(),
+        serde_json::to_value(&invocation).unwrap(),
         json!({"kind":"invocation","invocation_id":id('a')})
-    );
-    assert!(TaskExecutionRecordV4::from_owned(&legacy).is_none());
-    assert_invalid(
-        "task-execution-record-v4.json",
-        &serde_json::to_value(legacy).unwrap(),
-        "v4 is only owned lifecycle",
     );
 }

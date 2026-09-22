@@ -2,8 +2,10 @@
 
 Date: 2026-09-12
 Status: Proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): earlier
-inspection generations. Integration phases are an optional section of `af/task-inspection@11`, the
-only inspection.
+inspection, transition, run-report and handoff generations. Selection and completion are ordinary
+changes of `TaskTransition@5`, a phase report is `af/TaskRunReport@2` with a `phase_id`, an
+integrated handoff is `af/TaskReviewHandoff@2`, and Integration phases are an optional section of
+`af/task-inspection@11`, the only inspection.
 
 ## Context
 

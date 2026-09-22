@@ -328,16 +328,10 @@ impl EventStore {
                 "Task Review selection requires the trusted Task publication entry point".into(),
             ));
         }
-        if events.iter().any(|e| {
-            matches!(
-                e.event_type,
-                EventType::TaskTransitionV1
-                    | EventType::TaskTransitionV2
-                    | EventType::TaskTransitionV3
-                    | EventType::TaskTransitionV4
-                    | EventType::TaskTransitionV5
-            )
-        }) && task_permit.is_none()
+        if events
+            .iter()
+            .any(|e| matches!(e.event_type, EventType::TaskTransitionV5))
+            && task_permit.is_none()
         {
             return Err(StoreError::Conflict(
                 "Task events require the trusted Task entry point".into(),
@@ -366,7 +360,7 @@ impl EventStore {
             permit.validate(&tx, run_id, first, events)?;
         } else {
             let task_log: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM events WHERE run_id = ?1 AND type = 'TaskTransition@1')",
+                "SELECT EXISTS(SELECT 1 FROM events WHERE run_id = ?1 AND type = 'TaskTransition@5')",
                 [run_id], |row| row.get(0),
             )?;
             if task_log {

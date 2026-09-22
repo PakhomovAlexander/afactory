@@ -1,6 +1,6 @@
 //! Real captured Review execution and fresh-process inspection of owned Task history.
 use super::*;
-use review_core::task::execution::{TASK_EXECUTION_RECORD_V4, TaskInvocationV1, TaskOutputV1};
+use review_core::task::execution::{TASK_EXECUTION_RECORD_V5, TaskInvocationV1, TaskOutputV1};
 use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_core::task::{TaskLimitsV1, TaskResultV1, TaskRevisionV1, VerificationReserveV1};
 use review_graph::task::{Address, OperatorAttemptCost};
@@ -298,7 +298,12 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         let records = value["execution_records"].as_array().unwrap();
         let owned: Vec<_> = records
             .iter()
-            .filter(|entry| entry["artifact_type"] == TASK_EXECUTION_RECORD_V4)
+            .filter(|entry| {
+                entry["artifact_type"] == TASK_EXECUTION_RECORD_V5
+                    && entry["record"]["kind"]
+                        .as_str()
+                        .is_some_and(|kind| kind.starts_with("owned_child"))
+            })
             .collect();
         assert_eq!(owned.len(), 2);
         assert_eq!(owned[0]["record"]["kind"], "owned_children_registered");

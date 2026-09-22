@@ -576,7 +576,7 @@ fn worker_output_and_generic_event_append_cannot_supply_developer_authority() {
             .is_err()
     );
     let fake = NewEvent::new(
-        EventType::TaskTransitionV1,
+        EventType::TaskTransitionV5,
         serde_json::to_value(TaskTransitionV1 {
             writer: "writer-1".into(),
             epoch: 1,
@@ -777,13 +777,13 @@ fn lease_takeover_fences_old_writer_and_sequence_comparison_is_atomic() {
         },
     };
     let value = serde_json::to_value(&transition).unwrap();
-    let event = NewEvent::new(EventType::TaskTransitionV1, value.clone())
+    let event = NewEvent::new(EventType::TaskTransitionV5, value.clone())
         .referencing(references(&f.cas, &transition.change, Some(&f.state())).unwrap());
     let permit = WritePermit {
         run_id: task_run_id("task-1").unwrap(),
         first,
         payloads: vec![value],
-        event_type: EventType::TaskTransitionV1,
+        event_type: EventType::TaskTransitionV5,
         valid_until: None,
         review_round: None,
         review_prefix: None,
@@ -1168,7 +1168,7 @@ fn crash_after_successful_settlement_reuses_the_selected_result_under_a_new_writ
     let record = f
         .cas
         .put_artifact(
-            TASK_EXECUTION_RECORD_V1,
+            TASK_EXECUTION_RECORD_V5,
             producer(),
             vec![output.clone()],
             None,

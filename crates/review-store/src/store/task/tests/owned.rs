@@ -561,28 +561,37 @@ fn owned_common_attempt_overrun_can_publish_facts_and_seal_without_new_dispatch(
         )
         .unwrap();
     assert_eq!(f.state().next_sequence, next);
-    let versions = f
+    let records = f
         .store
         .replay(&task_run_id("task-1").unwrap())
         .unwrap()
         .into_iter()
         .filter_map(|event| {
             let transition: TaskTransitionV1 = serde_json::from_value(event.payload).ok()?;
-            if let TaskChangeV1::ExecutionRecorded { record_id } = transition.change {
-                Some(f.cas.get_artifact(&record_id).unwrap().artifact_type)
-            } else {
-                None
-            }
+            let TaskChangeV1::ExecutionRecorded { record_id } = transition.change else {
+                return None;
+            };
+            let frame = f.cas.get_artifact(&record_id).unwrap();
+            Some((
+                frame.artifact_type,
+                frame.payload["kind"].as_str()?.to_string(),
+            ))
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        versions
+    // One closed record type carries every lifecycle kind, owned children included.
+    assert!(
+        records
             .iter()
-            .filter(|kind| kind.as_str() == TASK_EXECUTION_RECORD_V4)
+            .all(|(kind, _)| kind == TASK_EXECUTION_RECORD_V5)
+    );
+    assert_eq!(
+        records
+            .iter()
+            .filter(|(_, kind)| kind.starts_with("owned_child"))
             .count(),
         3
     );
-    assert!(versions.iter().any(|kind| kind == TASK_EXECUTION_RECORD_V3));
+    assert!(records.iter().any(|(_, kind)| kind == "settled"));
 }
 
 #[test]

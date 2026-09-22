@@ -54,7 +54,7 @@ impl TaskProjection {
                 "Recording recovery requires the exact expired admitted publication pause",
             ));
         }
-        let (report, phase) = read_task_run_report(cas, report_id)?;
+        let report = read_task_run_report(cas, report_id)?;
         let recorded = self
             .recording_report
             .as_ref()
@@ -68,7 +68,7 @@ impl TaskProjection {
             .execution
             .as_ref()
             .ok_or_else(|| conflict("Recording recovery has no execution"))?;
-        if phase.is_some()
+        if report.phase_id.is_some()
             || execution.active_review_integration().is_some()
             || report.task_revision_id != revision_id
             || report.plan_id != plan_id
@@ -108,8 +108,8 @@ impl TaskProjection {
             .filter(|_| self.has_recording_recovery())
             .ok_or_else(|| conflict("Task has no exact recording recovery capability"))?;
         // Retain the report's identity on cached and fresh projections alike.
-        let (report, phase) = read_task_run_report(cas, &recovery.report_id)?;
-        if phase.is_some()
+        let report = read_task_run_report(cas, &recovery.report_id)?;
+        if report.phase_id.is_some()
             || report.task_revision_id != recovery.revision_id
             || report.plan_id != recovery.plan_id
         {

@@ -26,8 +26,17 @@ impl ReviewDomainState<'_> {
             .cas
             .get_artifact(task_report_id)
             .map_err(|e| e.to_string())?;
-        if captured.artifact_type != review_core::task::report::TASK_RUN_REPORT_V1 {
-            return Err("Canonical Task Review requires a typed scheduler report".into());
+        if captured.artifact_type != review_core::task::report::TASK_RUN_REPORT_V2
+            || serde_json::from_value::<review_core::task::report::TaskRunReportV1>(
+                captured.payload.clone(),
+            )
+            .map_err(|e| e.to_string())?
+            .phase_id
+            .is_some()
+        {
+            return Err(
+                "Canonical Task Review requires a typed Round scheduler report, not an Integration phase report".into(),
+            );
         }
         let state = self
             .store

@@ -8,19 +8,17 @@ impl EventStore {
     /// No lease fact or integrity result is retained between calls.
     pub fn task_lease_state(&self, lease: &TaskLease) -> Result<u64, StoreError> {
         let run_id = task_run_id(lease.task_id())?;
-        // Lease changes are frozen TaskTransition@1 records. Include the latest transition
-        // of any generation and the stream tail, so a changed writer, future policy clock or
-        // foreign event cannot hide behind an earlier lease row.
+        // Include the latest lease change, the latest transition of any kind and the stream
+        // tail, so a changed writer, future policy clock or foreign event cannot hide behind
+        // an earlier lease row.
         let mut query = self.conn.prepare(
             "WITH lease AS (
-                SELECT sequence FROM events WHERE run_id=?1 AND type='TaskTransition@1'
+                SELECT sequence FROM events WHERE run_id=?1 AND type='TaskTransition@5'
                 AND json_extract(payload,'$.change.kind') IN
                     ('opened','lease_taken','lease_renewed','lease_released')
                 ORDER BY sequence DESC LIMIT 1
              ), transition AS (
-                SELECT sequence FROM events WHERE run_id=?1 AND type IN
-                    ('TaskTransition@1','TaskTransition@2','TaskTransition@3','TaskTransition@4',
-                     'TaskTransition@5')
+                SELECT sequence FROM events WHERE run_id=?1 AND type='TaskTransition@5'
                 ORDER BY sequence DESC LIMIT 1
              ), tail AS (
                 SELECT sequence FROM events WHERE run_id=?1 ORDER BY sequence DESC LIMIT 1

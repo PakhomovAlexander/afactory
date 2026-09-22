@@ -87,9 +87,9 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         for id in self.projection()?.run_reports.iter().rev() {
             let value = envelope(self.cas, id)?;
             if value.artifact_type == TASK_RUN_REPORT_V2 {
-                let report: TaskRunReportV2 =
+                let report: TaskRunReportV1 =
                     serde_json::from_value(value.payload).map_err(|e| e.to_string())?;
-                if report.phase_id == phase.phase_id() {
+                if report.phase_id.as_deref() == Some(phase.phase_id()) {
                     return Ok((id.clone(), self.restore_phase_report(id)?));
                 }
             }
@@ -173,9 +173,9 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             if value.artifact_type != TASK_RUN_REPORT_V2 {
                 continue;
             }
-            let report: TaskRunReportV2 =
+            let report: TaskRunReportV1 =
                 serde_json::from_value(value.payload).map_err(|e| e.to_string())?;
-            if report.phase_id == phase.phase_id()
+            if report.phase_id.as_deref() == Some(phase.phase_id())
                 && matches!(
                     report.nodes[0].outcome,
                     TaskNodeOutcomeV1::Failed {
@@ -208,9 +208,12 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         if value.artifact_type != TASK_RUN_REPORT_V2 {
             return Err("Integration report has another type".into());
         }
-        let report: TaskRunReportV2 =
+        let report: TaskRunReportV1 =
             serde_json::from_value(value.payload).map_err(|e| e.to_string())?;
         report.validate()?;
+        if report.phase_id.is_none() {
+            return Err("Integration report has no activated phase".into());
+        }
         let entry = &report.nodes[0];
         let outcome = match &entry.outcome {
             TaskNodeOutcomeV1::Completed { output_id } => {

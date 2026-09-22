@@ -1010,7 +1010,7 @@ pub(in crate::store::task) fn receipt_records_referencing(
 ) -> Result<Vec<String>, StoreError> {
     let mut query = connection.prepare(
         "SELECT payload,artifact_refs FROM events
-         WHERE run_id=?1 AND type='TaskTransition@1' AND instr(artifact_refs,?2)>0
+         WHERE run_id=?1 AND type='TaskTransition@5' AND instr(artifact_refs,?2)>0
          AND EXISTS (SELECT 1 FROM json_each(events.artifact_refs)
                      WHERE json_each.type='text' AND json_each.value=?2)
          ORDER BY sequence",

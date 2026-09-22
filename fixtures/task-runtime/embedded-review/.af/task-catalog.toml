@@ -1,4 +1,4 @@
-"schema" = "af.task-catalog/1"
+"schema" = "af.task-catalog/2"
 "code_policy" = ".af/code-policy.toml"
 
 ["packages"]

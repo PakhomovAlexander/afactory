@@ -2,6 +2,8 @@
 
 Status: accepted for the Task increment implementation; unreleased. Superseded in part by
 [ADR-0113](0113-ga-reads-only-what-ga-writes.md): readability of older Tasks without run reports.
+Every run report is `af/TaskRunReport@2`, the only run report; an Integration phase report is the
+same contract with a `phase_id`.
 
 ## Context
 

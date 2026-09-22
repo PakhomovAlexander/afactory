@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 163] = [
+const SCHEMAS: [&str; 153] = [
     "session-snapshot-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -49,7 +49,6 @@ const SCHEMAS: [&str; 163] = [
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
     "task-inspection-v11.json",
-    "task-execution-record-v5.json",
     "experiment-execution-plan-v1.json",
     "task-runtime-evidence-v1.json",
     "optimization-sources-v1.json",
@@ -74,12 +73,9 @@ const SCHEMAS: [&str; 163] = [
     "document-context-v1.json",
     "task-plan-inspection-v1.json",
     "task-file-v1.json",
-    "task-catalog-v1.json",
     "task-catalog-v2.json",
     "compiled-task-v1.json",
     "task-list-entry-v2.json",
-    "task-execution-record-v3.json",
-    "task-execution-record-v4.json",
     "task-owned-child-set-v1.json",
     "task-token-usage-v3.json",
     "task-usage-observation-v1.json",
@@ -133,23 +129,17 @@ const SCHEMAS: [&str; 163] = [
     "task-retry-feedback-v1.json",
     "artifact-envelope-v1.json",
     "task-contracts-v1.json",
-    "task-transition-v1.json",
-    "task-transition-v2.json",
-    "task-transition-v3.json",
-    "task-transition-v4.json",
     "task-transition-v5.json",
     "task-review-check-sequence-policy-v1.json",
     "task-review-integration-phase-v1.json",
-    "task-run-report-v2.json",
-    "task-review-handoff-v2.json",
     "legacy-review-task-policy-v4.json",
-    "task-review-handoff-v1.json",
+    "task-review-handoff-v2.json",
     "task-delivery-record-v1.json",
     "task-invocation-v1.json",
     "task-output-v1.json",
-    "task-run-report-v1.json",
+    "task-run-report-v2.json",
     "task-diagnostic-v1.json",
-    "task-execution-record-v1.json",
+    "task-execution-record-v5.json",
     "task-revision-v1.json",
     "task-result-v1.json",
     "task-phase-v1.json",
@@ -263,12 +253,12 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
     for record in records {
         record.validate().unwrap();
         let mut value = serde_json::to_value(record).unwrap();
-        assert_valid("task-execution-record-v1.json", &value);
+        assert_valid("task-execution-record-v5.json", &value);
         value["undeclared"] = json!(true);
-        assert!(!validator("task-execution-record-v1.json").is_valid(&value));
+        assert!(!validator("task-execution-record-v5.json").is_valid(&value));
         assert!(serde_json::from_value::<TaskExecutionRecordV1>(value).is_err());
     }
-    // Accounting has only its exact decimal encoding; the v1 wire never carries it.
+    // Accounting records carry the same closed wire, with exact decimal charges.
     let accounting = [
         TaskExecutionRecordV1::Settled {
             attempt_id: attempt_id.clone(),
@@ -306,18 +296,20 @@ fn task_invocations_and_attempt_records_are_versioned_and_closed() {
         },
     ];
     for record in accounting {
-        assert!(record.validate().is_err());
-        assert!(serde_json::to_value(&record).is_err());
-        let encoded = TaskExecutionRecordV3::from_accounting(&record).unwrap();
-        encoded.validate().unwrap();
-        let mut value = serde_json::to_value(&encoded).unwrap();
-        assert_valid("task-execution-record-v3.json", &value);
-        assert_invalid("task-execution-record-v1.json", &value, "v3 accounting");
-        assert!(serde_json::from_value::<TaskExecutionRecordV1>(value.clone()).is_err());
-        assert_eq!(encoded.into_record(), record);
+        record.validate().unwrap();
+        let mut value = serde_json::to_value(&record).unwrap();
+        assert_valid("task-execution-record-v5.json", &value);
+        assert!(
+            value["charged_tokens"].is_string(),
+            "exact charges are canonical decimal text"
+        );
+        assert_eq!(
+            serde_json::from_value::<TaskExecutionRecordV1>(value.clone()).unwrap(),
+            record
+        );
         value["undeclared"] = json!(true);
-        assert!(!validator("task-execution-record-v3.json").is_valid(&value));
-        assert!(serde_json::from_value::<TaskExecutionRecordV3>(value).is_err());
+        assert!(!validator("task-execution-record-v5.json").is_valid(&value));
+        assert!(serde_json::from_value::<TaskExecutionRecordV1>(value).is_err());
     }
 }
 
@@ -624,8 +616,8 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
             let root = schema(name);
             let mut builder = jsonschema::Registry::new()
                 .add(
-                    "urn:af:schema:task-transition:1",
-                    jsonschema::Resource::from_contents(schema("task-transition-v1.json")),
+                    "urn:af:schema:task-transition:5",
+                    jsonschema::Resource::from_contents(schema("task-transition-v5.json")),
                 )
                 .unwrap_or_else(|e| panic!("{name}: {e}"));
             for resource in resources {
@@ -2124,19 +2116,19 @@ fn task_lifecycle_events_have_closed_versioned_payloads() {
         };
         transition.validate().unwrap();
         let mut value = serde_json::to_value(&transition).unwrap();
-        assert_valid("task-transition-v1.json", &value);
-        review_core::event::validate_event_payload(EventType::TaskTransitionV1, &value).unwrap();
+        assert_valid("task-transition-v5.json", &value);
+        review_core::event::validate_event_payload(EventType::TaskTransitionV5, &value).unwrap();
         value["change"]["unrecognized"] = json!(true);
-        assert!(!validator("task-transition-v1.json").is_valid(&value));
+        assert!(!validator("task-transition-v5.json").is_valid(&value));
         assert!(
-            review_core::event::validate_event_payload(EventType::TaskTransitionV1, &value)
+            review_core::event::validate_event_payload(EventType::TaskTransitionV5, &value)
                 .is_err()
         );
     }
     // A revocation always carries its retained proof.
     let unproven = json!({"writer":"writer-1","epoch":1,"now_unix_ms":100,
         "change":{"kind":"approval_revoked","decision_id":id,"reason":"Revoked by developer"}});
-    assert_invalid("task-transition-v1.json", &unproven, "revocation proof");
+    assert_invalid("task-transition-v5.json", &unproven, "revocation proof");
     assert!(serde_json::from_value::<TaskTransitionV1>(unproven).is_err());
 }
 
@@ -2209,7 +2201,7 @@ fn source_refresh_event_requires_exactly_one_plan_or_unresolved_reason() {
             .unwrap()
             .extend(fields.as_object().unwrap().clone());
         assert_invalid(
-            "task-transition-v1.json",
+            "task-transition-v5.json",
             &value,
             "ambiguous source barrier",
         );
@@ -3605,20 +3597,23 @@ fn task_review_readable_subject_is_strict() {
 #[test]
 fn task_catalog_review_generation_is_omitted_or_two() {
     // Task Review has one generation: an omitted selector and `generation = 2` both mean it.
-    let mut value = json!({"schema":"af.task-catalog/1","code_policy":".af/code-policy.toml","packages":{"fixture/review":{"version":"1.0.0","digest":format!("sha256:{}","a".repeat(64)),"path":".af/packages/review"}},"independence":{"command_workers_by_package":true,"distinct_principals":true,"distinct_providers":false,"distinct_models":false},"review":{"reviewers":{"correctness":"required"},"gate":"major","clean_rounds":1,"max_rounds":2}});
-    for generation in [1, 2] {
-        let name = format!("task-catalog-v{generation}.json");
-        value["schema"] = json!(format!("af.task-catalog/{generation}"));
-        if generation == 2 {
-            value["provider_admission"] = json!({"tokens":32768,"wall_ms":45000});
+    let name = "task-catalog-v2.json";
+    let mut value = json!({"schema":"af.task-catalog/2","code_policy":".af/code-policy.toml","packages":{"fixture/review":{"version":"1.0.0","digest":format!("sha256:{}","a".repeat(64)),"path":".af/packages/review"}},"independence":{"command_workers_by_package":true,"distinct_principals":true,"distinct_providers":false,"distinct_models":false},"review":{"reviewers":{"correctness":"required"},"gate":"major","clean_rounds":1,"max_rounds":2}});
+    for admission in [None, Some(json!({"tokens":32768,"wall_ms":45000}))] {
+        match &admission {
+            // An omitted Provider admission cost keeps the fixed default allowance.
+            None => {
+                value.as_object_mut().unwrap().remove("provider_admission");
+            }
+            Some(cost) => value["provider_admission"] = cost.clone(),
         }
         value["review"]
             .as_object_mut()
             .unwrap()
             .remove("generation");
-        assert_valid(&name, &value);
+        assert_valid(name, &value);
         value["review"]["generation"] = json!(2);
-        assert_valid(&name, &value);
+        assert_valid(name, &value);
         for invalid in [
             json!(0),
             json!(1),
@@ -3629,16 +3624,10 @@ fn task_catalog_review_generation_is_omitted_or_two() {
         ] {
             let mut bad = value.clone();
             bad["review"]["generation"] = invalid;
-            assert_invalid(&name, &bad, "unsupported explicit Review generation");
-        }
-        if generation == 2 {
-            let mut bad = value.clone();
-            bad.as_object_mut().unwrap().remove("provider_admission");
-            assert_invalid(
-                &name,
-                &bad,
-                "Review generation does not waive Provider authority",
-            );
+            assert_invalid(name, &bad, "unsupported explicit Review generation");
         }
     }
+    let mut retired = value;
+    retired["schema"] = json!("af.task-catalog/1");
+    assert_invalid(name, &retired, "one catalog schema");
 }

@@ -17,7 +17,7 @@ fn review_handoff_inspection_preserves_transition_payloads_and_typed_evidence() 
                 "change":{"kind":"review_continued","handoff_id":id('7')}}}
         ],
         "run_reports":[], "execution_records":[],
-        "review_handoffs":[{"artifact_id":id('7'),"artifact_type":"af/TaskReviewHandoff@1","record":{
+        "review_handoffs":[{"artifact_id":id('7'),"artifact_type":"af/TaskReviewHandoff@2","record":{
             "task_id":"review-task", "predecessor_revision_id":id('1'),
             "predecessor_plan_id":id('2'), "successor_revision_id":id('3'),
             "successor_plan_id":id('4'), "predecessor_round_id":id('5'),
@@ -119,12 +119,12 @@ fn integration_inspection_preserves_phase_reports_and_integrated_handoff_type() 
         }
     }]);
     assert_valid("task-inspection-v11.json", &value);
-    let mut incorrect_generation = value.clone();
-    incorrect_generation["review_handoffs"][0]["artifact_type"] = json!("af/TaskReviewHandoff@1");
+    let mut retired_generation = value.clone();
+    retired_generation["review_handoffs"][0]["artifact_type"] = json!("af/TaskReviewHandoff@1");
     assert_invalid(
         "task-inspection-v11.json",
-        &incorrect_generation,
-        "integrated evidence retains generation two",
+        &retired_generation,
+        "one closed handoff type",
     );
     let mut empty = value;
     empty.as_object_mut().unwrap().remove("review_handoffs");

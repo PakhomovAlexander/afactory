@@ -599,13 +599,7 @@ pub fn run_numeric_rounds(
         .unwrap()
         .continue_task_review(&cas, &lease, &handoff_id, &next_authority)
         .unwrap();
-    assert_eq!(transition.event_type, EventType::TaskTransitionV2);
-    assert!(
-        serde_json::from_value::<review_core::task::event::TaskTransitionV1>(
-            transition.payload.clone()
-        )
-        .is_err()
-    );
+    assert_eq!(transition.event_type, EventType::TaskTransitionV5);
     assert_eq!(
         review_store::store::task::review_handoff::read_task_transition(&transition)
             .unwrap()

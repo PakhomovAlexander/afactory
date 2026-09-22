@@ -31,10 +31,6 @@
       "description": "Closed event type and semantic-version vocabulary. New event kinds and payload versions are explicit additive contract changes.",
       "type": "string",
       "enum": [
-        "TaskTransition@1",
-        "TaskTransition@2",
-        "TaskTransition@3",
-        "TaskTransition@4",
         "TaskTransition@5",
         "TaskReviewResultSelected@1",
         "CheckCompleted@1",
@@ -140,63 +136,6 @@
       "if": {
         "properties": {
           "type": {
-            "const": "TaskTransition@2"
-          }
-        },
-        "required": [
-          "type"
-        ]
-      },
-      "then": {
-        "properties": {
-          "payload": {
-            "$ref": "urn:af:schema:task-transition:2"
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "type": {
-            "const": "TaskTransition@3"
-          }
-        },
-        "required": [
-          "type"
-        ]
-      },
-      "then": {
-        "properties": {
-          "payload": {
-            "$ref": "urn:af:schema:task-transition:3"
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "type": {
-            "const": "TaskTransition@4"
-          }
-        },
-        "required": [
-          "type"
-        ]
-      },
-      "then": {
-        "properties": {
-          "payload": {
-            "$ref": "urn:af:schema:task-transition:4"
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "type": {
             "const": "TaskTransition@5"
           }
         },
@@ -208,25 +147,6 @@
         "properties": {
           "payload": {
             "$ref": "urn:af:schema:task-transition:5"
-          }
-        }
-      }
-    },
-    {
-      "if": {
-        "properties": {
-          "type": {
-            "const": "TaskTransition@1"
-          }
-        },
-        "required": [
-          "type"
-        ]
-      },
-      "then": {
-        "properties": {
-          "payload": {
-            "$ref": "urn:af:schema:task-transition:1"
           }
         }
       }

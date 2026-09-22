@@ -201,7 +201,7 @@ fn failed_worker_and_provider_overruns_retain_exact_usage_in_the_common_runtime(
                 {
                     assert_eq!(
                         decoded.envelope.artifact_type,
-                        review_core::task::execution::TASK_EXECUTION_RECORD_V3
+                        review_core::task::execution::TASK_EXECUTION_RECORD_V5
                     );
                     assert_eq!(raw_artifact_ids.len(), 1);
                     let usage =
@@ -324,7 +324,7 @@ fn one_attempt_retains_aggregate_charge_above_u64_through_failure_and_reopen() {
                 assert_eq!(charged_tokens, exact);
                 assert_eq!(
                     decoded.envelope.artifact_type,
-                    review_core::task::execution::TASK_EXECUTION_RECORD_V3
+                    review_core::task::execution::TASK_EXECUTION_RECORD_V5
                 );
                 let envelope = f.cas.get_artifact(&id).unwrap();
                 assert_eq!(

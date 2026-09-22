@@ -123,6 +123,7 @@ fn expired_publication_at_report(
         task_revision_id: f.revision_id.clone(),
         plan_id: f.plan_id.clone(),
         through_sequence: state.next_sequence,
+        phase_id: None,
         nodes: execution
             .graph
             .order
@@ -145,7 +146,7 @@ fn expired_publication_at_report(
     let id = f
         .cas
         .put_artifact(
-            TASK_RUN_REPORT_V1,
+            TASK_RUN_REPORT_V2,
             producer(),
             vec![],
             None,
@@ -295,7 +296,7 @@ fn recording_resume_pins_exact_report_and_outputs_without_dispatch_or_new_resour
         .store
         .resume_task_for_recording(&f.cas, &current, &f.authority)
         .unwrap();
-    assert_eq!(event.event_type, EventType::TaskTransitionV4);
+    assert_eq!(event.event_type, EventType::TaskTransitionV5);
     assert!(event.artifact_refs.contains(&output));
     f.store = EventStore::open(&f.path).unwrap();
     let after = f.state();
@@ -427,7 +428,7 @@ fn recording_resume_rejects_revoked_decision_or_replaced_latest_report() {
     let (mut f, lease, _) = expired_publication(Fixture::new(true).with_execution_graph(), false);
     let state = f.state();
     let old_report = state.run_reports.last().unwrap();
-    let (mut report, _) = read_task_run_report(&f.cas, old_report).unwrap();
+    let mut report = read_task_run_report(&f.cas, old_report).unwrap();
     report.through_sequence = state.next_sequence;
     for node in &mut report.nodes {
         if let TaskNodeOutcomeV1::Failed { class, .. } = &mut node.outcome {
@@ -437,7 +438,7 @@ fn recording_resume_rejects_revoked_decision_or_replaced_latest_report() {
     let id = f
         .cas
         .put_artifact(
-            TASK_RUN_REPORT_V1,
+            TASK_RUN_REPORT_V2,
             producer(),
             vec![],
             None,

@@ -88,7 +88,7 @@ fn exact_usage_rejects_noncanonical_numbers_and_never_coerces_optional_nulls() {
 
 #[test]
 fn cumulative_execution_accounting_has_one_full_width_encoding() {
-    use review_core::task::execution::{TaskExecutionRecordV1, TaskExecutionRecordV3};
+    use review_core::task::execution::TaskExecutionRecordV1;
     let digest = format!("sha256:{}", "1".repeat(64));
     for tokens in [
         0,
@@ -108,44 +108,22 @@ fn cumulative_execution_accounting_has_one_full_width_encoding() {
             if kind == "settled" {
                 value["result"] = json!({"kind":"abandoned", "diagnostic_id":digest});
             }
-            assert_valid("task-execution-record-v3.json", &value);
+            assert_valid("task-execution-record-v5.json", &value);
             review_core::json::admit(&value).unwrap();
-            let typed: TaskExecutionRecordV3 = serde_json::from_value(value.clone()).unwrap();
+            let typed: TaskExecutionRecordV1 = serde_json::from_value(value.clone()).unwrap();
             typed.validate().unwrap();
             assert_eq!(serde_json::to_value(&typed).unwrap(), value);
-            let normalized = typed.into_record();
-            assert_eq!(
-                TaskExecutionRecordV3::from_accounting(&normalized)
-                    .unwrap()
-                    .into_record(),
-                normalized
-            );
-            assert!(
-                normalized.validate().is_err(),
-                "accounting is never v1 wire"
-            );
-            assert_invalid(
-                "task-execution-record-v1.json",
-                &value,
-                "accounting is never v1 wire",
-            );
         }
     }
     let numeric = json!({"kind":"usage_observed", "attempt_id":"A".repeat(26),
         "charged_tokens":7, "usage_id":digest, "raw_artifact_ids":[]});
-    assert_invalid("task-execution-record-v1.json", &numeric, "numeric charge");
+    assert_invalid("task-execution-record-v5.json", &numeric, "numeric charge");
     assert!(serde_json::from_value::<TaskExecutionRecordV1>(numeric).is_err());
-    assert!(
-        TaskExecutionRecordV3::from_accounting(&TaskExecutionRecordV1::Started {
-            attempt_id: "A".repeat(26)
-        })
-        .is_none()
-    );
 }
 
 #[test]
 fn cumulative_records_reject_invalid_decimal_encodings() {
-    use review_core::task::execution::TaskExecutionRecordV3;
+    use review_core::task::execution::TaskExecutionRecordV1;
     let digest = format!("sha256:{}", "1".repeat(64));
     for invalid in [
         json!(7),
@@ -168,15 +146,12 @@ fn cumulative_records_reject_invalid_decimal_encodings() {
         let record = json!({"kind":"usage_observed", "attempt_id":"A".repeat(26),
             "charged_tokens":invalid, "usage_id":digest, "raw_artifact_ids":[]});
         assert_invalid(
-            "task-execution-record-v3.json",
+            "task-execution-record-v5.json",
             &record,
             "canonical cumulative record",
         );
-        assert!(serde_json::from_value::<TaskExecutionRecordV3>(record).is_err());
+        assert!(serde_json::from_value::<TaskExecutionRecordV1>(record).is_err());
     }
-    let started = json!({"kind":"started", "attempt_id":"A".repeat(26)});
-    assert_invalid("task-execution-record-v3.json", &started, "accounting only");
-    assert!(serde_json::from_value::<TaskExecutionRecordV3>(started).is_err());
 }
 
 #[test]

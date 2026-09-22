@@ -285,7 +285,7 @@ fn recovery_case(fail_at: usize, incomplete: bool) {
     }
     assert_eq!(
         settlement[0].0,
-        review_core::task::execution::TASK_EXECUTION_RECORD_V3
+        review_core::task::execution::TASK_EXECUTION_RECORD_V5
     );
     let recovered_usage =
         review_runner::task::usage::read_task_usage_exact(&f.cas, &settlement[0].1).unwrap();

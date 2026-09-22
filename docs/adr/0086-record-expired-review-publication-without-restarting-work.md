@@ -2,8 +2,9 @@
 
 Date: 2026-09-12
 Status: Proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): earlier
-transition and inspection generations. `af/task-inspection@11`, the only inspection, shows the
-recording transition in its history without a generation of its own.
+transition and inspection generations. Recording recovery is an ordinary change of
+`TaskTransition@5`, the only transition, and `af/task-inspection@11`, the only inspection, shows
+it in its history without a generation of its own.
 
 ## Context
 

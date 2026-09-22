@@ -6,16 +6,23 @@ use crate::is_digest;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-mod accounting;
-mod experiment;
-mod owned;
-pub use accounting::{TASK_EXECUTION_RECORD_V3, TaskExecutionRecordV3};
-pub use experiment::{TASK_EXECUTION_RECORD_V5, TaskExecutionRecordV5};
-pub use owned::{TASK_EXECUTION_RECORD_V4, TaskExecutionRecordV4};
+/// Exact provider counters exceed the canonical JSON number bound, so they travel as text.
+mod decimal_tokens {
+    use crate::task::usage::DecimalU128;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(value: &u128, serializer: S) -> Result<S::Ok, S::Error> {
+        DecimalU128::from(*value).serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<u128, D::Error> {
+        DecimalU128::deserialize(deserializer).map(DecimalU128::get)
+    }
+}
 
 pub const TASK_INVOCATION_V1: &str = "af/TaskInvocation@1";
 pub const TASK_OUTPUT_V1: &str = "af/TaskOutput@1";
-pub const TASK_EXECUTION_RECORD_V1: &str = "af/TaskExecutionRecord@1";
+pub const TASK_EXECUTION_RECORD_V5: &str = "af/TaskExecutionRecord@5";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -108,13 +115,18 @@ pub enum TaskExecutionRecordV1 {
         attempt_id: String,
         reason: String,
     },
-    /// Normalized lifecycle only: accounting records have an explicit v3 wire encoding.
-    #[serde(skip)]
+    /// Exact charges are recorded as canonical decimal text, never as a bounded JSON number.
     Settled {
         attempt_id: String,
+        #[serde(with = "decimal_tokens")]
         charged_tokens: u128,
         result: TaskAttemptResultV1,
         raw_artifact_ids: Vec<String>,
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "super::present_option"
+        )]
         usage_id: Option<String>,
     },
     Published {
@@ -128,39 +140,32 @@ pub enum TaskExecutionRecordV1 {
     },
     /// A trusted cumulative charge floor for started work, whether running or settled.
     /// It neither grants execution authority nor refunds an earlier observation.
-    #[serde(skip)]
     UsageObserved {
         attempt_id: String,
+        #[serde(with = "decimal_tokens")]
         charged_tokens: u128,
         usage_id: String,
         raw_artifact_ids: Vec<String>,
     },
-    /// Normalized lifecycle only: owned records have an explicit v4 wire encoding.
-    #[serde(skip)]
     OwnedChildrenRegistered {
         child_set_id: String,
     },
-    #[serde(skip)]
     OwnedChildPublished {
         child_set_id: String,
         output_id: String,
         attempt_id: String,
     },
-    #[serde(skip)]
     OwnedChildrenCompleted {
         child_set_id: String,
         output_id: String,
     },
-    #[serde(skip)]
     ExperimentPrepared {
         prepared_id: String,
     },
-    #[serde(skip)]
     ExperimentPlanDecided {
         prepared_id: String,
         decision_id: String,
     },
-    #[serde(skip)]
     ExperimentChildrenRegistered {
         prepared_id: String,
         decision_id: String,
@@ -243,24 +248,6 @@ impl TaskExecutionRecordV1 {
     }
 
     pub fn validate(&self) -> Result<(), String> {
-        require(
-            !matches!(
-                self,
-                Self::Settled { .. }
-                    | Self::UsageObserved { .. }
-                    | Self::OwnedChildrenRegistered { .. }
-                    | Self::OwnedChildPublished { .. }
-                    | Self::OwnedChildrenCompleted { .. }
-                    | Self::ExperimentPrepared { .. }
-                    | Self::ExperimentPlanDecided { .. }
-                    | Self::ExperimentChildrenRegistered { .. }
-            ),
-            "Versioned Task execution records require their explicit encoding",
-        )?;
-        self.validate_fields()
-    }
-
-    fn validate_fields(&self) -> Result<(), String> {
         require(
             self.artifact_refs().iter().all(|id| is_digest(id)),
             "Invalid Task execution artifact reference",

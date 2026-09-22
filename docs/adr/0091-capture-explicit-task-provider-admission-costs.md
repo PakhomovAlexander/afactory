@@ -2,7 +2,9 @@
 
 Date: 2026-09-13
 Status: Proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the V1
-catalog and run-authority generation beside V2.
+catalog and run-authority generation beside V2. `af.task-catalog/2` is the only catalog and
+`af.task-run-authority/2` the only run authority; `provider_admission` is optional, and an
+omitted cost means the fixed 4,096-token, 45-second default allowance.
 
 ## Context
 

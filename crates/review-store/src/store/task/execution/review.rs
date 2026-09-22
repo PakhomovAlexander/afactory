@@ -146,16 +146,13 @@ impl EventStore {
         event: NewEvent,
         authority: &dyn TaskAuthority,
     ) -> Result<Vec<review_core::RunEvent>, StoreError> {
-        use review_core::task::report::{
-            TASK_RUN_REPORT_V1, TaskFailureClassV1, TaskNodeOutcomeV1, TaskRunReportV1,
-        };
+        use review_core::task::report::{TaskFailureClassV1, TaskNodeOutcomeV1};
         let (state, plan) = self.checked_task_review_conclusion(cas, lease, authority)?;
         let execution = state
             .execution
             .as_ref()
             .ok_or_else(|| conflict("Review Task has no execution"))?;
-        let report: TaskRunReportV1 = payload(cas, report_id, TASK_RUN_REPORT_V1)?;
-        report.validate().map_err(conflict)?;
+        let report = super::super::report::round_report(cas, report_id)?;
         if !execution.pending_attempts().is_empty()
             || state.run_reports.last().map(String::as_str) != Some(report_id)
             || report.task_revision_id != state.revision_id
@@ -256,8 +253,8 @@ impl EventStore {
         self.publish_task_review_result_inner(cas, lease, output_id, None, false, authority)
     }
 
-    /// Recover only the selected output pinned by TaskTransition@4. Frozen ordinary
-    /// selection still requires its dispatch deadline; this adds no execution authority.
+    /// Recover only the selected output pinned by the recorded `RecordingResumed` transition.
+    /// Ordinary selection still requires its dispatch deadline; this adds no execution authority.
     pub fn publish_task_recorded_review_result(
         &mut self,
         cas: &Cas,

@@ -156,13 +156,12 @@ fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery(
             .settle_task_attempt(&f.cas, &lease, settled.clone(), &f.authority)
             .unwrap();
         assert_eq!(f.state().next_sequence, sequence);
-        let equivalent = TaskExecutionRecordV3::from_accounting(&settled).unwrap();
         assert!(
             append(
                 &mut f,
                 &lease,
-                TASK_EXECUTION_RECORD_V3,
-                serde_json::to_value(equivalent).unwrap()
+                TASK_EXECUTION_RECORD_V5,
+                serde_json::to_value(&settled).unwrap()
             )
             .is_err()
         );
@@ -354,7 +353,7 @@ fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery(
             .unwrap();
         assert_eq!(
             first_settled.envelope.artifact_type,
-            TASK_EXECUTION_RECORD_V3
+            TASK_EXECUTION_RECORD_V5
         );
         assert_eq!(first_settled.envelope.payload["charged_tokens"], "7");
         let current = records
@@ -364,7 +363,7 @@ fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery(
             TaskExecutionRecordV1::Settled { attempt_id, .. } if attempt_id == active.id())
             })
             .unwrap();
-        assert_eq!(current.envelope.artifact_type, TASK_EXECUTION_RECORD_V3);
+        assert_eq!(current.envelope.artifact_type, TASK_EXECUTION_RECORD_V5);
         assert_eq!(
             current.envelope.payload["charged_tokens"],
             if recover {
@@ -382,7 +381,7 @@ fn settled_and_cumulative_attempt_usage_reopen_exactly_including_crash_recovery(
                 if attempt_id == active.id() && *charged_tokens == actual)
                 })
                 .unwrap();
-            assert_eq!(observed.envelope.artifact_type, TASK_EXECUTION_RECORD_V3);
+            assert_eq!(observed.envelope.artifact_type, TASK_EXECUTION_RECORD_V5);
             assert_eq!(
                 observed.envelope.payload["charged_tokens"],
                 actual.to_string()
@@ -414,13 +413,16 @@ fn execution_record_readers_preserve_each_declared_counter_domain() {
         })
     };
     let wide = u128::from(u64::MAX) + 7;
-    for (kind, value, expected) in [
-        (TASK_EXECUTION_RECORD_V3, json!("7"), 7),
-        (TASK_EXECUTION_RECORD_V3, json!(wide.to_string()), wide),
-    ] {
+    for (value, expected) in [(json!("7"), 7), (json!(wide.to_string()), wide)] {
         let (id, envelope) = f
             .cas
-            .put_artifact(kind, producer(), vec![], None, record(value))
+            .put_artifact(
+                TASK_EXECUTION_RECORD_V5,
+                producer(),
+                vec![],
+                None,
+                record(value),
+            )
             .unwrap();
         let read = execution::read_execution_record(&f.cas, &id).unwrap();
         assert_eq!(read.envelope, envelope);
@@ -428,22 +430,26 @@ fn execution_record_readers_preserve_each_declared_counter_domain() {
             matches!(read.record, TaskExecutionRecordV1::UsageObserved { charged_tokens, .. } if charged_tokens == expected)
         );
     }
-    for (kind, value) in [
-        (TASK_EXECUTION_RECORD_V1, json!(7)),
-        (TASK_EXECUTION_RECORD_V1, json!("7")),
-        (TASK_EXECUTION_RECORD_V3, json!(7)),
-        (
-            TASK_EXECUTION_RECORD_V3,
-            json!("340282366920938463463374607431768211456"),
-        ),
+    // Exact charges travel only as canonical decimal text, never as a JSON number.
+    for value in [
+        json!(7),
+        json!("07"),
+        json!(""),
+        json!("340282366920938463463374607431768211456"),
     ] {
         let (id, _) = f
             .cas
-            .put_artifact(kind, producer(), vec![], None, record(value))
+            .put_artifact(
+                TASK_EXECUTION_RECORD_V5,
+                producer(),
+                vec![],
+                None,
+                record(value.clone()),
+            )
             .unwrap();
         assert!(
             execution::read_execution_record(&f.cas, &id).is_err(),
-            "{kind} cannot fall back to another encoding"
+            "{value} is not a canonical charge"
         );
     }
     let normalized = TaskExecutionRecordV1::UsageObserved {
@@ -452,12 +458,12 @@ fn execution_record_readers_preserve_each_declared_counter_domain() {
         usage_id,
         raw_artifact_ids: vec![],
     };
-    assert!(normalized.validate().is_err());
-    assert!(
-        TaskExecutionRecordV3::from_accounting(&normalized)
-            .unwrap()
-            .validate()
-            .is_ok()
+    normalized.validate().unwrap();
+    let encoded = serde_json::to_value(&normalized).unwrap();
+    assert_eq!(encoded["charged_tokens"], json!(wide.to_string()));
+    assert_eq!(
+        serde_json::from_value::<TaskExecutionRecordV1>(encoded).unwrap(),
+        normalized
     );
 }
 

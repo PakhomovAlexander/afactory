@@ -420,23 +420,7 @@
             "maximum": 9007199254740991
           },
           "transition": {
-            "oneOf": [
-              {
-                "$ref": "urn:af:schema:task-transition:1"
-              },
-              {
-                "$ref": "urn:af:schema:task-transition:2"
-              },
-              {
-                "$ref": "urn:af:schema:task-transition:3"
-              },
-              {
-                "$ref": "urn:af:schema:task-transition:4"
-              },
-              {
-                "$ref": "urn:af:schema:task-transition:5"
-              }
-            ]
+            "$ref": "urn:af:schema:task-transition:5"
           }
         }
       }
@@ -444,92 +428,28 @@
     "execution_records": {
       "type": "array",
       "items": {
-        "oneOf": [
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "artifact_id",
-              "artifact_type",
-              "record"
-            ],
-            "properties": {
-              "artifact_id": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
-              },
-              "artifact_type": {
-                "const": "af/TaskExecutionRecord@1"
-              },
-              "record": {
-                "$ref": "urn:af:schema:task-execution-record:1"
-              }
-            }
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "record"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
           },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "artifact_id",
-              "artifact_type",
-              "record"
-            ],
-            "properties": {
-              "artifact_id": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
-              },
-              "artifact_type": {
-                "const": "af/TaskExecutionRecord@3"
-              },
-              "record": {
-                "$ref": "urn:af:schema:task-execution-record:3"
-              },
-              "diagnostic": {
-                "$comment": "The exact CAS JSON a Failed settlement's diagnostic_id names: an af.task-diagnostic/1 object that no published schema types.",
-                "type": "object"
-              }
-            }
+          "artifact_type": {
+            "const": "af/TaskExecutionRecord@5"
           },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "artifact_id",
-              "artifact_type",
-              "record"
-            ],
-            "properties": {
-              "artifact_id": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
-              },
-              "artifact_type": {
-                "const": "af/TaskExecutionRecord@4"
-              },
-              "record": {
-                "$ref": "urn:af:schema:task-execution-record:4"
-              }
-            }
+          "record": {
+            "$ref": "urn:af:schema:task-execution-record:5"
           },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "artifact_id",
-              "artifact_type",
-              "record"
-            ],
-            "properties": {
-              "artifact_id": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
-              },
-              "artifact_type": {
-                "const": "af/TaskExecutionRecord@5"
-              },
-              "record": {
-                "$ref": "urn:af:schema:task-execution-record:5"
-              }
-            }
+          "diagnostic": {
+            "$comment": "The exact CAS JSON a Failed settlement's diagnostic_id names: an af.task-diagnostic/1 object that no published schema types.",
+            "type": "object"
           }
-        ]
+        }
       }
     },
     "run_reports": {
@@ -547,14 +467,7 @@
             "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
           },
           "report": {
-            "oneOf": [
-              {
-                "$ref": "urn:af:schema:task-run-report:1"
-              },
-              {
-                "$ref": "urn:af:schema:task-run-report:2"
-              }
-            ]
+            "$ref": "urn:af:schema:task-run-report:2"
           },
           "diagnostics": {
             "type": "object",
@@ -646,48 +559,24 @@
       "type": "array",
       "minItems": 1,
       "items": {
-        "oneOf": [
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "artifact_id",
-              "artifact_type",
-              "record"
-            ],
-            "properties": {
-              "artifact_id": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
-              },
-              "artifact_type": {
-                "const": "af/TaskReviewHandoff@1"
-              },
-              "record": {
-                "$ref": "urn:af:schema:task-review-handoff:1"
-              }
-            }
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "record"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
           },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "artifact_id",
-              "artifact_type",
-              "record"
-            ],
-            "properties": {
-              "artifact_id": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
-              },
-              "artifact_type": {
-                "const": "af/TaskReviewHandoff@2"
-              },
-              "record": {
-                "$ref": "urn:af:schema:task-review-handoff:2"
-              }
-            }
+          "artifact_type": {
+            "const": "af/TaskReviewHandoff@2"
+          },
+          "record": {
+            "$ref": "urn:af:schema:task-review-handoff:2"
           }
-        ]
+        }
       }
     },
     "review_integrations": {
@@ -1277,7 +1166,24 @@
               ],
               "properties": {
                 "transition": {
-                  "$ref": "urn:af:schema:task-transition:3"
+                  "properties": {
+                    "change": {
+                      "properties": {
+                        "kind": {
+                          "enum": [
+                            "review_integration_selected",
+                            "review_integration_finished"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "kind"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "change"
+                  ]
                 }
               }
             }

@@ -1,12 +1,9 @@
 use super::*;
-use review_core::task::event::{
-    TaskChangeV1, TaskTransitionV1, TaskTransitionV2, TaskTransitionV3, TaskTransitionV4,
-    TaskTransitionV5,
-};
+use review_core::task::event::{TaskChangeV1, TaskTransitionV1};
 
 #[test]
-fn adoption_observation_has_its_own_strict_wire() {
-    let normalized = TaskTransitionV1 {
+fn adoption_observation_is_an_ordinary_exact_transition_change() {
+    let transition = TaskTransitionV1 {
         writer: "observer".into(),
         epoch: 3,
         now_unix_ms: 5678,
@@ -14,20 +11,13 @@ fn adoption_observation_has_its_own_strict_wire() {
             observation_id: format!("sha256:{}", "d".repeat(64)),
         },
     };
-    assert!(serde_json::to_value(&normalized).is_err());
-    let wire = TaskTransitionV5::from_adoption(&normalized).unwrap();
-    wire.validate().unwrap();
-    let value = serde_json::to_value(&wire).unwrap();
+    transition.validate().unwrap();
+    let value = serde_json::to_value(&transition).unwrap();
     assert_valid("task-transition-v5.json", &value);
-    assert_eq!(wire.into_transition(), normalized);
-    for schema in [
-        "task-transition-v1.json",
-        "task-transition-v2.json",
-        "task-transition-v3.json",
-        "task-transition-v4.json",
-    ] {
-        assert_invalid(schema, &value, "adoption observation is additive authority");
-    }
+    assert_eq!(
+        serde_json::from_value::<TaskTransitionV1>(value.clone()).unwrap(),
+        transition
+    );
     review_core::event::validate_event_payload(review_core::EventType::TaskTransitionV5, &value)
         .unwrap();
     let id = |c: char| format!("sha256:{}", c.to_string().repeat(64));
@@ -44,7 +34,7 @@ fn adoption_observation_has_its_own_strict_wire() {
         "an absent section is omitted, never empty",
     );
 
-    let mut missing = value.clone();
+    let mut missing = serde_json::to_value(&transition).unwrap();
     missing["change"]
         .as_object_mut()
         .unwrap()
@@ -54,12 +44,12 @@ fn adoption_observation_has_its_own_strict_wire() {
         &missing,
         "observation identity is mandatory",
     );
-    assert!(serde_json::from_value::<TaskTransitionV5>(missing).is_err());
+    assert!(serde_json::from_value::<TaskTransitionV1>(missing).is_err());
 }
 
 #[test]
-fn recording_resume_has_its_own_strict_wire_and_leaves_old_resume_frozen() {
-    let normalized = TaskTransitionV1 {
+fn recording_resume_is_exact_and_stays_distinct_from_an_ordinary_resume() {
+    let transition = TaskTransitionV1 {
         writer: "recovery".into(),
         epoch: 2,
         now_unix_ms: 1234,
@@ -69,24 +59,14 @@ fn recording_resume_has_its_own_strict_wire_and_leaves_old_resume_frozen() {
             report_id: format!("sha256:{}", "c".repeat(64)),
         },
     };
-    assert!(normalized.validate().is_err());
-    assert!(serde_json::to_value(&normalized).is_err());
-    assert!(TaskTransitionV2::from_continuation(&normalized).is_none());
-    assert!(TaskTransitionV3::from_integration(&normalized).is_none());
-    let wire = TaskTransitionV4::from_recording(&normalized).unwrap();
-    wire.validate().unwrap();
-    let value = serde_json::to_value(&wire).unwrap();
-    assert_valid("task-transition-v4.json", &value);
-    assert_eq!(wire.into_transition(), normalized);
-    for schema in [
-        "task-transition-v1.json",
-        "task-transition-v2.json",
-        "task-transition-v3.json",
-    ] {
-        assert_invalid(schema, &value, "recovery is additive authority");
-    }
-    assert!(serde_json::from_value::<TaskTransitionV1>(value.clone()).is_err());
-    review_core::event::validate_event_payload(review_core::EventType::TaskTransitionV4, &value)
+    transition.validate().unwrap();
+    let value = serde_json::to_value(&transition).unwrap();
+    assert_valid("task-transition-v5.json", &value);
+    assert_eq!(
+        serde_json::from_value::<TaskTransitionV1>(value.clone()).unwrap(),
+        transition
+    );
+    review_core::event::validate_event_payload(review_core::EventType::TaskTransitionV5, &value)
         .unwrap();
     let mut invalid = Vec::new();
     for field in ["task_revision_id", "plan_id", "report_id"] {
@@ -111,31 +91,26 @@ fn recording_resume_has_its_own_strict_wire_and_leaves_old_resume_frozen() {
     invalid.push(bad);
     for bad in invalid {
         assert_invalid(
-            "task-transition-v4.json",
+            "task-transition-v5.json",
             &bad,
             "invalid or invented recovery authority",
         );
         assert!(
-            serde_json::from_value::<TaskTransitionV4>(bad)
+            serde_json::from_value::<TaskTransitionV1>(bad)
                 .and_then(|v| v.validate().map_err(serde::de::Error::custom))
                 .is_err()
         );
     }
     let old = TaskTransitionV1 {
         change: TaskChangeV1::Resumed {},
-        ..normalized
+        ..transition
     };
     let old_json = serde_json::to_value(&old).unwrap();
     assert_eq!(
         old_json,
         json!({"writer":"recovery","epoch":2,"now_unix_ms":1234,"change":{"kind":"resumed"}})
     );
-    assert_valid("task-transition-v1.json", &old_json);
-    assert_invalid(
-        "task-transition-v4.json",
-        &old_json,
-        "ordinary resume stays distinct",
-    );
+    assert_valid("task-transition-v5.json", &old_json);
 }
 
 #[test]

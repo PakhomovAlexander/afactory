@@ -229,12 +229,7 @@ struct CapturedPackage {
 #[serde(deny_unknown_fields)]
 struct RunAuthority {
     schema: String,
-    #[serde(
-        default,
-        skip_serializing_if = "Option::is_none",
-        deserialize_with = "present_option"
-    )]
-    provider_admission: Option<review_graph::task::OperatorAttemptCost>,
+    provider_admission: review_graph::task::OperatorAttemptCost,
     engine_id: String,
     #[serde(
         default,
@@ -560,12 +555,7 @@ fn capture_authority(
         )
     };
     let authority = RunAuthority {
-        schema: if provider_admission.is_some() {
-            "af.task-run-authority/2"
-        } else {
-            "af.task-run-authority/1"
-        }
-        .into(),
+        schema: provider_admission::RUN_AUTHORITY_SCHEMA.into(),
         provider_admission,
         engine_id,
         code_policy_id: code_policy_id.clone(),
@@ -1992,7 +1982,7 @@ fn present_with_format(
     let mut reports = Vec::new();
     for id in &state.run_reports {
         use review_core::task::report::*;
-        let (report, phase_id) =
+        let report =
             review_store::store::task::read_task_run_report(cas, id).map_err(|e| e.to_string())?;
         let mut diagnostics = BTreeMap::new();
         for node in &report.nodes {
@@ -2003,11 +1993,7 @@ fn present_with_format(
                 diagnostics.insert(node.node.clone(), diagnostic);
             }
         }
-        let report = if phase_id.is_some() {
-            cas.get_artifact(id).map_err(|e| e.to_string())?.payload
-        } else {
-            serde_json::to_value(report).map_err(|e| e.to_string())?
-        };
+        let report = serde_json::to_value(report).map_err(|e| e.to_string())?;
         reports.push(json!({"artifact_id":id,"report":report,"diagnostics":diagnostics}));
     }
     value["run_reports"] = json!(reports);

@@ -829,7 +829,7 @@ fn export_fixture(
         toml::to_string(policy).unwrap(),
     )
     .unwrap();
-    let catalog = json!({"schema":"af.task-catalog/1","code_policy":".af/code-policy.toml","packages":pins,"independence":IndependencePolicyV1::default()});
+    let catalog = json!({"schema":"af.task-catalog/2","code_policy":".af/code-policy.toml","packages":pins,"independence":IndependencePolicyV1::default()});
     std::fs::write(
         destination.join(".af/task-catalog.toml"),
         toml::to_string(&catalog).unwrap(),

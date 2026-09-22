@@ -182,7 +182,7 @@ pub trait TaskDomain: TaskOperatorHost {
         _task: &TaskRevisionV1,
         _plan: &ExecutionPlanV1,
         _phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
-        _report: &review_core::task::report::TaskRunReportV2,
+        _report: &review_core::task::report::TaskRunReportV1,
         _events: &[review_store::NewEvent],
         _evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {
@@ -419,7 +419,7 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
-        report: &review_core::task::report::TaskRunReportV2,
+        report: &review_core::task::report::TaskRunReportV1,
         events: &[review_store::NewEvent],
         evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {
@@ -1379,7 +1379,7 @@ impl TaskDomain for CapturedTaskHost<'_> {
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
-        report: &review_core::task::report::TaskRunReportV2,
+        report: &review_core::task::report::TaskRunReportV1,
         events: &[review_store::NewEvent],
         evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {

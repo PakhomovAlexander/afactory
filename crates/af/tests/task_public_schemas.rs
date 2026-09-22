@@ -5,9 +5,7 @@ use std::process::{Command, Output};
 use review_core::task::delivery::{
     TASK_DELIVERY_RECORD_V1, TaskDeliveryRecordV1, TaskDeliveryStatusV1,
 };
-use review_core::task::execution::{
-    TaskAttemptResultV1, TaskExecutionRecordV1, TaskExecutionRecordV3,
-};
+use review_core::task::execution::{TaskAttemptResultV1, TaskExecutionRecordV1};
 use review_graph::task::CompiledTask;
 use serde_json::{Value, json};
 
@@ -133,7 +131,7 @@ fn append_delivery(
 #[test]
 fn task_file_and_catalog_schemas_match_real_fixtures_and_cli_refusals() {
     let file_schema = validator("task-file-v1.json");
-    let catalog_schema = validator("task-catalog-v1.json");
+    let catalog_schema = validator("task-catalog-v2.json");
     for name in ["pagination", "review", "embedded-review", "bounded-repair"] {
         let fixture = workspace().join("fixtures/task-runtime").join(name);
         valid(
@@ -423,7 +421,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
     );
 
     let digest = format!("sha256:{}", "a".repeat(64));
-    let wide = TaskExecutionRecordV3::from_accounting(&TaskExecutionRecordV1::Settled {
+    let wide = TaskExecutionRecordV1::Settled {
         attempt_id: "A".repeat(26),
         charged_tokens: u128::MAX,
         result: TaskAttemptResultV1::Failed {
@@ -432,17 +430,16 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
         },
         raw_artifact_ids: vec![],
         usage_id: None,
-    })
-    .unwrap();
+    };
     wide.validate().unwrap();
     let mut value = finished.clone();
-    value["execution_records"] = json!([{"artifact_id":digest,"artifact_type":"af/TaskExecutionRecord@3","record":wide,"diagnostic":{"schema":"af.task-diagnostic/1","error":"opaque"}}]);
+    value["execution_records"] = json!([{"artifact_id":digest,"artifact_type":"af/TaskExecutionRecord@5","record":wide,"diagnostic":{"schema":"af.task-diagnostic/1","error":"opaque"}}]);
     value["chargeable_tokens"] = json!(u128::MAX.to_string());
     valid(&inspection_schema, &value);
-    value["execution_records"][0]["artifact_type"] = json!("af/TaskExecutionRecord@1");
+    value["execution_records"][0]["artifact_type"] = json!("af/TaskExecutionRecord@3");
     assert!(
         !inspection_schema.is_valid(&value),
-        "mismatched record version"
+        "one closed execution record type"
     );
     for charge in [
         json!(7),

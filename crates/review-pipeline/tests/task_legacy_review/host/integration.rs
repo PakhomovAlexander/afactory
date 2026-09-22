@@ -178,7 +178,7 @@ fn prepared_integration_reuses_one_common_attempt_and_replays_its_exact_phase_re
             .unwrap();
         let backup_lease = lease.clone();
         let canonical_start = shared.lock().unwrap().len("review").unwrap() as usize;
-        sql.execute_batch("CREATE TRIGGER integration_atomicity_fault BEFORE INSERT ON events WHEN NEW.type='TaskTransition@3' AND json_extract(NEW.payload,'$.change.kind')='review_integration_finished' BEGIN SELECT RAISE(ABORT,'integration atomicity fault'); END;").unwrap();
+        sql.execute_batch("CREATE TRIGGER integration_atomicity_fault BEFORE INSERT ON events WHEN NEW.type='TaskTransition@5' AND json_extract(NEW.payload,'$.change.kind')='review_integration_finished' BEGIN SELECT RAISE(ABORT,'integration atomicity fault'); END;").unwrap();
         let task_run = review_store::store::task::task_run_id(lease.task_id()).unwrap();
         let before_task = shared.lock().unwrap().replay(&task_run).unwrap();
         let before_review = shared.lock().unwrap().replay("review").unwrap();

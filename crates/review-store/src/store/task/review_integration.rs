@@ -1,6 +1,6 @@
 //! One captured post-Round sequence, on the original Task ledger and two checked log prefixes.
 use super::*;
-use review_core::task::report::{TASK_RUN_REPORT_V2, TaskNodeOutcomeV1, TaskRunReportV2};
+use review_core::task::report::{TaskNodeOutcomeV1, TaskRunReportV1};
 use review_core::task::review_compat::{LEGACY_REVIEW_ROUND_V1, LegacyReviewRoundV1};
 use review_core::task::review_integration::*;
 use review_graph::task::{CompiledReviewIntegrationV1, CompiledTask};
@@ -222,12 +222,7 @@ impl EventStore {
                 "Integration requires its original passing Task conclusion",
             ));
         }
-        let task_report: task::report::TaskRunReportV1 = payload(
-            cas,
-            &report.task_accounting.task_report_id,
-            task::report::TASK_RUN_REPORT_V1,
-        )?;
-        task_report.validate().map_err(conflict)?;
+        let task_report = super::report::round_report(cas, &report.task_accounting.task_report_id)?;
         if task_report.plan_id != phase.plan_id
             || task_report.task_revision_id != phase.task_revision_id
         {
@@ -463,9 +458,8 @@ impl EventStore {
         if active.finished() {
             return Err(conflict("Integration phase is already sealed"));
         }
-        let report: TaskRunReportV2 = payload(cas, phase_report_id, TASK_RUN_REPORT_V2)?;
-        report.validate().map_err(conflict)?;
-        if report.phase_id != registered.id
+        let report = super::report::phase_report(cas, phase_report_id)?;
+        if report.phase_id.as_deref() != Some(registered.id.as_str())
             || report.plan_id != registered.phase.plan_id
             || report.task_revision_id != registered.phase.task_revision_id
             || report.nodes[0].node != registered.node()
@@ -562,10 +556,9 @@ fn selection_events(
 fn selected_checks(
     cas: &Cas,
     registered: &RegisteredTaskReviewIntegration,
-    report: &TaskRunReportV2,
+    report: &TaskRunReportV1,
 ) -> Result<Option<review_core::IntegrationChecksV1>, StoreError> {
-    report.validate().map_err(conflict)?;
-    if report.phase_id != registered.id
+    if report.phase_id.as_deref() != Some(registered.id.as_str())
         || report.plan_id != registered.phase.plan_id
         || report.task_revision_id != registered.phase.task_revision_id
         || report.nodes[0].node != registered.node()
@@ -635,7 +628,7 @@ fn resource_refusal(
 fn validate_resource_recovery(
     execution: &execution::TaskExecutionProjection,
     node: &str,
-    report: &TaskRunReportV2,
+    report: &TaskRunReportV1,
     deadline: u64,
     time: u64,
 ) -> Result<(), StoreError> {
@@ -659,7 +652,7 @@ fn validate_completion(
     cas: &Cas,
     state: &TaskProjection,
     registered: &RegisteredTaskReviewIntegration,
-    report: &TaskRunReportV2,
+    report: &TaskRunReportV1,
     events: &[NewEvent],
     evidence: &TaskReviewIntegrationEvidence,
 ) -> Result<(), StoreError> {
@@ -691,7 +684,7 @@ fn validate_completion(
 fn validate_canonical_completion(
     cas: &Cas,
     registered: &RegisteredTaskReviewIntegration,
-    report: &TaskRunReportV2,
+    report: &TaskRunReportV1,
     events: &[NewEvent],
     evidence: &TaskReviewIntegrationEvidence,
 ) -> Result<(), StoreError> {
@@ -1031,7 +1024,7 @@ impl TaskProjection {
                 if active.finished() {
                     return Err(conflict("Integration phase is already sealed"));
                 }
-                let report: TaskRunReportV2 = payload(cas, report_id, TASK_RUN_REPORT_V2)?;
+                let report = super::report::phase_report(cas, report_id)?;
                 let checks = selected_checks(cas, active, &report)?;
                 validate_resource_recovery(
                     execution,
@@ -1242,11 +1235,7 @@ pub(in crate::store) fn canonical_task_integration_views(
         return Err(conflict("Task Integration has ambiguous Round authority"));
     };
     let round: LegacyReviewRoundV1 = payload(cas, id, LEGACY_REVIEW_ROUND_V1)?;
-    let task_report: task::report::TaskRunReportV1 = payload(
-        cas,
-        &report.task_accounting.task_report_id,
-        task::report::TASK_RUN_REPORT_V1,
-    )?;
+    let task_report = super::report::round_report(cas, &report.task_accounting.task_report_id)?;
     super::review_handoff::selected_prior_sets(
         cas,
         &report.task_accounting.plan_id,
@@ -1314,7 +1303,7 @@ pub(super) fn validate_handoff(
         ));
     }
     let task_events = replays.read(store, &task_run_id(&handoff.task_id)?)?;
-    let finishes:Vec<_>=task_events.iter().filter(|e|e.event_type==EventType::TaskTransitionV3).map(super::read_task_transition).collect::<Result<Vec<_>,_>>()?.into_iter().filter(|t|matches!(&t.change,TaskChangeV1::ReviewIntegrationFinished{phase_id:p,integration_committed_event_id:Some(id),..} if p==phase_id && id==integration_committed_event_id)).collect();
+    let finishes:Vec<_>=task_events.iter().map(super::read_task_transition).collect::<Result<Vec<_>,_>>()?.into_iter().filter(|t|matches!(&t.change,TaskChangeV1::ReviewIntegrationFinished{phase_id:p,integration_committed_event_id:Some(id),..} if p==phase_id && id==integration_committed_event_id)).collect();
     if finishes.len() != 1 {
         return Err(conflict(
             "Integrated handoff requires one protected common phase completion",
@@ -1372,7 +1361,7 @@ pub(super) fn validate_cached(
             }
         }
         if let Some(report_id) = &phase.report_id {
-            let report: TaskRunReportV2 = payload(cas, report_id, TASK_RUN_REPORT_V2)?;
+            let report = super::report::phase_report(cas, report_id)?;
             let checks = selected_checks(cas, phase, &report)?;
             if phase.committed_event_id.is_some() != checks.as_ref().is_some_and(|c| c.passed()) {
                 return Err(conflict(

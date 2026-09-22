@@ -138,7 +138,7 @@ pub trait TaskAuthority: Sync {
         _task: &TaskRevisionV1,
         _plan: &ExecutionPlanV1,
         _phase: &task::review_integration::TaskReviewIntegrationPhaseV1,
-        _report: &task::report::TaskRunReportV2,
+        _report: &task::report::TaskRunReportV1,
         _events: &[NewEvent],
         _evidence: &review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {
@@ -1371,14 +1371,7 @@ impl EventStore {
         let mut replays = ReviewReplays::default();
         let first = state.as_ref().map_or(0, |state| state.next_sequence);
         for event in self.replay_from(&task_run_id(task_id)?, first)? {
-            if !matches!(
-                event.event_type,
-                EventType::TaskTransitionV1
-                    | EventType::TaskTransitionV2
-                    | EventType::TaskTransitionV3
-                    | EventType::TaskTransitionV4
-                    | EventType::TaskTransitionV5
-            ) {
+            if !matches!(event.event_type, EventType::TaskTransitionV5) {
                 return Err(conflict("Task log contains a foreign event"));
             }
             let transition = read_task_transition(&event)?;

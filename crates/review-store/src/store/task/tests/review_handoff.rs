@@ -1,6 +1,5 @@
 use super::*;
 use crate::store::task::review_handoff::*;
-use review_core::task::event::TaskTransitionV2;
 use review_core::task::execution::*;
 use review_core::task::review_compat::*;
 use review_core::task::review_handoff::*;
@@ -237,8 +236,7 @@ fn review_handoff_retains_original_budget_late_charge_and_exact_reopen_without_a
             .store
             .continue_task_review(&f.cas, &lease, &id, &HandoffAuthority(&f.authority))
             .unwrap();
-        assert_eq!(event.event_type, EventType::TaskTransitionV2);
-        assert!(serde_json::from_value::<TaskTransitionV1>(event.payload.clone()).is_err());
+        assert_eq!(event.event_type, EventType::TaskTransitionV5);
         assert_eq!(
             read_task_transition(&event).unwrap().change,
             TaskChangeV1::ReviewContinued {
@@ -434,20 +432,19 @@ fn review_handoff_refuses_pending_untrusted_or_changed_epoch_caps_without_append
             .to_string()
             .contains("aggregate scopes")
     );
-    let raw = TaskTransitionV2::from_continuation(&TaskTransitionV1 {
+    let raw = TaskTransitionV1 {
         writer: lease.writer.clone(),
         epoch: lease.epoch,
         now_unix_ms: now().unwrap(),
         change: TaskChangeV1::ReviewContinued { handoff_id: id },
-    })
-    .unwrap();
+    };
     let error = f
         .store
         .append(
             &task_run_id(lease.task_id()).unwrap(),
             &f.cas,
             NewEvent::new(
-                EventType::TaskTransitionV2,
+                EventType::TaskTransitionV5,
                 serde_json::to_value(raw).unwrap(),
             ),
         )

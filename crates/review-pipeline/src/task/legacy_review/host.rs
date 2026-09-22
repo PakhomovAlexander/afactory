@@ -883,7 +883,7 @@ impl TaskDomain for LegacyReviewTaskHost<'_, '_> {
         task: &TaskRevisionV1,
         plan: &ExecutionPlanV1,
         phase: &review_core::task::review_integration::TaskReviewIntegrationPhaseV1,
-        _report: &review_core::task::report::TaskRunReportV2,
+        _report: &review_core::task::report::TaskRunReportV1,
         _events: &[NewEvent],
         evidence: &review_store::store::task::review_integration::TaskReviewIntegrationEvidence,
     ) -> Result<(), String> {
