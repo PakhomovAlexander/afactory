@@ -180,7 +180,7 @@ fn publication_recovers(before_attempt: bool) {
                 usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&bytes).unwrap()],
                 message: Ok(bytes),
-                usage: Some(review_runner::TokenUsage::charge_only(7).into()),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(7)),
             }
         }
     }

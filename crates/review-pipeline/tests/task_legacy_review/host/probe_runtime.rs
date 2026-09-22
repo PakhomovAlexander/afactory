@@ -81,7 +81,7 @@ impl WorkerModelAdapter for Model {
                 .collect(),
             message,
             // Connector evidence remains the charge floor even when native metadata is lower.
-            usage: Some(review_runner::TokenUsage::charge_only(0).into()),
+            usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
         }
     }
 }

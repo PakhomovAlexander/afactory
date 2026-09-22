@@ -13,10 +13,10 @@ use review_broker::{
 };
 use review_core::task::execution::TaskInvocationV1;
 use review_core::task::feedback::TaskFeedbackCodeV1;
+use review_core::task::usage::TaskTokenUsageV3;
 use review_core::{
     BrokerCredentialModeV1, BrokerLeaseV1, BrokerOperationPolicyV1, BrokerOperationReceiptV2,
 };
-use review_runner::TokenUsage;
 use review_runner::task::{
     ModelWorkerReturn, WorkerContract, WorkerModelAdapter, invoke_model, invoke_model_controlled,
     invoke_model_with_broker,
@@ -104,7 +104,7 @@ impl WorkerModelAdapter for NativeModel<'_> {
             } else {
                 Ok(VALID_REPLY.to_vec())
             },
-            usage: Some(TokenUsage::charge_only(u64::MAX).into()),
+            usage: Some(TaskTokenUsageV3::charge_only(u64::MAX.into())),
             raw_artifact_ids: vec![cas.put(RAW).unwrap()],
         }
     }
@@ -356,7 +356,7 @@ impl WorkerModelAdapter for BrokeredModel {
                 Ok(response.body)
             },
             // Adapter counters remain separate from the execution owner's exact Broker total.
-            usage: Some(TokenUsage::charge_only(3).into()),
+            usage: Some(TaskTokenUsageV3::charge_only(3)),
             raw_artifact_ids,
         }
     }

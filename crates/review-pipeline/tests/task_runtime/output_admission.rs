@@ -103,9 +103,9 @@ impl WorkerModelAdapter for DomainModel {
             usage_observation: None,
             raw_artifact_ids: vec![cas.put(&message).unwrap()],
             message: Ok(message),
-            usage: Some(
-                review_runner::TokenUsage::charge_only(if count == 0 { 17 } else { 23 }).into(),
-            ),
+            usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(
+                if count == 0 { 17 } else { 23 },
+            )),
         }
     }
 }

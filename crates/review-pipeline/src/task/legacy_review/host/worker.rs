@@ -124,8 +124,7 @@ impl LegacyReviewTaskHost<'_, '_> {
         )
         .map_err(|e| e.to_string())?;
         if let Some(focus) = manifest.focus {
-            instructions.push_str("\n\n## Focus for this run\n\n");
-            instructions.push_str(&focus);
+            review_runner::append_focus(&mut instructions, &focus);
         }
         Ok(instructions)
     }

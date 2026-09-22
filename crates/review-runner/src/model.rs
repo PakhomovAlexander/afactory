@@ -490,15 +490,6 @@ pub struct TokenUsage {
     pub chargeable_tokens: u64,
 }
 
-impl TokenUsage {
-    pub fn charge_only(chargeable_tokens: u64) -> Self {
-        Self {
-            chargeable_tokens,
-            ..Self::default()
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ContextEntry {
@@ -671,9 +662,17 @@ pub struct RenderedInput {
     pub manifest: ContextManifest,
 }
 
+/// Narrow a run's attention: the Campaign focus, under its own heading after the package
+/// instructions. A narrowing only — the package prompt still governs. The one formatting that
+/// `af review render` (through the adapters' `with_focus`) and the Task host share.
+pub fn append_focus(instructions: &mut String, focus: &str) {
+    instructions.push_str("\n\n## Focus for this run\n\n");
+    instructions.push_str(focus);
+}
+
 /// Compose a model Worker's prompt: the package instructions, the output contract, then the
 /// labelled inputs. A pure function of its arguments — no sandbox, Provider, or CAS — so what
-/// an adapter sends and what `af review render` shows are the same bytes by construction.
+/// the Task host sends and what `af review render` shows are the same bytes by construction.
 pub fn compose_model_prompt(
     instructions: &str,
     inputs: &ReviewerInputs,

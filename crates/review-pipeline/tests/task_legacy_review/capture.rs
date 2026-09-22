@@ -26,11 +26,15 @@ pub(super) fn open_round_with_package(
     store: &mut EventStore,
     definition: &str,
 ) -> String {
-    let files = BTreeMap::from([
+    open_round_authority(cas, store, definition, Some(claude_package()))
+}
+
+/// The packaged `claude` fixture Worker's files.
+pub(super) fn claude_package() -> BTreeMap<String, Vec<u8>> {
+    BTreeMap::from([
         ("reviewer.toml".into(), b"name=\"fixture\"\nversion=\"1.0.0\"\nsubjects=[\"whole-tree\"]\n[runner]\nprogram=\"claude\"\nargs=[{value=\"--model\"},{value=\"claude-fixture\"},{value=\"--effort\"},{value=\"high\"}]\n".to_vec()),
         ("reviewer.md".into(), b"Review the exact declared Subject. Captured instruction marker.".to_vec()),
-    ]);
-    open_round_authority(cas, store, definition, Some(files))
+    ])
 }
 
 pub(super) fn limits() -> TaskLimitsV1 {

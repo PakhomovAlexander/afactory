@@ -1,6 +1,6 @@
 [package]
 name = "review-runner"
-description = "Reviewer adapters: command and model runners behind one contract"
+description = "Worker runners: the supervised process transport, input composition and the Task Worker adapter contract"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

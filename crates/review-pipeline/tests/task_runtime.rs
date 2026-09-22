@@ -88,7 +88,7 @@ fn approved_derived_model_child_uses_its_exact_context_and_replays_without_reexe
                 usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&reply).unwrap()],
                 message: Ok(reply),
-                usage: Some(review_runner::TokenUsage::charge_only(1).into()),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(1)),
             }
         }
     }
@@ -1341,7 +1341,9 @@ fn provider_admission_is_charged_once_and_failed_admission_dispatches_no_busines
                 usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&bytes).unwrap()],
                 message: Ok(bytes),
-                usage: Some(review_runner::TokenUsage::charge_only(cost).into()),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(
+                    cost,
+                )),
             }
         }
     }
@@ -1503,9 +1505,9 @@ fn model_schema_failure_keeps_usage_and_retry_runs_through_the_same_task_budget(
                 usage_observation: None,
                 raw_artifact_ids: vec![cas.put(&message).unwrap()],
                 message: Ok(message),
-                usage: Some(
-                    review_runner::TokenUsage::charge_only(if first { 20 } else { 30 }).into(),
-                ),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(
+                    if first { 20 } else { 30 },
+                )),
             }
         }
     }

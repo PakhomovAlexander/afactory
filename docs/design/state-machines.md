@@ -152,7 +152,7 @@ not.
 | State | Meaning | Leaves on |
 |---|---|---|
 | `pending` | selected by the pipeline, Input written | `reserve` → `reserved` |
-| `reserved` | budget reserved across nested scopes (attempt, node, fan-out, run); Env admitted (`admit(required, provided)`) | `dispatch` → `dispatched`; `refused` / `unavailable` → **released** (reservation returned) |
+| `reserved` | budget reserved across the named token scopes (node, fan-out) and the run; Env admitted (`admit(required, provided)`) | `dispatch` → `dispatched`; `refused` / `unavailable` → **released** (reservation returned) |
 | `dispatched` | epoch `e` issued; Env materialized; Provider session started | `started` → `running` |
 | `running` | the model session is working | `tool_call` → `tool_call`; `result` → `sealing`; `error` → **failed**; `unparseable` → **malformed**; `timeout` / `supersede` → **fenced** |
 | `tool_call` | a brokered tool is executing under epoch `e`; the call and its result are events | `tool_result` → `running`; stale epoch → the call is **quarantined**, machine unchanged |

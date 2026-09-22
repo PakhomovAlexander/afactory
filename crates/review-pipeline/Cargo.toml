@@ -25,6 +25,10 @@ toml = "0.8.23"
 toml_edit = "0.22.27"
 
 [dev-dependencies]
+# One test pins that `af review render`, which composes through the adapters, shows the
+# instructions the Task host dispatches.
+review-runner-claude = { path = "../review-runner-claude" }
+review-runner-codex = { path = "../review-runner-codex" }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 jsonschema = { version = "0.56.0", default-features = false }
 

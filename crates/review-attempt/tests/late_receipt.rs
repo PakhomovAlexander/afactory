@@ -207,8 +207,12 @@ fn fenced_attempts_consume_the_cap_that_bounds_retries() {
     assert_eq!(budget.committed(&deep), 200);
 }
 
+/// A fenced Attempt's charge and its successor's above-u64 native usage each stay exact, and a
+/// repeated late report is a floor, not a second charge. The ledger's total over distinct
+/// Attempts is private; its overflow refusal is pinned in `fencing.rs`
+/// (`exact_attempt_total_overflow_does_not_mutate_charge_or_selection`).
 #[test]
-fn late_native_usage_does_not_overflow_the_total_of_distinct_attempts() {
+fn late_native_usage_above_u64_charges_each_attempt_exactly() {
     let mut attempts = ledger();
     let first = attempts.dispatch("review");
     attempts.charge_exact(&first, 7).unwrap();

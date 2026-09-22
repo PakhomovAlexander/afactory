@@ -67,11 +67,7 @@ impl CodexAdapter {
     /// Narrow this invocation's attention. A narrowing only — the package prompt still
     /// governs; this cannot grant anything the package did not.
     pub fn with_focus(mut self, focus: impl AsRef<str>) -> Self {
-        self.prompt = format!(
-            "{}\n\n## Focus for this run\n\n{}",
-            self.prompt,
-            focus.as_ref()
-        );
+        review_runner::append_focus(&mut self.prompt, focus.as_ref());
         self
     }
 }

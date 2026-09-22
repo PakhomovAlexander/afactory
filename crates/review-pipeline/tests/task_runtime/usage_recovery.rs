@@ -83,7 +83,7 @@ impl WorkerModelAdapter for OutageModel {
                 usage_observation: None,
                 message: Ok(b"OK".to_vec()),
                 raw_artifact_ids: vec![cas.put(b"OK").unwrap()],
-                usage: Some(review_runner::TokenUsage::charge_only(7).into()),
+                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(7)),
             }
         }
     }

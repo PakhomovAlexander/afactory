@@ -74,7 +74,15 @@ fn admitted_plan(
     review_store::store::task::TaskLease,
     ExecutionPlanV1,
 ) {
-    admitted_plan_with_provider(cas, store, mode, "claude")
+    admitted_plan_with_provider(cas, store, mode, "claude", None)
+}
+
+/// The packaged `codex` fixture Worker's files.
+fn codex_package() -> BTreeMap<String, Vec<u8>> {
+    BTreeMap::from([
+        ("reviewer.toml".into(), b"name=\"fixture\"\nversion=\"1.0.0\"\nsubjects=[\"whole-tree\"]\n[runner]\nprogram=\"codex\"\nargs=[{value=\"--model\"},{value=\"codex-fixture\"},{value=\"-c\"},{value=\"model_reasoning_effort=high\"}]\n".to_vec()),
+        ("reviewer.md".into(), b"Review the exact declared Subject. Captured instruction marker.".to_vec()),
+    ])
 }
 
 fn admitted_plan_with_provider(
@@ -82,6 +90,7 @@ fn admitted_plan_with_provider(
     store: &mut EventStore,
     mode: &str,
     provider_kind: &str,
+    focus: Option<&str>,
 ) -> (
     LegacyReviewPlanCompiler,
     review_store::store::task::TaskLease,
@@ -91,15 +100,19 @@ fn admitted_plan_with_provider(
         .replace("version = 2", "version = 4\n[gate]\nprovider=\"trusted_local\"\nrequired_isolation=\"none\"\nmode=\"ephemeral-write\"")
         .replace("runner = { program = \"/bin/true\" }", &format!("package=\"fixture\"\ngated_by=\"gate\"\nexecution={{credential_mode=\"{mode}\"}}"))
         + "\n[[nodes]]\nid=\"gate\"\nkind=\"gate\"\noutputs=[\"decision\"]\n[[checks]]\nname=\"required\"\nprogram=\"/bin/sh\"\nargs=[{value=\"-c\"},{value=\"exit 0\"}]\n";
-    let round = if provider_kind == "claude" {
-        capture::open_round_with_package(cas, store, &definition)
+    let package = if provider_kind == "claude" {
+        capture::claude_package()
     } else {
         assert_eq!(provider_kind, "codex");
-        captured_fixture::open_round_authority(cas, store, &definition, Some(BTreeMap::from([
-            ("reviewer.toml".into(), b"name=\"fixture\"\nversion=\"1.0.0\"\nsubjects=[\"whole-tree\"]\n[runner]\nprogram=\"codex\"\nargs=[{value=\"--model\"},{value=\"codex-fixture\"},{value=\"-c\"},{value=\"model_reasoning_effort=high\"}]\n".to_vec()),
-            ("reviewer.md".into(), b"Review the exact declared Subject. Captured instruction marker.".to_vec()),
-        ])))
+        codex_package()
     };
+    let round = captured_fixture::open_round_authority_with_focus(
+        cas,
+        store,
+        &definition,
+        Some(package),
+        focus,
+    );
     let mut settings = plan::settings();
     settings.provider_admission.tokens = 32;
     settings.executions.insert(
@@ -162,7 +175,7 @@ fn check_native_provider_reuse(provider_only: bool) {
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
         let (compiler, lease, plan) =
-            admitted_plan_with_provider(&cas, &mut store, "trusted_unsafe", provider_kind);
+            admitted_plan_with_provider(&cas, &mut store, "trusted_unsafe", provider_kind, None);
         let model = Model {
             provider_kind,
             calls: AtomicUsize::new(0),
@@ -329,6 +342,130 @@ fn check_native_provider_reuse(provider_only: bool) {
             } else {
                 1
             }
+        );
+    }
+}
+
+/// `af review render` shows the prompt an adapter composes from the package and the focus
+/// (`from_package`, `with_focus`, `render_input`); the Task host composes the prompt it
+/// dispatches from the captured package and the Campaign's recorded focus. The instructions,
+/// the focus narrowing and the output contract must be the same bytes on both sides; what
+/// follows is the shared input rendering over Campaign-bound inputs render cannot know.
+#[test]
+fn dispatched_review_prompt_starts_with_the_rendered_instructions_and_focus() {
+    use review_core::task::review_compat::{TaskReviewContextV1, TaskReviewResultSelectedV1};
+    use review_runner::ReviewerAdapter;
+    const FOCUS: &str = "the parser";
+    for provider_kind in ["claude", "codex"] {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+        let (compiler, lease, plan) = admitted_plan_with_provider(
+            &cas,
+            &mut store,
+            "trusted_unsafe",
+            provider_kind,
+            Some(FOCUS),
+        );
+        let model = Model {
+            provider_kind,
+            calls: AtomicUsize::new(0),
+            admitted: true,
+            retry: false,
+            wide: false,
+        };
+        let models = plan
+            .bindings
+            .iter()
+            .map(|(slot, binding)| {
+                (
+                    slot.clone(),
+                    TaskModelBinding {
+                        binding: binding.clone(),
+                        adapter: &model as &dyn WorkerModelAdapter,
+                    },
+                )
+            })
+            .collect();
+        let shared = SharedEventStore::new(&mut store);
+        let host =
+            LegacyReviewTaskHost::new(&cas, shared.clone(), &compiler, lease.clone(), models)
+                .unwrap();
+        let authority =
+            CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+        let runtime =
+            TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host)
+                .unwrap();
+        assert!(runtime.execute().unwrap().complete());
+        let selected = shared
+            .lock()
+            .unwrap()
+            .replay("review")
+            .unwrap()
+            .into_iter()
+            .find(|event| event.event_type == EventType::TaskReviewResultSelectedV1)
+            .unwrap();
+        let selected: TaskReviewResultSelectedV1 =
+            serde_json::from_value(selected.payload).unwrap();
+        let context: TaskReviewContextV1 =
+            serde_json::from_value(cas.get_artifact(&selected.context_id).unwrap().payload)
+                .unwrap();
+        let dispatched = cas.get(&context.rendered_input_id).unwrap();
+        let dispatched_manifest = cas.get_json(&context.context_manifest_id).unwrap();
+        let result_contract =
+            cas.get_json(&context.reviewer_inputs_id).unwrap()["result_contract"].clone();
+        let inputs = review_runner::ReviewerInputs {
+            result_contract: if result_contract.is_null() {
+                Default::default()
+            } else {
+                serde_json::from_value(result_contract).unwrap()
+            },
+            ..Default::default()
+        };
+
+        let files = if provider_kind == "claude" {
+            capture::claude_package()
+        } else {
+            codex_package()
+        };
+        let package = review_runner::ResolvedReviewer::new(
+            "fixture",
+            "1.0.0",
+            "fixture-digest",
+            directory.path(),
+            review_core::Command::new(provider_kind, vec![]),
+            files,
+        );
+        let rendered = if provider_kind == "claude" {
+            review_runner_claude::ClaudeAdapter::from_package(&package)
+                .unwrap()
+                .with_focus(FOCUS)
+                .render_input(&inputs)
+        } else {
+            review_runner_codex::CodexAdapter::from_package(&package)
+                .unwrap()
+                .with_focus(FOCUS)
+                .render_input(&inputs)
+        }
+        .unwrap();
+        let instructions = &rendered.manifest.entries[0];
+        assert_eq!(instructions.name, "worker_instructions");
+        let prefix = &rendered.bytes[..instructions.rendered_bytes as usize];
+        assert!(
+            String::from_utf8_lossy(prefix).contains("\n\n## Focus for this run\n\nthe parser"),
+            "{provider_kind}: render lost the focus"
+        );
+        assert_eq!(
+            dispatched_manifest["entries"][0]["name"], "worker_instructions",
+            "{provider_kind}"
+        );
+        assert_eq!(
+            dispatched_manifest["entries"][0]["rendered_bytes"], instructions.rendered_bytes,
+            "{provider_kind}: dispatched and rendered instructions differ in length"
+        );
+        assert!(
+            dispatched.starts_with(prefix),
+            "{provider_kind}: the Task host dispatched other instructions than render shows"
         );
     }
 }

@@ -14,7 +14,7 @@ pub use model::{
     CommandAdapter, ContextEntry, ContextManifest, Grant, InputTransport, ModelRunner,
     NotesRequest, RESULT_CONTRACT, RESULT_CONTRACT_V2, RawCapture, RenderedInput, ReviewerAdapter,
     ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs, ReviewerNoteHint,
-    ReviewerNotesDeclaration, ReviewerProposalDeclaration, RunnerError, TokenUsage,
+    ReviewerNotesDeclaration, ReviewerProposalDeclaration, RunnerError, TokenUsage, append_focus,
     compose_command_input, compose_model_prompt, estimate_tokens, extract_result,
     parse_notes_declaration, parse_proposal_declaration, parse_stage_output_for, result_contract,
     unfence,
