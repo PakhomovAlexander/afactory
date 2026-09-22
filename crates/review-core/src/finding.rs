@@ -11,9 +11,8 @@ pub enum Severity {
 }
 
 impl Severity {
-    /// Rank, ordered so a re-report may only raise it. The legacy harness ranked
-    /// blocker/major/other as 3/2/1 and treated anything unknown as the floor; this enum removes
-    /// the "unknown ranks as minor" hole that let an out-of-enum severity slip under a gate.
+    /// Rank, ordered so a re-report may only raise it. The enum is closed, so an out-of-enum
+    /// severity is refused at parse time instead of ranking as minor and slipping under a gate.
     pub fn rank(self) -> u8 {
         match self {
             Severity::Minor => 1,

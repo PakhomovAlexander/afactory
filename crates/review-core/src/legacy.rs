@@ -56,8 +56,8 @@ pub struct LegacyBenchmarkDemand {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LegacyDispute {
-    /// The v1 contract says `claim_id`; the legacy harness said `fp`. Both parse into the
-    /// same slot — a model following the newer contract must not have its disputes refused.
+    /// The claim the disposition is about. The v1 contract spells it `claim_id`; the runner moves
+    /// a `ReviewerResult@2` disposition's `finding_id` into `fp`. Both reach the same slot.
     #[serde(alias = "claim_id")]
     pub fp: String,
     pub position: String,

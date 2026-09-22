@@ -18,7 +18,7 @@
       "enum": ["blocker", "major", "minor"]
     },
     "locations": {
-      "description": "Where the claim applies. Empty means change-wide; the legacy harness spelled that as the literal path '(change-wide)', which this contract does not carry into a path field.",
+      "description": "Where the claim applies. Empty means change-wide; there is no sentinel path for it.",
       "type": "array",
       "items": { "$ref": "#/$defs/location" }
     },

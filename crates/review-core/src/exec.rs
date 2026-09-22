@@ -1,9 +1,8 @@
 //! Typed argument slots.
 //!
-//! A check command is not a string. The shell harness took `<name><TAB><shell command>` and ran
-//! it through `bash -c`, with `{tests}` placeholders filled from the bundle — which means paths
-//! **taken from the diff under review** were spliced into a command line. A file added in a PR
-//! and named `--config=/tmp/evil` is not exotic; it is one `git add` away.
+//! A check command is not a string. A shell command line with placeholders filled from the change
+//! would splice paths **taken from the diff under review** into a command line. A file added in a
+//! PR and named `--config=/tmp/evil` is not exotic; it is one `git add` away.
 //!
 //! So the vector is typed instead. The program and every option are trusted literals from
 //! project configuration. Values derived from the change are [`Provenance::Untrusted`], and an
