@@ -133,7 +133,7 @@ exact inputs for resume (never consumes a clean/cap slot — unchanged).
 
 **Determinism at the barrier.** Regions finish in any order; `all_done` is emitted only when
 every region is terminal, and Outputs are admitted to `reduce` in canonical worker order —
-the existing determinism test, now a property of the `workers` state.
+a property of the `workers` state.
 
 ## 4. Worker
 

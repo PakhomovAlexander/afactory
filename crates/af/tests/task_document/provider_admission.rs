@@ -40,6 +40,8 @@ else:
  message=json.dumps({'schema':'af.worker-reply/1','outputs':{'draft':[{'schema':'af.document-draft/1','title':'Release notes','sections':[{'heading':'Summary','body':'\n\n'.join(s[k]['text'] for k in sorted(s))}],'citations':sorted(s)}]}})
  usage={'input_tokens':3,'cached_input_tokens':0,'output_tokens':2,'reasoning_output_tokens':0,'cache_write_input_tokens':0}
 with open(home+'/calls','a') as f: f.write(kind+'\n')
+if '-o' in sys.argv:
+ with open(sys.argv[sys.argv.index('-o')+1],'w') as f: f.write(message)
 print(json.dumps({'type':'thread.started','thread_id':'synthetic-'+kind}))
 print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':message}}))
 print(json.dumps({'type':'turn.completed','usage':usage}))

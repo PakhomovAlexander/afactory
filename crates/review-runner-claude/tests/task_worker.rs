@@ -1,17 +1,35 @@
-use review_core::Command;
+use review_core::{Arg, Command};
 use review_runner::task::{WorkerContract, WorkerModelAdapter};
 use review_runner_claude::task::ClaudeTaskAdapter;
 use review_store::Cas;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
+/// A Task adapter for `program`, with the explicit model restriction every Task binding carries.
+fn task_adapter(program: &str) -> ClaudeTaskAdapter {
+    ClaudeTaskAdapter::new(&Command::new(
+        program,
+        vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+    ))
+    .unwrap()
+}
+
 #[test]
 fn native_task_adapter_declares_trusted_unsafe_credentials() {
-    let adapter = ClaudeTaskAdapter::new(&Command::new("claude", vec![])).unwrap();
     assert_eq!(
-        adapter.credential_mode(),
+        task_adapter("claude").credential_mode(),
         review_core::BrokerCredentialModeV1::TrustedUnsafe
     );
+}
+
+#[test]
+fn native_task_adapter_requires_an_explicit_model() {
+    for args in [vec![], vec![Arg::literal("--effort"), Arg::literal("high")]] {
+        let error = ClaudeTaskAdapter::new(&Command::new("claude", args))
+            .err()
+            .expect("a Task adapter without --model is refused");
+        assert_eq!(error, "Claude Task Worker requires an explicit --model");
+    }
 }
 
 #[test]
@@ -21,7 +39,7 @@ fn review_role_keeps_the_legacy_read_only_tool_grant() {
     let program = temp.path().join("fake-claude");
     std::fs::write(&program, "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' \"$@\" >&2\nprintf '%s' '{\"is_error\":false,\"result\":\"OK\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}'\n").unwrap();
     std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let adapter = ClaudeTaskAdapter::new(&Command::new(program.to_str().unwrap(), vec![])).unwrap();
+    let adapter = task_adapter(program.to_str().unwrap());
     let returned = adapter.invoke(
         &cas,
         temp.path(),
@@ -79,8 +97,7 @@ fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_messa
             std::fs::remove_dir_all(&cas_path).unwrap();
             std::fs::write(&cas_path, b"not a directory").unwrap();
         }
-        let adapter =
-            ClaudeTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+        let adapter = task_adapter(script.to_str().unwrap());
         let returned = adapter.invoke(
             &cas,
             temp.path(),
@@ -162,8 +179,7 @@ fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage
         )
         .unwrap();
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let adapter =
-            ClaudeTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+        let adapter = task_adapter(script.to_str().unwrap());
         let returned = adapter.invoke(
             &cas,
             &workdir,
@@ -217,8 +233,7 @@ fn malformed_native_usage_refuses_message_and_survives_raw_capture_outage() {
             std::fs::remove_dir_all(&cas_path).unwrap();
             std::fs::write(&cas_path, b"outage").unwrap();
         }
-        let adapter =
-            ClaudeTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+        let adapter = task_adapter(script.to_str().unwrap());
         let returned = adapter.invoke(
             &cas,
             temp.path(),

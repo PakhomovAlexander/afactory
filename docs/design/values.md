@@ -115,8 +115,8 @@ are derived from content or from run + sequence, never from wall-clock time or a
 two writers could share. The earlier values decide genuine design trade-offs; an already accepted
 deterministic contract remains binding until an explicit superseding ADR and fixture change it.
 
-- Replay of the log plus its referenced artifacts reproduces the ledger byte-for-byte; the
-  determinism test (shuffled completion orders, identical ledgers) stays green.
+- Replay of the log plus its referenced artifacts reproduces the ledger byte-for-byte, whatever
+  order the reviewers finished in.
 - No `Debug` impl, string comparison, or map iteration order is load-bearing.
 - Time and randomness are injected; a fixture can run the same run twice and diff nothing.
 

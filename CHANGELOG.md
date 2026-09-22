@@ -139,6 +139,10 @@ or needs a documented hand edit.
   embeds its Task phase or result, a Task phase is never `resolving`, `planning` or `verifying`, a
   Task result's `execution` is `completed`, `incomplete` or `exhausted` (never `blocked` or
   `cancelled`), and the unreferenced `reviewConclusion` definition is gone.
+- A Codex Task Worker's reply is read only from the `-o` last-message file that `codex exec`
+  writes (codex-cli 0.147.0 always writes it). The Task adapter no longer falls back to the last
+  `agent_message` event on stdout, so with a codex CLI that does not write that file the Attempt
+  fails with "Codex Worker returned no final message"; the usage it reported is still charged.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

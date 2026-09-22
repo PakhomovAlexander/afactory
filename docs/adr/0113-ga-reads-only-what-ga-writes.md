@@ -167,6 +167,9 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0101](0101-reuse-review-structure-with-fresh-task-boundaries.md): readability of historical
   duplicate or non-approved revocations, and of unauthenticated revocations without a retained
   proof.
+- [ADR-0102](0102-account-for-every-reported-claude-task-model.md): the default-model
+  compatibility of a Claude Task adapter invoked without an explicit model restriction. The
+  adapter now refuses a command without `--model`, which every Task binding passes.
 - [ADR-0104](0104-preview-captured-task-plans-before-first-execution.md): the preview for the
   legacy goal entry point; `task start` takes only a Task file.
 - [ADR-0106](0106-authorize-experimental-children-separately.md): earlier inspection and execution

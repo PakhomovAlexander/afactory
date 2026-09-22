@@ -1599,8 +1599,6 @@ dependencies = [
  "review-config",
  "review-core",
  "review-runner",
- "review-sandbox",
- "review-source-git",
  "review-store",
  "rustix",
  "serde_json",

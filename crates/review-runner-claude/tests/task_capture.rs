@@ -1,4 +1,4 @@
-use review_core::Command;
+use review_core::{Arg, Command};
 use review_runner::task::WorkerModelAdapter;
 use review_runner_claude::task::ClaudeTaskAdapter;
 use review_store::Cas;
@@ -20,7 +20,11 @@ fn held_output_retains_reported_overrun_without_admitting_the_message() {
     )
     .unwrap();
     std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
-    let adapter = ClaudeTaskAdapter::new(&Command::new(script.to_str().unwrap(), vec![])).unwrap();
+    let adapter = ClaudeTaskAdapter::new(&Command::new(
+        script.to_str().unwrap(),
+        vec![Arg::literal("--model"), Arg::literal("claude-fixture-1")],
+    ))
+    .unwrap();
     let started = Instant::now();
     let returned = adapter.invoke(
         &cas,

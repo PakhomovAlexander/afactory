@@ -19,7 +19,7 @@ fn held_output_retains_reported_overrun_without_admitting_the_message() {
     std::fs::write(
         &script,
         format!(
-            "#!/bin/sh\ncat >/dev/null\nprintf '%s' '{quoted}'\nprintf diagnostic >&2\nsleep 30 &\n"
+            "#!/bin/sh\ncat >/dev/null\nout=; prev=; for arg in \"$@\"; do [ \"$prev\" = -o ] && out=$arg; prev=$arg; done\nprintf OK >\"$out\"\nprintf '%s' '{quoted}'\nprintf diagnostic >&2\nsleep 30 &\n"
         ),
     )
     .unwrap();

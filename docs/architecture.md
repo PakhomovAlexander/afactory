@@ -27,8 +27,8 @@ crates/
   review-check/  typed Check nodes: trusted programs with typed argument slots,
                  per-attempt CheckResult records, and a gate that never passes
                  what it did not verify
-  review-runner/ reviewer adapters and the canonical gather barrier —
-                 concurrency without nondeterminism
+  review-runner/ reviewer adapters: command and model runners behind one
+                 contract
   review-sandbox/ materialized sandboxes, sealed mutation capture, and an
                  isolation level a pipeline can refuse
   review-graph/  the typed pipeline: named ports, deterministic planning, and
@@ -252,14 +252,12 @@ later ones become duplicates. Ingesting in completion order would therefore let 
 who owns a finding, and a replay would not reproduce the run it replays. So results are admitted
 in canonical order (by node ID), never in arrival order.
 
-`crates/review-runner/tests/determinism.rs` proves both halves, which is the only way the first half means anything:
-
-- Four reviewers, four delay patterns forcing different completion orders, and the test asserts
-  the orders really did differ before comparing anything. Canonical admission produces identical
-  event streams and identical ledgers every time, and the shared finding always belongs to the
-  first node in canonical order with all four reports still attached.
-- The control: the same outcomes admitted in completion order produce *different* ledgers, and
-  the shared finding changes owner. Without that, the barrier would be proving nothing.
+The pipeline's gather node is that barrier. It runs only once every reviewer has finished, and
+`ReviewDomainState::run_gather` (`crates/review-pipeline/src/review_domain.rs`) flushes the
+buffered reviewer events in node order; Ledger reduction then ingests the gathered results sorted
+by reviewer node ID. `crates/review-pipeline/tests/end_to_end.rs` checks the outcome on a live
+pipeline: a Finding that two reviewers report lists its sources in canonical order, not
+completion order.
 
 ### Seeing exactly what a Worker receives
 

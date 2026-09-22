@@ -98,9 +98,10 @@ through recovery. Valid native calls retain their previous artifact identities. 
 
 Generic Claude Task returns also account for an optional per-model usage breakdown, without
 adding its overlapping top-level summary twice. Malformed or conflicting summaries preserve
-known charge and refuse output. An explicitly selected model refuses other reported model
-activity while retaining its usage; an entirely zero foreign entry is unused metadata. This
-is detection after execution, not prevention of internal client inference or its input delivery.
+known charge and refuse output. The adapter requires an explicit `--model`, and that model
+refuses other reported model activity while retaining its usage; an entirely zero foreign entry
+is unused metadata. This is detection after execution, not prevention of internal client
+inference or its input delivery.
 The adapter disables native nonessential traffic and terminal-title generation through owned
 environment settings. Static client evidence supports the automatic title path; it does not
 prove suppression of every internal call. Personal authentication grants remain unchanged.

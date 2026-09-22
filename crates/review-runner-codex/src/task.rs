@@ -181,11 +181,9 @@ impl CodexTaskAdapter {
             });
             return returned;
         }
-        returned.message = read_final_message(&output_directory).and_then(|bytes| {
-            bytes
-                .or_else(|| events.final_message.map(String::into_bytes))
-                .ok_or_else(|| "Codex Worker returned no final message".into())
-        });
+        // The `-o` file is the only final message: an absent or empty file is no reply.
+        returned.message = read_final_message(&output_directory)
+            .and_then(|bytes| bytes.ok_or_else(|| "Codex Worker returned no final message".into()));
         returned
     }
 }
@@ -224,7 +222,6 @@ fn read_final_message(directory: &rustix::fd::OwnedFd) -> Result<Option<Vec<u8>>
 #[derive(Default)]
 struct TaskEvents {
     usage: review_core::task::usage::TaskTokenUsageV3,
-    final_message: Option<String>,
     error: Option<String>,
     incomplete_charge: bool,
     malformed_usage: bool,
@@ -290,8 +287,8 @@ impl TaskEvents {
         .into();
     }
 
-    /// Fold the JSONL stream. Unknown event types are ignored — the CLI adds kinds freely —
-    /// but the three that matter are pinned by fixtures captured from a real run.
+    /// Fold the JSONL stream for usage and errors. Unknown event types are ignored — the CLI
+    /// adds kinds freely — and the reply itself is read from the `-o` file, never from stdout.
     fn parse(stdout: &[u8]) -> TaskEvents {
         let mut events = TaskEvents::default();
         for line in stdout.split(|b| *b == b'\n') {
@@ -301,14 +298,6 @@ impl TaskEvents {
             match value.get("type").and_then(|t| t.as_str()) {
                 Some("turn.completed") => {
                     events.add_usage(value.get("usage"));
-                }
-                Some("item.completed") => {
-                    if let Some(item) = value.get("item")
-                        && item.get("type").and_then(|t| t.as_str()) == Some("agent_message")
-                        && let Some(text) = item.get("text").and_then(|t| t.as_str())
-                    {
-                        events.final_message = Some(text.to_string());
-                    }
                 }
                 Some("error") | Some("turn.failed") => {
                     let message = value
