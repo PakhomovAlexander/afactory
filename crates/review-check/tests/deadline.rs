@@ -53,7 +53,6 @@ fn a_hung_check_is_killed_and_recorded_not_run() {
 /// the stdout pipe. Killing one PID and joining the drain unbounded would hang the review
 /// forever; the process-group kill and bounded collection must return.
 #[test]
-#[cfg(unix)]
 fn a_backgrounded_grandchild_does_not_hang_the_deadline() {
     let dir = tempfile::tempdir().unwrap();
     let cas = review_store::Cas::open(dir.path().join("cas")).unwrap();
@@ -81,7 +80,6 @@ fn a_backgrounded_grandchild_does_not_hang_the_deadline() {
 /// A check that *passes* but backgrounds a child holding stdout must not hang either: the
 /// bounded collection returns instead of joining forever.
 #[test]
-#[cfg(unix)]
 fn a_passing_check_with_a_backgrounded_child_returns() {
     let dir = tempfile::tempdir().unwrap();
     let cas = review_store::Cas::open(dir.path().join("cas")).unwrap();

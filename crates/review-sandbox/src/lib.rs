@@ -161,7 +161,6 @@ impl Drop for Sandbox {
 /// Make every directory under `root` writable by its owner again, so a subsequent
 /// `remove_dir_all` can unlink what is inside them. Best-effort: a failure here only means the
 /// TempDir cleanup that follows will do no worse than before.
-#[cfg(unix)]
 fn restore_writable_dirs(root: &Path) {
     let mut level = vec![root.to_path_buf()];
     while !level.is_empty() {
@@ -183,10 +182,6 @@ fn restore_writable_dirs(root: &Path) {
     }
 }
 
-#[cfg(not(unix))]
-fn restore_writable_dirs(_root: &Path) {}
-
-#[cfg(unix)]
 pub(crate) fn ensure_directory_mode(path: &Path, required: u32) -> std::io::Result<()> {
     use nix::fcntl::AT_FDCWD;
     use nix::sys::stat::{FchmodatFlags, Mode as NixMode, fchmodat};
@@ -207,47 +202,6 @@ pub(crate) fn ensure_directory_mode(path: &Path, required: u32) -> std::io::Resu
         );
     }
     Ok(())
-}
-
-#[cfg(not(unix))]
-pub(crate) fn ensure_directory_mode(_path: &Path, _required: u32) -> std::io::Result<()> {
-    Ok(())
-}
-
-#[cfg(all(test, unix))]
-mod directory_mode_tests {
-    use super::*;
-    use std::os::unix::fs::{PermissionsExt, symlink};
-
-    #[test]
-    fn directory_mode_repair_never_follows_a_symlink() {
-        let directory = tempfile::tempdir().unwrap();
-        let target = directory.path().join("target");
-        let link = directory.path().join("link");
-        std::fs::create_dir(&target).unwrap();
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
-        symlink(&target, &link).unwrap();
-
-        ensure_directory_mode(&link, 0o1000).unwrap();
-        assert_eq!(
-            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-    }
-
-    #[test]
-    fn directory_mode_repair_adds_only_the_requested_bits() {
-        let directory = tempfile::tempdir().unwrap();
-        let target = directory.path().join("target");
-        std::fs::create_dir(&target).unwrap();
-        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o000)).unwrap();
-
-        ensure_directory_mode(&target, 0o500).unwrap();
-        assert_eq!(
-            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
-            0o500
-        );
-    }
 }
 
 /// Recreate `src`'s tree at `dst`, copy-on-write cloning each regular file. Directories are
@@ -351,7 +305,6 @@ fn clone_file_batch(files: Vec<CloneFile>) -> std::io::Result<()> {
     })
 }
 
-#[cfg(unix)]
 fn apply_one_file_permission(path: &Path, mode: Option<u32>) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     match mode {
@@ -360,12 +313,6 @@ fn apply_one_file_permission(path: &Path, mode: Option<u32>) -> std::io::Result<
     }
 }
 
-#[cfg(not(unix))]
-fn apply_one_file_permission(_path: &Path, _mode: Option<u32>) -> std::io::Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
 fn read_only_mode_for(metadata: &std::fs::Metadata) -> u32 {
     use std::os::unix::fs::PermissionsExt;
     if metadata.permissions().mode() & 0o111 != 0 {
@@ -375,12 +322,6 @@ fn read_only_mode_for(metadata: &std::fs::Metadata) -> u32 {
     }
 }
 
-#[cfg(not(unix))]
-fn read_only_mode_for(_metadata: &std::fs::Metadata) -> u32 {
-    0
-}
-
-#[cfg(unix)]
 fn apply_directories_read_only(directories: Vec<PathBuf>) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     for directory in directories.into_iter().rev() {
@@ -389,19 +330,8 @@ fn apply_directories_read_only(directories: Vec<PathBuf>) -> std::io::Result<()>
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn apply_directories_read_only(_directories: Vec<PathBuf>) -> std::io::Result<()> {
-    Ok(())
-}
-
-#[cfg(unix)]
 fn symlink_raw(target: &Path, at: &Path) -> std::io::Result<()> {
     std::os::unix::fs::symlink(target, at)
-}
-
-#[cfg(not(unix))]
-fn symlink_raw(target: &Path, at: &Path) -> std::io::Result<()> {
-    std::fs::write(at, target.to_string_lossy().as_bytes())
 }
 
 /// A snapshot materialized once, to be cloned per sandbox.
@@ -513,7 +443,6 @@ impl Sandbox {
         self.baseline.as_ref()
     }
 
-    #[cfg(unix)]
     fn apply_read_only(&self) -> std::io::Result<()> {
         // Files first, then directories: a read-only directory cannot have its contents chmod'd.
         let mut level = vec![self.root.clone()];
@@ -536,11 +465,6 @@ impl Sandbox {
         }
         apply_file_permissions(pending_files)?;
         apply_directories_read_only(seen_dirs)
-    }
-
-    #[cfg(not(unix))]
-    fn apply_read_only(&self) -> std::io::Result<()> {
-        Ok(())
     }
 
     /// Seal the sandbox and capture what changed.
@@ -594,10 +518,45 @@ fn scan_permission_directory(directory: PathBuf) -> std::io::Result<PermissionSc
     Ok(scan)
 }
 
-#[cfg(unix)]
 fn apply_file_permissions(files: Vec<(PathBuf, u32)>) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     review_parallel::try_for_each_owned(files, |(path, mode)| {
         std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))
     })
+}
+
+#[cfg(test)]
+mod directory_mode_tests {
+    use super::*;
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    #[test]
+    fn directory_mode_repair_never_follows_a_symlink() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        let link = directory.path().join("link");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o700)).unwrap();
+        symlink(&target, &link).unwrap();
+
+        ensure_directory_mode(&link, 0o1000).unwrap();
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+
+    #[test]
+    fn directory_mode_repair_adds_only_the_requested_bits() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("target");
+        std::fs::create_dir(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o000)).unwrap();
+
+        ensure_directory_mode(&target, 0o500).unwrap();
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o500
+        );
+    }
 }

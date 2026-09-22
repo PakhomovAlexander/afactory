@@ -682,7 +682,6 @@ fn a_preparation_the_log_never_recorded_is_rebuilt_with_the_recorded_lineage() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn a_preparation_failure_reaches_the_report_without_a_host_path() {
     let dir = tempfile::tempdir().unwrap();

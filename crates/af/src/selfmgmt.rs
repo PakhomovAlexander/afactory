@@ -211,7 +211,6 @@ fn install_lock(paths: &Paths) -> Result<std::fs::File, String> {
         .truncate(false)
         .open(&path)
         .map_err(|error| format!("opening {}: {error}", path.display()))?;
-    #[cfg(unix)]
     rustix::fs::flock(&file, rustix::fs::FlockOperation::LockExclusive)
         .map_err(|error| format!("locking {}: {error}", path.display()))?;
     Ok(file)
@@ -687,7 +686,6 @@ fn install(
             "{asset} does not contain an `af` binary at its root"
         )));
     }
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&extracted, std::fs::Permissions::from_mode(0o755))
@@ -760,11 +758,8 @@ fn set_default(paths: &Paths, version: &str) -> Result<(), String> {
         .bin
         .with_extension(format!("tmp.{}", std::process::id()));
     let _ = std::fs::remove_file(&tmp);
-    #[cfg(unix)]
     std::os::unix::fs::symlink(&binary, &tmp)
         .map_err(|error| format!("linking {}: {error}", tmp.display()))?;
-    #[cfg(not(unix))]
-    return Err("the default symlink is supported on Unix only".to_string());
     std::fs::rename(&tmp, &paths.bin)
         .map_err(|error| format!("activating {}: {error}", paths.bin.display()))?;
     let mut state = read_state(paths);
@@ -1049,7 +1044,6 @@ pub(crate) fn maybe_dispatch(argv: &[String]) {
     if let Some(lock) = &request.lock {
         record_seen_pin(&paths, lock, &request.version);
     }
-    #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt as _;
         let error = Command::new(&binary)
@@ -1100,7 +1094,6 @@ pub(crate) fn after_command(argv: &[String]) {
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .stderr(Stdio::null());
-            #[cfg(unix)]
             {
                 use std::os::unix::process::CommandExt as _;
                 command.process_group(0);

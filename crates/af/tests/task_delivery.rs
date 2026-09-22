@@ -772,7 +772,6 @@ fn delivery_refuses_unverified_and_dirty_sources_without_creating_a_target() {
     assert!(!refused.exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn failed_local_creation_rolls_back_only_its_owned_refs() {
     use std::os::unix::fs::PermissionsExt;

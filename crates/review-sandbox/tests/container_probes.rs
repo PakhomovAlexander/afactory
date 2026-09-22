@@ -209,7 +209,6 @@ fn a_check_command_runs_contained_and_its_work_lands_in_the_sandbox() {
         "fn main() {}\n",
         "work done in /work lands in the sandbox on the host"
     );
-    #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         assert_eq!(

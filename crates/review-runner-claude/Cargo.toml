@@ -12,10 +12,8 @@ review-core = { path = "../review-core" }
 review-runner = { path = "../review-runner" }
 review-store = { path = "../review-store" }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
-
 # Session capture and its idempotent deletion open every component of the operator's harness
 # directory `O_NOFOLLOW`, which needs the same safe syscall wrappers the sandbox already uses.
-[target.'cfg(unix)'.dependencies]
 nix = { version = "0.31.3", default-features = false, features = ["dir", "fs"] }
 
 [dev-dependencies]

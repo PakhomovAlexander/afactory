@@ -270,7 +270,6 @@ fn the_digest_is_location_independent() {
 
 /// A symlink's target is content the digest would silently depend on — and a path outside the
 /// package is content the pin never saw. Refused, not followed.
-#[cfg(unix)]
 #[test]
 fn a_symlink_in_a_package_is_refused() {
     let dir = tempfile::tempdir().unwrap();
@@ -364,7 +363,6 @@ fn a_manifest_accepting_no_subject_cannot_be_pinned() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn a_non_regular_package_entry_is_refused_before_reading() {
     let dir = tempfile::tempdir().unwrap();
@@ -393,7 +391,6 @@ fn a_package_name_cannot_escape_its_registry() {
     ));
 }
 
-#[cfg(unix)]
 #[test]
 fn a_symlink_cannot_be_a_package_root() {
     let registry_dir = tempfile::tempdir().unwrap();

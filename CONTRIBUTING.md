@@ -12,6 +12,10 @@ installs it on the first `cargo` invocation, so there is nothing to choose. Edit
 workspace version in `Cargo.toml`. The container probes need Docker; nothing else needs a
 daemon.
 
+`af` supports Linux and macOS only, and a `compile_error!` in `crates/af/src/main.rs` refuses
+every other target. Write unix code directly: do not add `#[cfg(unix)]` gates or
+`#[cfg(not(unix))]` fallbacks. Where Linux and macOS differ, split on `target_os`.
+
 ## Before every pull request
 
 ```sh

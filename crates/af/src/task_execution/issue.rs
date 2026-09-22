@@ -325,7 +325,6 @@ fn read_issue_file(repo: &Path, path: &Path, project_relative: bool) -> Result<V
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(unix)]
     #[test]
     fn project_issue_reader_is_bounded_regular_and_does_not_follow_symlink_components() {
         let root = tempfile::tempdir().unwrap();

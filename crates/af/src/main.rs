@@ -39,6 +39,9 @@ use review_source_git::Repo;
 use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status, Verdict};
 use sha2::{Digest, Sha256};
 
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+compile_error!("af supports Linux and macOS only");
+
 mod authority;
 mod caches;
 mod cli;
@@ -5383,7 +5386,6 @@ mod option_tests {
         assert!(!state.join("cas").exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn bad_entries_do_not_hide_campaigns_and_symlinked_state_is_not_followed() {
         let temp = tempfile::tempdir().unwrap();
@@ -5401,7 +5403,6 @@ mod option_tests {
         assert!(enumeration.problems[0].reason.contains("symlink"));
     }
 
-    #[cfg(unix)]
     #[test]
     fn campaign_enumeration_refuses_a_symlinked_event_database() {
         let temp = tempfile::tempdir().unwrap();

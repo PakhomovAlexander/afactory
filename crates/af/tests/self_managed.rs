@@ -588,7 +588,6 @@ fn a_bare_binary_without_a_receipt_is_not_installed() {
     let digest = sandbox.publish("0.8.1", false);
     let dir = sandbox.versions().join("0.8.1");
     write(&dir.join("af"), "#!/bin/sh\necho planted\n");
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(dir.join("af"), std::fs::Permissions::from_mode(0o755)).unwrap();

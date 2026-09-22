@@ -1,5 +1,3 @@
-#![cfg(unix)]
-
 use review_core::{Arg, Command, Producer, task::usage::TaskTokenUsageV2};
 use review_runner::task::{
     WorkerModelAdapter,

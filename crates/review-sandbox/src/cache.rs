@@ -309,7 +309,6 @@ pub fn materialize_cache(
     result
 }
 
-#[cfg(unix)]
 fn preflight(kind: CacheKind, source: &Path, limits: CacheLimits) -> Result<Preflight, CacheError> {
     use nix::dir::Dir;
     use nix::fcntl::OFlag;
@@ -470,18 +469,6 @@ fn preflight(kind: CacheKind, source: &Path, limits: CacheLimits) -> Result<Pref
         files,
         bytes,
     })
-}
-
-#[cfg(not(unix))]
-fn preflight(
-    _kind: CacheKind,
-    _source: &Path,
-    _limits: CacheLimits,
-) -> Result<Preflight, CacheError> {
-    Err(cache_error(
-        CacheErrorKind::MaterializationFailed,
-        "Cache Snapshots require descriptor-relative no-follow filesystem APIs",
-    ))
 }
 
 fn materialize_preflight(
@@ -686,22 +673,6 @@ fn reflink_from_handle(file: &std::fs::File, target: &Path) -> std::io::Result<(
         .map_err(std::io::Error::from)
 }
 
-#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
-fn reflink_from_handle(file: &std::fs::File, target: &Path) -> std::io::Result<()> {
-    use std::os::fd::AsRawFd;
-    reflink_copy::reflink(
-        PathBuf::from(format!("/dev/fd/{}", file.as_raw_fd())),
-        target,
-    )
-}
-
-#[cfg(not(unix))]
-fn reflink_from_handle(_file: &std::fs::File, _target: &Path) -> std::io::Result<()> {
-    Err(std::io::Error::other(
-        "Cache Snapshots require stable descriptor paths",
-    ))
-}
-
 fn stable_size(file: &std::fs::File) -> Result<u64, CacheError> {
     let metadata = file.metadata().map_err(|error| {
         cache_error(
@@ -802,7 +773,6 @@ fn digest_stable_file(
     Ok(result)
 }
 
-#[cfg(unix)]
 pub(crate) fn normalize_materialized_metadata(
     path: &Path,
     directory: bool,
@@ -863,20 +833,9 @@ fn normalize_macos_metadata(file: &std::fs::File, directory: bool) -> std::io::R
     Ok(())
 }
 
-#[cfg(all(unix, not(target_os = "macos")))]
+#[cfg(target_os = "linux")]
 fn normalize_macos_metadata(_file: &std::fs::File, _directory: bool) -> std::io::Result<()> {
     Ok(())
-}
-
-#[cfg(not(unix))]
-pub(crate) fn normalize_materialized_metadata(
-    path: &Path,
-    _directory: bool,
-    _mode: u32,
-) -> std::io::Result<()> {
-    let mut permissions = std::fs::metadata(path)?.permissions();
-    permissions.set_readonly(false);
-    std::fs::set_permissions(path, permissions)
 }
 
 /// Remove seeded and Gate-mutated cache bytes before the ordinary Subject seal. Every cache
@@ -906,7 +865,7 @@ fn remove_cache_root(root: &Path) -> Result<(), String> {
         .map_err(|error| format!("removing sandbox cache root {}: {error}", root.display()))
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod race_tests {
     use super::*;
     use std::os::unix::fs::symlink;

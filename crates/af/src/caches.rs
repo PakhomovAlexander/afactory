@@ -132,7 +132,6 @@ fn read_policy(path: &Path) -> Result<Option<String>, String> {
         .map_err(|_| format!("cache policy {} is not UTF-8", path.display()))
 }
 
-#[cfg(unix)]
 fn open_policy(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
 
@@ -140,11 +139,6 @@ fn open_policy(path: &Path) -> std::io::Result<File> {
         .read(true)
         .custom_flags(nix::libc::O_NONBLOCK | nix::libc::O_NOFOLLOW)
         .open(path)
-}
-
-#[cfg(not(unix))]
-fn open_policy(path: &Path) -> std::io::Result<File> {
-    File::open(path)
 }
 
 fn parse_policy(

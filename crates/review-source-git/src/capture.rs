@@ -40,11 +40,7 @@ struct WorktreeFingerprint {
 }
 type ScannedWorktreeEntry = (String, WorktreeFingerprint);
 
-#[cfg(unix)]
 type ChangeStamp = (u64, u64, i64, i64, i64, i64);
-
-#[cfg(not(unix))]
-type ChangeStamp = Option<std::time::SystemTime>;
 
 #[derive(Debug)]
 pub enum CaptureError {
@@ -654,18 +650,11 @@ fn parse_batch_stream(
     }
 }
 
-#[cfg(unix)]
 fn is_executable(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     meta.permissions().mode() & 0o111 != 0
 }
 
-#[cfg(not(unix))]
-fn is_executable(_meta: &std::fs::Metadata) -> bool {
-    false
-}
-
-#[cfg(unix)]
 fn metadata_change_stamp(metadata: &std::fs::Metadata) -> ChangeStamp {
     use std::os::unix::fs::MetadataExt;
     (
@@ -676,11 +665,6 @@ fn metadata_change_stamp(metadata: &std::fs::Metadata) -> ChangeStamp {
         metadata.ctime(),
         metadata.ctime_nsec(),
     )
-}
-
-#[cfg(not(unix))]
-fn metadata_change_stamp(metadata: &std::fs::Metadata) -> ChangeStamp {
-    metadata.modified().ok()
 }
 
 struct WorktreeMonitor {
@@ -769,24 +753,9 @@ fn checked_worktree_path(
     Ok(Some(current.join(file_name)))
 }
 
-#[cfg(unix)]
 fn read_link_bytes(path: &std::path::Path) -> Result<Vec<u8>, std::io::Error> {
     use std::os::unix::ffi::OsStrExt;
     Ok(std::fs::read_link(path)?.as_os_str().as_bytes().to_vec())
-}
-
-#[cfg(not(unix))]
-fn read_link_bytes(path: &std::path::Path) -> Result<Vec<u8>, std::io::Error> {
-    std::fs::read_link(path)?
-        .into_os_string()
-        .into_string()
-        .map(String::into_bytes)
-        .map_err(|_| {
-            std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "symlink target is not UTF-8",
-            )
-        })
 }
 
 /// Whether a capture left the checkout as it found it. Used by tests, and worth having in the

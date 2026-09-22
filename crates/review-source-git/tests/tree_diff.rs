@@ -103,7 +103,6 @@ fn resolved_trees_produce_typed_changes_and_a_fixed_patch() {
     assert_eq!(change_set.renames[0].new_path, "new-name.txt");
 }
 
-#[cfg(unix)]
 #[test]
 fn a_file_to_symlink_type_change_has_two_patch_stanzas() {
     let fixture = Fixture::new();

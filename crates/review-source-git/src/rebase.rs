@@ -146,7 +146,6 @@ pub fn apply_tree_diff(
 /// root and every parent component are opened descriptor-relative with `O_NOFOLLOW` and must
 /// be real directories, and the entry itself is unlinked relative to the last of them. A parent
 /// that is a symlink, wherever it points, refuses the rebase instead of reaching through it.
-#[cfg(unix)]
 fn remove_entry(root: &Path, relative: &Path, encoded: &str) -> Result<(), MaterializeError> {
     use nix::fcntl::AtFlags;
     use nix::sys::stat::{SFlag, fstatat};
@@ -171,7 +170,6 @@ fn remove_entry(root: &Path, relative: &Path, encoded: &str) -> Result<(), Mater
 /// Remove an emptied directory of the tree being re-based, relative to its no-follow parent.
 /// Best effort: a directory that still holds entries, or a parent that is no longer a real
 /// directory, leaves it in place for the verification scan to judge.
-#[cfg(unix)]
 fn prune_directory(root: &Path, relative: &Path) {
     use nix::unistd::{UnlinkatFlags, unlinkat};
 
@@ -182,7 +180,6 @@ fn prune_directory(root: &Path, relative: &Path) {
 
 /// Open every parent component of `relative` below `root` with `O_NOFOLLOW | O_DIRECTORY`,
 /// returning the last directory and the entry's own name.
-#[cfg(unix)]
 fn open_parent_no_follow<'a>(
     root: &Path,
     relative: &'a Path,
@@ -209,26 +206,6 @@ fn open_parent_no_follow<'a>(
         }
     }
     Ok((directory, name))
-}
-
-#[cfg(not(unix))]
-fn remove_entry(root: &Path, relative: &Path, encoded: &str) -> Result<(), MaterializeError> {
-    let target = root.join(relative);
-    match fs::symlink_metadata(&target) {
-        Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
-            Err(MaterializeError::Manifest(format!(
-                "entry `{encoded}` is a directory in the tree being re-based"
-            )))
-        }
-        Ok(_) => fs::remove_file(&target).map_err(MaterializeError::Io),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(MaterializeError::Io(error)),
-    }
-}
-
-#[cfg(not(unix))]
-fn prune_directory(root: &Path, relative: &Path) {
-    let _ = fs::remove_dir(root.join(relative));
 }
 
 /// Read the tree at `root` back into a manifest, hashing every regular file and symlink target.
@@ -307,26 +284,14 @@ fn scan_directory(directory: &Path) -> Result<DirectoryScan, std::io::Error> {
     Ok(scan)
 }
 
-#[cfg(unix)]
 fn is_executable(metadata: &fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     metadata.permissions().mode() & 0o111 != 0
 }
 
-#[cfg(not(unix))]
-fn is_executable(_metadata: &fs::Metadata) -> bool {
-    false
-}
-
-#[cfg(unix)]
 fn path_bytes(path: &Path) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt;
     path.as_os_str().as_bytes().to_vec()
-}
-
-#[cfg(not(unix))]
-fn path_bytes(path: &Path) -> Vec<u8> {
-    path.to_string_lossy().into_owned().into_bytes()
 }
 
 #[cfg(test)]
@@ -469,7 +434,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_drifted_symlinked_parent_cannot_delete_outside_the_tree() {
         let directory = tempfile::tempdir().unwrap();
@@ -509,7 +473,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn a_symlink_root_is_refused_before_anything_is_touched() {
         let dir = tempfile::tempdir().unwrap();

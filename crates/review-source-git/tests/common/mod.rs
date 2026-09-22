@@ -70,7 +70,6 @@ impl Fixture {
         std::fs::write(full, contents).unwrap();
     }
 
-    #[cfg(unix)]
     pub fn write_executable(&self, path: &str, contents: &[u8]) {
         use std::os::unix::fs::PermissionsExt;
         self.write(path, contents);
@@ -81,7 +80,6 @@ impl Fixture {
         .unwrap();
     }
 
-    #[cfg(unix)]
     pub fn symlink(&self, target: &str, at: &str) {
         std::os::unix::fs::symlink(target, self.repo_path().join(at)).unwrap();
     }

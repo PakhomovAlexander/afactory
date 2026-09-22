@@ -180,7 +180,6 @@ pub fn capture_build_cache(
     })
 }
 
-#[cfg(unix)]
 fn walk(
     kind: BuildCacheKindV1,
     source: &Path,
@@ -338,18 +337,6 @@ fn walk(
         }
     }
     Ok((files, bytes))
-}
-
-#[cfg(not(unix))]
-fn walk(
-    _kind: BuildCacheKindV1,
-    _source: &Path,
-    _limits: &BuildCacheLimitsV1,
-) -> Result<(Vec<PlannedFile>, u64), CacheError> {
-    Err(cache_error(
-        CacheErrorKind::MaterializationFailed,
-        "Build Cache capture requires descriptor-relative no-follow filesystem APIs",
-    ))
 }
 
 /// Stream one opened regular file into the CAS and file it under the size it was opened with.

@@ -161,7 +161,6 @@ fn probe_identity(
     cancelled: &AtomicBool,
     deadline: Option<Instant>,
 ) -> Result<(String, String), String> {
-    #[cfg(unix)]
     match spec.kind {
         ProviderKind::Claude => {
             let output = run_probe_before(program, spec, probe_path, cancelled, deadline)?;
@@ -184,11 +183,6 @@ fn probe_identity(
             )?;
             Ok((codex_principal(&response)?, "chatgpt".into()))
         }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (program, spec, probe_path, cancelled, deadline);
-        Err("Task Provider admission requires bounded Unix process isolation".into())
     }
 }
 
@@ -382,6 +376,6 @@ mod tests {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 #[path = "task/currentness_tests.rs"]
 mod currentness_tests;

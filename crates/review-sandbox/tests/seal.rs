@@ -130,7 +130,6 @@ fn odd_names_seal_in_the_canonical_spelling() {
 /// A mutable node may leave a directory unreadable. Seal restores traversal permissions before
 /// reading it, so a completed review is not discarded merely because its sandbox was hostile.
 #[test]
-#[cfg(unix)]
 fn an_unreadable_directory_does_not_prevent_sealing() {
     use std::os::unix::fs::PermissionsExt;
 
@@ -216,7 +215,6 @@ fn executables_survive_both_modes_and_seal_clean() {
     let (dir, repo, cas) = fixture_repo();
     let script = repo.workdir().join("tool.sh");
     std::fs::write(&script, "#!/bin/sh\ntrue\n").unwrap();
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -245,7 +243,6 @@ fn executables_survive_both_modes_and_seal_clean() {
 
     for mode in [Mode::ReadOnly, Mode::EphemeralWrite] {
         let sandbox = Sandbox::materialize(&snapshot.manifest, &cas, mode).unwrap();
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let bits = std::fs::metadata(sandbox.root().join("tool.sh"))
@@ -271,7 +268,6 @@ fn executables_survive_both_modes_and_seal_clean() {
 /// unlinking needs write on the parent — so without the restore-on-drop the whole tree leaks
 /// into TMPDIR. Both the sealed path and the dropped-without-seal path must reclaim it.
 #[test]
-#[cfg(unix)]
 fn a_read_only_sandbox_cleans_up_its_tree() {
     for seal_it in [true, false] {
         let (_dir, sandbox, _cas) = sandbox_of(Mode::ReadOnly);

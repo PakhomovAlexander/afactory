@@ -46,7 +46,6 @@ mod tests {
         assert!(read(&file, 4).unwrap_err().contains("byte bound"));
         assert!(read(root.path(), 100).unwrap_err().contains("regular file"));
         assert!(read(&file, u64::MAX).is_err());
-        #[cfg(unix)]
         {
             let link = root.path().join("explicit-link");
             std::os::unix::fs::symlink(&file, &link).unwrap();
@@ -54,7 +53,6 @@ mod tests {
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn fifo_child() {
         let Some(path) = std::env::var_os("AF_TEST_TASK_INPUT_FIFO") else {
@@ -68,7 +66,6 @@ mod tests {
         std::fs::write(Path::new(&path).with_extension("rejected"), b"refused").unwrap();
     }
 
-    #[cfg(unix)]
     #[test]
     fn fifo_and_its_explicit_symlink_refuse_without_a_writer() {
         use std::process::{Command, Stdio};

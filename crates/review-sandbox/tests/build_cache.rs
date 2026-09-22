@@ -23,20 +23,17 @@ fn limits() -> BuildCacheLimitsV1 {
     }
 }
 
-#[cfg(unix)]
 fn set_mode(path: &std::path::Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
 }
 
-#[cfg(unix)]
 fn mode_of(path: &std::path::Path) -> u32 {
     use std::os::unix::fs::PermissionsExt;
     std::fs::metadata(path).unwrap().permissions().mode() & 0o777
 }
 
 #[test]
-#[cfg(unix)]
 fn a_gate_build_is_captured_cloned_with_fixed_modes_and_removed_before_seal() {
     let (_directory, repo, cas) = fixture_repo();
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
@@ -120,7 +117,6 @@ fn a_gate_build_is_captured_cloned_with_fixed_modes_and_removed_before_seal() {
 }
 
 #[test]
-#[cfg(unix)]
 fn a_symlink_in_the_gate_cache_directory_refuses_capture_as_unsafe_content() {
     use std::os::unix::fs::symlink;
 
@@ -153,7 +149,6 @@ fn a_symlink_in_the_gate_cache_directory_refuses_capture_as_unsafe_content() {
 }
 
 #[test]
-#[cfg(unix)]
 fn a_fifo_in_the_gate_cache_directory_refuses_capture_as_unsafe_content() {
     let (_directory, repo, cas) = fixture_repo();
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();
@@ -178,7 +173,6 @@ fn a_fifo_in_the_gate_cache_directory_refuses_capture_as_unsafe_content() {
 }
 
 #[test]
-#[cfg(unix)]
 fn capture_is_bounded_and_refuses_credential_shaped_and_empty_trees() {
     let (_directory, repo, cas) = fixture_repo();
     let snapshot = Capture::new(&repo, &cas).committed("HEAD").unwrap();

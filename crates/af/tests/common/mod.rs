@@ -130,7 +130,6 @@ impl Sandbox {
             "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then echo \"af {version}\"; exit 0; fi\necho \"fake af {version} $*\"\necho \"from=${{AF_DISPATCHED_FROM:-none}}\"\n"
         );
         write(&stage.join("af"), &script);
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(stage.join("af"), std::fs::Permissions::from_mode(0o755))

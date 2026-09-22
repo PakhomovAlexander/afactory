@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-#[cfg(unix)]
 #[path = "common_review_summaries/recovery.rs"]
 mod recovery;
 

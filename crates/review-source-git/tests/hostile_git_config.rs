@@ -41,7 +41,6 @@ fn weaponize(fixture: &Fixture, marker: &std::path::Path) {
             ),
         )
         .unwrap();
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -58,7 +57,6 @@ fn weaponize(fixture: &Fixture, marker: &std::path::Path) {
         ),
     )
     .unwrap();
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&filter, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -187,7 +185,6 @@ fn a_hostile_global_config_is_inert() {
             ),
         )
         .unwrap();
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -302,7 +299,6 @@ fn filtering_subcommands_are_refused_outright() {
 
 /// Tree diff is a separate typed door: candidate attributes may select a configured textconv,
 /// but the adapter neither executes it nor lets hostile diff settings alter the patch.
-#[cfg(unix)]
 #[test]
 fn tree_diff_ignores_candidate_textconv_and_hostile_diff_configuration() {
     fn history(fixture: &Fixture, attributes: bool) -> (String, String) {

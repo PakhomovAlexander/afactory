@@ -30,9 +30,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use toml_edit::{ArrayOfTables, DocumentMut, Item, Table, value};
 
-#[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
-#[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
 pub mod task;
@@ -545,7 +543,6 @@ fn resolve_auth_dir(
     Ok(auth_dir)
 }
 
-#[cfg(unix)]
 fn validate_private_auth_directory(path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("cannot inspect auth directory {}: {error}", path.display()))?;
@@ -647,17 +644,14 @@ fn missing_directories(path: &Path, what: &str) -> Result<(Vec<PathBuf>, PathBuf
     }
 }
 
-#[cfg(unix)]
 fn validate_secure_directory_chain(path: &Path, what: &str) -> Result<(), String> {
     validate_directory_chain(path, what, true)
 }
 
-#[cfg(unix)]
 fn validate_creation_ancestor(path: &Path, what: &str) -> Result<(), String> {
     validate_directory_chain(path, what, false)
 }
 
-#[cfg(unix)]
 fn validate_directory_chain(
     path: &Path,
     what: &str,
@@ -700,7 +694,6 @@ fn validate_directory_chain(
     Ok(())
 }
 
-#[cfg(unix)]
 fn validate_rename_controlling_directory(
     path: &Path,
     metadata: &fs::Metadata,
@@ -714,7 +707,6 @@ fn validate_rename_controlling_directory(
     )
 }
 
-#[cfg(unix)]
 fn validate_rename_controlling_directory_for_uid(
     path: &Path,
     metadata: &fs::Metadata,
@@ -730,7 +722,6 @@ fn validate_rename_controlling_directory_for_uid(
     )
 }
 
-#[cfg(unix)]
 fn validate_rename_controlling_directory_values(
     path: &Path,
     owner_uid: u32,
@@ -754,11 +745,6 @@ fn validate_rename_controlling_directory_values(
     Ok(())
 }
 
-#[cfg(not(unix))]
-fn validate_secure_directory_chain(_path: &Path, _what: &str) -> Result<(), String> {
-    Ok(())
-}
-
 fn chmod_fix(path: &Path, mode: &str) -> String {
     path.to_str().map_or_else(
         || format!("remove the unsafe permission bits from {}", path.display()),
@@ -766,24 +752,10 @@ fn chmod_fix(path: &Path, mode: &str) -> String {
     )
 }
 
-#[cfg(not(unix))]
-fn validate_private_auth_directory(path: &Path) -> Result<(), String> {
-    if path.is_dir() {
-        Ok(())
-    } else {
-        Err(format!(
-            "auth directory {} must be a real directory",
-            path.display()
-        ))
-    }
-}
-
-#[cfg(unix)]
 fn create_private_directory(path: &Path) -> Result<(), String> {
     create_private_directory_tree(path, "auth directory", false)
 }
 
-#[cfg(unix)]
 fn create_private_directory_tree(path: &Path, what: &str, durable: bool) -> Result<(), String> {
     use rustix::fs::{AtFlags, Mode, OFlags, chmodat, mkdirat, open, openat};
 
@@ -859,26 +831,21 @@ fn create_private_directory_tree(path: &Path, what: &str, durable: bool) -> Resu
 
 struct BoundDirectoryLock {
     _lock: File,
-    #[cfg(unix)]
     directory: File,
 }
 
 impl BoundDirectoryLock {
     fn ensure_directory_current(&self, path: &Path, what: &str) -> Result<(), String> {
-        #[cfg(unix)]
         if !bound_directory_is_current(path, &self.directory).unwrap_or(false) {
             return Err(format!(
                 "{what} {} changed while locked; retry",
                 path.display()
             ));
         }
-        #[cfg(not(unix))]
-        let _ = (path, what);
         Ok(())
     }
 }
 
-#[cfg(unix)]
 fn bind_directory(path: &Path, what: &str) -> Result<File, String> {
     use rustix::fs::{Mode, OFlags, open};
 
@@ -904,7 +871,6 @@ fn bind_directory(path: &Path, what: &str) -> Result<File, String> {
     Ok(directory)
 }
 
-#[cfg(unix)]
 fn bound_directory_is_current(path: &Path, directory: &File) -> std::io::Result<bool> {
     let path = fs::symlink_metadata(path)?;
     let directory = directory.metadata()?;
@@ -924,10 +890,8 @@ fn auth_context_lock_with_hook(
     auth_dir: &Path,
     before_wait: impl FnOnce(),
 ) -> Result<BoundDirectoryLock, String> {
-    #[cfg(unix)]
     let directory = bind_directory(auth_dir, "auth directory")?;
     let lock_path = auth_dir.join(format!(".af-{}-setup.lock", kind.name()));
-    #[cfg(unix)]
     let file: File = {
         use rustix::fs::{Mode, OFlags, openat};
 
@@ -948,18 +912,6 @@ fn auth_context_lock_with_hook(
         })?
         .into()
     };
-    #[cfg(not(unix))]
-    let file = {
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        options.open(&lock_path).map_err(|error| {
-            format!(
-                "opening {} auth-context lock {}: {error}",
-                kind.name(),
-                lock_path.display()
-            )
-        })?
-    };
     let metadata = file.metadata().map_err(|error| {
         format!(
             "inspecting {} auth-context lock {}: {error}",
@@ -974,7 +926,6 @@ fn auth_context_lock_with_hook(
             lock_path.display()
         ));
     }
-    #[cfg(unix)]
     {
         file.set_permissions(fs::Permissions::from_mode(0o600))
             .map_err(|error| {
@@ -1007,7 +958,6 @@ fn auth_context_lock_with_hook(
             auth_dir.display()
         )
     })?;
-    #[cfg(unix)]
     if !bound_directory_is_current(auth_dir, &directory).unwrap_or(false) {
         return Err(format!(
             "auth directory {} changed while waiting for its setup lock; retry",
@@ -1016,15 +966,8 @@ fn auth_context_lock_with_hook(
     }
     Ok(BoundDirectoryLock {
         _lock: file,
-        #[cfg(unix)]
         directory,
     })
-}
-
-#[cfg(not(unix))]
-fn create_private_directory(path: &Path) -> Result<(), String> {
-    fs::create_dir_all(path)
-        .map_err(|error| format!("cannot create auth directory {}: {error}", path.display()))
 }
 
 /// Return true only when the requested ID already names this exact context. Conflicts are
@@ -1347,12 +1290,10 @@ fn registry_lock(path: &Path) -> Result<BoundDirectoryLock, String> {
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
     create_dir_all_durable(parent)?;
     validate_registry_directory(parent)?;
-    #[cfg(unix)]
     let directory = bind_directory(parent, "provider registry directory")?;
     let mut lock_name = path.as_os_str().to_os_string();
     lock_name.push(".lock");
     let lock_path = PathBuf::from(lock_name);
-    #[cfg(unix)]
     let file: File = {
         use rustix::fs::{Mode, OFlags, openat};
 
@@ -1375,17 +1316,6 @@ fn registry_lock(path: &Path) -> Result<BoundDirectoryLock, String> {
         })?
         .into()
     };
-    #[cfg(not(unix))]
-    let file = {
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        options.open(&lock_path).map_err(|error| {
-            format!(
-                "opening provider registry lock {}: {error}",
-                lock_path.display()
-            )
-        })?
-    };
     let metadata = file.metadata().map_err(|error| {
         format!(
             "inspecting provider registry lock {}: {error}",
@@ -1398,7 +1328,6 @@ fn registry_lock(path: &Path) -> Result<BoundDirectoryLock, String> {
             lock_path.display()
         ));
     }
-    #[cfg(unix)]
     {
         validate_owned_not_writable_by_others(&lock_path, &metadata, "provider registry lock")?;
         file.set_permissions(fs::Permissions::from_mode(0o600))
@@ -1417,7 +1346,6 @@ fn registry_lock(path: &Path) -> Result<BoundDirectoryLock, String> {
     }
     fs2::FileExt::lock_exclusive(&file)
         .map_err(|error| format!("locking provider registry {}: {error}", lock_path.display()))?;
-    #[cfg(unix)]
     if !bound_directory_is_current(parent, &directory).unwrap_or(false) {
         return Err(format!(
             "provider registry directory {} changed while waiting for its lock; retry",
@@ -1426,7 +1354,6 @@ fn registry_lock(path: &Path) -> Result<BoundDirectoryLock, String> {
     }
     Ok(BoundDirectoryLock {
         _lock: file,
-        #[cfg(unix)]
         directory,
     })
 }
@@ -1441,31 +1368,17 @@ fn write_registry(
         .ok_or_else(|| format!("provider registry {} has no parent", path.display()))?;
     create_dir_all_durable(parent)?;
     validate_registry_directory(parent)?;
-    #[cfg(unix)]
     let directory = bind_directory(parent, "provider registry directory")?;
-    #[cfg(not(unix))]
-    let permissions = fs::metadata(path)
-        .ok()
-        .map(|metadata| metadata.permissions());
     let mut temporary = tempfile::NamedTempFile::new_in(parent)
         .map_err(|error| format!("creating provider registry temporary file: {error}"))?;
-    #[cfg(unix)]
     temporary
         .as_file()
         .set_permissions(fs::Permissions::from_mode(0o600))
         .map_err(|error| format!("setting provider registry permissions: {error}"))?;
-    #[cfg(not(unix))]
-    if let Some(permissions) = permissions {
-        temporary
-            .as_file()
-            .set_permissions(permissions)
-            .map_err(|error| format!("setting provider registry permissions: {error}"))?;
-    }
     temporary
         .write_all(bytes)
         .and_then(|()| temporary.as_file().sync_all())
         .map_err(|error| format!("writing provider registry: {error}"))?;
-    #[cfg(unix)]
     if !bound_directory_is_current(parent, &directory).unwrap_or(false) {
         return Err(format!(
             "provider registry directory {} changed before publication; retry",
@@ -1485,7 +1398,6 @@ fn write_registry(
         }
         Some(expected) => Some(replace_registry_if_unchanged(path, temporary, expected)?),
     };
-    #[cfg(unix)]
     if !bound_directory_is_current(parent, &directory).unwrap_or(false) {
         eprintln!(
             "warning: provider registry committed, but its directory {} changed during publication; inspect the registry and its preserved versions",
@@ -1501,18 +1413,9 @@ fn write_registry(
 }
 
 fn create_dir_all_durable(path: &Path) -> Result<(), String> {
-    #[cfg(unix)]
-    return create_private_directory_tree(path, "provider registry directory", true);
-    #[cfg(not(unix))]
-    fs::create_dir_all(path).map_err(|error| {
-        format!(
-            "creating provider registry directory {}: {error}",
-            path.display()
-        )
-    })
+    create_private_directory_tree(path, "provider registry directory", true)
 }
 
-#[cfg(unix)]
 fn validate_owned_not_writable_by_others(
     path: &Path,
     metadata: &fs::Metadata,
@@ -1536,7 +1439,6 @@ fn validate_owned_not_writable_by_others(
     Ok(())
 }
 
-#[cfg(unix)]
 fn validate_registry_directory(path: &Path) -> Result<(), String> {
     let metadata = fs::metadata(path).map_err(|error| {
         format!(
@@ -1554,19 +1456,6 @@ fn validate_registry_directory(path: &Path) -> Result<(), String> {
     validate_secure_directory_chain(path, "provider registry directory")
 }
 
-#[cfg(not(unix))]
-fn validate_registry_directory(path: &Path) -> Result<(), String> {
-    if path.is_dir() {
-        Ok(())
-    } else {
-        Err(format!(
-            "provider registry directory {} is not a directory",
-            path.display()
-        ))
-    }
-}
-
-#[cfg(unix)]
 fn sync_directory(path: &Path) -> Result<(), String> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
@@ -1578,20 +1467,6 @@ fn sync_directory(path: &Path) -> Result<(), String> {
         })
 }
 
-#[cfg(not(unix))]
-fn sync_directory(_path: &Path) -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-))]
 fn replace_registry_if_unchanged(
     path: &Path,
     mut temporary: tempfile::NamedTempFile,
@@ -1728,15 +1603,6 @@ fn replace_registry_if_unchanged(
     Ok(recovery.displaced_copy)
 }
 
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-))]
 fn emit_registry_commit_warnings(warnings: &[String]) {
     if !warnings.is_empty() {
         eprintln!(
@@ -1746,15 +1612,6 @@ fn emit_registry_commit_warnings(warnings: &[String]) {
     }
 }
 
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-))]
 struct RegistryRecovery {
     directory: PathBuf,
     directory_file: File,
@@ -1765,15 +1622,6 @@ struct RegistryRecovery {
     original_file: File,
 }
 
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-))]
 fn prepare_registry_recovery(
     path: &Path,
     stage: &Path,
@@ -1862,29 +1710,11 @@ fn prepare_registry_recovery(
     })
 }
 
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-))]
 fn registry_file_matches(path: &Path, file: &File, expected: &str) -> bool {
     same_file(path, file).unwrap_or(false)
         && matches!(read_registry_unchecked(path), Ok(Some(current)) if current == expected)
 }
 
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-))]
 fn make_recovery_inspectable(recovery: &RegistryRecovery) -> Result<(), String> {
     let mut failures = Vec::new();
     if let Err(error) = fs::set_permissions(&recovery.directory, fs::Permissions::from_mode(0o700))
@@ -1910,15 +1740,6 @@ fn make_recovery_inspectable(recovery: &RegistryRecovery) -> Result<(), String> 
     }
 }
 
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-))]
 fn archive_transaction_if_ours(
     path: &Path,
     transaction: &Path,
@@ -2037,7 +1858,6 @@ fn validate_sha256(value: &str, field: &str) -> Result<(), String> {
     }
 }
 
-#[cfg(unix)]
 fn open_regular_file_at(
     directory: &File,
     name: &std::ffi::OsStr,
@@ -2072,7 +1892,6 @@ fn open_regular_file_at(
     Ok(file)
 }
 
-#[cfg(unix)]
 fn bounded_file_bytes(file: &File, display: &Path, label: &str) -> Result<Vec<u8>, String> {
     use std::os::unix::fs::FileExt;
 
@@ -2116,7 +1935,6 @@ fn bounded_file_bytes(file: &File, display: &Path, label: &str) -> Result<Vec<u8
     Ok(bytes)
 }
 
-#[cfg(unix)]
 fn registry_digest_from_file(file: &File, display: &Path, label: &str) -> Result<String, String> {
     let bytes = bounded_file_bytes(file, display, label)?;
     let text = std::str::from_utf8(&bytes).map_err(|_| {
@@ -2134,7 +1952,6 @@ fn registry_digest_from_file(file: &File, display: &Path, label: &str) -> Result
     Ok(review_core::hex::encode(&Sha256::digest(bytes)))
 }
 
-#[cfg(unix)]
 fn same_file_at(directory: &File, name: &std::ffi::OsStr, expected: &File) -> bool {
     let Ok(current) = open_regular_file_at(directory, name, Path::new(name), "secured file") else {
         return false;
@@ -2148,7 +1965,6 @@ fn same_file_at(directory: &File, name: &std::ffi::OsStr, expected: &File) -> bo
     current.dev() == expected.dev() && current.ino() == expected.ino()
 }
 
-#[cfg(unix)]
 fn same_directory_at(directory: &File, name: &std::ffi::OsStr, expected: &File) -> bool {
     use rustix::fs::{Mode, OFlags, openat};
 
@@ -2170,28 +1986,10 @@ fn same_directory_at(directory: &File, name: &std::ffi::OsStr, expected: &File) 
     current.dev() == expected.dev() && current.ino() == expected.ino()
 }
 
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-))]
 fn recover_registry(path: &Path) -> Result<(), String> {
     recover_registry_with_hook(path, || {})
 }
 
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-))]
 fn recover_registry_with_hook(path: &Path, before_archive: impl FnOnce()) -> Result<(), String> {
     use rustix::fs::{Mode, OFlags, RenameFlags, openat, renameat_with};
 
@@ -2411,31 +2209,6 @@ fn recover_registry_with_hook(path: &Path, before_archive: impl FnOnce()) -> Res
     Ok(())
 }
 
-#[cfg(not(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-)))]
-fn recover_registry(path: &Path) -> Result<(), String> {
-    Err(format!(
-        "provider registry recovery is not supported on this platform for {}",
-        path.display()
-    ))
-}
-
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-))]
 fn write_registry_transaction(
     path: &Path,
     stage: &Path,
@@ -2506,7 +2279,6 @@ fn write_registry_transaction(
     let transaction = registry_transaction_path(path);
     let mut temporary = tempfile::NamedTempFile::new_in(parent)
         .map_err(|error| format!("creating provider transaction marker: {error}"))?;
-    #[cfg(unix)]
     temporary
         .as_file()
         .set_permissions(fs::Permissions::from_mode(0o600))
@@ -2527,41 +2299,12 @@ fn write_registry_transaction(
     Ok((transaction, marker_file))
 }
 
-#[cfg(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-))]
 fn same_file(path: &Path, file: &File) -> std::io::Result<bool> {
     use std::os::unix::fs::MetadataExt;
 
     let path = fs::symlink_metadata(path)?;
     let file = file.metadata()?;
     Ok(path.dev() == file.dev() && path.ino() == file.ino())
-}
-
-#[cfg(not(any(
-    target_os = "android",
-    target_os = "linux",
-    target_os = "macos",
-    target_os = "ios",
-    target_os = "tvos",
-    target_os = "visionos",
-    target_os = "watchos"
-)))]
-fn replace_registry_if_unchanged(
-    path: &Path,
-    _temporary: tempfile::NamedTempFile,
-    _expected: &str,
-) -> Result<PathBuf, String> {
-    Err(format!(
-        "provider registry {} already exists, but this platform has no conditional replacement primitive",
-        path.display()
-    ))
 }
 
 pub fn format_limit(limit: &ProviderLimit) -> String {
@@ -2689,7 +2432,6 @@ fn read_registry_with_hooks(
     if let Some(parent) = configured_parent_resolved.as_deref() {
         validate_registry_directory(parent)?;
     }
-    #[cfg(unix)]
     let configured_directory = configured_parent_resolved
         .as_deref()
         .map(|parent| bind_directory(parent, "provider registry directory"))
@@ -2706,7 +2448,6 @@ fn read_registry_with_hooks(
         .parent()
         .ok_or_else(|| format!("provider registry {} has no parent", resolved.display()))?;
     validate_registry_directory(resolved_parent)?;
-    #[cfg(unix)]
     let resolved_directory = bind_directory(resolved_parent, "provider registry directory")?;
     ensure_registry_transactions_clear(path, &resolved)?;
     before_read();
@@ -2727,7 +2468,6 @@ fn read_registry_with_hooks(
             path.display()
         ));
     }
-    #[cfg(unix)]
     {
         let configured_alias_changed = configured_parent
             .zip(configured_parent_resolved.as_deref())
@@ -2814,7 +2554,6 @@ fn read_registry_resolved(path: &Path, resolved: &Path) -> Result<String, String
             path.display()
         ));
     }
-    #[cfg(unix)]
     validate_owned_not_writable_by_others(path, &metadata, "provider registry")?;
     if metadata.len() > MAX_REGISTRY_BYTES {
         return Err(format!(
@@ -2836,18 +2575,12 @@ fn read_registry_resolved(path: &Path, resolved: &Path) -> Result<String, String
         .map_err(|_| format!("provider registry {} is not UTF-8", path.display()))
 }
 
-#[cfg(unix)]
 fn open_registry(path: &Path) -> std::io::Result<File> {
     let mut options = OpenOptions::new();
     options
         .read(true)
         .custom_flags(nix::libc::O_NONBLOCK | nix::libc::O_NOFOLLOW)
         .open(path)
-}
-
-#[cfg(not(unix))]
-fn open_registry(path: &Path) -> std::io::Result<File> {
-    File::open(path)
 }
 
 fn implicit_defaults() -> Vec<ProviderSpec> {
@@ -3229,7 +2962,6 @@ fn claude_subscription_usage_supported(auth_status: &str) -> bool {
             == Some("firstParty")
 }
 
-#[cfg(unix)]
 fn cached_claude_weekly_limits(
     program: &Path,
     spec: &ProviderSpec,
@@ -3265,16 +2997,6 @@ fn cached_claude_weekly_limits(
     Ok(limits)
 }
 
-#[cfg(not(unix))]
-fn cached_claude_weekly_limits(
-    _program: &Path,
-    _spec: &ProviderSpec,
-    _probe_path: &std::ffi::OsStr,
-) -> Result<Vec<ProviderLimit>, String> {
-    Err("Claude usage probes require a Unix pseudo-terminal".to_string())
-}
-
-#[cfg(unix)]
 fn probe_claude_weekly_limits(
     program: &Path,
     spec: &ProviderSpec,
@@ -3416,15 +3138,6 @@ fn probe_claude_weekly_limits(
         Err(_) => {}
     }
     result
-}
-
-#[cfg(not(unix))]
-fn probe_claude_weekly_limits(
-    _program: &Path,
-    _spec: &ProviderSpec,
-    _probe_path: &std::ffi::OsStr,
-) -> Result<Vec<ProviderLimit>, String> {
-    Err("Claude usage probes require a Unix pseudo-terminal".to_string())
 }
 
 fn parse_claude_weekly_limits(output: &[u8]) -> Result<ParsedClaudeUsage, String> {
@@ -3577,7 +3290,6 @@ fn configure_probe_environment(
     }
 }
 
-#[cfg(unix)]
 fn probe_codex_subscription(
     program: &Path,
     spec: &ProviderSpec,
@@ -3594,7 +3306,6 @@ fn probe_codex_subscription(
     )?)
 }
 
-#[cfg(unix)]
 fn probe_codex_request_before(
     program: &Path,
     spec: &ProviderSpec,
@@ -3686,15 +3397,6 @@ fn probe_codex_request_before(
     };
     stop_probe(&mut child);
     result
-}
-
-#[cfg(not(unix))]
-fn probe_codex_subscription(
-    _program: &Path,
-    _spec: &ProviderSpec,
-    _probe_path: &std::ffi::OsStr,
-) -> Result<SubscriptionSnapshot, String> {
-    Err("provider probes require Unix process-group isolation".to_string())
 }
 
 fn response_for_id(captured: &[u8], expected_id: u64) -> Option<serde_json::Value> {
@@ -4457,7 +4159,6 @@ struct SmokeOutput {
     stderr: Vec<u8>,
 }
 
-#[cfg(unix)]
 fn run_smoke(
     program: &Path,
     spec: &ProviderSpec,
@@ -4593,16 +4294,6 @@ fn drain_smoke_available(
         Err(error) if error.kind() == ErrorKind::WouldBlock => Ok(false),
         Err(error) => Err(format!("cannot read provider smoke output: {error}")),
     }
-}
-
-#[cfg(not(unix))]
-fn run_smoke(
-    _program: &Path,
-    _spec: &ProviderSpec,
-    _reviewer: &ReviewerCommand,
-    _state_dir: &Path,
-) -> Result<SmokeOutput, String> {
-    Err("provider smoke requires Unix process-group isolation".to_string())
 }
 
 struct OperationIdentity<'a> {
@@ -4866,7 +4557,6 @@ pub fn format_window(minutes: u64) -> String {
 }
 
 // Status probes run to completion; only Task identity checks cancel the shared probe.
-#[cfg(unix)]
 fn run_probe(
     program: &Path,
     spec: &ProviderSpec,
@@ -4875,7 +4565,6 @@ fn run_probe(
     run_probe_before(program, spec, probe_path, &AtomicBool::new(false), None)
 }
 
-#[cfg(unix)]
 fn run_probe_before(
     program: &Path,
     spec: &ProviderSpec,
@@ -5014,23 +4703,12 @@ fn drain_probe_streams(
     Ok(stdout_read || stderr_read)
 }
 
-#[cfg(unix)]
 fn stop_probe(child: &mut Child) {
     terminate_probe_group(child.id());
     let _ = child.kill();
     let _ = child.wait();
 }
 
-#[cfg(not(unix))]
-fn run_probe(
-    _program: &Path,
-    _spec: &ProviderSpec,
-    _probe_path: &std::ffi::OsStr,
-) -> Result<ProbeOutput, String> {
-    Err("provider probes require Unix process-group isolation".to_string())
-}
-
-#[cfg(unix)]
 fn terminate_probe_group(process_group: u32) {
     let _ = nix::sys::signal::killpg(
         nix::unistd::Pid::from_raw(process_group as i32),
@@ -5038,7 +4716,6 @@ fn terminate_probe_group(process_group: u32) {
     );
 }
 
-#[cfg(unix)]
 fn set_nonblocking(stdout: &impl std::os::fd::AsFd) -> Result<(), String> {
     use nix::fcntl::{FcntlArg, OFlag, fcntl};
 
@@ -5261,10 +4938,7 @@ fn is_executable(path: &Path) -> bool {
     if !metadata.is_file() {
         return false;
     }
-    #[cfg(unix)]
-    return metadata.permissions().mode() & 0o111 != 0;
-    #[cfg(not(unix))]
-    true
+    metadata.permissions().mode() & 0o111 != 0
 }
 
 #[cfg(test)]
@@ -5319,7 +4993,6 @@ mod tests {
         assert!(read_registry(&path).is_err());
     }
 
-    #[cfg(unix)]
     #[test]
     fn symlinked_registry_checks_the_marker_beside_the_resolved_target() {
         use std::os::unix::fs::symlink;
@@ -5339,7 +5012,6 @@ mod tests {
         assert!(error.contains(path.to_str().unwrap()), "{error}");
     }
 
-    #[cfg(unix)]
     #[test]
     fn reader_rechecks_a_leaf_symlink_retargeted_to_a_fenced_registry() {
         use std::os::unix::fs::symlink;
@@ -5372,15 +5044,6 @@ mod tests {
         assert!(second_transaction.is_file());
     }
 
-    #[cfg(any(
-        target_os = "android",
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "tvos",
-        target_os = "visionos",
-        target_os = "watchos"
-    ))]
     #[test]
     fn reader_rejects_a_candidate_that_is_exchanged_and_rolled_back_mid_read() {
         use rustix::fs::{CWD, RenameFlags, renameat_with};
@@ -5412,15 +5075,6 @@ mod tests {
         assert!(fs::read_to_string(&stage).unwrap().contains("# candidate"));
     }
 
-    #[cfg(any(
-        target_os = "android",
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "tvos",
-        target_os = "visionos",
-        target_os = "watchos"
-    ))]
     #[test]
     fn rollback_race_preserves_the_second_replacement_at_the_stage_path() {
         use rustix::fs::{CWD, RenameFlags, renameat_with};
@@ -5451,15 +5105,6 @@ mod tests {
         );
     }
 
-    #[cfg(any(
-        target_os = "android",
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "tvos",
-        target_os = "visionos",
-        target_os = "watchos"
-    ))]
     #[test]
     fn recovery_hardlink_preserves_late_writes_after_stage_replacement() {
         use rustix::fs::{CWD, RenameFlags, renameat_with};
@@ -5496,15 +5141,6 @@ mod tests {
         assert_eq!(fs::read_to_string(&stage_path).unwrap(), external);
     }
 
-    #[cfg(any(
-        target_os = "android",
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "tvos",
-        target_os = "visionos",
-        target_os = "watchos"
-    ))]
     #[test]
     fn successful_replace_records_and_preserves_recovery_versions() {
         let root = tempfile::tempdir().unwrap();
@@ -5530,15 +5166,6 @@ mod tests {
         assert!(!registry_transaction_path(&path).exists());
     }
 
-    #[cfg(any(
-        target_os = "android",
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "tvos",
-        target_os = "visionos",
-        target_os = "watchos"
-    ))]
     #[test]
     fn recovery_archives_only_a_hash_validated_precommit_marker() {
         let root = tempfile::tempdir().unwrap();
@@ -5572,7 +5199,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn recovery_rejects_a_symlinked_candidate_and_retains_the_marker() {
         use std::os::unix::fs::symlink;
@@ -5600,7 +5226,6 @@ mod tests {
         assert!(transaction.is_file());
     }
 
-    #[cfg(unix)]
     #[test]
     fn recovery_revalidates_held_files_immediately_before_archival() {
         let root = tempfile::tempdir().unwrap();
@@ -5632,7 +5257,6 @@ mod tests {
         assert!(transaction.is_file());
     }
 
-    #[cfg(unix)]
     #[test]
     fn recovery_revalidates_marker_bytes_immediately_before_archival() {
         let root = tempfile::tempdir().unwrap();
@@ -5661,7 +5285,6 @@ mod tests {
         assert!(transaction.is_file());
     }
 
-    #[cfg(unix)]
     #[test]
     fn recovery_rejects_parent_replaced_by_a_symlink_to_the_held_directory() {
         use std::os::unix::fs::symlink;
@@ -5694,7 +5317,6 @@ mod tests {
         assert!(transaction.is_file());
     }
 
-    #[cfg(unix)]
     #[test]
     fn recovery_through_an_alias_handles_the_marker_that_fences_reads() {
         use std::os::unix::fs::symlink;
@@ -5725,7 +5347,6 @@ mod tests {
         assert_eq!(read_registry(&alias).unwrap().as_deref(), Some(original));
     }
 
-    #[cfg(unix)]
     #[test]
     fn recovery_deduplicates_a_registry_reached_through_a_symlinked_ancestor() {
         use std::os::unix::fs::symlink;
@@ -5758,7 +5379,6 @@ mod tests {
         assert_eq!(read_registry(&alias).unwrap().as_deref(), Some(original));
     }
 
-    #[cfg(unix)]
     #[test]
     fn recovery_revalidates_a_symlinked_ancestor_after_acquiring_locks() {
         use std::os::unix::fs::symlink;
@@ -5788,7 +5408,6 @@ mod tests {
         assert!(second_transaction.is_file());
     }
 
-    #[cfg(unix)]
     #[test]
     fn recovery_through_an_alias_refuses_two_competing_markers() {
         use std::os::unix::fs::symlink;
@@ -5807,15 +5426,6 @@ mod tests {
         assert!(registry_transaction_path(&alias).is_file());
     }
 
-    #[cfg(any(
-        target_os = "android",
-        target_os = "linux",
-        target_os = "macos",
-        target_os = "ios",
-        target_os = "tvos",
-        target_os = "visionos",
-        target_os = "watchos"
-    ))]
     #[test]
     fn recovery_identifies_a_committed_candidate_and_refuses_unknown_live_bytes() {
         use rustix::fs::{CWD, RenameFlags, renameat_with};
@@ -5914,7 +5524,6 @@ mod tests {
         create_dir_all_durable(&directory).unwrap();
     }
 
-    #[cfg(unix)]
     #[test]
     fn directory_creation_rejects_an_unsafe_ancestor_without_side_effects() {
         let root = tempfile::tempdir().unwrap();
@@ -5930,7 +5539,6 @@ mod tests {
         assert!(!shared.join("new-config").exists());
     }
 
-    #[cfg(unix)]
     #[test]
     fn rename_controlling_ancestor_rejects_a_foreign_non_root_owner() {
         let error = validate_rename_controlling_directory_values(
@@ -5954,7 +5562,6 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn auth_lock_rejects_a_directory_replaced_while_waiting() {
         use std::sync::mpsc;
@@ -5985,7 +5592,6 @@ mod tests {
         assert!(error.contains("changed while waiting"), "{error}");
     }
 
-    #[cfg(unix)]
     #[test]
     fn auth_lock_rejects_a_symlink_to_the_held_directory_after_waiting() {
         use std::os::unix::fs::symlink;
@@ -6061,7 +5667,6 @@ auth_dir = "/profiles/claude-personal"
         }
     }
 
-    #[cfg(unix)]
     #[test]
     fn registry_rejects_a_symlinked_auth_context_before_canonicalization() {
         use std::os::unix::fs::symlink;
@@ -6241,7 +5846,6 @@ auth_dir = "{}"
         ));
     }
 
-    #[cfg(unix)]
     #[test]
     fn claude_usage_probe_reads_the_fixed_screen_and_reaps_the_session() {
         use std::os::unix::fs::PermissionsExt;
@@ -6272,7 +5876,6 @@ auth_dir = "{}"
         assert_eq!(limits[0].resets_at, None);
     }
 
-    #[cfg(unix)]
     #[test]
     fn claude_usage_cache_skips_a_second_interactive_probe() {
         use std::os::unix::fs::PermissionsExt;
@@ -6340,7 +5943,6 @@ auth_dir = "{}"
         );
     }
 
-    #[cfg(unix)]
     #[test]
     fn codex_subscription_probe_reaps_descendants_after_an_early_exit() {
         use std::os::unix::fs::PermissionsExt;

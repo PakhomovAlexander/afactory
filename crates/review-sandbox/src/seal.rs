@@ -413,26 +413,13 @@ fn hash_baseline_candidates(
     )
 }
 
-#[cfg(unix)]
 fn is_executable(meta: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     meta.permissions().mode() & 0o111 != 0
 }
 
-#[cfg(not(unix))]
-fn is_executable(_meta: &std::fs::Metadata) -> bool {
-    false
-}
-
-/// The raw bytes of a path, for lossless encoding. Unix: the OS bytes; elsewhere, a best-effort
-/// UTF-8 view (the byte-exact model does not apply off-unix).
-#[cfg(unix)]
+/// The raw OS bytes of a path, for lossless encoding.
 fn path_bytes(path: &Path) -> &[u8] {
     use std::os::unix::ffi::OsStrExt;
     path.as_os_str().as_bytes()
-}
-
-#[cfg(not(unix))]
-fn path_bytes(path: &Path) -> &[u8] {
-    path.as_os_str().to_str().map(str::as_bytes).unwrap_or(b"")
 }

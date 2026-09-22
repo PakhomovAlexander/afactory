@@ -5,8 +5,6 @@
 //! and that test re-runs itself as a child process with the altered PATH instead of changing
 //! its own environment.
 
-#![cfg(unix)]
-
 use std::time::{Duration, Instant};
 
 /// Set only in the child run; names the directory holding the fake `git` and its marker.

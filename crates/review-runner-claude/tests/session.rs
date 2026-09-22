@@ -43,7 +43,6 @@ fn recording_stub(dir: &Path) -> (PathBuf, PathBuf) {
         ),
     )
     .unwrap();
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -243,7 +242,6 @@ fn a_transcript_over_its_bound_is_never_filed_and_a_non_file_is_refused() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn a_symlinked_project_directory_is_never_followed() {
     let dir = tempfile::tempdir().unwrap();
@@ -299,7 +297,6 @@ fn a_re_materialized_transcript_is_found_under_the_source_identity() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn a_symlinked_projects_directory_is_never_followed() {
     let dir = tempfile::tempdir().unwrap();
@@ -330,7 +327,6 @@ fn a_symlinked_projects_directory_is_never_followed() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn a_deletion_unlinks_in_the_directory_the_search_validated() {
     let dir = tempfile::tempdir().unwrap();
@@ -352,7 +348,6 @@ fn a_deletion_unlinks_in_the_directory_the_search_validated() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn a_materialized_transcript_never_writes_through_a_link() {
     let dir = tempfile::tempdir().unwrap();

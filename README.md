@@ -32,12 +32,15 @@ key and refuses an unsigned or badly signed release. `install.sh` verifies the a
 when `minisign` is on `PATH`, the signature too.
 
 Supported targets: `aarch64-apple-darwin`, `x86_64-unknown-linux-musl`, and
-`aarch64-unknown-linux-musl` (static: no glibc floor). On x86_64 macOS, or anywhere else, build from
-source:
+`aarch64-unknown-linux-musl` (static: no glibc floor). On x86_64 macOS, or another Linux or macOS
+target, build from source:
 
 ```sh
 cargo install --path crates/af --locked
 ```
+
+`af` runs on Linux and macOS only. Windows and other non-unix hosts are unsupported, and so are the
+BSDs: a source build on any of them stops with a compile error.
 
 ## Quickstart
 

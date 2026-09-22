@@ -307,7 +307,6 @@ fn export_refuses_preparation_private_task_values_and_unsafe_destinations() {
     for path in ["../escape", ".git/export", "/tmp/af-export"] {
         assert!(rejected(path).contains("safe project-relative"));
     }
-    #[cfg(unix)]
     {
         std::os::unix::fs::symlink(root.path(), repo.join("escape-link")).unwrap();
         assert!(rejected("escape-link/export").contains("symlink"));

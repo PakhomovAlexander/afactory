@@ -86,41 +86,34 @@ fn review_file_uses_common_task_state_and_keeps_changes_requested_exit() {
     assert_eq!(wrong_kind.status.code(), Some(2));
 }
 
-#[cfg(unix)]
 #[test]
 fn native_model_cli_admission_is_shared_and_account_changes_refuse_dispatch() {
     native_model_case(false, false);
 }
 
-#[cfg(unix)]
 #[test]
 fn native_model_cli_retains_wide_failed_usage_in_json_and_text_inspection() {
     native_model_case(true, false);
 }
 
-#[cfg(unix)]
 #[test]
 fn native_codex_multiturn_usage_survives_common_accounting_and_fresh_inspection() {
     native_model_case(true, true);
 }
 
-#[cfg(unix)]
 fn native_model_case(wide: bool, codex: bool) {
     native_model_drift_case(wide, codex, None);
 }
 
-#[cfg(unix)]
 #[test]
 fn native_task_account_change_after_admission_refuses_private_worker_context() {
     native_model_drift_case(false, false, Some(1));
 }
-#[cfg(unix)]
 #[test]
 fn native_task_account_change_between_workers_retains_original_spend() {
     native_model_drift_case(false, false, Some(2));
 }
 
-#[cfg(unix)]
 fn native_model_drift_case(wide: bool, codex: bool, switch_after: Option<usize>) {
     use review_config::task::catalog::{TaskWorkerManifest, TaskWorkerRunner};
     use std::os::unix::fs::PermissionsExt;

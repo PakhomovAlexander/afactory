@@ -247,7 +247,6 @@ fn fixture() -> (tempfile::TempDir, PathBuf, PathBuf) {
     (dir, repo, home)
 }
 
-#[cfg(unix)]
 fn recording_container_runtime(root: &Path) -> (PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
 
@@ -1575,7 +1574,6 @@ fn cache_resolver_preserves_every_non_policy_failure_kind() {
 }
 
 #[test]
-#[cfg(unix)]
 fn a_cache_not_reached_after_gate_setup_failure_is_explicit_v5_evidence() {
     use review_config::Definition;
     use review_sandbox::{CacheKind, CacheSource};
@@ -1643,7 +1641,6 @@ fn a_cache_not_reached_after_gate_setup_failure_is_explicit_v5_evidence() {
 }
 
 #[test]
-#[cfg(unix)]
 fn a_v3_unusable_container_is_not_admitted_or_executed() {
     use review_config::Definition;
 

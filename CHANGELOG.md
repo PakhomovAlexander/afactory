@@ -151,6 +151,10 @@ or needs a documented hand edit.
   literally when the baseline was an ordinary tree. A Snapshot's content digest hashes the stored
   spelling, so ordinary trees keep their digests, but a tree with such a name gets a different
   Snapshot digest than an earlier release gave it. ADR-0024 is superseded.
+- `af` builds and runs on Linux and macOS only. A source build for any other host, including
+  Windows and the BSDs, now stops with a compile error. It no longer compiles fallbacks that
+  skipped read-only sandboxes, process-group kills, symlinks or executable bits. The release
+  targets and `install.sh` are unchanged.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

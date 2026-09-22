@@ -82,7 +82,6 @@ fn stub(dir: &Path, envelope: &str, code: i32) -> PathBuf {
         format!("#!/bin/sh\ncat <<'ENVELOPE'\n{envelope}\nENVELOPE\nexit {code}\n"),
     )
     .unwrap();
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -305,7 +304,6 @@ fn rendered_input_is_exactly_what_the_stub_receives() {
         format!("#!/bin/sh\ncat > \"{}\"\nexit 1\n", dump.display()),
     )
     .unwrap();
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&stub_path, std::fs::Permissions::from_mode(0o755)).unwrap();

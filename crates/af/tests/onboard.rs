@@ -25,11 +25,10 @@ fn stdout(output: &Output) -> String {
 }
 
 /// A repository directory whose name is not UTF-8, or `None` where the filesystem refuses to
-/// hold one. `#[cfg(unix)]` is not the real condition: the constraint is the filesystem's own
-/// encoding rule, and APFS rejects with `EILSEQ` the byte that ext4 stores without complaint.
-/// Skipping there keeps a Mac from failing these tests against a limitation of its disk rather
-/// than anything in `af`; Linux CI still exercises them.
-#[cfg(unix)]
+/// hold one. The constraint is the filesystem's own encoding rule, not the platform: APFS
+/// rejects with `EILSEQ` the byte that ext4 stores without complaint. Skipping there keeps a
+/// Mac from failing these tests against a limitation of its disk rather than anything in `af`;
+/// Linux CI still exercises them.
 fn non_utf8_repository(root: &Path) -> Option<PathBuf> {
     use std::os::unix::ffi::OsStringExt;
 
@@ -147,7 +146,6 @@ fn preview_preserves_the_explicit_af_release_in_the_printed_apply_command() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn preview_rejects_a_repository_path_that_cannot_be_copied_as_utf8() {
     let root = tempfile::tempdir().unwrap();
@@ -172,7 +170,6 @@ fn preview_rejects_a_repository_path_that_cannot_be_copied_as_utf8() {
     assert!(!repo.join(".af").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn existing_authority_can_be_validated_under_a_non_utf8_repository_path() {
     let root = tempfile::tempdir().unwrap();
@@ -198,7 +195,6 @@ fn existing_authority_can_be_validated_under_a_non_utf8_repository_path() {
     assert_eq!(report["status"], "onboarded");
 }
 
-#[cfg(unix)]
 #[test]
 fn preview_rejects_a_non_utf8_canonical_repository_reached_as_dot() {
     let root = tempfile::tempdir().unwrap();

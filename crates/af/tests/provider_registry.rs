@@ -5,17 +5,14 @@ use std::path::Path;
 use std::process::{Command, Output};
 use std::sync::{Arc, Barrier};
 
-#[cfg(unix)]
 use std::os::unix::ffi::OsStringExt;
-#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 
 /// A directory whose name is not UTF-8, or `None` where the filesystem refuses to hold one.
-/// `#[cfg(unix)]` is not the real condition: the constraint is the filesystem's own encoding
-/// rule, and APFS rejects with `EILSEQ` the byte that ext4 stores without complaint. Skipping
-/// there keeps a Mac from failing this against a limitation of its disk; Linux CI, which the
-/// release also runs, still exercises every assertion.
-#[cfg(unix)]
+/// The constraint is the filesystem's own encoding rule, not the platform: APFS rejects with
+/// `EILSEQ` the byte that ext4 stores without complaint. Skipping there keeps a Mac from failing
+/// this against a limitation of its disk; Linux CI, which the release also runs, still exercises
+/// every assertion.
 fn non_utf8_dir(root: &Path, name: &[u8]) -> Option<std::path::PathBuf> {
     let path = root.join(std::ffi::OsString::from_vec(name.to_vec()));
     std::fs::create_dir(&path).ok().map(|()| path)
@@ -35,7 +32,6 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-#[cfg(unix)]
 fn fake_provider(root: &Path, name: &str, script: &str) -> std::path::PathBuf {
     let bin = root.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
@@ -47,7 +43,6 @@ fn fake_provider(root: &Path, name: &str, script: &str) -> std::path::PathBuf {
     bin
 }
 
-#[cfg(unix)]
 #[test]
 fn setup_owns_claude_login_registration_and_idempotent_recheck() {
     let root = tempfile::tempdir().unwrap();
@@ -126,7 +121,6 @@ exit 64
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn setup_owns_codex_login_and_reads_its_stderr_status() {
     let root = tempfile::tempdir().unwrap();
@@ -172,7 +166,6 @@ exit 64
     assert!(registry.contains("codex-main"), "{registry}");
 }
 
-#[cfg(unix)]
 #[test]
 fn setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask() {
     let root = tempfile::tempdir().unwrap();
@@ -225,7 +218,6 @@ exit 64
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn setup_never_registers_a_failed_login() {
     let root = tempfile::tempdir().unwrap();
@@ -265,7 +257,6 @@ exit 64
     assert!(!root.path().join("config/af/providers.toml").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn explicit_registration_rejects_an_auth_directory_writable_by_other_users() {
     let root = tempfile::tempdir().unwrap();
@@ -316,7 +307,6 @@ fn explicit_registration_rejects_an_auth_directory_writable_by_other_users() {
     assert!(!root.path().join("config/af/providers.toml").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn status_revalidates_auth_directory_safety_after_registration() {
     let root = tempfile::tempdir().unwrap();
@@ -350,7 +340,6 @@ fn status_revalidates_auth_directory_safety_after_registration() {
     assert!(stdout.contains("writable by another user"), "{stdout}");
 }
 
-#[cfg(unix)]
 #[test]
 fn setup_rejects_a_symlinked_auth_directory() {
     use std::os::unix::fs::symlink;
@@ -382,7 +371,6 @@ fn setup_rejects_a_symlinked_auth_directory() {
     assert!(!root.path().join("config/af/providers.toml").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn setup_rejects_a_non_utf8_auth_directory_before_creating_it() {
     let root = tempfile::tempdir().unwrap();
@@ -410,7 +398,6 @@ fn setup_rejects_a_non_utf8_auth_directory_before_creating_it() {
     assert!(!root.path().join("config/af/providers.toml").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn setup_rejects_a_utf8_alias_to_a_non_utf8_parent_before_creating_the_leaf() {
     use std::os::unix::fs::symlink;
@@ -440,7 +427,6 @@ fn setup_rejects_a_utf8_alias_to_a_non_utf8_parent_before_creating_the_leaf() {
     assert!(!target.join("codex-auth").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn setup_rejects_authenticated_output_from_a_failed_status_command() {
     let root = tempfile::tempdir().unwrap();
@@ -482,7 +468,6 @@ exit 64
     assert!(!root.path().join("config/af/providers.toml").exists());
 }
 
-#[cfg(unix)]
 #[test]
 fn concurrent_identical_setup_is_idempotent() {
     let root = tempfile::tempdir().unwrap();
@@ -614,7 +599,6 @@ fn add_creates_a_machine_local_registry_and_refuses_ambiguous_duplicates() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn add_creates_private_registry_state_even_with_a_wide_umask() {
     for umask in ["0002", "0177", "0777"] {
@@ -709,7 +693,6 @@ fn add_creates_private_registry_state_even_with_a_wide_umask() {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn add_rejects_registry_state_writable_by_other_users() {
     for unsafe_target in ["directory", "registry"] {
@@ -755,7 +738,6 @@ fn add_rejects_registry_state_writable_by_other_users() {
     }
 }
 
-#[cfg(unix)]
 #[test]
 fn add_rejects_a_nonsticky_writable_rename_ancestor() {
     let root = tempfile::tempdir().unwrap();

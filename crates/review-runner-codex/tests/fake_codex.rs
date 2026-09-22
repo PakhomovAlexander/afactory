@@ -54,7 +54,6 @@ fn stub(dir: &Path, answer: &str, events: &str, code: i32) -> PathBuf {
         marker = if answer.is_empty() { "" } else { "x" },
     );
     std::fs::write(&path, script).unwrap();
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -253,7 +252,6 @@ fn the_prompt_is_the_verified_bytes_not_the_disk() {
     let stub_path = dir.path().join("codex");
     let script = format!("#!/bin/sh\ncat > \"{}\"\nexit 1\n", prompt_dump.display());
     std::fs::write(&stub_path, script).unwrap();
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&stub_path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -287,7 +285,6 @@ fn prior_findings_reach_the_prompt_as_labelled_data() {
     let stub_path = dir.path().join("codex");
     let script = format!("#!/bin/sh\ncat > \"{}\"\nexit 1\n", prompt_dump.display());
     std::fs::write(&stub_path, script).unwrap();
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&stub_path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -336,7 +333,6 @@ fn rendered_input_is_exactly_what_the_stub_receives() {
         format!("#!/bin/sh\ncat > \"{}\"\nexit 1\n", dump.display()),
     )
     .unwrap();
-    #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&stub_path, std::fs::Permissions::from_mode(0o755)).unwrap();

@@ -226,7 +226,6 @@ fn shared_catalog_cycles_collisions_missing_dependencies_and_symlinks_are_refuse
                     .remove("fixture/implementer");
             }
             "symlink" => {
-                #[cfg(unix)]
                 std::os::unix::fs::symlink(
                     "/etc/passwd",
                     source.join(".af/task-packages/fixture/bugs/escape"),

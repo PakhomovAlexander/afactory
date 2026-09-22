@@ -270,7 +270,6 @@ impl ContainerProvider {
             "--env-file".to_string(),
             "/dev/null".to_string(),
         ];
-        #[cfg(unix)]
         argv.extend([
             "--user".to_string(),
             format!(
@@ -517,7 +516,6 @@ mod tests {
             "writing runtime fixture: {}",
             String::from_utf8_lossy(&output.stderr)
         );
-        #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -580,7 +578,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn runtime_detection_stops_at_the_callers_deadline() {
         let directory = tempfile::tempdir().unwrap();
         let paths: Vec<_> = (0..3)
@@ -610,7 +607,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn a_wedged_runtime_is_bounded_and_unusable() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("wedged-runtime");
@@ -626,7 +622,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn a_wedged_container_execution_is_bounded() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("runtime");
@@ -659,7 +654,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn a_failed_reap_is_distinct_from_a_safely_stopped_timeout() {
         let dir = tempfile::tempdir().unwrap();
         let fake = dir.path().join("runtime");
@@ -684,7 +678,6 @@ mod tests {
     }
 
     #[test]
-    #[cfg(unix)]
     fn cancellation_still_confirms_container_removal_without_cancelling_cleanup() {
         use std::sync::atomic::{AtomicBool, Ordering};
         for cleanup_ok in [true, false] {
@@ -740,7 +733,6 @@ mod tests {
     /// The invocation is the part a stub can prove: one bind, no network, only declared
     /// environment, and a name that can be reaped after client failure.
     #[test]
-    #[cfg(unix)]
     fn the_invocation_binds_only_the_sandbox_and_disables_the_network() {
         let provider =
             ContainerProvider::with_runtime("/nonexistent/runtime").with_image("example/image:tag");

@@ -420,7 +420,6 @@ fn a_marker_the_log_never_recorded_is_rebuilt_and_supplies_no_lineage() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn a_drifted_symlink_can_reach_nothing_outside_the_root() {
     let dir = tempfile::tempdir().unwrap();
@@ -461,7 +460,6 @@ fn a_drifted_symlink_can_reach_nothing_outside_the_root() {
     assert_eq!(scan_tree(root.tree()).unwrap(), head_two);
 }
 
-#[cfg(unix)]
 #[test]
 fn a_preparation_failure_names_no_host_path() {
     let dir = tempfile::tempdir().unwrap();

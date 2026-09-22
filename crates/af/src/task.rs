@@ -1712,20 +1712,11 @@ fn scan_delivery_directory(
     Ok(())
 }
 
-#[cfg(unix)]
 fn os_path_bytes(path: &Path) -> Result<Vec<u8>, String> {
     use std::os::unix::ffi::OsStrExt;
     Ok(path.as_os_str().as_bytes().to_vec())
 }
 
-#[cfg(not(unix))]
-fn os_path_bytes(path: &Path) -> Result<Vec<u8>, String> {
-    path.to_str()
-        .map(|path| path.as_bytes().to_vec())
-        .ok_or("delivered path is not valid UTF-8".into())
-}
-
-#[cfg(unix)]
 fn read_link_bytes(path: &Path) -> Result<Vec<u8>, String> {
     use std::os::unix::ffi::OsStrExt;
     Ok(std::fs::read_link(path)
@@ -1735,25 +1726,9 @@ fn read_link_bytes(path: &Path) -> Result<Vec<u8>, String> {
         .to_vec())
 }
 
-#[cfg(not(unix))]
-fn read_link_bytes(path: &Path) -> Result<Vec<u8>, String> {
-    std::fs::read_link(path)
-        .map_err(|error| error.to_string())?
-        .into_os_string()
-        .into_string()
-        .map(String::into_bytes)
-        .map_err(|_| "symlink target is not UTF-8".into())
-}
-
-#[cfg(unix)]
 fn is_executable(metadata: &std::fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
     metadata.permissions().mode() & 0o111 != 0
-}
-
-#[cfg(not(unix))]
-fn is_executable(_metadata: &std::fs::Metadata) -> bool {
-    false
 }
 
 fn resolve_task_state(state: &Option<PathBuf>, repository: &Path) -> Result<PathBuf, String> {

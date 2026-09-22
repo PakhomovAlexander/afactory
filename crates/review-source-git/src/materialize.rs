@@ -289,27 +289,15 @@ fn ensure_directory(path: &Path, encoded: &str) -> Result<(), MaterializeError> 
     }
 }
 
-#[cfg(unix)]
 fn symlink(target: &[u8], at: &Path) -> std::io::Result<()> {
     use std::os::unix::ffi::OsStrExt;
     std::os::unix::fs::symlink(std::ffi::OsStr::from_bytes(target), at)
 }
 
-#[cfg(not(unix))]
-fn symlink(target: &[u8], at: &Path) -> std::io::Result<()> {
-    fs::write(at, target)
-}
-
-#[cfg(unix)]
 fn set_executable(path: &Path, executable: bool) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mode = if executable { 0o755 } else { 0o644 };
     fs::set_permissions(path, fs::Permissions::from_mode(mode))
-}
-
-#[cfg(not(unix))]
-fn set_executable(_path: &Path, _executable: bool) -> std::io::Result<()> {
-    Ok(())
 }
 
 #[cfg(test)]
