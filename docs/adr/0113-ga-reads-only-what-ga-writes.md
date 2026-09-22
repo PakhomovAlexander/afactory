@@ -154,8 +154,9 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0071](0071-share-captured-review-authority-and-task-token-scopes.md): readability of
   historical `.review/` captures.
 - [ADR-0075](0075-retain-exact-task-usage-with-versioned-decimal-counters.md): readers for
-  unversioned and numeric-only usage, migration on write, and the execution-record and usage
-  version ladders.
+  unversioned and numeric-only usage, migration on write, and the execution-record, usage and
+  inspection version ladders. Every Task inspection is `af/task-inspection@11`, whose sections
+  are each present only when the Task recorded them.
 - [ADR-0077](0077-run-captured-review-operations-under-common-task-attempts.md): historical
   name-only Reviewer outputs meaning `ReviewerResult@1`, and the Store's opaque exception for them.
 - [ADR-0078](0078-bind-review-conclusions-to-exact-task-accounting.md): readers for historical
@@ -169,7 +170,7 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   and inspection generations, and the Review Task policy generations before
   `LegacyReviewTaskPolicy@4` that compiled without owned children.
 - [ADR-0082](0082-continue-captured-review-rounds-within-the-original-task.md): earlier
-  `TaskTransition` generations.
+  `TaskTransition` generations and inspection@6.
 - [ADR-0083](0083-run-post-round-integration-within-the-original-task.md): earlier inspection
   generations.
 - [ADR-0084](0084-route-new-review-commands-through-the-common-task.md): the original executor for

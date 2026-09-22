@@ -67,8 +67,8 @@ The branch and worktree must be absent. Delivery records its preparation before 
 verifies the materialized result, and supports retry/recovery with the same command. It makes
 no commit, push, PR or remote call. The common Store keeps delivery receipts alongside the Task.
 
-JSON inspection uses [`af/task-inspection@3`](../../schemas/task-inspection-v3.json) and list entries
-use [`af/task-list-entry@2`](../../schemas/task-list-entry-v2.json); their
+JSON inspection uses [`af/task-inspection@11`](../../schemas/task-inspection-v11.json) and list
+entries use [`af/task-list-entry@2`](../../schemas/task-list-entry-v2.json); their
 `chargeable_tokens` values are exact unsigned decimal strings. Inspection retains original
 execution-record versions, and `explain` includes the captured
 [`af.compiled-task/1`](../../schemas/compiled-task-v1.json) graph and

@@ -6,9 +6,9 @@ fn id(c: char) -> String {
 }
 
 #[test]
-fn review_handoff_inspection_preserves_transition_generations_and_typed_evidence() {
+fn review_handoff_inspection_preserves_transition_payloads_and_typed_evidence() {
     let value = json!({
-        "schema":"af/task-inspection@6", "task_id":"review-task", "revision_id":id('3'),
+        "schema":"af/task-inspection@11", "task_id":"review-task", "revision_id":id('3'),
         "phase":{"kind":"running"}, "plan_id":id('4'), "chargeable_tokens":"7", "attempts":1,
         "history":[
             {"sequence":1,"transition":{"writer":"writer","epoch":1,"now_unix_ms":1,
@@ -25,7 +25,7 @@ fn review_handoff_inspection_preserves_transition_generations_and_typed_evidence
             "evidence":{"kind":"closed_round","report_event_id":"a".repeat(26)}
         }}]
     });
-    assert_valid("task-inspection-v6.json", &value);
+    assert_valid("task-inspection-v11.json", &value);
     for (pointer, replacement) in [
         ("/history/1/transition/change/handoff_id", json!("unbound")),
         (
@@ -41,12 +41,12 @@ fn review_handoff_inspection_preserves_transition_generations_and_typed_evidence
     ] {
         let mut invalid = value.clone();
         *invalid.pointer_mut(pointer).unwrap() = replacement;
-        assert_invalid("task-inspection-v6.json", &invalid, pointer);
+        assert_invalid("task-inspection-v11.json", &invalid, pointer);
     }
     let mut invalid = value.clone();
     invalid["review_handoffs"][0]["record"]["approved"] = json!(true);
     assert_invalid(
-        "task-inspection-v6.json",
+        "task-inspection-v11.json",
         &invalid,
         "data cannot invent approval",
     );
@@ -54,22 +54,13 @@ fn review_handoff_inspection_preserves_transition_generations_and_typed_evidence
     epoch["review_handoffs"][0]["record"]["evidence"] = json!({
         "kind":"superseded_input", "superseded_event_id":"b".repeat(26)
     });
-    assert_valid("task-inspection-v6.json", &epoch);
-    for version in [3, 5] {
-        let mut old = value.clone();
-        old["schema"] = json!(format!("af/task-inspection@{version}"));
-        assert_invalid(
-            &format!("task-inspection-v{version}.json"),
-            &old,
-            "earlier inspection generations remain unchanged",
-        );
-    }
+    assert_valid("task-inspection-v11.json", &epoch);
 }
 
 #[test]
-fn integration_inspection_preserves_phase_reports_and_integrated_handoff_generation() {
+fn integration_inspection_preserves_phase_reports_and_integrated_handoff_type() {
     let mut value = json!({
-        "schema":"af/task-inspection@7", "task_id":"review-task", "revision_id":id('3'),
+        "schema":"af/task-inspection@11", "task_id":"review-task", "revision_id":id('3'),
         "phase":{"kind":"running"}, "plan_id":id('4'), "chargeable_tokens":"7", "attempts":2,
         "history":[
             {"sequence":1,"transition":{"writer":"writer","epoch":1,"now_unix_ms":1,
@@ -90,7 +81,7 @@ fn integration_inspection_preserves_phase_reports_and_integrated_handoff_generat
             "report_id":null,"integration_committed_event_id":null
         }]
     });
-    assert_valid("task-inspection-v7.json", &value);
+    assert_valid("task-inspection-v11.json", &value);
     for (pointer, replacement) in [
         ("/review_integrations", json!([])),
         ("/review_integrations/0/requires_checks", json!(false)),
@@ -104,7 +95,7 @@ fn integration_inspection_preserves_phase_reports_and_integrated_handoff_generat
     ] {
         let mut invalid = value.clone();
         *invalid.pointer_mut(pointer).unwrap() = replacement;
-        assert_invalid("task-inspection-v7.json", &invalid, pointer);
+        assert_invalid("task-inspection-v11.json", &invalid, pointer);
     }
     value["review_integrations"][0]["finished"] = json!(true);
     value["review_integrations"][0]["report_id"] = json!(id('a'));
@@ -115,7 +106,7 @@ fn integration_inspection_preserves_phase_reports_and_integrated_handoff_generat
                 "outcome":{"kind":"completed","output_id":id('b')}}]
         }
     }]);
-    assert_valid("task-inspection-v7.json", &value);
+    assert_valid("task-inspection-v11.json", &value);
     value["review_integrations"][0]["integration_committed_event_id"] = json!("b".repeat(26));
     value["review_handoffs"] = json!([{
         "artifact_id":id('c'),"artifact_type":"af/TaskReviewHandoff@2","record":{
@@ -127,23 +118,14 @@ fn integration_inspection_preserves_phase_reports_and_integrated_handoff_generat
                 "integration_committed_event_id":"b".repeat(26)}
         }
     }]);
-    assert_valid("task-inspection-v7.json", &value);
+    assert_valid("task-inspection-v11.json", &value);
     let mut incorrect_generation = value.clone();
     incorrect_generation["review_handoffs"][0]["artifact_type"] = json!("af/TaskReviewHandoff@1");
     assert_invalid(
-        "task-inspection-v7.json",
+        "task-inspection-v11.json",
         &incorrect_generation,
         "integrated evidence retains generation two",
     );
-    for version in [3, 5, 6] {
-        let mut old = value.clone();
-        old["schema"] = json!(format!("af/task-inspection@{version}"));
-        assert_invalid(
-            &format!("task-inspection-v{version}.json"),
-            &old,
-            "earlier inspection generations do not acquire phase semantics",
-        );
-    }
     let mut empty = value;
     empty.as_object_mut().unwrap().remove("review_handoffs");
     empty["run_reports"] = json!([]);
@@ -151,10 +133,10 @@ fn integration_inspection_preserves_phase_reports_and_integrated_handoff_generat
     empty["review_integrations"][0]["requires_checks"] = json!(false);
     empty["review_integrations"][0]["report_id"] = json!(null);
     empty["review_integrations"][0]["integration_committed_event_id"] = json!(null);
-    assert_valid("task-inspection-v7.json", &empty);
+    assert_valid("task-inspection-v11.json", &empty);
     empty["review_integrations"][0]["finished"] = json!(false);
     assert_invalid(
-        "task-inspection-v7.json",
+        "task-inspection-v11.json",
         &empty,
         "empty selection is durably terminal without checks",
     );

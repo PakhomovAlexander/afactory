@@ -2,7 +2,8 @@
 
 Status: accepted. Date: 2026-09-12. Superseded in part by
 [ADR-0113](0113-ga-reads-only-what-ga-writes.md): readers for unversioned and numeric-only usage,
-migration on write, and the execution-record and usage version ladders.
+migration on write, and the execution-record, usage and inspection version ladders. Every Task
+inspection is `af/task-inspection@11`.
 
 ## Context
 

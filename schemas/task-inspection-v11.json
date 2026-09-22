@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:af:schema:task-inspection:11",
   "title": "Task inspection af/task-inspection@11",
-  "$comment": "Adds immutable, non-causal later common Task evidence beside adoption observations.",
+  "$comment": "The one read-only projection of a common Task. Sections beyond the required core appear only when the Task recorded them: owned children, Review handoffs and Integration phases, measured Attempt walls with their runtime evidence, experiments and adoption observations. History, execution, report and handoff entries keep their exact artifact types and payloads. The Store validates cross-artifact identities, histories, selected results and cumulative accounting; a JSON schema cannot authenticate CAS or recompute a history. These records grant no admission or dispatch authority. Explain adds graph and plan together.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -15,49 +15,612 @@
     "attempts",
     "history",
     "execution_records",
-    "run_reports",
-    "experiments",
-    "adoption_observations"
+    "run_reports"
   ],
   "properties": {
     "schema": {
       "const": "af/task-inspection@11"
     },
     "task_id": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/task_id"
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
     },
     "revision_id": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/revision_id"
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
     },
     "phase": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/phase"
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/taskPhase"
     },
     "plan_id": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/plan_id"
+      "anyOf": [
+        {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "chargeable_tokens": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/chargeable_tokens"
+      "$ref": "urn:af:schema:task-token-usage:2#/$defs/decimalU128"
     },
     "attempts": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/attempts"
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
     },
     "selection": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/selection"
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "request_revision_id",
+        "assessment"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "request_revision_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "assessment": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "requested",
+            "no_match",
+            "candidates",
+            "decision"
+          ],
+          "properties": {
+            "schema": {
+              "const": "af.pipeline-selection/1"
+            },
+            "requested": {
+              "anyOf": [
+                {
+                  "$ref": "urn:af:schema:task-contracts:1#/$defs/choice"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "no_match": {
+              "enum": [
+                "refuse",
+                "generate"
+              ]
+            },
+            "candidates": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "pipeline",
+                  "preferred",
+                  "priority",
+                  "state"
+                ],
+                "properties": {
+                  "pipeline": {
+                    "type": "string"
+                  },
+                  "preferred": {
+                    "type": "boolean"
+                  },
+                  "priority": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "maximum": 4294967295
+                  },
+                  "state": {
+                    "oneOf": [
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "fit"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "compatible"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "reasons"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "no_fit"
+                          },
+                          "reasons": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "facts"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "unknown_facts"
+                          },
+                          "facts": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            },
+                            "uniqueItems": true
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "reason"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "unavailable"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "reason"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "infeasible"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": [
+                          "kind",
+                          "reason"
+                        ],
+                        "properties": {
+                          "kind": {
+                            "const": "invalid"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    ]
+                  }
+                }
+              }
+            },
+            "decision": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "unavailable"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "infeasible"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "invalid"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "refused"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "needs_generation"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "pipeline"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "selected"
+                    },
+                    "pipeline": {
+                      "type": "string"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "pipelines"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "ambiguous"
+                    },
+                    "pipelines": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "uniqueItems": true
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "facts"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "needs_facts"
+                    },
+                    "facts": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      },
+                      "uniqueItems": true
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
     },
     "planning": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/planning"
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bootstrap_plan_id",
+        "proposal_id",
+        "request_revision_id"
+      ],
+      "properties": {
+        "bootstrap_plan_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "proposal_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "request_revision_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        }
+      }
     },
     "plan_decisions": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/plan_decisions"
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "decision",
+          "valid_until_unix_ms"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "decision": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/planDecision"
+          },
+          "valid_until_unix_ms": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          }
+        }
+      },
+      "minItems": 1
     },
     "history": {
       "type": "array",
       "items": {
-        "$ref": "urn:af:schema:task-inspection:8#/properties/history/items"
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sequence",
+          "transition"
+        ],
+        "properties": {
+          "sequence": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 9007199254740991
+          },
+          "transition": {
+            "oneOf": [
+              {
+                "$ref": "urn:af:schema:task-transition:1"
+              },
+              {
+                "$ref": "urn:af:schema:task-transition:2"
+              },
+              {
+                "$ref": "urn:af:schema:task-transition:3"
+              },
+              {
+                "$ref": "urn:af:schema:task-transition:4"
+              },
+              {
+                "$ref": "urn:af:schema:task-transition:5"
+              }
+            ]
+          }
+        }
       }
     },
     "execution_records": {
       "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifact_id",
+              "artifact_type",
+              "record"
+            ],
+            "properties": {
+              "artifact_id": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              },
+              "artifact_type": {
+                "const": "af/TaskExecutionRecord@1"
+              },
+              "record": {
+                "$ref": "urn:af:schema:task-execution-record:1"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifact_id",
+              "artifact_type",
+              "record"
+            ],
+            "properties": {
+              "artifact_id": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              },
+              "artifact_type": {
+                "const": "af/TaskExecutionRecord@3"
+              },
+              "record": {
+                "$ref": "urn:af:schema:task-execution-record:3"
+              },
+              "diagnostic": {
+                "$comment": "The exact CAS JSON a Failed settlement's diagnostic_id names: an af.task-diagnostic/1 object that no published schema types.",
+                "type": "object"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifact_id",
+              "artifact_type",
+              "record"
+            ],
+            "properties": {
+              "artifact_id": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              },
+              "artifact_type": {
+                "const": "af/TaskExecutionRecord@4"
+              },
+              "record": {
+                "$ref": "urn:af:schema:task-execution-record:4"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifact_id",
+              "artifact_type",
+              "record"
+            ],
+            "properties": {
+              "artifact_id": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              },
+              "artifact_type": {
+                "const": "af/TaskExecutionRecord@5"
+              },
+              "record": {
+                "$ref": "urn:af:schema:task-execution-record:5"
+              }
+            }
+          }
+        ]
+      }
+    },
+    "run_reports": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "report",
+          "diagnostics"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "report": {
+            "oneOf": [
+              {
+                "$ref": "urn:af:schema:task-run-report:1"
+              },
+              {
+                "$ref": "urn:af:schema:task-run-report:2"
+              }
+            ]
+          },
+          "diagnostics": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "urn:af:schema:task-diagnostic:1"
+            }
+          }
+        }
+      }
+    },
+    "delivery": {
+      "$ref": "#/$defs/deliveryReceipt"
+    },
+    "result": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/taskResult"
+    },
+    "planning_diagnostic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "plan_id",
+        "reason"
+      ],
+      "properties": {
+        "schema": {
+          "const": "af.planning-diagnostic/1"
+        },
+        "plan_id": {
+          "anyOf": [
+            {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "maxLength": 8192
+        }
+      }
+    },
+    "repair_assessments": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/repairAssessment"
+      },
+      "minItems": 1
+    },
+    "review_rounds": {
+      "type": "array",
+      "items": {
+        "$ref": "urn:af:schema:task-review-round:1"
+      }
+    },
+    "graph": {
+      "$ref": "urn:af:schema:compiled-task:1"
+    },
+    "plan": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/executionPlan"
+    },
+    "owned_child_sets": {
+      "type": "array",
+      "minItems": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -71,67 +634,224 @@
             "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
           },
           "artifact_type": {
-            "enum": [
-              "af/TaskExecutionRecord@1",
-              "af/TaskExecutionRecord@3",
-              "af/TaskExecutionRecord@4",
-              "af/TaskExecutionRecord@5"
-            ]
+            "const": "af/TaskOwnedChildSet@1"
           },
           "record": {
-            "oneOf": [
-              {
-                "$ref": "urn:af:schema:task-execution-record:1"
-              },
-              {
-                "$ref": "urn:af:schema:task-execution-record:3"
-              },
-              {
-                "$ref": "urn:af:schema:task-execution-record:4"
-              },
-              {
-                "$ref": "urn:af:schema:task-execution-record:5"
-              }
-            ]
-          },
-          "diagnostic": {
-            "type": "object"
+            "$ref": "urn:af:schema:task-owned-child-set:1"
           }
         }
       }
     },
-    "run_reports": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/run_reports"
-    },
-    "delivery": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/delivery"
-    },
-    "result": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/result"
-    },
-    "planning_diagnostic": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/planning_diagnostic"
-    },
-    "repair_assessments": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/repair_assessments"
-    },
-    "review_rounds": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/review_rounds"
-    },
-    "graph": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/graph"
-    },
-    "plan": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/plan"
-    },
-    "owned_child_sets": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/owned_child_sets"
-    },
     "review_handoffs": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/review_handoffs"
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifact_id",
+              "artifact_type",
+              "record"
+            ],
+            "properties": {
+              "artifact_id": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              },
+              "artifact_type": {
+                "const": "af/TaskReviewHandoff@1"
+              },
+              "record": {
+                "$ref": "urn:af:schema:task-review-handoff:1"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifact_id",
+              "artifact_type",
+              "record"
+            ],
+            "properties": {
+              "artifact_id": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              },
+              "artifact_type": {
+                "const": "af/TaskReviewHandoff@2"
+              },
+              "record": {
+                "$ref": "urn:af:schema:task-review-handoff:2"
+              }
+            }
+          }
+        ]
+      }
     },
     "review_integrations": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/review_integrations"
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "artifact_id",
+          "artifact_type",
+          "record",
+          "node",
+          "requires_checks",
+          "finished",
+          "report_id",
+          "integration_committed_event_id"
+        ],
+        "properties": {
+          "artifact_id": {
+            "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+          },
+          "artifact_type": {
+            "const": "af/TaskReviewIntegrationPhase@1"
+          },
+          "record": {
+            "$ref": "urn:af:schema:task-review-integration-phase:1"
+          },
+          "node": {
+            "type": "string",
+            "maxLength": 4096,
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,127}(\\.[A-Za-z0-9][A-Za-z0-9_-]{0,127})*$"
+          },
+          "requires_checks": {
+            "type": "boolean"
+          },
+          "finished": {
+            "type": "boolean"
+          },
+          "report_id": {
+            "oneOf": [
+              {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "integration_committed_event_id": {
+            "oneOf": [
+              {
+                "type": "string",
+                "pattern": "^[a-z0-9]{26}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "record": {
+                  "properties": {
+                    "selection": {
+                      "properties": {
+                        "kind": {
+                          "const": "prepared"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "requires_checks": {
+                  "const": true
+                }
+              }
+            },
+            "else": {
+              "properties": {
+                "requires_checks": {
+                  "const": false
+                },
+                "finished": {
+                  "const": true
+                },
+                "report_id": {
+                  "type": "null"
+                },
+                "integration_committed_event_id": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "finished": {
+                  "const": false
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "report_id": {
+                  "type": "null"
+                },
+                "integration_committed_event_id": {
+                  "type": "null"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "requires_checks": {
+                  "const": true
+                },
+                "finished": {
+                  "const": true
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "report_id": {
+                  "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "integration_committed_event_id": {
+                  "type": "string"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "requires_checks": {
+                  "const": true
+                },
+                "finished": {
+                  "const": true
+                },
+                "report_id": {
+                  "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+                }
+              }
+            }
+          }
+        ]
+      }
     },
     "attempt_walls": {
       "type": "array",
@@ -268,6 +988,7 @@
     },
     "adoption_observations": {
       "type": "array",
+      "minItems": 1,
       "items": {
         "type": "object",
         "additionalProperties": false,
@@ -309,6 +1030,177 @@
       }
     }
   },
+  "$defs": {
+    "deliveryReceipt": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "delivery_id",
+            "task_id",
+            "result_id",
+            "source_snapshot_id",
+            "derived_snapshot_id",
+            "target",
+            "source_revision"
+          ],
+          "properties": {
+            "schema": {
+              "const": "af/task-delivery-prepared@1"
+            },
+            "delivery_id": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "result_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "source_snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "derived_snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "repository",
+                "repository_id",
+                "branch",
+                "worktree"
+              ],
+              "properties": {
+                "repository": {
+                  "type": "string"
+                },
+                "repository_id": {
+                  "type": "string"
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "worktree": {
+                  "type": "string"
+                }
+              }
+            },
+            "source_revision": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "delivery_id",
+            "task_id",
+            "result_id",
+            "source_snapshot_id",
+            "derived_snapshot_id",
+            "target",
+            "outcome",
+            "ignored_paths",
+            "remote_actions"
+          ],
+          "properties": {
+            "schema": {
+              "const": "af/task-delivery@1"
+            },
+            "delivery_id": {
+              "type": "string"
+            },
+            "task_id": {
+              "type": "string"
+            },
+            "result_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "source_snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "derived_snapshot_id": {
+              "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+            },
+            "target": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "repository",
+                "repository_id",
+                "branch",
+                "worktree"
+              ],
+              "properties": {
+                "repository": {
+                  "type": "string"
+                },
+                "repository_id": {
+                  "type": "string"
+                },
+                "branch": {
+                  "type": "string"
+                },
+                "worktree": {
+                  "type": "string"
+                }
+              }
+            },
+            "outcome": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "delivered"
+                    }
+                  }
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "reason"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "const": "failed"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  }
+                }
+              ]
+            },
+            "ignored_paths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            },
+            "remote_actions": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
   "dependentRequired": {
     "graph": [
       "plan"
@@ -327,6 +1219,12 @@
     ],
     "review_rounds": [
       "result"
+    ],
+    "attempt_walls": [
+      "runtime_observations"
+    ],
+    "runtime_observations": [
+      "attempt_walls"
     ]
   },
   "allOf": [
@@ -368,7 +1266,29 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "history": {
+            "contains": {
+              "required": [
+                "transition"
+              ],
+              "properties": {
+                "transition": {
+                  "$ref": "urn:af:schema:task-transition:3"
+                }
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "review_integrations"
+        ]
+      }
     }
   ]
 }
-

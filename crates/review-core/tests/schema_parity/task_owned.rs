@@ -33,9 +33,9 @@ fn experimental_execution_records_have_a_distinct_generation() {
 }
 
 #[test]
-fn owned_inspection_keeps_frozen_execution_generations_and_exact_registry_types() {
-    let mut value = json!({
-        "schema":"af/task-inspection@5", "task_id":"review-task", "revision_id":id('1'),
+fn owned_inspection_pairs_each_execution_record_with_its_exact_type() {
+    let value = json!({
+        "schema":"af/task-inspection@11", "task_id":"review-task", "revision_id":id('1'),
         "phase":{"kind":"running"}, "plan_id":id('2'), "chargeable_tokens":"7", "attempts":1,
         "history":[], "run_reports":[],
         "execution_records":[
@@ -47,7 +47,7 @@ fn owned_inspection_keeps_frozen_execution_generations_and_exact_registry_types(
             "children":[{"node":"root.scatter.slice1","source_item_id":id('8'),"invocation_id":id('9')}]
         }}]
     });
-    assert_valid("task-inspection-v5.json", &value);
+    assert_valid("task-inspection-v11.json", &value);
     for (pointer, bad_value) in [
         (
             "/execution_records/1/artifact_type",
@@ -65,20 +65,14 @@ fn owned_inspection_keeps_frozen_execution_generations_and_exact_registry_types(
     ] {
         let mut bad = value.clone();
         *bad.pointer_mut(pointer).unwrap() = bad_value;
-        assert_invalid("task-inspection-v5.json", &bad, pointer);
+        assert_invalid("task-inspection-v11.json", &bad, pointer);
     }
     let mut bad = value.clone();
     bad["owned_child_sets"][0]["record"]["children"][0]["allowance"] = json!(100);
     assert_invalid(
-        "task-inspection-v5.json",
+        "task-inspection-v11.json",
         &bad,
         "registry data cannot invent authority",
-    );
-    value["schema"] = json!("af/task-inspection@3");
-    assert_invalid(
-        "task-inspection-v3.json",
-        &value,
-        "old inspection remains frozen",
     );
 }
 

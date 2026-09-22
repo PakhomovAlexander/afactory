@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 174] = [
+const SCHEMAS: [&str; 167] = [
     "session-snapshot-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -48,12 +48,10 @@ const SCHEMAS: [&str; 174] = [
     "optimization-adoption-task-evidence-v1.json",
     "optimization-evaluation-v1.json",
     "experimental-slot-v2.json",
-    "task-inspection-v10.json",
     "task-inspection-v11.json",
     "task-execution-record-v5.json",
     "experiment-execution-plan-v1.json",
     "task-runtime-evidence-v1.json",
-    "task-inspection-v9.json",
     "optimization-sources-v1.json",
     "optimization-history-v1.json",
     "optimization-economics-v1.json",
@@ -67,7 +65,6 @@ const SCHEMAS: [&str; 174] = [
     "optimization-verification-v1.json",
     "optimization-package-repin-v1.json",
     "harness-materialization-v1.json",
-    "task-inspection-v8.json",
     "provider-doctor-v2.json",
     "review-outcome-v2.json",
     "review-outcome-v3.json",
@@ -76,15 +73,11 @@ const SCHEMAS: [&str; 174] = [
     "task-builtin-context-v1.json",
     "task-provider-context-v1.json",
     "document-context-v1.json",
-    "task-inspection-v7.json",
     "task-plan-inspection-v1.json",
-    "task-inspection-v6.json",
-    "task-inspection-v5.json",
     "task-file-v1.json",
     "task-catalog-v1.json",
     "task-catalog-v2.json",
     "compiled-task-v1.json",
-    "task-inspection-v3.json",
     "task-list-entry-v2.json",
     "task-execution-record-v3.json",
     "task-execution-record-v4.json",

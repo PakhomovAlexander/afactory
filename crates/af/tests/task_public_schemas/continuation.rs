@@ -20,10 +20,10 @@ fn review_continuation_inspection_preserves_exact_history_and_historical_plans()
         cli(repo.path(), state, &["task", "explain", "heavy-review"]),
         0,
     );
-    let schema = validator("task-inspection-v6.json");
+    let schema = validator("task-inspection-v11.json");
     for value in [&shown, &explained] {
         valid(&schema, value);
-        assert_eq!(value["schema"], "af/task-inspection@6");
+        assert_eq!(value["schema"], "af/task-inspection@11");
         assert_eq!(value["chargeable_tokens"], "5");
         assert_eq!(value["review_handoffs"].as_array().unwrap().len(), 1);
         assert!(

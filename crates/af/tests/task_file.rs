@@ -329,7 +329,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
             String::from_utf8_lossy(&output.stderr)
         );
         let result: Value = serde_json::from_slice(&output.stdout).unwrap();
-        assert_eq!(result["schema"], "af/task-inspection@3");
+        assert_eq!(result["schema"], "af/task-inspection@11");
         assert_eq!(result["chargeable_tokens"], exact.to_string());
         assert_eq!(result["result"]["domain_conclusion"], "incomplete");
         assert_eq!(std::fs::read_to_string(&calls).unwrap().lines().count(), 1);
@@ -835,7 +835,7 @@ fn plan_then_run_uses_captured_inputs_and_does_not_repeat_finished_attempts() {
     let temp = tempfile::tempdir().unwrap();
     let (repo, state) = fixture(temp.path());
     let planned = af(&repo, &state, &["plan", "--file", "ticket.json"]);
-    assert_eq!(planned["schema"], "af/task-inspection@3");
+    assert_eq!(planned["schema"], "af/task-inspection@11");
     assert_eq!(planned["attempts"], 0);
     assert!(planned["plan"].is_object());
     assert!(planned["graph"].is_object());

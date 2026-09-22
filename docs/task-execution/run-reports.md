@@ -44,7 +44,7 @@ pipeline work remains Inconclusive. Pending Attempts, active Integration, a chan
 expired/revoked plan approval refuse. A selected settlement that never reached Task output
 publication is outside this route.
 
-Inspection uses `af/task-inspection@8` when history contains this additive recording transition.
+Task inspection lists this recording transition in its history like any other.
 Show and explain preserve the recorded events and remain read-only; explain retains the
 Inconclusive exit status. See
 [ADR-0086](../adr/0086-record-expired-review-publication-without-restarting-work.md).

@@ -2,7 +2,8 @@
 
 Date: 2026-09-17
 Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): earlier
-inspection and execution generations.
+inspection and execution generations. Experiments are an optional section of
+`af/task-inspection@11`, the only inspection.
 
 Extends [ADR-0046](0046-add-versioned-task-contracts-with-exact-plan-approval.md),
 [ADR-0056](0056-share-planning-accounting-and-authenticate-generated-plan-decisions.md), and

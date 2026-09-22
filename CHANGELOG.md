@@ -95,11 +95,10 @@ or needs a documented hand edit.
   schema is gone, and `task-execution-record-v1.json` no longer describes `prepared`, `settled` or
   `usage_observed` records: this release writes settlements and usage observations only as
   `af/TaskExecutionRecord@3`, with decimal-string charges, and binds an Attempt's context through
-  separate `reserved` and `context_bound` records. The `af/task-inspection` schemas no longer list
-  `af/TaskExecutionRecord@2`, so `af/task-inspection@10` and `@11` output, which could match two
-  record schemas at once, now validates. `task-transition-v1.json` drops `revision_recorded`, which
-  no release wrote, and requires `revocation_id` on `approval_revoked`, which this release always
-  writes.
+  separate `reserved` and `context_bound` records. The `af/task-inspection` schema no longer lists
+  `af/TaskExecutionRecord@2`, so inspection output, which could match two record schemas at once,
+  now validates. `task-transition-v1.json` drops `revision_recorded`, which no release wrote, and
+  requires `revocation_id` on `approval_revoked`, which this release always writes.
 - `af self optimize` history sources: the `af` adapter reads only the `af/task-inspection`
   receipts that `af task show --json` prints and refuses any other line, including the
   `af.task-event/1` event export that no af command produced. The `af`, `codex` and `claude`
@@ -314,7 +313,22 @@ or needs a documented hand edit.
   receipt. The `task-broker-binding-v1.json`, `task-broker-operation-v1.json`,
   `task-broker-transition-v1.json`, `broker-operation-receipt-v2.json` and
   `task-inspection-v4.json` schemas are deleted, and `run-event-v1.json` and
-  `task-inspection-v5.json` to `task-inspection-v11.json` drop their Broker entries.
+  `task-inspection-v11.json` drop their Broker entries.
+- Task inspection has one version. Every command that prints a Task as JSON (`af task show`,
+  `explain`, `plan`, `start`, `run`, `approve` and the others, and `af self optimize`) now emits
+  `af/task-inspection@11`, instead of a version from `@3` to `@11` chosen by the sections the Task
+  happened to have. Each section beyond the core (`owned_child_sets`, `review_handoffs`,
+  `review_integrations`, `attempt_walls` with `runtime_observations`, `experiments` and
+  `adoption_observations`) appears only when the Task recorded it, and `history` holds
+  `TaskTransition@1` to `@5` payloads. `task-inspection-v11.json` is now self-contained and
+  describes all of it; it no longer requires `experiments` and `adoption_observations`, and a
+  Failed settlement's `diagnostic` must be a JSON object, as this release always writes it. The
+  `task-inspection-v3.json` and `-v5.json` to `-v10.json` schemas are deleted, and
+  `task-list-entry-v2.json` and `task-plan-inspection-v1.json` now refer to
+  `urn:af:schema:task-inspection:11`. The `af` history adapter of `af self optimize` accepts only
+  `af/task-inspection@11` receipts, so a receipt an earlier release exported is refused. A script,
+  skill or hub check that matches another `af/task-inspection@N`, or validates against a deleted
+  schema, must switch to `@11`.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

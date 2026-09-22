@@ -1824,7 +1824,7 @@ fn present_with_format(
         TaskPhaseV1::Finished { result_id } => Some(artifact(cas, result_id, TASK_RESULT_V1)?),
         _ => None,
     };
-    let mut value = json!({"schema":"af/task-inspection@3","task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"plan_id":state.plan_id,
+    let mut value = json!({"schema":"af/task-inspection@11","task_id":state.task_id,"revision_id":state.revision_id,"phase":state.phase,"plan_id":state.plan_id,
         "chargeable_tokens":state.execution.as_ref().map_or(0,|e|e.budget.committed_tokens()).to_string(),"attempts":state.execution.as_ref().map_or(0,|e|e.budget.begun_attempts())});
     if let Some(selection) = selection::recorded(cas, &state.revision)? {
         value["selection"] = selection;
@@ -1835,9 +1835,6 @@ fn present_with_format(
     let events = store
         .replay(&review_store::store::task::task_run_id(id).map_err(|e| e.to_string())?)
         .map_err(|e| e.to_string())?;
-    let recording_recovery = events
-        .iter()
-        .any(|event| event.event_type == review_core::EventType::TaskTransitionV4);
     let mut history = Vec::new();
     let mut execution = Vec::new();
     let mut owned_child_sets = Vec::new();
@@ -1962,15 +1959,12 @@ fn present_with_format(
         value["runtime_observations"] = json!(runtime_observations);
     }
     if !owned_child_sets.is_empty() {
-        value["schema"] = json!("af/task-inspection@5");
         value["owned_child_sets"] = json!(owned_child_sets);
     }
     if !experiments.is_empty() {
-        value["schema"] = json!("af/task-inspection@10");
         value["experiments"] = json!(experiments);
     }
     if !state.review_handoffs.is_empty() {
-        value["schema"] = json!("af/task-inspection@6");
         let mut handoffs = Vec::new();
         for (id, _) in &state.review_handoffs {
             // The checked projection normalizes both generations. Keep the original
@@ -1983,7 +1977,6 @@ fn present_with_format(
     if let Some(execution) = &state.execution {
         let phases = execution.review_integrations();
         if !phases.is_empty() {
-            value["schema"] = json!("af/task-inspection@7");
             value["review_integrations"] = json!(phases.iter().map(|phase| json!({
                 "artifact_id":phase.phase_id(),
                 "artifact_type":review_core::task::review_integration::TASK_REVIEW_INTEGRATION_PHASE_V1,
@@ -1995,13 +1988,6 @@ fn present_with_format(
                 "integration_committed_event_id":phase.integration_committed_event_id(),
             })).collect::<Vec<_>>());
         }
-    }
-    if !experiments.is_empty() {
-        value["schema"] = json!("af/task-inspection@10");
-    } else if !runtime_observations.is_empty() {
-        value["schema"] = json!("af/task-inspection@9");
-    } else if recording_recovery {
-        value["schema"] = json!("af/task-inspection@8");
     }
     let mut reports = Vec::new();
     for id in &state.run_reports {
@@ -2061,7 +2047,6 @@ fn present_with_format(
                 "task_evidence": task_evidence,
             }));
         }
-        value["schema"] = json!("af/task-inspection@11");
         value["adoption_observations"] = json!(observations);
     }
     if let Some(delivery) = delivery_view(cas, &state)? {

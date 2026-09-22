@@ -239,18 +239,7 @@ fn parse_af_inspection(
     state: &mut AdapterState,
     value: &Value,
 ) -> Result<Vec<NormalizedRecord>, String> {
-    let schema = value.get("schema").and_then(Value::as_str).unwrap_or("");
-    if !matches!(
-        schema,
-        "af/task-inspection@3"
-            | "af/task-inspection@5"
-            | "af/task-inspection@6"
-            | "af/task-inspection@7"
-            | "af/task-inspection@8"
-            | "af/task-inspection@9"
-            | "af/task-inspection@10"
-            | "af/task-inspection@11"
-    ) {
+    if value.get("schema").and_then(Value::as_str) != Some("af/task-inspection@11") {
         return Err("unsupported AF inspection generation".into());
     }
     let task = value
@@ -1069,7 +1058,7 @@ mod tests {
     fn real_inspection_shape_requires_attestation_and_reconciles_cumulative_attempts() {
         let dir = tempfile::tempdir().unwrap();
         let mut adapter = state("af", dir.path());
-        let receipt = serde_json::json!({"schema":"af/task-inspection@3","task_id":"declared-session","chargeable_tokens":"17",
+        let receipt = serde_json::json!({"schema":"af/task-inspection@11","task_id":"declared-session","chargeable_tokens":"17",
             "history":[{"transition":{"now_unix_ms":1,"change":{"kind":"opened"}}},
                 {"transition":{"now_unix_ms":2,"change":{"kind":"execution_recorded","record_id":"reserved"}}},
                 {"transition":{"now_unix_ms":3,"change":{"kind":"execution_recorded","record_id":"started"}}},
@@ -1121,6 +1110,14 @@ mod tests {
         let mut foreign = receipt.clone();
         foreign["task_id"] = serde_json::json!("other-task");
         assert!(parse_af_inspection(&mut adapter, &foreign).is_err());
+        for earlier in ["af/task-inspection@3", "af/task-inspection@10"] {
+            let mut old = receipt.clone();
+            old["schema"] = serde_json::json!(earlier);
+            assert_eq!(
+                parse_af_inspection(&mut adapter, &old).unwrap_err(),
+                "unsupported AF inspection generation"
+            );
+        }
         let mut corrupt = receipt;
         corrupt["chargeable_tokens"] = serde_json::json!("16");
         assert!(parse_af_inspection(&mut adapter, &corrupt).is_err());
@@ -1133,7 +1130,7 @@ mod tests {
         adapter.attest_project = true;
         let exact = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
         let receipt = serde_json::json!({
-            "schema":"af/task-inspection@10",
+            "schema":"af/task-inspection@11",
             "task_id":"declared-session",
             "chargeable_tokens":"19",
             "history":[],

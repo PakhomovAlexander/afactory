@@ -804,7 +804,7 @@ mod tests {
     #[test]
     fn duplicate_af_exports_keep_both_receipts_but_count_one_incomplete_execution() {
         let dir = tempfile::tempdir().unwrap();
-        let receipt = serde_json::json!({"schema":"af/task-inspection@3","task_id":"task","chargeable_tokens":"12","history":[{"transition":{"now_unix_ms":1,"change":{"kind":"opened"}}}],"execution_records":[{"record":{"kind":"settled","attempt_id":"a","charged_tokens":"12"}}]});
+        let receipt = serde_json::json!({"schema":"af/task-inspection@11","task_id":"task","chargeable_tokens":"12","history":[{"transition":{"now_unix_ms":1,"change":{"kind":"opened"}}}],"execution_records":[{"record":{"kind":"settled","attempt_id":"a","charged_tokens":"12"}}]});
         std::fs::write(dir.path().join("receipt.json"), receipt.to_string() + "\n").unwrap();
         let project = format!("sha256:{}", "1".repeat(64));
         let config = serde_json::json!({"schema":"af.optimization-sources/1","project_id":project,"sources":[{"adapter":"af","path":"receipt.json","source_id":"first-export","execution_id":"task","attest_project":true},{"adapter":"af","path":"receipt.json","source_id":"duplicate-export","execution_id":"task","attest_project":true}]});

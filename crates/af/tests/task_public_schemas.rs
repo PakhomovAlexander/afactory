@@ -172,7 +172,7 @@ fn task_file_and_catalog_schemas_match_real_fixtures_and_cli_refusals() {
         planned["selection"]["assessment"]["decision"]["kind"],
         "selected"
     );
-    valid(&validator("task-inspection-v3.json"), &planned);
+    valid(&validator("task-inspection-v11.json"), &planned);
     let cases = [
         ("/schema", json!("af.task-file/2")),
         ("/task_id", json!("bad/task")),
@@ -280,7 +280,7 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
-    valid(&validator("task-inspection-v3.json"), &inspection);
+    valid(&validator("task-inspection-v11.json"), &inspection);
     let schema = validator("compiled-task-v1.json");
     let graph = &inspection["graph"];
     valid(&schema, graph);
@@ -355,16 +355,17 @@ fn compiled_task_schema_matches_real_graph_and_closed_rust_variants() {
 }
 
 #[test]
-fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_versions() {
+fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
     let directory = tempfile::tempdir().unwrap();
     let (repo, state) = task_cli::fixture_named(directory.path(), "pagination");
-    let inspection_schema = validator("task-inspection-v3.json");
+    let inspection_schema = validator("task-inspection-v11.json");
     let list_schema = validator("task-list-entry-v2.json");
     let planned = json_output(
         cli(&repo, &state, &["task", "plan", "--file", "ticket.json"]),
         0,
     );
     valid(&inspection_schema, &planned);
+    assert_eq!(planned["schema"], "af/task-inspection@11");
     let exact = json_output(
         cli(
             &repo,
@@ -402,10 +403,15 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
         ),
         0,
     );
-    let runtime_inspection_schema = validator("task-inspection-v9.json");
-    valid(&runtime_inspection_schema, &finished);
-    assert_eq!(finished["schema"], "af/task-inspection@9");
-    assert!(!inspection_schema.is_valid(&finished));
+    valid(&inspection_schema, &finished);
+    assert_eq!(finished["schema"], "af/task-inspection@11");
+    assert!(
+        !finished["runtime_observations"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!finished["attempt_walls"].as_array().unwrap().is_empty());
     let listed = json_output(cli(&repo, &state, &["task", "list"]), 0);
     let entry = &listed["tasks"][0];
     valid(&list_schema, entry);
@@ -430,12 +436,12 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
     .unwrap();
     wide.validate().unwrap();
     let mut value = finished.clone();
-    value["execution_records"] = json!([{"artifact_id":digest,"artifact_type":"af/TaskExecutionRecord@3","record":wide,"diagnostic":["opaque",{"opaque":true}]}]);
+    value["execution_records"] = json!([{"artifact_id":digest,"artifact_type":"af/TaskExecutionRecord@3","record":wide,"diagnostic":{"schema":"af.task-diagnostic/1","error":"opaque"}}]);
     value["chargeable_tokens"] = json!(u128::MAX.to_string());
-    valid(&runtime_inspection_schema, &value);
+    valid(&inspection_schema, &value);
     value["execution_records"][0]["artifact_type"] = json!("af/TaskExecutionRecord@1");
     assert!(
-        !runtime_inspection_schema.is_valid(&value),
+        !inspection_schema.is_valid(&value),
         "mismatched record version"
     );
     for charge in [
@@ -446,7 +452,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
     ] {
         let mut value = finished.clone();
         value["chargeable_tokens"] = charge.clone();
-        assert!(!runtime_inspection_schema.is_valid(&value));
+        assert!(!inspection_schema.is_valid(&value));
         let mut value = entry.clone();
         value["chargeable_tokens"] = charge;
         assert!(!list_schema.is_valid(&value));
@@ -459,14 +465,14 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
     ] {
         let mut value = finished.clone();
         value[key] = bad;
-        assert!(!runtime_inspection_schema.is_valid(&value), "{key}");
+        assert!(!inspection_schema.is_valid(&value), "{key}");
     }
     let mut value = planned.clone();
     value.as_object_mut().unwrap().remove("plan");
     assert!(!inspection_schema.is_valid(&value));
     let mut value = finished.clone();
     value.as_object_mut().unwrap().remove("result");
-    assert!(!runtime_inspection_schema.is_valid(&value));
+    assert!(!inspection_schema.is_valid(&value));
     let mut value = planned.clone();
     value["result"] = finished["result"].clone();
     assert!(!inspection_schema.is_valid(&value));
@@ -500,7 +506,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
     );
     let delivered = json_output(cli(&repo, &state, &["task", "show", "pagination-cli"]), 0);
     assert_eq!(delivered["delivery"], receipt);
-    valid(&runtime_inspection_schema, &delivered);
+    valid(&inspection_schema, &delivered);
     let listed = json_output(cli(&repo, &state, &["task", "list"]), 0);
     valid(&list_schema, &listed["tasks"][0]);
 
@@ -519,15 +525,15 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
         .unwrap();
     let mut value = delivered.clone();
     value["delivery"] = cas.get_json(&prepared.1.receipt_id).unwrap();
-    valid(&runtime_inspection_schema, &value);
+    valid(&inspection_schema, &value);
     value["delivery"]["target"]
         .as_object_mut()
         .unwrap()
         .remove("branch");
-    assert!(!runtime_inspection_schema.is_valid(&value));
+    assert!(!inspection_schema.is_valid(&value));
     let mut value = delivered.clone();
     value["delivery"]["unexpected"] = json!(true);
-    assert!(!runtime_inspection_schema.is_valid(&value));
+    assert!(!inspection_schema.is_valid(&value));
 
     let preparation = cas.get_json(&prepared.1.receipt_id).unwrap();
     let terminal = projection
@@ -570,7 +576,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
         }
         let mut view = delivered.clone();
         view["delivery"] = raw.clone();
-        assert!(!runtime_inspection_schema.is_valid(&view), "{case}");
+        assert!(!inspection_schema.is_valid(&view), "{case}");
         let isolated = directory.path().join(format!("delivery-{index}"));
         task_cli::copy_tree(&before_delivery, &isolated);
         let cas = review_store::Cas::open_existing(isolated.join("cas")).unwrap();
@@ -614,7 +620,7 @@ fn inspection_and_list_schemas_preserve_actual_output_and_frozen_accounting_vers
         raw.as_object_mut().unwrap().remove("result_id");
         let mut view = delivered.clone();
         view["delivery"] = raw.clone();
-        assert!(!runtime_inspection_schema.is_valid(&view), "{raw}");
+        assert!(!inspection_schema.is_valid(&view), "{raw}");
         append_delivery(&cas, &mut store, &lease, template, &raw).unwrap_err();
         append_delivery(&cas, &mut store, &lease, template, bound).unwrap();
     }

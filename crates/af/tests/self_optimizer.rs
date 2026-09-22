@@ -27,6 +27,45 @@ fn af(repo: &Path, state: &Path, extra: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
+/// Checks actual `af task` JSON against the one published inspection schema.
+fn valid_inspection(value: &Value) {
+    static SCHEMA: std::sync::OnceLock<jsonschema::Validator> = std::sync::OnceLock::new();
+    let schema = SCHEMA.get_or_init(|| {
+        let directory = std::env::var_os("AF_WORKSPACE_ROOT")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .join("schemas");
+        let mut registry = jsonschema::Registry::new();
+        for entry in std::fs::read_dir(&directory).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let value: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            let Some(id) = value["$id"].as_str().map(str::to_owned) else {
+                continue;
+            };
+            registry = registry
+                .add(id, jsonschema::Resource::from_contents(value))
+                .unwrap();
+        }
+        let root: Value = serde_json::from_slice(
+            &std::fs::read(directory.join("task-inspection-v11.json")).unwrap(),
+        )
+        .unwrap();
+        let registry = registry.prepare().unwrap();
+        jsonschema::options()
+            .with_registry(&registry)
+            .build(&root)
+            .unwrap()
+    });
+    let errors: Vec<_> = schema
+        .iter_errors(value)
+        .map(|e| format!("{} at {}", e, e.instance_path()))
+        .collect();
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+}
+
 fn install_optimizer_catalog(repo: &Path) {
     let workspace = std::env::var_os("AF_WORKSPACE_ROOT")
         .map(std::path::PathBuf::from)
@@ -1246,6 +1285,7 @@ fn light_strategy_generates_one_candidate_without_exposing_source_to_author_work
         &["task", "show", task, "--repo", delivered.to_str().unwrap()],
     );
     assert_eq!(adoption_projection["schema"], "af/task-inspection@11");
+    valid_inspection(&adoption_projection);
     let projected = adoption_projection["adoption_observations"]
         .as_array()
         .unwrap()
@@ -1744,7 +1784,8 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
     }
 
     let waiting = af(&repo, &state, &["--experiment", "--execute"]);
-    assert_eq!(waiting["schema"], "af/task-inspection@10");
+    assert_eq!(waiting["schema"], "af/task-inspection@11");
+    valid_inspection(&waiting);
     assert_eq!(waiting["attempts"], 0);
     assert_eq!(waiting["phase"]["reason"], "needs_plan_review");
     let task_id = waiting["task_id"].as_str().unwrap();
@@ -1899,6 +1940,7 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
         ],
     );
     let completed = command_json(&repo, &state, &["task", "run", task_id, "--execute"]);
+    valid_inspection(&completed);
     assert_eq!(completed["attempts"], 2);
     assert_eq!(completed["result"]["acceptance"], "inconclusive");
     assert_eq!(
@@ -2003,6 +2045,7 @@ fn experimental_cli_signs_registers_executes_and_imports_actual_child_receipt() 
             reject_signature.to_str().unwrap(),
         ],
     );
+    valid_inspection(&rejected);
     assert_eq!(rejected["attempts"], 0);
     assert_eq!(rejected["phase"]["reason"], "needs_human");
     assert!(
@@ -2154,7 +2197,8 @@ fn actual_code_task_runtime_evidence_round_trips_through_native_af_capture() {
         String::from_utf8_lossy(&task.stderr)
     );
     let receipt: Value = serde_json::from_slice(&task.stdout).unwrap();
-    assert_eq!(receipt["schema"], "af/task-inspection@9");
+    assert_eq!(receipt["schema"], "af/task-inspection@11");
+    valid_inspection(&receipt);
     let runtime = receipt["runtime_observations"].as_array().unwrap();
     assert!(runtime.iter().any(|entry| {
         entry["record"]["spans"]

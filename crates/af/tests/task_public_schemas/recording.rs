@@ -26,8 +26,8 @@ fn expired_recording_inspection_keeps_one_task_and_exact_old_and_new_history() {
     let shown = json_output(cli(repo.path(), state, &["task", "show", &task_id]), 0);
     let explained = json_output(cli(repo.path(), state, &["task", "explain", &task_id]), 4);
     for value in [&shown, &explained] {
-        valid(&validator("task-inspection-v8.json"), value);
-        assert_eq!(value["schema"], "af/task-inspection@8");
+        valid(&validator("task-inspection-v11.json"), value);
+        assert_eq!(value["schema"], "af/task-inspection@11");
         assert!(
             value.get("review_integrations").is_none(),
             "ordinary Review recovery must not invent Integration"
@@ -51,11 +51,6 @@ fn expired_recording_inspection_keeps_one_task_and_exact_old_and_new_history() {
                 .unwrap()
                 .payload
         );
-        for version in [3, 5, 6, 7] {
-            let mut old = value.clone();
-            old["schema"] = json!(format!("af/task-inspection@{version}"));
-            assert!(!validator(&format!("task-inspection-v{version}.json")).is_valid(&old));
-        }
     }
     assert_eq!(shown["history"], explained["history"]);
     assert_eq!(shown["execution_records"], explained["execution_records"]);

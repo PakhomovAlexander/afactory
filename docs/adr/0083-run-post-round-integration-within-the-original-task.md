@@ -2,7 +2,8 @@
 
 Date: 2026-09-12
 Status: Proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): earlier
-inspection generations.
+inspection generations. Integration phases are an optional section of `af/task-inspection@11`, the
+only inspection.
 
 ## Context
 

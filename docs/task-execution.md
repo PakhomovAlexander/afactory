@@ -25,7 +25,7 @@ expanded tree, Claude/Codex workflow and rc2 automation change.
   ([ADR-0056](adr/0056-share-planning-accounting-and-authenticate-generated-plan-decisions.md)).
 - Generated optimization children cross a second exact approval barrier. Preparation records the
   complete baseline/candidate closure and pauses at `needs_plan_review` without reserving child
-  work. Inspection generation 10 shows the pending closure and its separate decision. Initial
+  work. Task inspection shows the pending closure and its separate decision. Initial
   `--execute` and outer `--confirm-plan` do not approve it
   ([ADR-0106](adr/0106-authorize-experimental-children-separately.md)).
 - Every Attempt is reserved before its context is bound; failed, abandoned and late usage stays
@@ -53,7 +53,7 @@ expanded tree, Claude/Codex workflow and rc2 automation change.
 |---|---|
 | Task, Pipeline, plan, result and decision wire contracts | `crates/review-core/src/task/`, [`task-contracts-v1`](../schemas/task-contracts-v1.json), `fixtures/task-contracts/` |
 | Task file, catalogs, bindings and developers | [`task-file-v1`](../schemas/task-file-v1.json), [`task-catalog-v1`](../schemas/task-catalog-v1.json), [`task-catalog-v2`](../schemas/task-catalog-v2.json), [`shared-task-catalog-v1`](../schemas/shared-task-catalog-v1.json), [`task-developers-v1`](../schemas/task-developers-v1.json) |
-| Inspection and listing | [`task-inspection-v10`](../schemas/task-inspection-v10.json), [`task-list-entry-v2`](../schemas/task-list-entry-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json) |
+| Inspection and listing | [`task-inspection-v11`](../schemas/task-inspection-v11.json), [`task-list-entry-v2`](../schemas/task-list-entry-v2.json), [`task-plan-inspection-v1`](../schemas/task-plan-inspection-v1.json), [`compiled-task-v1`](../schemas/compiled-task-v1.json) |
 | Run diagnostics and delivery | [`task-run-report-v2`](../schemas/task-run-report-v2.json), [`task-diagnostic-v1`](../schemas/task-diagnostic-v1.json), [`task-delivery-record-v1`](../schemas/task-delivery-record-v1.json) |
 | Review accounting | [`review-report-v3`](../schemas/review-report-v3.json), [`review-report-v4`](../schemas/review-report-v4.json) |
 | Executable credential-free fixtures | `fixtures/task-runtime/` (`pagination`, `review`, `review-v2`, `embedded-review`, `bounded-repair`) |

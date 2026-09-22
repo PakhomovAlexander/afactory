@@ -5,7 +5,8 @@ Status: Accepted, 2026-09-17, as the shared-runtime foundation for the authorize
 self-optimizer M1–M3 implementation. Superseded in part by
 [ADR-0113](0113-ga-reads-only-what-ga-writes.md): earlier execution and inspection generations,
 and the Review Task policy generations before `LegacyReviewTaskPolicy@4` that compiled without
-owned children. `LegacyReviewTaskPolicy@4`, the only generation, always installs this capture.
+owned children. `LegacyReviewTaskPolicy@4`, the only generation, always installs this capture,
+and owned child sets are an optional section of `af/task-inspection@11`, the only inspection.
 
 ## Context
 
