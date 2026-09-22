@@ -6,10 +6,10 @@ process survives."*
 
 ## Why there is nothing to capture
 
-The shell harness ingests a reviewer's findings file whenever the orchestrator hands it over. It
-has no attempt identity, no epoch, and no notion of a result arriving after its attempt was
-abandoned — so a late result is simply ingested as if it were current. The failure this case
-describes cannot be reproduced against it, only against the kernel.
+The retired shell harness ingested a reviewer's findings file whenever the orchestrator handed it
+over. It had no attempt identity, no epoch, and no notion of a result arriving after its attempt
+was abandoned — so a late result was simply ingested as if it were current. The failure this case
+describes could not be reproduced against it, only against the kernel.
 
 ## Setup
 

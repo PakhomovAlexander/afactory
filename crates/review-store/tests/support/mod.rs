@@ -4,10 +4,12 @@
 
 use review_core::{
     AuthorityFileV1, CANONICAL_FINDING_IDENTITY_POLICY, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, EventType, LEGACY_FINDING_IDENTITY_POLICY, RoundStartedPayloadV1,
+    CampaignOpenedPayloadV1, EventType, LegacyStageOutput, Producer, RoundStartedPayloadV1,
     SubjectKind, SubjectV1,
 };
-use review_store::{Cas, EventStore, NewEvent};
+use review_store::{
+    CanonicalReduction, CanonicalStage, Cas, EventStore, Ingest, NewEvent, StoreError,
+};
 
 pub struct Authority {
     pub authority: String,
@@ -19,22 +21,9 @@ pub struct Authority {
     pub round_event_id: String,
 }
 
-/// A Campaign on the canonical, report-derived Finding identity policy.
+/// A Campaign on the canonical, report-derived Finding identity policy, the only policy this
+/// release records.
 pub fn opened_round(store: &mut EventStore, cas: &Cas, run_id: &str) -> Authority {
-    opened_round_with_policy(store, cas, run_id, CANONICAL_FINDING_IDENTITY_POLICY)
-}
-
-/// A Campaign on the path/title Finding identity policy, which live flat reviewer results use.
-pub fn opened_legacy_round(store: &mut EventStore, cas: &Cas, run_id: &str) -> Authority {
-    opened_round_with_policy(store, cas, run_id, LEGACY_FINDING_IDENTITY_POLICY)
-}
-
-fn opened_round_with_policy(
-    store: &mut EventStore,
-    cas: &Cas,
-    run_id: &str,
-    finding_identity_policy: &str,
-) -> Authority {
     let authority = cas.put(b"authority").unwrap();
     let pipeline = cas
         .put(
@@ -79,7 +68,7 @@ runner = { program = "/bin/true" }
                 git_timeout_seconds: 300,
                 budgets: None,
                 focus: None,
-                finding_identity_policy: finding_identity_policy.into(),
+                finding_identity_policy: CANONICAL_FINDING_IDENTITY_POLICY.into(),
                 finding_genesis_id: findings.clone(),
                 demand_genesis_id: demands.clone(),
             })
@@ -143,8 +132,56 @@ runner = { program = "/bin/true" }
     }
 }
 
-/// Append a bare-status `FindingResolved@1` under the active Round, the event the reducer
-/// itself writes when a reviewer contests a claim.
+/// Admit flat `ReviewerResult@1` answers, given as `(source, attempt_id, output)`, through the
+/// canonical reduction a Campaign runs at its barrier. Each answer is first published as its
+/// Attempt's `ReviewerResult@1` envelope, so every Report carries that Attempt's provenance.
+pub fn add_flat_results(
+    ingest: &mut Ingest<'_>,
+    cas: &Cas,
+    run_id: &str,
+    round: &Authority,
+    results: &[(&str, &str, &LegacyStageOutput)],
+) -> Result<CanonicalReduction, StoreError> {
+    let result_ids: Vec<String> = results
+        .iter()
+        .map(|(source, attempt_id, output)| {
+            cas.put_artifact(
+                review_core::contract::REVIEWER_RESULT_V1,
+                Producer::Attempt {
+                    run_id: run_id.into(),
+                    node_id: (*source).into(),
+                    attempt_id: (*attempt_id).into(),
+                },
+                Vec::new(),
+                Some(round.head.clone()),
+                serde_json::to_value(output).unwrap(),
+            )
+            .unwrap()
+            .0
+        })
+        .collect();
+    let stages: Vec<CanonicalStage<'_>> = results
+        .iter()
+        .zip(&result_ids)
+        .map(|((source, attempt_id, output), result_id)| CanonicalStage {
+            source,
+            demand_requirement: review_core::DemandRequirement::Required,
+            stage: output,
+            attempt_id,
+            result_artifact_id: result_id,
+            input_artifacts: &[],
+            subject_snapshot_id: &round.head,
+            subject_id: &round.subject,
+            result_contract: review_core::ReviewerResultContract::V1,
+        })
+        .collect();
+    ingest.add_canonical_stage_outputs(&stages)
+}
+
+/// Append a bare-status `FindingResolved@1` under the active Round. It sets `status` directly,
+/// which is why tests use it to stage a Finding. On the live path the reducer writes this shape
+/// only as `contested`, when a reviewer disputes a claim; operator decisions are typed
+/// Resolutions (`FindingResolutionRecorded@1`, `FixVerified@1`) recorded through [`Ingest`].
 pub fn resolve(
     store: &mut EventStore,
     cas: &Cas,

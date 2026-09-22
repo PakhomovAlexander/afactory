@@ -73,12 +73,13 @@ zero claims.
 the event store, when each event's payload is defined; enumerating it from prose now would make
 the schema claim a completeness it does not have.
 
-Reviewers answer with flat findings; each one is converted to `FindingReport@1` on its own and
-must satisfy it before any ingest admits it. `fix` is required, because a claim with no proposed
-remedy is one a triager cannot act on. An empty `file`, or the literal `(change-wide)` sentinel,
-is a change-wide claim and becomes an empty location list, because the sentinel shares a
-namespace with real paths. One violation refuses the whole reviewer result, so a blocking
-verdict cannot degrade into an empty pass (`crates/review-store/tests/canonical_identity.rs`).
+A `ReviewerResult@1` reviewer answers with flat findings; each one is converted to
+`FindingReport@1` on its own and must satisfy it before any ingest admits it. `fix` is required,
+because a claim with no proposed remedy is one a triager cannot act on. An empty `file`, or the
+literal `(change-wide)` sentinel, is a change-wide claim and becomes an empty location list,
+because the sentinel shares a namespace with real paths. One violation refuses every result at
+that barrier, so a blocking verdict cannot degrade into an empty pass
+(`crates/review-store/tests/canonical_identity.rs`).
 
 ## The store
 
@@ -106,18 +107,24 @@ recorded path/title fingerprint policy and permanent reader.
 
 ### Replay and convergence
 
-`crates/review-store/tests/crash_replay.rs` kills the process at each boundary: the projection
-after reopening equals the projection before, a crash between publishing an artifact and
-appending its event leaves collectible garbage rather than a dangling reference, and a refused
-append does not consume a sequence.
+`crates/review-store/tests/crash_replay.rs` kills the process at each boundary of a canonical
+Round: the projection after reopening equals the projection before, a crash between publishing
+an artifact and appending its event leaves collectible garbage rather than a dangling reference,
+and a refused append does not consume a sequence.
 
-`crates/review-store/tests/ledger_convergence.rs` pins how one Finding moves: a fix that did not
-hold reopens, a higher-severity re-report escalates in place and is news, a same-severity
-re-report is not, a rejected or `wontfix` claim is never reopened by a re-report, `contested`
-blocks like `open`, a fix needs a clean Round before convergence, an open blocker at the Round
-cap is `Exhausted` rather than a pass, and an open finding below the gate never blocks. Nothing
-is lost on the way: both reports of a same-round duplicate stay attached with distinct artifact
-IDs, and a reopen never overwrites the note the fix recorded.
+`crates/review-store/tests/ledger_convergence.rs` pins how the Ledger fold moves one Finding: a
+fix that did not hold reopens, a higher-severity re-report escalates in place and is news, a
+same-severity re-report is not, a rejected or `wontfix` claim is not reopened by a re-report,
+`contested` blocks like `open`, a fix needs a clean Round before convergence, an open blocker at
+the Round cap is `Exhausted` rather than a pass, and an open finding below the gate never
+blocks. Nothing is lost on the way: both reports of a same-round duplicate stay attached with
+distinct artifact IDs, and a reopen never overwrites the note the fix recorded.
+
+Those scenarios set status with a bare-status `FindingResolved@1`, which a Review host writes
+only as `contested`. Operator decisions are typed Resolutions, and they add one rule: an
+in-scope re-report challenges a `rejected` or tracked-`wontfix` Resolution when its severity is
+above what the Resolution accepted or its Subject is not the one the Resolution was decided on,
+and the Finding becomes `contested` (`crates/review-store/tests/canonical_identity.rs`).
 
 ## The source adapter
 
@@ -159,11 +166,13 @@ plain `git status` over the same repository first, proving the marker *would* ha
 
 ## Check nodes
 
-Two properties, each pinned by `crates/review-check/tests/check_runner.rs`.
+Two properties. `crates/review-check/tests/check_runner.rs` pins them against real processes;
+the vacuous-gate rule is pinned by `a_vacuous_gate_blocks` in `crates/review-check/src/gate.rs`.
 
 **Nothing overwrites.** A gate that runs five times in one round leaves five records: each
-execution is an immutable `CheckResult@1` appended to the log, and a test asserts a failing
-attempt's stderr is still readable after a later attempt passes.
+execution is its own immutable `CheckResult@1`. `check_runner.rs` runs one check twice and
+asserts that both executions' artifacts survive: the failing attempt's stderr is a distinct CAS
+artifact, still readable after the later attempt passes.
 
 **A check that could not run is not a pass.** `not_run` is a first-class status carrying a
 reason, and it blocks a required gate exactly as a failure does. So does a gate with no required

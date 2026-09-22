@@ -13,8 +13,10 @@ mod support;
 use std::path::Path;
 
 use review_core::LegacyStageOutput;
-use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, NewEvent, Status};
-use support::opened_legacy_round;
+use review_store::{
+    Cas, ConvergencePolicy, EventStore, Finding, Ingest, Ledger, LedgerProjection, NewEvent, Status,
+};
+use support::{add_flat_results, opened_round};
 
 fn stage(json: &str) -> LegacyStageOutput {
     serde_json::from_str(json).unwrap()
@@ -29,67 +31,90 @@ fn one_finding(severity: &str, file: &str, title: &str) -> LegacyStageOutput {
     ))
 }
 
-fn snapshot(ledger: &Ledger) -> Vec<(String, Status, u32, u32, usize)> {
+type Snapshot = (Vec<Finding>, Vec<review_core::DemandSetEntryV1>);
+
+fn snapshot(ledger: &Ledger) -> Snapshot {
+    (ledger.finding_views(), ledger.demand_views())
+}
+
+fn key_of(ledger: &Ledger, title: &str) -> String {
     ledger
         .findings()
         .into_iter()
-        .map(|f| {
-            (
-                f.key.clone(),
-                f.status,
-                f.news_round,
-                f.last_seen_round,
-                f.reports.len(),
-            )
-        })
-        .collect()
+        .find(|finding| finding.title == title)
+        .unwrap_or_else(|| panic!("no Finding titled `{title}`"))
+        .key
+        .clone()
 }
 
-/// Ingest one live reviewer result under a freshly opened Round of `run_id`.
+/// Admit one reviewer result under a freshly opened Round of `run_id`.
 fn ingest_one(store: &mut EventStore, cas: &Cas, run_id: &str, output: &LegacyStageOutput) {
-    let authority = opened_legacy_round(store, cas, run_id);
-    Ingest::new(store, cas, run_id)
+    let round = opened_round(store, cas, run_id);
+    let mut ingest = Ingest::new(store, cas, run_id)
         .unwrap()
-        .under_round(&authority.round_event_id)
-        .add_live_stage_outputs(&[("deep", output)])
-        .unwrap();
+        .under_round(&round.round_event_id);
+    add_flat_results(
+        &mut ingest,
+        cas,
+        run_id,
+        &round,
+        &[("deep", "01jd8m4qz9k7v3n2p6r8t0w201", output)],
+    )
+    .unwrap();
 }
 
-/// Build a run of a few rounds against a store on disk, then hand back its directory.
-fn build_run(dir: &Path) -> Vec<(String, Status, u32, u32, usize)> {
+/// Build a Round against a store on disk and hand back its projection. Two reviewers report
+/// three claims and a Demand; a third reviewer then confirms one claim and refutes another.
+fn build_run(dir: &Path) -> Snapshot {
     let mut store = EventStore::open(dir.join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.join("cas")).unwrap();
-    let authority = opened_legacy_round(&mut store, &cas, "run");
+    let round = opened_round(&mut store, &cas, "run");
     let mut ingest = Ingest::new(&mut store, &cas, "run")
         .unwrap()
-        .under_round(&authority.round_event_id);
-    ingest
-        .add_live_stage_outputs(&[(
-            "deep-r1",
-            &one_finding("major", "src/a.rs", "Retry loop can spin forever"),
-        )])
-        .unwrap();
-    let key = ingest.ledger().findings()[0].key.clone();
-    drop(ingest);
-    support::resolve(
-        &mut store,
+        .under_round(&round.round_event_id);
+    let cross = stage(
+        r#"{"verdict":"block","summary":null,
+            "findings":[
+              {"severity":"blocker","file":"src/queue.rs","line":3,"title":"Queue grows without bound",
+               "body":"b","fix":"f","confidence":0.8},
+              {"severity":"minor","file":"src/lib.rs","line":1,"title":"Misleading comment",
+               "body":"b","fix":"f","confidence":0.5}],
+            "benchmark_demands":[{"claim":"Enqueue stays O(1)","why":"the queue is on the hot path",
+                                  "suggested_method":"time 10^6 enqueues"}],
+            "disputes":[]}"#,
+    );
+    add_flat_results(
+        &mut ingest,
         &cas,
         "run",
-        &authority,
-        &key,
-        Status::Fixed,
-        "capped",
-    );
-    let mut ingest = Ingest::new(&mut store, &cas, "run")
-        .unwrap()
-        .under_round(&authority.round_event_id);
-    ingest.advance().unwrap();
-    ingest
-        .add_live_stage_outputs(&[(
-            "deep-r2",
-            &one_finding("blocker", "src/a.rs", "Retry loop can spin forever"),
-        )])
-        .unwrap();
+        &round,
+        &[
+            (
+                "deep",
+                "01jd8m4qz9k7v3n2p6r8t0w201",
+                &one_finding("major", "src/a.rs", "Retry loop can spin forever"),
+            ),
+            ("cross", "01jd8m4qz9k7v3n2p6r8t0w202", &cross),
+        ],
+    )
+    .unwrap();
+
+    let retry = key_of(ingest.ledger(), "Retry loop can spin forever");
+    let queue = key_of(ingest.ledger(), "Queue grows without bound");
+    let positions = stage(&format!(
+        r#"{{"verdict":"request-changes","summary":null,"findings":[],"benchmark_demands":[],
+            "disputes":[
+              {{"claim_id":"{retry}","position":"confirm","reason":"reproduced"}},
+              {{"claim_id":"{queue}","position":"refute","reason":"the producer is bounded"}}]}}"#
+    ));
+    add_flat_results(
+        &mut ingest,
+        &cas,
+        "run",
+        &round,
+        &[("performance", "01jd8m4qz9k7v3n2p6r8t0w203", &positions)],
+    )
+    .unwrap();
     snapshot(ingest.ledger())
 }
 
@@ -101,18 +126,35 @@ fn the_projection_survives_process_death() {
 
     let store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
-    let rebuilt = snapshot(
-        &LedgerProjection::rebuild(&store, &cas, "run")
-            .unwrap()
-            .into_ledger(),
-    );
+    let ledger = LedgerProjection::rebuild(&store, &cas, "run")
+        .unwrap()
+        .into_ledger();
+    let rebuilt = snapshot(&ledger);
     assert_eq!(live, rebuilt, "rebuild must reproduce the committed state");
+    assert_eq!(
+        ledger
+            .convergence(ConvergencePolicy::default())
+            .authority_failures_recent,
+        0,
+        "the history is one well-formed Round"
+    );
 
-    // And the reopen-after-fix path really was exercised, so this is not a trivial equality.
-    let (_, status, news_round, last_seen, reports) = &rebuilt[0];
-    assert_eq!(*status, Status::Open, "the fix did not hold");
-    assert_eq!((*news_round, *last_seen), (2, 2));
-    assert_eq!(*reports, 2, "both reports survived");
+    // Every kind of transition really was exercised, so this is not a trivial equality.
+    let (findings, demands) = &rebuilt;
+    let findings: Vec<(&str, Status, usize)> = findings
+        .iter()
+        .map(|f| (f.title.as_str(), f.status, f.reports.len()))
+        .collect();
+    assert_eq!(
+        findings,
+        [
+            ("Retry loop can spin forever", Status::Open, 2),
+            ("Queue grows without bound", Status::Contested, 1),
+            ("Misleading comment", Status::Open, 1),
+        ],
+        "the confirmation attached a second Report and the refutation contested its claim"
+    );
+    assert_eq!(demands.len(), 1);
 }
 
 #[test]
@@ -141,10 +183,18 @@ fn the_report_artifact_not_the_event_copy_is_projection_authority() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
-    let authority = opened_legacy_round(&mut store, &cas, "run");
-    let report_id = cas
-        .put_json(
-            &serde_json::to_value(review_core::FindingReport {
+    let round = opened_round(&mut store, &cas, "run");
+    let (report_id, _) = cas
+        .put_artifact(
+            review_core::contract::FINDING_REPORT_V1,
+            review_core::Producer::Attempt {
+                run_id: "run".into(),
+                node_id: "architecture".into(),
+                attempt_id: "01jd8m4qz9k7v3n2p6r8t0w201".into(),
+            },
+            Vec::new(),
+            Some(round.head.clone()),
+            serde_json::to_value(review_core::FindingReport {
                 title: "Canonical title".into(),
                 severity: review_core::Severity::Blocker,
                 locations: vec![review_core::Location {
@@ -163,6 +213,7 @@ fn the_report_artifact_not_the_event_copy_is_projection_authority() {
             .unwrap(),
         )
         .unwrap();
+    let key = review_store::canonical_finding_id(&report_id);
     store
         .append(
             "run",
@@ -170,7 +221,7 @@ fn the_report_artifact_not_the_event_copy_is_projection_authority() {
             NewEvent::new(
                 review_store::ledger::EVENT_FINDING_REPORTED,
                 serde_json::json!({
-                    "key": "claim",
+                    "key": key,
                     "round": 1,
                     "source": "architecture",
                     "severity": "minor",
@@ -182,8 +233,8 @@ fn the_report_artifact_not_the_event_copy_is_projection_authority() {
                     "report_id": report_id,
                 }),
             )
-            .caused_by(authority.round_event_id)
-            .correlating("claim")
+            .caused_by(round.round_event_id)
+            .correlating(key.clone())
             .referencing(vec![report_id]),
         )
         .unwrap();
@@ -191,7 +242,7 @@ fn the_report_artifact_not_the_event_copy_is_projection_authority() {
     let ledger = LedgerProjection::rebuild(&store, &cas, "run")
         .unwrap()
         .into_ledger();
-    let finding = ledger.get("claim").unwrap();
+    let finding = ledger.get(&key).unwrap();
     assert_eq!(finding.title, "Canonical title");
     assert_eq!(finding.body, "canonical body");
     assert_eq!(finding.fix, "canonical fix");

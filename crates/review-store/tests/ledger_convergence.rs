@@ -1,10 +1,17 @@
 //! Ledger convergence scenarios: how re-reports, resolutions and Rounds move one Finding.
 //!
-//! Each test folds the events a Review host appends — `RoundStarted@1` for Scope authority,
+//! Each test folds events through `Ledger::apply_event` — `RoundStarted@1` for Scope authority,
 //! `GenerationAdvanced@1` for the Round counter, `FindingReported@1` over an immutable
-//! `FindingReport@1` artifact, `FindingResolved@1` — through `Ledger::apply_event`, and pins
-//! the projected Finding and the convergence verdict under the default policy (one clean Round,
-//! at most three, gate `major`).
+//! `FindingReport@1` artifact — and pins the projected Finding and the convergence verdict under
+//! the default policy (one clean Round, at most three, gate `major`).
+//!
+//! Status is set with a bare-status `FindingResolved@1`, which drives the fold directly. A Review
+//! host writes that shape only as `contested`, when a reviewer disputes a claim. Operator
+//! decisions are typed Resolutions (`FindingResolutionRecorded@1`, after `FixVerified@1` for a
+//! fix), and re-reports move them through the same transitions with one addition: an in-scope
+//! re-report challenges a typed `rejected` or tracked-`wontfix` Resolution when its severity is
+//! above what the Resolution accepted or its Subject is not the one the Resolution was decided
+//! on, and the Finding becomes `contested`. `canonical_identity.rs` pins that rule.
 
 use review_core::{
     EventType, FindingReport, Location, RoundStartedPayloadV1, RunEvent, Severity, SubjectV1,
@@ -119,6 +126,7 @@ impl Run {
         report_id
     }
 
+    /// Set `status` with a bare-status `FindingResolved@1` (see the module doc).
     fn resolve(&mut self, status: Status, note: &str) {
         self.apply(event(
             EventType::FindingResolvedV1,
@@ -328,8 +336,9 @@ fn a_rejected_claim_re_reported_at_the_same_severity_stays_rejected() {
     assert_eq!(verdict(run.convergence()), (2, 0, 0, Verdict::Converged));
 }
 
-/// A rejected Finding re-reported at a higher severity adopts the rank, evidence and source in
-/// place so a later re-triage sees the real severity, but its status is untouched. It is news.
+/// A Finding rejected by a bare-status `FindingResolved@1` and re-reported at a higher severity
+/// adopts the rank, evidence and source in place so a later re-triage sees the real severity, but
+/// its status is untouched. It is news. A typed `rejected` Resolution is challenged instead.
 #[test]
 fn a_rejected_claim_re_reported_higher_adopts_the_rank_but_stays_rejected() {
     let mut run = Run::new();
