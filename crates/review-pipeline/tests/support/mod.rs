@@ -6,50 +6,15 @@ use review_pipeline::RoundAuthority;
 use review_source_git::Manifest;
 use review_store::{Cas, EventStore, NewEvent};
 
-#[allow(dead_code)]
+/// Open a whole-tree Campaign over `snapshot` and its first Round, as the authority layer does.
+/// `pipeline` must declare a Ledger node: canonical Finding identity reads its prior Finding Set
+/// lineage from the Ledger.
 pub fn test_round_authority_for_pipeline(
     cas: &Cas,
     store: &mut EventStore,
     run_id: &str,
     snapshot: &Manifest,
     pipeline: &str,
-) -> RoundAuthority {
-    test_round_authority(
-        cas,
-        store,
-        run_id,
-        snapshot,
-        pipeline,
-        review_core::LEGACY_FINDING_IDENTITY_POLICY,
-    )
-}
-
-#[allow(dead_code)]
-pub fn test_canonical_round_authority_for_pipeline(
-    cas: &Cas,
-    store: &mut EventStore,
-    run_id: &str,
-    snapshot: &Manifest,
-    pipeline: &str,
-) -> RoundAuthority {
-    test_round_authority(
-        cas,
-        store,
-        run_id,
-        snapshot,
-        pipeline,
-        review_core::CANONICAL_FINDING_IDENTITY_POLICY,
-    )
-}
-
-/// Open a whole-tree Campaign over `snapshot` and its first Round, as the authority layer does.
-fn test_round_authority(
-    cas: &Cas,
-    store: &mut EventStore,
-    run_id: &str,
-    snapshot: &Manifest,
-    pipeline: &str,
-    identity_policy: &str,
 ) -> RoundAuthority {
     let authority_manifest = Manifest::new(vec![]).unwrap();
     let authority_manifest_id = cas
@@ -96,7 +61,7 @@ fn test_round_authority(
                 git_timeout_seconds: 300,
                 budgets: None,
                 focus: None,
-                finding_identity_policy: identity_policy.into(),
+                finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
                 finding_genesis_id,
                 demand_genesis_id: demand_genesis_id.clone(),
             })

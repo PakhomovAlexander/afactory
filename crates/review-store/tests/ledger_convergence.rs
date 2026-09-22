@@ -14,7 +14,8 @@
 //! on, and the Finding becomes `contested`. `canonical_identity.rs` pins that rule.
 
 use review_core::{
-    EventType, FindingReport, Location, RoundStartedPayloadV1, RunEvent, Severity, SubjectV1,
+    EventType, FindingReport, Location, Producer, RoundStartedPayloadV1, RunEvent, Severity,
+    SubjectV1,
 };
 use review_store::ledger::TransitionKind;
 use review_store::{Cas, Convergence, ConvergencePolicy, Finding, Ledger, Status, Verdict};
@@ -109,9 +110,19 @@ impl Run {
             occurrence_key: None,
             relations: Vec::new(),
         };
-        let report_id = self
+        let (report_id, _) = self
             .cas
-            .put_json(&serde_json::to_value(report).unwrap())
+            .put_artifact(
+                review_core::contract::FINDING_REPORT_V1,
+                Producer::KernelOperation {
+                    run_id: "run".into(),
+                    node_id: Some(source.into()),
+                    operation_id: "convergence-report".into(),
+                },
+                Vec::new(),
+                None,
+                serde_json::to_value(report).unwrap(),
+            )
             .unwrap();
         self.apply(event(
             EventType::FindingReportedV1,

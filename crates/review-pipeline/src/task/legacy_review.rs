@@ -111,7 +111,6 @@ impl CapturedLegacyReviewRound {
         .map_err(|error| error.to_string())?;
         let loaded = review_config::captured_review::load_captured_review(cas, &manifest, mode)?;
         let mut context = ReviewCompileContext {
-            finding_identity_policy: manifest.finding_identity_policy.clone(),
             inputs: request.inputs,
             head_input: "head".into(),
             round_input: "round".into(),

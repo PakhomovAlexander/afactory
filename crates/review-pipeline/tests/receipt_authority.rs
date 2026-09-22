@@ -19,6 +19,14 @@ id = "reviewer"
 kind = "reviewer"
 outputs = ["result"]
 runner = { program = "/bin/true" }
+[[nodes]]
+id = "ledger"
+kind = "ledger"
+inputs = ["reports"]
+outputs = ["findings"]
+[[edges]]
+from = { node = "reviewer", port = "result" }
+to = { node = "ledger", port = "reports" }
 "#;
     let _authority =
         support::test_round_authority_for_pipeline(&cas, &mut store, "run", &manifest, definition);

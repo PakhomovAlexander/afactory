@@ -258,10 +258,6 @@ impl RoundAuthority {
         self.change_set.as_ref()
     }
 
-    pub fn finding_identity_policy(&self) -> &str {
-        &self.finding_identity_policy
-    }
-
     pub fn campaign_manifest_id(&self) -> &str {
         &self.campaign_manifest_id
     }
@@ -345,20 +341,14 @@ impl RoundAuthority {
         )
         .map_err(|error| error.to_string())?;
         campaign_manifest.validate()?;
-        let prior_reduction_finding_set_id = if campaign_manifest.finding_identity_policy
-            == review_core::CANONICAL_FINDING_IDENTITY_POLICY
-        {
-            canonical_prior_finding_set_id_from_events(
-                cas,
-                events,
-                round.sequence,
-                payload.round,
-                &opened.campaign_manifest_id,
-                &campaign_manifest,
-            )?
-        } else {
-            payload.prior_finding_set_id.clone()
-        };
+        let prior_reduction_finding_set_id = canonical_prior_finding_set_id_from_events(
+            cas,
+            events,
+            round.sequence,
+            payload.round,
+            &opened.campaign_manifest_id,
+            &campaign_manifest,
+        )?;
         let reviewer_packages = campaign_manifest
             .reviewers
             .iter()

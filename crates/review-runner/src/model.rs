@@ -791,9 +791,6 @@ pub struct ReviewerInputs {
     pub prior_findings: Option<serde_json::Value>,
     #[serde(skip)]
     pub prior_findings_artifact_id: Option<String>,
-    /// Pinned Campaign policy used only to choose the matching prior-claim instructions.
-    #[serde(skip)]
-    pub finding_identity_policy: Option<String>,
     /// Kernel-generated reasons earlier attempts in this node were refused or fenced. These are
     /// labelled as data and JSON-encoded so a retry can correct a systematic contract failure
     /// without treating model-controlled text as prompt instructions.
@@ -1155,14 +1152,8 @@ impl ReviewerInputs {
     /// The prior-findings section, or nothing when this Attempt is assigned no prior claim.
     fn rendered_prior_findings_section(&self) -> Result<Option<String>, String> {
         if let Some(prior) = &self.prior_findings {
-            let persistence_guidance = match (
-                self.result_contract,
-                self.finding_identity_policy.as_deref(),
-            ) {
-                (
-                    ReviewerResultContract::V2,
-                    Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY),
-                ) => {
+            let persistence_guidance = match self.result_contract {
+                ReviewerResultContract::V2 => {
                     "Every Finding in this exact Set is assigned to you. Return exactly one \
                      `dispositions` entry for each `finding_id`: `corroborate` when the defect \
                      persists, `not_reproduced` when the current Subject no longer exhibits it, \
@@ -1170,29 +1161,9 @@ impl ReviewerInputs {
                      reason. Do not use omission as a disposition, and do not emit a second flat \
                      report for a Finding you have dispositioned."
                 }
-                (
-                    ReviewerResultContract::V1,
-                    Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY),
-                ) => {
+                ReviewerResultContract::V1 => {
                     "A prior claim that still exists: confirm it in `disputes` with `claim_id` \
                      set to the finding's key; do not emit a second flat report for the same claim."
-                }
-                (
-                    ReviewerResultContract::V1,
-                    None | Some(review_core::LEGACY_FINDING_IDENTITY_POLICY),
-                ) => {
-                    "A prior claim that still exists: re-report it with the same title and the \
-                     same canonical current location so the legacy identity policy can attach it."
-                }
-                (_, Some(policy)) => {
-                    return Err(format!(
-                        "cannot render prior-finding guidance for unknown identity policy `{policy}`"
-                    ));
-                }
-                (ReviewerResultContract::V2, None) => {
-                    return Err(
-                        "ReviewerResult@2 requires canonical Finding identity authority".into(),
-                    );
                 }
             };
             let rendered =

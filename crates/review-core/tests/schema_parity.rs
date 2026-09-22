@@ -1278,7 +1278,7 @@ fn subject_and_campaign_authority_roundtrip() {
         git_timeout_seconds: 300,
         budgets: None,
         focus: Some("authority bootstrap".into()),
-        finding_identity_policy: "legacy-path-title@1".into(),
+        finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
         finding_genesis_id: digest.clone(),
         demand_genesis_id: digest.clone(),
     };

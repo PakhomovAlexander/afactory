@@ -393,9 +393,7 @@ impl LegacyReviewPlanCompiler {
                 CompiledOperator::ReviewDomain {
                     operation: ReviewOperation::Ledger,
                     ..
-                } if node.contract.outputs.contains_key("finding_set") => {
-                    &["finding_set", "demand_set"]
-                }
+                } => &["finding_set", "demand_set"],
                 _ => &[],
             };
             for &port in ports {

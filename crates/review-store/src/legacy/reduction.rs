@@ -42,10 +42,7 @@ pub fn prepare_canonical_task_review(
                 "Task reduction changed the selected result payload".into(),
             ));
         }
-        item.provenance
-            .as_mut()
-            .expect("canonical stage provenance")
-            .producer = artifact.producer;
+        item.provenance.producer = artifact.producer;
     }
     prepare_review_outputs(cas, run_id, ledger, &prepared)
 }
@@ -135,7 +132,7 @@ pub(super) fn prepare_canonical_inputs(
             reports,
             demands: stage.stage.benchmark_demands.clone(),
             disputes: stage.stage.disputes.clone(),
-            provenance: Some(ReportProvenance {
+            provenance: ReportProvenance {
                 producer: Producer::Attempt {
                     run_id: run_id.to_owned(),
                     node_id: stage.source.to_string(),
@@ -144,7 +141,7 @@ pub(super) fn prepare_canonical_inputs(
                 input_artifacts,
                 subject_snapshot_id: stage.subject_snapshot_id.to_string(),
                 subject_id: stage.subject_id.to_string(),
-            }),
+            },
             result_contract: stage.result_contract,
         });
     }
@@ -187,194 +184,169 @@ pub(super) fn prepare_review_outputs(
 
     for stage in stages {
         let source = stage.source.as_str();
-        if let Some(provenance) = &stage.provenance {
-            for demand in &stage.demands {
-                let demand_id = canonical_demand_id(source, demand);
-                if ledger.demand(&demand_id).is_some() || !pending_demands.insert(demand_id.clone())
+        let provenance = &stage.provenance;
+        for demand in &stage.demands {
+            let demand_id = canonical_demand_id(source, demand);
+            if ledger.demand(&demand_id).is_some() || !pending_demands.insert(demand_id.clone()) {
+                continue;
+            }
+            let payload = review_core::DemandV1 {
+                demand_id: demand_id.clone(),
+                claim: demand.claim.clone(),
+                why: demand.why.clone(),
+                suggested_method: demand.suggested_method.clone(),
+                source: source.to_string(),
+                requirement: stage.demand_requirement,
+                round,
+                subject_id: provenance.subject_id.clone(),
+            };
+            payload.validate().map_err(StoreError::Conflict)?;
+            let (record_id, envelope) = cas
+                .put_artifact(
+                    review_core::contract::DEMAND_V1,
+                    provenance.producer.clone(),
+                    provenance.input_artifacts.clone(),
+                    Some(provenance.subject_snapshot_id.clone()),
+                    serde_json::to_value(payload)?,
+                )
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+            let event = NewEvent::new(
+                crate::ledger::EVENT_DEMAND_RECORDED,
+                serde_json::to_value(review_core::RecordedArtifactPayloadV1 {
+                    artifact_id: record_id.clone(),
+                })?,
+            )
+            .correlating(demand_id)
+            .referencing(vec![record_id.clone()]);
+            apply_candidate(&mut projected, &event, cas)?;
+            events.push(event);
+            selected_demand_artifact_ids.push(envelope.artifact_id);
+            demand_input_artifact_ids.push(record_id);
+        }
+        let mut reports = stage.reports.clone();
+        for dispute in &stage.disputes {
+            let corroborates = match stage.result_contract {
+                ReviewerResultContract::V1 => dispute.position.trim() == "confirm",
+                ReviewerResultContract::V2 => dispute.position.trim() == "corroborate",
+            };
+            if !corroborates {
+                continue;
+            }
+            let key = dispute.fp.trim();
+            let Some(finding) = ledger.get(key) else {
+                // A model may mistype a long canonical ID. Like an unresolvable refute,
+                // it carries no safe authority and must not discard the other selected
+                // reviewers' evidence.
+                continue;
+            };
+            let mut replayed = false;
+            for existing in finding.reports.iter().filter(|report| {
+                report.source == source
+                    && report.round == round
+                    && report.relations.iter().any(|relation| {
+                        relation.kind == review_core::RelationKind::Corroborates
+                            && relation.target.kind
+                                == review_core::finding::ClaimTargetKind::Finding
+                            && relation.target.id == key
+                    })
+            }) {
+                let value = cas.get_json(&existing.report_id).map_err(|error| {
+                    StoreError::Artifact(format!(
+                        "corroborating Report {} is unreadable during replay: {error}",
+                        existing.report_id
+                    ))
+                })?;
+                let envelope: review_core::ArtifactEnvelope = serde_json::from_value(value)
+                    .map_err(|error| {
+                        StoreError::Artifact(format!(
+                            "corroborating Report {} is not an ArtifactEnvelope: {error}",
+                            existing.report_id
+                        ))
+                    })?;
+                crate::canonical::validate_envelope(&envelope).map_err(|error| {
+                    StoreError::Artifact(format!(
+                        "corroborating Report {}: {error}",
+                        existing.report_id
+                    ))
+                })?;
+                if envelope.artifact_type != review_core::contract::FINDING_REPORT_V1 {
+                    return Err(StoreError::Artifact(format!(
+                        "corroborating Report {} has type {}",
+                        existing.report_id, envelope.artifact_type
+                    )));
+                }
+                if envelope.producer != provenance.producer
+                    || envelope.input_artifacts != provenance.input_artifacts
+                    || envelope.subject_snapshot_id.as_deref()
+                        != Some(provenance.subject_snapshot_id.as_str())
                 {
                     continue;
                 }
-                let payload = review_core::DemandV1 {
-                    demand_id: demand_id.clone(),
-                    claim: demand.claim.clone(),
-                    why: demand.why.clone(),
-                    suggested_method: demand.suggested_method.clone(),
-                    source: source.to_string(),
-                    requirement: stage.demand_requirement,
-                    round,
-                    subject_id: provenance.subject_id.clone(),
-                };
-                payload.validate().map_err(StoreError::Conflict)?;
-                let (record_id, envelope) = cas
-                    .put_artifact(
-                        review_core::contract::DEMAND_V1,
-                        provenance.producer.clone(),
-                        provenance.input_artifacts.clone(),
-                        Some(provenance.subject_snapshot_id.clone()),
-                        serde_json::to_value(payload)?,
-                    )
-                    .map_err(|error| StoreError::Conflict(error.to_string()))?;
-                let event = NewEvent::new(
-                    crate::ledger::EVENT_DEMAND_RECORDED,
-                    serde_json::to_value(review_core::RecordedArtifactPayloadV1 {
-                        artifact_id: record_id.clone(),
-                    })?,
-                )
-                .correlating(demand_id)
-                .referencing(vec![record_id.clone()]);
-                apply_candidate(&mut projected, &event, cas)?;
-                events.push(event);
-                selected_demand_artifact_ids.push(envelope.artifact_id);
-                demand_input_artifact_ids.push(record_id);
+                reports.push(serde_json::from_value(envelope.payload).map_err(|error| {
+                    StoreError::Artifact(format!(
+                        "corroborating Report {} is not FindingReport@1: {error}",
+                        existing.report_id
+                    ))
+                })?);
+                replayed = true;
+                break;
             }
-        }
-        let mut reports = stage.reports.clone();
-        if let Some(provenance) = &stage.provenance {
-            for dispute in &stage.disputes {
-                let corroborates = match stage.result_contract {
-                    ReviewerResultContract::V1 => dispute.position.trim() == "confirm",
-                    ReviewerResultContract::V2 => dispute.position.trim() == "corroborate",
-                };
-                if !corroborates {
-                    continue;
-                }
-                let key = dispute.fp.trim();
-                let Some(finding) = ledger.get(key) else {
-                    // A model may mistype a long canonical ID. Like an unresolvable refute,
-                    // it carries no safe authority and must not discard the other selected
-                    // reviewers' evidence.
-                    continue;
-                };
-                let mut replayed = false;
-                for existing in finding.reports.iter().filter(|report| {
-                    report.source == source
-                        && report.round == round
-                        && report.relations.iter().any(|relation| {
-                            relation.kind == review_core::RelationKind::Corroborates
-                                && relation.target.kind
-                                    == review_core::finding::ClaimTargetKind::Finding
-                                && relation.target.id == key
-                        })
-                }) {
-                    let value = cas.get_json(&existing.report_id).map_err(|error| {
-                        StoreError::Artifact(format!(
-                            "corroborating Report {} is unreadable during replay: {error}",
-                            existing.report_id
-                        ))
-                    })?;
-                    let envelope: review_core::ArtifactEnvelope = serde_json::from_value(value)
-                        .map_err(|error| {
-                            StoreError::Artifact(format!(
-                                "corroborating Report {} is not an ArtifactEnvelope: {error}",
-                                existing.report_id
-                            ))
-                        })?;
-                    crate::canonical::validate_envelope(&envelope).map_err(|error| {
-                        StoreError::Artifact(format!(
-                            "corroborating Report {}: {error}",
-                            existing.report_id
-                        ))
-                    })?;
-                    if envelope.artifact_type != review_core::contract::FINDING_REPORT_V1 {
-                        return Err(StoreError::Artifact(format!(
-                            "corroborating Report {} has type {}",
-                            existing.report_id, envelope.artifact_type
-                        )));
-                    }
-                    if envelope.producer != provenance.producer
-                        || envelope.input_artifacts != provenance.input_artifacts
-                        || envelope.subject_snapshot_id.as_deref()
-                            != Some(provenance.subject_snapshot_id.as_str())
-                    {
-                        continue;
-                    }
-                    reports.push(serde_json::from_value(envelope.payload).map_err(|error| {
-                        StoreError::Artifact(format!(
-                            "corroborating Report {} is not FindingReport@1: {error}",
-                            existing.report_id
-                        ))
-                    })?);
-                    replayed = true;
-                    break;
-                }
-                if replayed {
-                    continue;
-                }
-                let Some(confidence) = finding.confidence else {
-                    continue;
-                };
-                let fix = finding.fix.clone();
-                let locations =
-                    if finding.identity_file == review_core::legacy::CHANGE_WIDE_SENTINEL {
-                        Vec::new()
-                    } else if review_core::is_valid_repo_path(&finding.identity_file) {
-                        let line = match finding.identity_line.map(u32::try_from).transpose() {
-                            Ok(line) => line,
-                            Err(_) => continue,
-                        };
-                        vec![review_core::Location {
-                            path: finding.identity_file.clone(),
-                            line,
-                            end_line: None,
-                        }]
-                    } else {
-                        continue;
-                    };
-                reports.push(FindingReport {
-                    title: finding.title.clone(),
-                    severity: finding.severity,
-                    locations,
-                    body: finding.body.clone(),
-                    fix,
-                    confidence,
-                    failure_trace: None,
-                    rule_id: None,
-                    occurrence_key: None,
-                    relations: vec![review_core::Relation {
-                        kind: review_core::RelationKind::Corroborates,
-                        target: review_core::finding::RelationTarget {
-                            kind: review_core::finding::ClaimTargetKind::Finding,
-                            id: key.to_string(),
-                        },
-                        reason: Some(dispute.reason.clone()),
-                    }],
-                });
+            if replayed {
+                continue;
             }
+            let Some(confidence) = finding.confidence else {
+                continue;
+            };
+            let fix = finding.fix.clone();
+            let locations = if finding.identity_file == review_core::legacy::CHANGE_WIDE_SENTINEL {
+                Vec::new()
+            } else if review_core::is_valid_repo_path(&finding.identity_file) {
+                let line = match finding.identity_line.map(u32::try_from).transpose() {
+                    Ok(line) => line,
+                    Err(_) => continue,
+                };
+                vec![review_core::Location {
+                    path: finding.identity_file.clone(),
+                    line,
+                    end_line: None,
+                }]
+            } else {
+                continue;
+            };
+            reports.push(FindingReport {
+                title: finding.title.clone(),
+                severity: finding.severity,
+                locations,
+                body: finding.body.clone(),
+                fix,
+                confidence,
+                failure_trace: None,
+                rule_id: None,
+                occurrence_key: None,
+                relations: vec![review_core::Relation {
+                    kind: review_core::RelationKind::Corroborates,
+                    target: review_core::finding::RelationTarget {
+                        kind: review_core::finding::ClaimTargetKind::Finding,
+                        id: key.to_string(),
+                    },
+                    reason: Some(dispute.reason.clone()),
+                }],
+            });
         }
         let mut published = Vec::with_capacity(reports.len());
         for report in &reports {
-            let (report_id, semantic_id) = match &stage.provenance {
-                Some(provenance) => {
-                    let (record_id, envelope) = cas
-                        .put_artifact(
-                            review_core::contract::FINDING_REPORT_V1,
-                            provenance.producer.clone(),
-                            provenance.input_artifacts.clone(),
-                            Some(provenance.subject_snapshot_id.clone()),
-                            serde_json::to_value(report)?,
-                        )
-                        .map_err(|error| StoreError::Conflict(error.to_string()))?;
-                    (record_id, envelope.artifact_id)
-                }
-                None => {
-                    let value = serde_json::to_value(report)?;
-                    let record_id = cas
-                        .put_json(&value)
-                        .map_err(|error| StoreError::Conflict(error.to_string()))?;
-                    (record_id.clone(), record_id)
-                }
-            };
-            published.push((report, report_id, semantic_id));
+            let (record_id, envelope) = cas
+                .put_artifact(
+                    review_core::contract::FINDING_REPORT_V1,
+                    provenance.producer.clone(),
+                    provenance.input_artifacts.clone(),
+                    Some(provenance.subject_snapshot_id.clone()),
+                    serde_json::to_value(report)?,
+                )
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+            published.push((report, record_id, envelope.artifact_id));
         }
-        let keys = match &stage.provenance {
-            Some(_) => canonical_stage_keys(&published, ledger, &pending_occurrences)?,
-            None => published
-                .iter()
-                .map(|(report, _, _)| {
-                    legacy_fingerprint(report_identity_path(report), &report.title)
-                })
-                .collect(),
-        };
+        let keys = canonical_stage_keys(&published, ledger, &pending_occurrences)?;
 
         for ((report, report_id, semantic_id), key) in published.into_iter().zip(keys.into_iter()) {
             if let (Some(rule_id), Some(occurrence_key)) = (&report.rule_id, &report.occurrence_key)
@@ -386,14 +358,12 @@ pub(super) fn prepare_review_outputs(
             // another reviewer is stored too, so every reviewer's evidence stays attached.
             let report_identity = (key.clone(), source.to_string(), round, report_id.clone());
 
-            if stage.provenance.is_some() {
-                selected_report_ids.push(semantic_id.clone());
-                report_ids_by_source
-                    .entry(source.to_string())
-                    .or_insert_with(Vec::new)
-                    .push(semantic_id.clone());
-                input_artifact_ids.push(report_id.clone());
-            }
+            selected_report_ids.push(semantic_id.clone());
+            report_ids_by_source
+                .entry(source.to_string())
+                .or_insert_with(Vec::new)
+                .push(semantic_id.clone());
+            input_artifact_ids.push(report_id.clone());
 
             if existing_reports.contains(&(key.as_str(), source, round, report_id.as_str()))
                 || pending_reports.contains(&report_identity)
@@ -477,11 +447,6 @@ pub(super) fn prepare_review_outputs(
         }
 
         if stage.result_contract == ReviewerResultContract::V2 {
-            let provenance = stage.provenance.as_ref().ok_or_else(|| {
-                StoreError::Conflict(
-                    "ReviewerResult@2 dispositions require canonical Attempt provenance".into(),
-                )
-            })?;
             for disposition in &stage.disputes {
                 let finding_id = disposition.fp.trim();
                 if ledger.get(finding_id).is_none() {

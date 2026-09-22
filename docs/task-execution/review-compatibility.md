@@ -141,10 +141,10 @@ now use that same runtime.
 
 Recorded-plan recompilation reads existing root wrappers and refuses their absence, different
 producer, changed Round or changed head; it does not recreate missing CAS objects. Historical
-Round reconstruction is separate from the active-epoch check used for dispatch. Opaque v1 Ledger
-ports use the captured finding identity policy to select either the canonical Finding Set
-envelope or the frozen legacy flat encoding. Scatter result version follows its inherited
-Finding Set input contract.
+Round reconstruction is separate from the active-epoch check used for dispatch. An opaque v1
+Ledger port carries the canonical Finding Set envelope, and every Ledger node also publishes its
+`finding_set` and `demand_set` companions. Scatter result version follows its inherited Finding
+Set input contract.
 
 ## Common operation host
 

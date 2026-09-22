@@ -26,61 +26,6 @@ use crate::ledger::{
 };
 use crate::store::{EventStore, NewEvent, StoreError};
 
-/// The path a change-wide finding (empty `file`) is keyed under. It shares the path/title key
-/// namespace with real paths, which is why `FindingReport@1` uses an empty location list
-/// instead — but the path/title key is still computed over it.
-pub const CHANGE_WIDE: &str = "(change-wide)";
-
-/// The path/title Finding key: sha256 of `file|title`, first 12 hex, with the title normalized
-/// for case and whitespace only.
-///
-/// Lowercasing is ASCII-only on purpose: the key is persisted Finding identity, and it must not
-/// shift with Unicode case-mapping tables.
-pub fn legacy_fingerprint(file: &str, title: &str) -> String {
-    let file = if file.trim().is_empty() {
-        CHANGE_WIDE
-    } else {
-        file
-    };
-
-    let mut normalized = String::with_capacity(title.len());
-    let mut in_space = false;
-    for ch in title.chars() {
-        if ch.is_whitespace() {
-            if !in_space {
-                normalized.push(' ');
-            }
-            in_space = true;
-        } else {
-            normalized.push(ch.to_ascii_lowercase());
-            in_space = false;
-        }
-    }
-    // Trim one leading and one trailing space, which is all that can remain after the squeeze.
-    let normalized = normalized
-        .strip_prefix(' ')
-        .unwrap_or(&normalized)
-        .to_string();
-    let normalized = normalized.strip_suffix(' ').unwrap_or(&normalized);
-
-    let mut hasher = Sha256::new();
-    hasher.update(file.as_bytes());
-    hasher.update(b"|");
-    hasher.update(normalized.as_bytes());
-    review_core::hex::encode(&hasher.finalize())[..12].to_string()
-}
-
-/// Permanent bridge identity for legacy campaigns. A report's location order is model output;
-/// selecting the minimum retains deterministic replay and the one-location legacy key exactly.
-fn report_identity_path(report: &review_core::FindingReport) -> &str {
-    report
-        .locations
-        .iter()
-        .map(|location| location.path.as_str())
-        .min()
-        .unwrap_or("")
-}
-
 /// Drives a run: ingest stage outputs, record resolutions, advance generations.
 pub struct Ingest<'a> {
     store: &'a mut EventStore,
@@ -137,7 +82,7 @@ struct PreparedStage {
     reports: Vec<FindingReport>,
     demands: Vec<LegacyBenchmarkDemand>,
     disputes: Vec<review_core::legacy::LegacyDispute>,
-    provenance: Option<ReportProvenance>,
+    provenance: ReportProvenance,
     result_contract: ReviewerResultContract,
 }
 
@@ -230,43 +175,14 @@ impl<'a> Ingest<'a> {
         Ok(round)
     }
 
-    /// Atomically admit every live reviewer result feeding one ledger node. Every finding must
-    /// satisfy `FindingReport@1` ([`LegacyFinding::into_report`]), and one violation refuses the
-    /// complete set, so a blocking verdict cannot degrade into an empty pass. Validation or
-    /// storage failure leaves the event log untouched, so a retry cannot inherit half a
-    /// reduction and duplicate the reviewers that were committed first.
+    /// Bridge selected flat results into typed, provenance-carrying Report artifacts and reduce
+    /// them with the canonical path-independent identity policy. Every finding must satisfy
+    /// `FindingReport@1` ([`LegacyFinding::into_report`]), and one violation refuses the complete
+    /// set, so a blocking verdict cannot degrade into an empty pass. Validation or storage
+    /// failure leaves the event log untouched, so a retry cannot inherit half a reduction and
+    /// duplicate the reviewers that were committed first.
     ///
     /// [`LegacyFinding::into_report`]: review_core::legacy::LegacyFinding::into_report
-    pub fn add_live_stage_outputs(
-        &mut self,
-        stages: &[(&str, &LegacyStageOutput)],
-    ) -> Result<(), StoreError> {
-        let mut prepared = Vec::with_capacity(stages.len());
-        for (source, stage) in stages {
-            let mut reports = Vec::with_capacity(stage.findings.len());
-            for (index, finding) in stage.findings.iter().enumerate() {
-                let report = finding.clone().into_report(index).map_err(|reason| {
-                    StoreError::Conflict(format!(
-                        "{source} finding {index} violates FindingReport@1: {reason}"
-                    ))
-                })?;
-                reports.push(report);
-            }
-            prepared.push(PreparedStage {
-                source: (*source).to_string(),
-                demand_requirement: review_core::DemandRequirement::Required,
-                reports,
-                demands: stage.benchmark_demands.clone(),
-                disputes: stage.disputes.clone(),
-                provenance: None,
-                result_contract: ReviewerResultContract::V1,
-            });
-        }
-        self.add_prepared_outputs(&prepared).map(|_| ())
-    }
-
-    /// Bridge selected flat results into typed, provenance-carrying Report artifacts and reduce
-    /// them with the canonical path-independent identity policy.
     pub fn add_canonical_stage_outputs(
         &mut self,
         stages: &[CanonicalStage<'_>],
@@ -1094,42 +1010,6 @@ fn apply_candidate(ledger: &mut Ledger, event: &NewEvent, cas: &Cas) -> Result<(
 mod tests {
     use super::*;
 
-    /// Fixed vectors, not computed by the function under test: path/title Finding keys are
-    /// persisted identity, so a change to the digest must fail here.
-    #[test]
-    fn fingerprints_match_the_fixed_vectors() {
-        assert_eq!(
-            legacy_fingerprint("src/parser.rs", "Retry loop can spin forever"),
-            "de15e7f49066"
-        );
-        assert_eq!(
-            legacy_fingerprint("", "No rollback path for the migration"),
-            "a724be9f6afa"
-        );
-    }
-
-    #[test]
-    fn normalization_folds_ascii_case_and_squeezes_whitespace() {
-        // case-folded, runs of whitespace squeezed, one leading/trailing space trimmed
-        assert_eq!(
-            legacy_fingerprint("f", "  Retry   LOOP\tcan\nspin forever "),
-            legacy_fingerprint("f", "retry loop can spin forever")
-        );
-        // ASCII-only lowercasing: non-ASCII case stays distinct
-        assert_ne!(
-            legacy_fingerprint("f", "ПРОВЕРКА"),
-            legacy_fingerprint("f", "проверка")
-        );
-    }
-
-    #[test]
-    fn an_empty_path_is_the_change_wide_sentinel() {
-        assert_eq!(
-            legacy_fingerprint("", "x"),
-            legacy_fingerprint(CHANGE_WIDE, "x")
-        );
-    }
-
     /// An event the store admits without a Campaign Round, so sequencing can be tested alone.
     fn unscoped_event() -> NewEvent {
         NewEvent::new(EventType::SourceCapturedV1, json!({}))
@@ -1201,31 +1081,21 @@ mod tests {
         );
     }
 
-    #[test]
-    fn multi_location_bridge_identity_is_independent_of_model_order() {
-        let report = review_core::FindingReport {
-            title: "same claim".into(),
-            severity: Severity::Major,
-            locations: vec![
-                review_core::Location::file("src/z.rs"),
-                review_core::Location::file("src/a.rs"),
-            ],
-            body: "body".into(),
-            fix: "fix".into(),
-            confidence: 0.9,
-            failure_trace: None,
-            rule_id: None,
-            occurrence_key: None,
-            relations: Vec::new(),
-        };
-        let mut reversed = report.clone();
-        reversed.locations.reverse();
-
-        assert_eq!(report_identity_path(&report), "src/a.rs");
-        assert_eq!(
-            legacy_fingerprint(report_identity_path(&report), &report.title),
-            legacy_fingerprint(report_identity_path(&reversed), &reversed.title)
-        );
+    /// Store `report` the way a reduction does: as an enveloped `FindingReport@1`.
+    fn put_report(cas: &Cas, report: &FindingReport) -> String {
+        cas.put_artifact(
+            review_core::contract::FINDING_REPORT_V1,
+            Producer::KernelOperation {
+                run_id: "run".into(),
+                node_id: Some("first".into()),
+                operation_id: "prior-report".into(),
+            },
+            Vec::new(),
+            None,
+            serde_json::to_value(report).unwrap(),
+        )
+        .unwrap()
+        .0
     }
 
     fn typed_report(rule: Option<&str>, occurrence: Option<&str>) -> FindingReport {
@@ -1249,9 +1119,7 @@ mod tests {
         let cas = Cas::open(directory.path()).unwrap();
         let mut prior = Ledger::default();
         let first = typed_report(Some("afactory/retry-loop@1"), Some("loop-7"));
-        let first_id = cas
-            .put_json(&serde_json::to_value(&first).unwrap())
-            .unwrap();
+        let first_id = put_report(&cas, &first);
         apply_candidate(
             &mut prior,
             &NewEvent::new(
@@ -1303,9 +1171,7 @@ mod tests {
         let cas = Cas::open(directory.path()).unwrap();
         let mut prior = Ledger::default();
         let first = typed_report(None, None);
-        let first_id = cas
-            .put_json(&serde_json::to_value(&first).unwrap())
-            .unwrap();
+        let first_id = put_report(&cas, &first);
         apply_candidate(
             &mut prior,
             &NewEvent::new(

@@ -85,9 +85,8 @@ pub use cache::{
 };
 pub use campaign::{
     AuthorityFileV1, CANONICAL_FINDING_IDENTITY_POLICY, CampaignBudgetV1, CampaignConvergenceV1,
-    CampaignManifestV1, CampaignOpenedPayloadV1, CampaignReviewerV1,
-    LEGACY_FINDING_IDENTITY_POLICY, ReviewerPackageV1, RoundInputSupersededPayloadV1,
-    RoundStartedPayloadV1,
+    CampaignManifestV1, CampaignOpenedPayloadV1, CampaignReviewerV1, ReviewerPackageV1,
+    RoundInputSupersededPayloadV1, RoundStartedPayloadV1,
 };
 pub use change_set::{ChangeSetV1, PathRenameV1};
 pub use demand::{

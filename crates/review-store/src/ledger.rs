@@ -16,9 +16,9 @@ use review_core::{
     CampaignOpenedPayloadV1, ChangeAttestationV1, DemandSetEntryV1, DemandStatus, DemandV1,
     DemandWaiverV1, EventType, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1, EvidenceV1,
     FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1,
-    FindingResolutionOutcome, FindingResolutionV1, FixVerificationV1,
-    LEGACY_FINDING_IDENTITY_POLICY, PolicyTimeV1, RecordedArtifactPayloadV1, Relation,
-    ResolutionChallengeV1, RoundStartedPayloadV1, Severity, SubjectKind,
+    FindingResolutionOutcome, FindingResolutionV1, FixVerificationV1, PolicyTimeV1,
+    RecordedArtifactPayloadV1, Relation, ResolutionChallengeV1, RoundStartedPayloadV1, Severity,
+    SubjectKind,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -184,7 +184,7 @@ pub enum TransitionKind {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Finding {
-    /// The legacy fingerprint. A grouping hint, never proof of claim identity.
+    /// The Finding ID, derived from the first selected Report that established the claim.
     pub key: String,
     /// Other durable Finding identities projected into this adjudication view. Base Findings
     /// keep this empty; [`Ledger::finding_views`] fills it without rewriting either member.
@@ -196,8 +196,9 @@ pub struct Finding {
     pub news_round: u32,
     pub last_seen_round: u32,
     pub source: String,
-    /// Path used by the legacy path/title bridge key. Stable even when Scope selects another
-    /// location for presentation from a multi-location Report.
+    /// The adopted Report's lowest location path: `(change-wide)` when it has none, empty for an
+    /// unreadable-authority placeholder. Stable even when Scope selects another location for
+    /// presentation from a multi-location Report.
     pub identity_file: String,
     /// Line paired with `identity_file`, from the same canonical identity location.
     #[serde(default)]
@@ -557,14 +558,11 @@ impl Ledger {
         Ok(())
     }
 
+    /// The Campaign's recorded Finding identity policy; `None` before `CampaignOpened@1` or when
+    /// its manifest is unreadable.
     pub fn finding_identity_policy(&self) -> Option<&str> {
-        if self.finding_identity_policy_unavailable {
-            None
-        } else if self.finding_identity_policy.is_empty() {
-            Some(LEGACY_FINDING_IDENTITY_POLICY)
-        } else {
-            Some(&self.finding_identity_policy)
-        }
+        (!self.finding_identity_policy_unavailable && !self.finding_identity_policy.is_empty())
+            .then_some(self.finding_identity_policy.as_str())
     }
 
     /// Resolve only an exact rule-owned occurrence key. Ambiguous historical state fails closed.
@@ -667,16 +665,6 @@ impl Ledger {
                         ReportProjection::unreadable(report_id, &reason)
                     }
                 };
-                if self.finding_identity_policy()
-                    == Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY)
-                    && !report.unreadable
-                    && report.artifact_id.is_none()
-                {
-                    return Err(malformed(
-                        "FindingReported@1",
-                        "canonical identity requires an enveloped FindingReport@1",
-                    ));
-                }
                 (report_id.clone(), report)
             }
             _ => {
@@ -686,9 +674,6 @@ impl Ledger {
                 ));
             }
         };
-        if let Some(reason) = report.scope_authority_reason.as_deref() {
-            self.record_authority_failure(round, ScopeAuthorityKind::Report, &report_id, reason);
-        }
         if let (Some(active), Some(snapshot_id)) = (
             self.active_scope.as_ref(),
             report.subject_snapshot_id.as_deref(),
@@ -2346,7 +2331,6 @@ struct ReportProjection {
     occurrence_key: Option<String>,
     relations: Vec<Relation>,
     unreadable: bool,
-    scope_authority_reason: Option<String>,
 }
 
 enum ReportLocation {
@@ -2381,197 +2365,68 @@ impl ReportProjection {
         }
     }
 
+    /// Project an enveloped `FindingReport@1`. Anything else, including a report whose
+    /// locations are not canonical repository paths, is unreadable Report authority.
     fn from_artifact(report_id: &str, value: &Value) -> Result<Self, crate::store::StoreError> {
-        let (value, artifact_id, subject_snapshot_id) = if value.get("type").is_some() {
-            let envelope: ArtifactEnvelope =
-                serde_json::from_value(value.clone()).map_err(|error| {
-                    crate::store::StoreError::Artifact(format!(
-                        "report {report_id} is not an ArtifactEnvelope: {error}"
-                    ))
-                })?;
-            crate::canonical::validate_envelope(&envelope).map_err(|error| {
-                crate::store::StoreError::Artifact(format!("report {report_id}: {error}"))
-            })?;
-            if envelope.artifact_type != review_core::contract::FINDING_REPORT_V1 {
-                return Err(crate::store::StoreError::Artifact(format!(
-                    "report {report_id} has type {}, expected {}",
-                    envelope.artifact_type,
-                    review_core::contract::FINDING_REPORT_V1
-                )));
-            }
-            (
-                envelope.payload,
-                Some(envelope.artifact_id),
-                envelope.subject_snapshot_id,
-            )
-        } else {
-            (value.clone(), None, None)
-        };
-        if value.get("locations").is_some() {
-            let report: review_core::FindingReport = serde::Deserialize::deserialize(&value)
-                .map_err(|error| {
-                    crate::store::StoreError::Artifact(format!(
-                        "report {report_id} is not FindingReport@1: {error}"
-                    ))
-                })?;
-            // Frozen typed artifacts with noncanonical paths remain readable but have unknown
-            // Scope: location authority is handled below. Validate every other semantic field
-            // by borrow, and keep positive line bounds mandatory for every location.
-            if report
-                .locations
-                .iter()
-                .any(|location| location.line == Some(0) || location.end_line == Some(0))
-            {
-                return Err(crate::store::StoreError::Artifact(format!(
-                    "report {report_id} is not FindingReport@1: location lines must be positive"
-                )));
-            }
-            report.validate_claim_fields().map_err(|error| {
+        let envelope: ArtifactEnvelope =
+            serde_json::from_value(value.clone()).map_err(|error| {
                 crate::store::StoreError::Artifact(format!(
-                    "report {report_id} is not FindingReport@1: {error}"
+                    "report {report_id} is not an ArtifactEnvelope: {error}"
                 ))
             })?;
-            let valid_locations: Vec<_> = report
-                .locations
-                .iter()
-                .filter(|location| review_core::is_valid_repo_path(&location.path))
-                .map(|location| ProjectedLocation {
-                    path: location.path.clone(),
-                    line: location.line.map(i64::from),
-                })
-                .collect();
-            let invalid_locations: Vec<_> = report
-                .locations
-                .iter()
-                .filter(|location| !review_core::is_valid_repo_path(&location.path))
-                .map(|location| location.path.as_str())
-                .collect();
-            let scope_authority_reason = (!invalid_locations.is_empty()).then(|| {
-                format!(
-                    "report {report_id} has noncanonical repository-relative location(s) \
-                         {invalid_locations:?}; claim content remains readable with unknown Scope"
-                )
-            });
-            let first = valid_locations.first();
-            let file = first
-                .map(|location| location.path.clone())
-                .or_else(|| {
-                    report
-                        .locations
-                        .first()
-                        .map(|location| location.path.clone())
-                })
-                .unwrap_or_else(|| "(change-wide)".to_string());
-            let line = first.and_then(|location| location.line).or_else(|| {
-                report
-                    .locations
-                    .first()
-                    .and_then(|location| location.line.map(i64::from))
-            });
-            let location = if report.locations.is_empty() {
-                ReportLocation::ChangeWide
-            } else if !invalid_locations.is_empty() {
-                ReportLocation::Unrecorded
-            } else {
-                ReportLocation::Paths(valid_locations)
-            };
-            return Ok(Self {
-                artifact_id,
-                subject_snapshot_id,
-                severity: report.severity,
-                file,
-                location,
-                line,
-                title: report.title,
-                body: report.body,
-                fix: report.fix,
-                confidence: Some(report.confidence),
-                rule_id: report.rule_id,
-                occurrence_key: report.occurrence_key,
-                relations: report.relations,
-                unreadable: false,
-                scope_authority_reason,
-            });
+        crate::canonical::validate_envelope(&envelope).map_err(|error| {
+            crate::store::StoreError::Artifact(format!("report {report_id}: {error}"))
+        })?;
+        if envelope.artifact_type != review_core::contract::FINDING_REPORT_V1 {
+            return Err(crate::store::StoreError::Artifact(format!(
+                "report {report_id} has type {}, expected {}",
+                envelope.artifact_type,
+                review_core::contract::FINDING_REPORT_V1
+            )));
         }
-        let required = |field: &str| {
-            value[field]
-                .as_str()
-                .filter(|text| !text.is_empty())
-                .ok_or_else(|| {
-                    crate::store::StoreError::Artifact(format!(
-                        "report {report_id} has no non-empty string `{field}`"
-                    ))
-                })
-        };
-        let severity_name = required("severity")?;
-        let severity = parse_severity(severity_name).ok_or_else(|| {
+        let not_a_report = |error: &dyn std::fmt::Display| {
             crate::store::StoreError::Artifact(format!(
-                "report {report_id} has invalid severity `{severity_name}`"
+                "report {report_id} is not FindingReport@1: {error}"
             ))
-        })?;
-        let file = value["file"].as_str().ok_or_else(|| {
-            crate::store::StoreError::Artifact(format!("report {report_id} has no string `file`"))
-        })?;
-        let line = match value.get("line") {
-            None | Some(Value::Null) => None,
-            Some(value) => Some(value.as_i64().filter(|line| *line > 0).ok_or_else(|| {
-                crate::store::StoreError::Artifact(format!(
-                    "report {report_id} has invalid positive integer `line`"
-                ))
-            })?),
         };
-        let confidence = match value.get("confidence") {
-            None | Some(Value::Null) => None,
-            Some(value) => Some(
-                value
-                    .as_f64()
-                    .filter(|value| (0.0..=1.0).contains(value))
-                    .ok_or_else(|| {
-                        crate::store::StoreError::Artifact(format!(
-                            "report {report_id} has invalid `confidence` outside [0,1]"
-                        ))
-                    })?,
+        let report: review_core::FindingReport =
+            serde_json::from_value(envelope.payload).map_err(|error| not_a_report(&error))?;
+        report.validate().map_err(|error| not_a_report(&error))?;
+        let locations: Vec<_> = report
+            .locations
+            .iter()
+            .map(|location| ProjectedLocation {
+                path: location.path.clone(),
+                line: location.line.map(i64::from),
+            })
+            .collect();
+        let (file, line, location) = match locations.first() {
+            Some(first) => (
+                first.path.clone(),
+                first.line,
+                ReportLocation::Paths(locations),
+            ),
+            None => (
+                "(change-wide)".to_string(),
+                None,
+                ReportLocation::ChangeWide,
             ),
         };
-        let invalid_location = !file.is_empty()
-            && file != review_core::legacy::CHANGE_WIDE_SENTINEL
-            && (file.trim().is_empty() || !review_core::is_valid_repo_path(file));
-        let scope_authority_reason = invalid_location.then(|| {
-            format!(
-                "report {report_id} has noncanonical legacy location `{file}`; \
-                 claim content remains readable with unknown Scope"
-            )
-        });
-        let location = if file.is_empty() || file == review_core::legacy::CHANGE_WIDE_SENTINEL {
-            ReportLocation::ChangeWide
-        } else if invalid_location {
-            ReportLocation::Unrecorded
-        } else {
-            ReportLocation::Paths(vec![ProjectedLocation {
-                path: file.to_string(),
-                line,
-            }])
-        };
         Ok(Self {
-            artifact_id,
-            subject_snapshot_id,
-            severity,
-            file: if file.is_empty() || file == review_core::legacy::CHANGE_WIDE_SENTINEL {
-                "(change-wide)".to_string()
-            } else {
-                file.to_string()
-            },
+            artifact_id: Some(envelope.artifact_id),
+            subject_snapshot_id: envelope.subject_snapshot_id,
+            severity: report.severity,
+            file,
             location,
             line,
-            title: required("title")?.to_string(),
-            body: required("body")?.to_string(),
-            fix: required("fix")?.to_string(),
-            confidence,
-            rule_id: None,
-            occurrence_key: None,
-            relations: Vec::new(),
+            title: report.title,
+            body: report.body,
+            fix: report.fix,
+            confidence: Some(report.confidence),
+            rule_id: report.rule_id,
+            occurrence_key: report.occurrence_key,
+            relations: report.relations,
             unreadable: false,
-            scope_authority_reason,
         })
     }
 
@@ -2591,7 +2446,6 @@ impl ReportProjection {
             occurrence_key: None,
             relations: Vec::new(),
             unreadable: true,
-            scope_authority_reason: None,
         }
     }
 
@@ -2651,15 +2505,6 @@ fn adopt(finding: &mut Finding, report: &ReportProjection, source: &str) {
     finding.body.clone_from(&report.body);
     finding.fix.clone_from(&report.fix);
     finding.confidence = report.confidence;
-}
-
-fn parse_severity(s: &str) -> Option<Severity> {
-    Some(match s {
-        "blocker" => Severity::Blocker,
-        "major" => Severity::Major,
-        "minor" => Severity::Minor,
-        _ => return None,
-    })
 }
 
 fn severity_name(s: Severity) -> &'static str {

@@ -29,12 +29,11 @@ and marked non-blocking rather than discarded; a blocker found and thrown away m
 like a blocker never found ([ADR-0011](adr/0011-silence-is-not-a-drop.md),
 [ADR-0013](adr/0013-scope-is-evaluated-per-active-claim.md)).
 
-### Re-keying legacy Finding fingerprints
+### Re-keying Findings on rename
 
-Campaigns recorded under the legacy `file + normalized title` fingerprint keep ASCII-only
-lowercasing, bug-compatible with the original shell harness, on their permanent replay path. New
-Campaigns use path-independent Finding identity, so renames need no re-keying and ambiguous
-duplicates use recorded Grouping ([ADR-0006](adr/0006-finding-identity-is-path-independent.md)).
+Finding identity is path-independent, so a rename changes a Report's location and Scope but never
+its Finding, and ambiguous duplicates use recorded Grouping
+([ADR-0006](adr/0006-finding-identity-is-path-independent.md)).
 
 ### Adding `diff` to the safe Git subcommand allowlist
 

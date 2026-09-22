@@ -65,7 +65,7 @@ fn authority_with_pipeline(cas: &Cas, label: &str, pipeline: &[u8]) -> Authority
                 git_timeout_seconds: 300,
                 budgets: None,
                 focus: None,
-                finding_identity_policy: "legacy-path-title@1".into(),
+                finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
                 finding_genesis_id: finding_genesis,
                 demand_genesis_id: demand_genesis,
             })

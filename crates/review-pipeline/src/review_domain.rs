@@ -829,77 +829,69 @@ impl<'a> ReviewDomainState<'a> {
         inputs: &ArtifactMap,
     ) -> Result<Vec<String>, String> {
         self.flush_reviewer_events()?;
-        if self.authority.finding_identity_policy == review_core::CANONICAL_FINDING_IDENTITY_POLICY
-        {
-            let sources = self.input_bindings.get(&node.id).ok_or_else(|| {
-                format!("canonical gather `{}` has no pinned input graph", node.id)
-            })?;
-            let selections = self
-                .reviewer_selections
-                .lock()
-                .expect("reviewer selections");
-            let node_outputs = self.node_outputs.lock().expect("node outputs");
-            let mut manifest: BTreeMap<String, Vec<String>> = BTreeMap::new();
-            for (port, artifacts) in inputs {
-                let upstream = sources.get(port).map(Vec::as_slice).unwrap_or(&[]);
-                let mut remaining = artifacts.clone();
-                for (source, source_port, kind) in upstream {
-                    let produced = node_outputs
-                        .get(source)
-                        .and_then(|outputs| outputs.get(source_port))
-                        .ok_or_else(|| {
-                            format!(
-                                "canonical gather `{}.{port}` has no durable output for pinned source `{source}.{source_port}`",
-                                node.id
-                            )
-                        })?;
-                    if *kind == NodeKind::Reviewer {
-                        let selected = selections.get(source).ok_or_else(|| {
-                            format!(
-                                "canonical gather `{}.{port}` received from `{source}` without a selected reviewer Attempt",
-                                node.id
-                            )
-                        })?;
-                        if produced.as_slice() != [selected.result_artifact.as_str()] {
-                            return Err(format!(
-                                "canonical gather `{}.{port}` input from `{source}` disagrees with its selected reviewer Attempt",
-                                node.id
-                            ));
-                        }
-                    }
-                    for artifact in produced {
-                        let Some(index) =
-                            remaining.iter().position(|delivered| delivered == artifact)
-                        else {
-                            return Err(format!(
-                                "canonical gather `{}.{port}` input from `{source}.{source_port}` disagrees with its durable output",
-                                node.id
-                            ));
-                        };
-                        manifest
-                            .entry(source.clone())
-                            .or_default()
-                            .push(remaining.remove(index));
+        let sources = self
+            .input_bindings
+            .get(&node.id)
+            .ok_or_else(|| format!("canonical gather `{}` has no pinned input graph", node.id))?;
+        let selections = self
+            .reviewer_selections
+            .lock()
+            .expect("reviewer selections");
+        let node_outputs = self.node_outputs.lock().expect("node outputs");
+        let mut manifest: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        for (port, artifacts) in inputs {
+            let upstream = sources.get(port).map(Vec::as_slice).unwrap_or(&[]);
+            let mut remaining = artifacts.clone();
+            for (source, source_port, kind) in upstream {
+                let produced = node_outputs
+                    .get(source)
+                    .and_then(|outputs| outputs.get(source_port))
+                    .ok_or_else(|| {
+                        format!(
+                            "canonical gather `{}.{port}` has no durable output for pinned source `{source}.{source_port}`",
+                            node.id
+                        )
+                    })?;
+                if *kind == NodeKind::Reviewer {
+                    let selected = selections.get(source).ok_or_else(|| {
+                        format!(
+                            "canonical gather `{}.{port}` received from `{source}` without a selected reviewer Attempt",
+                            node.id
+                        )
+                    })?;
+                    if produced.as_slice() != [selected.result_artifact.as_str()] {
+                        return Err(format!(
+                            "canonical gather `{}.{port}` input from `{source}` disagrees with its selected reviewer Attempt",
+                            node.id
+                        ));
                     }
                 }
-                if !remaining.is_empty() {
-                    return Err(format!(
-                        "canonical gather `{}.{port}` has {} artifacts without pinned upstream provenance",
-                        node.id,
-                        remaining.len()
-                    ));
+                for artifact in produced {
+                    let Some(index) = remaining.iter().position(|delivered| delivered == artifact)
+                    else {
+                        return Err(format!(
+                            "canonical gather `{}.{port}` input from `{source}.{source_port}` disagrees with its durable output",
+                            node.id
+                        ));
+                    };
+                    manifest
+                        .entry(source.clone())
+                        .or_default()
+                        .push(remaining.remove(index));
                 }
             }
-            let artifact = self
-                .cas
-                .put_json(&serde_json::to_value(manifest).map_err(|error| error.to_string())?)
-                .map_err(|error| error.to_string())?;
-            return Ok(vec![artifact]);
+            if !remaining.is_empty() {
+                return Err(format!(
+                    "canonical gather `{}.{port}` has {} artifacts without pinned upstream provenance",
+                    node.id,
+                    remaining.len()
+                ));
+            }
         }
         let artifact = self
             .cas
-            .put_json(&serde_json::json!(inputs))
-            .map_err(|e| e.to_string())?;
+            .put_json(&serde_json::to_value(manifest).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
         Ok(vec![artifact])
     }
 
@@ -975,8 +967,6 @@ impl<'a> ReviewDomainState<'a> {
     ) -> Result<ReviewLedgerOutputs, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
-        let canonical = self.authority.finding_identity_policy
-            == review_core::CANONICAL_FINDING_IDENTITY_POLICY;
         let mut results: Vec<(String, String, ReviewerResultContract, LegacyStageOutput)> =
             Vec::new();
         let mut dynamic_sets: Vec<(String, String, SliceSetV1, ShardSetV1)> = Vec::new();
@@ -1060,37 +1050,33 @@ impl<'a> ReviewDomainState<'a> {
                     continue;
                 }
                 if value.get("verdict").is_some() && value.get("reports").is_some() {
-                    let source = if canonical {
-                        let upstream = self
-                            .input_bindings
-                            .get(&node.id)
-                            .and_then(|ports| ports.get(input_port))
-                            .ok_or_else(|| {
-                                format!(
-                                    "canonical ledger `{}.{input_port}` has no pinned input graph",
-                                    node.id
-                                )
-                            })?;
-                        let selections = self
-                            .reviewer_selections
-                            .lock()
-                            .expect("reviewer selections");
-                        let source = upstream.iter().find(|(source, _, kind)| {
-                            *kind == NodeKind::Reviewer
-                                && !direct_sources_used.contains(source)
-                                && selections
-                                    .get(source)
-                                    .is_some_and(|selection| selection.result_artifact == *input)
-                        });
-                        source.map(|(source, _, _)| source.clone()).ok_or_else(|| {
+                    let upstream = self
+                        .input_bindings
+                        .get(&node.id)
+                        .and_then(|ports| ports.get(input_port))
+                        .ok_or_else(|| {
                             format!(
-                                "canonical ledger `{}.{input_port}` cannot bind delivered result {input} to its pinned upstream reviewers",
+                                "canonical ledger `{}.{input_port}` has no pinned input graph",
                                 node.id
                             )
-                        })?
-                    } else {
-                        input_port.clone()
-                    };
+                        })?;
+                    let selections = self
+                        .reviewer_selections
+                        .lock()
+                        .expect("reviewer selections");
+                    let selected = upstream.iter().find(|(source, _, kind)| {
+                        *kind == NodeKind::Reviewer
+                            && !direct_sources_used.contains(source)
+                            && selections
+                                .get(source)
+                                .is_some_and(|selection| selection.result_artifact == *input)
+                    });
+                    let source = selected.map(|(source, _, _)| source.clone()).ok_or_else(|| {
+                        format!(
+                            "canonical ledger `{}.{input_port}` cannot bind delivered result {input} to its pinned upstream reviewers",
+                            node.id
+                        )
+                    })?;
                     direct_sources_used.insert(source.clone());
                     load(&source, input, value)?;
                     continue;
@@ -1118,7 +1104,9 @@ impl<'a> ReviewDomainState<'a> {
                 }
             }
         }
-        if canonical {
+        // Label each delivered copy of a selected result with the node whose Attempt selected
+        // it. The selection lock is released before the Attempt bindings below take it again.
+        {
             let selections = self
                 .reviewer_selections
                 .lock()
@@ -1196,10 +1184,10 @@ impl<'a> ReviewDomainState<'a> {
             ));
         }
         // Canonical gather order: reviewer node id — not completion order, input-port label, or
-        // artifact digest order. Legacy campaigns retain their frozen port-labelled projection.
+        // artifact digest order.
         results.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
 
-        let canonical_metadata = if canonical {
+        let attempt_bindings = {
             let selections = self
                 .reviewer_selections
                 .lock()
@@ -1208,52 +1196,47 @@ impl<'a> ReviewDomainState<'a> {
                 .reviewer_input_artifacts
                 .lock()
                 .expect("reviewer inputs");
-            Some(
-                results
-                    .iter()
-                    .map(|(node, result_id, _, _)| {
-                        // A Cold Closeout result belongs to its own Attempt under its own
-                        // slot, run on the warm node's exact invocation inputs. It is not the
-                        // node's selection, so it is bound from its own durable record instead.
-                        if let Some((attempt_id, warm_node)) = closeout_attempts.get(node) {
-                            return Ok((
-                                attempt_id.clone(),
-                                reviewer_inputs
-                                    .get(node)
-                                    .or_else(|| reviewer_inputs.get(warm_node))
-                                    .cloned()
-                                    .ok_or_else(|| {
-                                        format!(
-                                            "Cold Closeout of `{warm_node}` has no exact invocation inputs"
-                                        )
-                                    })?,
-                            ));
-                        }
-                        let selection = selections.get(node).ok_or_else(|| {
-                            format!("selected reviewer result for `{node}` has no Attempt")
-                        })?;
-                        if &selection.result_artifact != result_id {
-                            return Err(format!(
-                                "selected reviewer result for `{node}` disagrees with its Attempt"
-                            ));
-                        }
-                        Ok((
-                            selection.attempt_id.clone(),
-                            reviewer_inputs.get(node).cloned().ok_or_else(|| {
-                                format!("selected reviewer `{node}` has no exact invocation inputs")
-                            })?,
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, String>>()?,
-            )
-        } else {
-            None
+            results
+                .iter()
+                .map(|(node, result_id, _, _)| {
+                    // A Cold Closeout result belongs to its own Attempt under its own
+                    // slot, run on the warm node's exact invocation inputs. It is not the
+                    // node's selection, so it is bound from its own durable record instead.
+                    if let Some((attempt_id, warm_node)) = closeout_attempts.get(node) {
+                        return Ok((
+                            attempt_id.clone(),
+                            reviewer_inputs
+                                .get(node)
+                                .or_else(|| reviewer_inputs.get(warm_node))
+                                .cloned()
+                                .ok_or_else(|| {
+                                    format!(
+                                        "Cold Closeout of `{warm_node}` has no exact invocation inputs"
+                                    )
+                                })?,
+                        ));
+                    }
+                    let selection = selections.get(node).ok_or_else(|| {
+                        format!("selected reviewer result for `{node}` has no Attempt")
+                    })?;
+                    if &selection.result_artifact != result_id {
+                        return Err(format!(
+                            "selected reviewer result for `{node}` disagrees with its Attempt"
+                        ));
+                    }
+                    Ok((
+                        selection.attempt_id.clone(),
+                        reviewer_inputs.get(node).cloned().ok_or_else(|| {
+                            format!("selected reviewer `{node}` has no exact invocation inputs")
+                        })?,
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()?
         };
 
         let projection = self.take_ledger_projection();
         let (
             round,
-            finding_count,
             finding_entries,
             grouping_relation_ids,
             grouping_input_artifact_ids,
@@ -1272,167 +1255,112 @@ impl<'a> ReviewDomainState<'a> {
                     .under_round(&self.authority.round_event_id);
             let reduction_round =
                 canonical_reduction_round(ingest.ledger().round, self.authority.round)?;
-            let reduction = match &canonical_metadata {
-                Some(metadata) => {
-                    let stages: Vec<_> = results
-                        .iter()
-                        .zip(metadata)
-                        .map(
-                            |(
-                                (node, result_id, result_contract, stage),
-                                (attempt_id, input_artifacts),
-                            )| {
-                                // A confirmation answers for the reviewer it confirms, so its
-                                // Demand requirement is that reviewer's, not its slot's.
-                                let subject = closeout_attempts
-                                    .get(node)
-                                    .map_or(node.as_str(), |(_, warm)| warm.as_str());
-                                let binding_node = self.reviewer_binding_node(subject);
-                                review_store::CanonicalStage {
-                                    source: node,
-                                    demand_requirement: self
-                                        .demand_requirements
-                                        .get(&binding_node)
-                                        .copied()
-                                        .unwrap_or(review_core::DemandRequirement::Required),
-                                    stage,
-                                    attempt_id,
-                                    result_artifact_id: result_id,
-                                    input_artifacts,
-                                    subject_snapshot_id: &self.authority.head_snapshot_id,
-                                    subject_id: &self.authority.subject_id,
-                                    result_contract: *result_contract,
-                                }
-                            },
-                        )
-                        .collect();
-                    Some(
-                        ingest
-                            .add_canonical_stage_outputs(&stages)
-                            .map_err(|error| error.to_string())?,
-                    )
-                }
-                None => {
-                    if results
-                        .iter()
-                        .any(|(_, _, contract, _)| *contract == ReviewerResultContract::V2)
-                    {
-                        return Err(
-                            "ReviewerResult@2 requires canonical Finding identity authority".into(),
-                        );
-                    }
-                    let stages: Vec<_> = results
-                        .iter()
-                        .map(|(node, _, _, stage)| (node.as_str(), stage))
-                        .collect();
-                    ingest
-                        .add_live_stage_outputs(&stages)
-                        .map_err(|error| error.to_string())?;
-                    None
-                }
-            };
+            let stages: Vec<_> = results
+                .iter()
+                .zip(&attempt_bindings)
+                .map(
+                    |((node, result_id, result_contract, stage), (attempt_id, input_artifacts))| {
+                        // A confirmation answers for the reviewer it confirms, so its
+                        // Demand requirement is that reviewer's, not its slot's.
+                        let subject = closeout_attempts
+                            .get(node)
+                            .map_or(node.as_str(), |(_, warm)| warm.as_str());
+                        let binding_node = self.reviewer_binding_node(subject);
+                        review_store::CanonicalStage {
+                            source: node,
+                            demand_requirement: self
+                                .demand_requirements
+                                .get(&binding_node)
+                                .copied()
+                                .unwrap_or(review_core::DemandRequirement::Required),
+                            stage,
+                            attempt_id,
+                            result_artifact_id: result_id,
+                            input_artifacts,
+                            subject_snapshot_id: &self.authority.head_snapshot_id,
+                            subject_id: &self.authority.subject_id,
+                            result_contract: *result_contract,
+                        }
+                    },
+                )
+                .collect();
+            let reduction = ingest
+                .add_canonical_stage_outputs(&stages)
+                .map_err(|error| error.to_string())?;
             (
                 reduction_round,
-                ingest.ledger().finding_views().len(),
-                canonical.then(|| finding_set_entries(ingest.ledger())),
+                finding_set_entries(ingest.ledger()),
                 ingest.ledger().grouping_relation_ids(),
                 ingest.ledger().grouping_input_artifact_ids(),
                 ingest.ledger().resolution_artifact_ids(),
                 ingest.ledger().resolution_input_artifact_ids(),
-                canonical.then(|| ingest.ledger().demand_views()),
+                ingest.ledger().demand_views(),
                 ingest.ledger().demand_reduction_artifact_ids(),
                 ingest.ledger().demand_reduction_input_ids(),
                 reduction,
                 ingest.into_projection(),
             )
         };
-        let proposal_ids = if let Some(reduction) = &reduction {
-            let proposals = self.finalize_proposals(reduction)?;
-            projection
-                .fast_forward(*self.store.lock().expect("event store"), self.cas)
-                .map_err(|error| error.to_string())?;
-            proposals
-        } else {
-            Vec::new()
-        };
-        let semantic_reduction_outputs = reduction.as_ref().map(|reduction| {
-            (
-                reduction.selected_report_ids.clone(),
-                reduction.relation_ids.clone(),
-                reduction.selected_demand_artifact_ids.clone(),
-            )
-        });
+        let proposal_ids = self.finalize_proposals(&reduction)?;
+        projection
+            .fast_forward(*self.store.lock().expect("event store"), self.cas)
+            .map_err(|error| error.to_string())?;
+        let semantic_reduction_outputs = (
+            reduction.selected_report_ids.clone(),
+            reduction.relation_ids.clone(),
+            reduction.selected_demand_artifact_ids.clone(),
+        );
         let semantic_grouping_ids = grouping_relation_ids.clone();
         let semantic_resolution_ids = resolution_ids.clone();
         let semantic_demand_lifecycle_ids = demand_artifact_ids.clone();
         *self.ledger_cache.lock().expect("ledger cache") = Some(projection);
-        let findings_artifact = if let (Some(entries), Some(reduction)) =
-            (finding_entries, reduction)
-        {
-            let reducer_version = reduction.reducer_version;
-            let payload = review_core::FindingSetV1 {
-                subject_id: self.authority.subject_id.clone(),
-                round,
-                prior_finding_set_id: self.authority.prior_reduction_finding_set_id.clone(),
-                reducer_version: reducer_version.to_string(),
-                identity_policy: self.authority.finding_identity_policy.clone(),
-                selected_report_ids: reduction.selected_report_ids,
-                relation_ids: reduction
-                    .relation_ids
-                    .into_iter()
-                    .chain(grouping_relation_ids)
-                    .collect(),
-                resolution_ids,
-                findings: entries,
-            };
-            payload.validate()?;
-            let mut reduction_inputs = vec![self.authority.prior_reduction_finding_set_id.clone()];
-            reduction_inputs.extend(reduction.input_artifact_ids);
-            reduction_inputs.extend(grouping_input_artifact_ids);
-            reduction_inputs.extend(resolution_input_artifact_ids);
-            let operation_digest = review_store::content_id(&serde_json::json!({
-                "reducer_version": reducer_version,
-                "identity_policy": self.authority.finding_identity_policy,
-                "inputs": reduction_inputs,
-            }))
-            .map_err(|error| error.to_string())?;
-            let (record_id, _) = self
-                .cas
-                .put_artifact(
-                    review_core::contract::FINDING_SET_V1,
-                    review_core::Producer::KernelOperation {
-                        run_id: self.run_id.clone(),
-                        node_id: Some("ledger".into()),
-                        operation_id: format!(
-                            "{}:{}:{}",
-                            reducer_version,
-                            self.authority.finding_identity_policy,
-                            operation_digest
-                        ),
-                    },
-                    reduction_inputs,
-                    Some(self.authority.head_snapshot_id.clone()),
-                    serde_json::to_value(payload).map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
-            record_id
-        } else {
-            // The `findings` port must carry a real artifact, not a label: the scheduler delivers
-            // exactly this string to whatever consumes the port, and a downstream event referencing
-            // a non-CAS string would be rejected as a dangling artifact far from its cause.
-            self.cas
-                .put_json(&serde_json::json!({
-                    "round": round,
-                    "sources": results.iter().map(|(node, _, _, _)| node).collect::<Vec<_>>(),
-                    "findings": finding_count,
-                }))
-                .map_err(|e| e.to_string())?
+        let reducer_version = reduction.reducer_version;
+        let payload = review_core::FindingSetV1 {
+            subject_id: self.authority.subject_id.clone(),
+            round,
+            prior_finding_set_id: self.authority.prior_reduction_finding_set_id.clone(),
+            reducer_version: reducer_version.to_string(),
+            identity_policy: self.authority.finding_identity_policy.clone(),
+            selected_report_ids: reduction.selected_report_ids,
+            relation_ids: reduction
+                .relation_ids
+                .into_iter()
+                .chain(grouping_relation_ids)
+                .collect(),
+            resolution_ids,
+            findings: finding_entries,
         };
+        payload.validate()?;
+        let mut reduction_inputs = vec![self.authority.prior_reduction_finding_set_id.clone()];
+        reduction_inputs.extend(reduction.input_artifact_ids);
+        reduction_inputs.extend(grouping_input_artifact_ids);
+        reduction_inputs.extend(resolution_input_artifact_ids);
+        let operation_digest = review_store::content_id(&serde_json::json!({
+            "reducer_version": reducer_version,
+            "identity_policy": self.authority.finding_identity_policy,
+            "inputs": reduction_inputs,
+        }))
+        .map_err(|error| error.to_string())?;
+        let (findings_artifact, _) = self
+            .cas
+            .put_artifact(
+                review_core::contract::FINDING_SET_V1,
+                review_core::Producer::KernelOperation {
+                    run_id: self.run_id.clone(),
+                    node_id: Some("ledger".into()),
+                    operation_id: format!(
+                        "{}:{}:{}",
+                        reducer_version, self.authority.finding_identity_policy, operation_digest
+                    ),
+                },
+                reduction_inputs,
+                Some(self.authority.head_snapshot_id.clone()),
+                serde_json::to_value(payload).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())?;
 
-        let mut canonical_outputs = BTreeMap::new();
-        if canonical {
-            canonical_outputs.insert("finding_set".into(), findings_artifact.clone());
-        }
+        let mut canonical_outputs =
+            BTreeMap::from([("finding_set".to_string(), findings_artifact.clone())]);
         let finding_port = node
             .outputs
             .iter()
@@ -1441,55 +1369,52 @@ impl<'a> ReviewDomainState<'a> {
             .ok_or_else(|| "ledger node has no Finding Set output".to_string())?;
         let mut outputs = ArtifactMap::from([(finding_port.name.clone(), vec![findings_artifact])]);
 
-        if let Some(demands) = demand_entries {
-            if round == 1 && self.authority.prior_demand_set_id != self.authority.demand_genesis_id
-            {
-                return Err("Round 1 Demand Set does not descend from Campaign genesis".into());
-            }
-            let (selected_demand_artifact_ids, satisfaction_artifact_ids, waiver_artifact_ids) =
-                demand_artifact_ids;
-            let payload = review_core::DemandSetV1 {
-                subject_id: self.authority.subject_id.clone(),
-                round,
-                prior_demand_set_id: self.authority.prior_demand_set_id.clone(),
-                reducer_version: review_core::DEMAND_REDUCER_VERSION.into(),
-                selected_demand_artifact_ids,
-                satisfaction_artifact_ids,
-                waiver_artifact_ids,
-                demands,
-            };
-            payload.validate()?;
-            let mut reduction_inputs = vec![self.authority.prior_demand_set_id.clone()];
-            reduction_inputs.extend(demand_input_artifact_ids);
-            let mut unique = BTreeSet::new();
-            reduction_inputs.retain(|id| unique.insert(id.clone()));
-            let operation_digest = review_store::content_id(&serde_json::json!({
-                "reducer_version": review_core::DEMAND_REDUCER_VERSION,
-                "inputs": reduction_inputs,
-            }))
+        if round == 1 && self.authority.prior_demand_set_id != self.authority.demand_genesis_id {
+            return Err("Round 1 Demand Set does not descend from Campaign genesis".into());
+        }
+        let (selected_demand_artifact_ids, satisfaction_artifact_ids, waiver_artifact_ids) =
+            demand_artifact_ids;
+        let payload = review_core::DemandSetV1 {
+            subject_id: self.authority.subject_id.clone(),
+            round,
+            prior_demand_set_id: self.authority.prior_demand_set_id.clone(),
+            reducer_version: review_core::DEMAND_REDUCER_VERSION.into(),
+            selected_demand_artifact_ids,
+            satisfaction_artifact_ids,
+            waiver_artifact_ids,
+            demands: demand_entries,
+        };
+        payload.validate()?;
+        let mut reduction_inputs = vec![self.authority.prior_demand_set_id.clone()];
+        reduction_inputs.extend(demand_input_artifact_ids);
+        let mut unique = BTreeSet::new();
+        reduction_inputs.retain(|id| unique.insert(id.clone()));
+        let operation_digest = review_store::content_id(&serde_json::json!({
+            "reducer_version": review_core::DEMAND_REDUCER_VERSION,
+            "inputs": reduction_inputs,
+        }))
+        .map_err(|error| error.to_string())?;
+        let (record_id, _) = self
+            .cas
+            .put_artifact(
+                review_core::contract::DEMAND_SET_V1,
+                review_core::Producer::KernelOperation {
+                    run_id: self.run_id.clone(),
+                    node_id: Some("ledger".into()),
+                    operation_id: format!(
+                        "{}:{}",
+                        review_core::DEMAND_REDUCER_VERSION,
+                        operation_digest
+                    ),
+                },
+                reduction_inputs,
+                Some(self.authority.head_snapshot_id.clone()),
+                serde_json::to_value(payload).map_err(|error| error.to_string())?,
+            )
             .map_err(|error| error.to_string())?;
-            let (record_id, _) = self
-                .cas
-                .put_artifact(
-                    review_core::contract::DEMAND_SET_V1,
-                    review_core::Producer::KernelOperation {
-                        run_id: self.run_id.clone(),
-                        node_id: Some("ledger".into()),
-                        operation_id: format!(
-                            "{}:{}",
-                            review_core::DEMAND_REDUCER_VERSION,
-                            operation_digest
-                        ),
-                    },
-                    reduction_inputs,
-                    Some(self.authority.head_snapshot_id.clone()),
-                    serde_json::to_value(payload).map_err(|error| error.to_string())?,
-                )
-                .map_err(|error| error.to_string())?;
-            canonical_outputs.insert("demand_set".into(), record_id.clone());
-            if let Some(port) = node.outputs.iter().find(|port| is_demand_set_port(port)) {
-                outputs.insert(port.name.clone(), vec![record_id]);
-            }
+        canonical_outputs.insert("demand_set".into(), record_id.clone());
+        if let Some(port) = node.outputs.iter().find(|port| is_demand_set_port(port)) {
+            outputs.insert(port.name.clone(), vec![record_id]);
         }
         if !dynamic_sets.is_empty() {
             let delivered_results = results
@@ -1575,16 +1500,15 @@ impl<'a> ReviewDomainState<'a> {
                 if let Some(closeout) = closeout_result_id {
                     semantic_sinks.insert(closeout, "ledger:whole-subject-closeout".into());
                 }
-                if let Some((reports, relations, demands)) = &semantic_reduction_outputs {
-                    for artifact in reports {
-                        semantic_sinks.insert(artifact.clone(), "ledger:finding-set".into());
-                    }
-                    for artifact in relations {
-                        semantic_sinks.insert(artifact.clone(), "ledger:relation".into());
-                    }
-                    for artifact in demands {
-                        semantic_sinks.insert(artifact.clone(), "ledger:demand-set".into());
-                    }
+                let (reports, relations, demands) = &semantic_reduction_outputs;
+                for artifact in reports {
+                    semantic_sinks.insert(artifact.clone(), "ledger:finding-set".into());
+                }
+                for artifact in relations {
+                    semantic_sinks.insert(artifact.clone(), "ledger:relation".into());
+                }
+                for artifact in demands {
+                    semantic_sinks.insert(artifact.clone(), "ledger:demand-set".into());
                 }
                 for artifact in &semantic_grouping_ids {
                     semantic_sinks.insert(artifact.clone(), "ledger:grouping".into());

@@ -19,26 +19,7 @@ fn prompt_states_the_change_wide_encoding_used_by_prior_rows() {
     assert!(rendered.contains("When `location_unrecorded` is true"));
     assert!(rendered.contains("re-locate a surviving claim"));
     assert!(rendered.contains("use an empty `file` to report it change-wide"));
-    assert!(rendered.contains("re-report it with the same title"));
-    assert!(!rendered.contains("confirm it in `disputes`"));
-}
-
-#[test]
-fn canonical_prior_claims_use_explicit_confirmation() {
-    let rendered = ReviewerInputs {
-        prior_findings: Some(serde_json::json!([{
-            "key": "sha256:claim",
-            "file": "src/lib.rs",
-            "title": "claim"
-        }])),
-        finding_identity_policy: Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY.to_string()),
-        ..ReviewerInputs::default()
-    }
-    .render()
-    .unwrap();
-
     assert!(rendered.contains("confirm it in `disputes`"));
-    assert!(!rendered.contains("re-report it with the same title"));
 }
 
 #[test]
@@ -52,7 +33,6 @@ fn v2_prior_findings_require_dispositions_without_duplicate_reports() {
                 "title": "claim"
             }]
         })),
-        finding_identity_policy: Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY.to_string()),
         ..ReviewerInputs::default()
     }
     .render()

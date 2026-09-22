@@ -70,7 +70,6 @@ pub(super) fn prepare(
         .cloned();
     let mut inputs = ReviewerInputs {
         result_contract,
-        finding_identity_policy: Some(authority.finding_identity_policy.clone()),
         ..ReviewerInputs::default()
     };
     let resolved_inputs = (|| -> Result<(), String> {

@@ -470,7 +470,6 @@ pub(super) fn first_attempt_input(
     };
     let mut inputs = review_runner::ReviewerInputs {
         result_contract,
-        finding_identity_policy: Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY.to_string()),
         ..Default::default()
     };
     let mut not_rendered = Vec::new();

@@ -188,9 +188,6 @@ fn prepare_proposal(
         Ok(None) => return Ok(TaskReviewProposalV1::None {}),
         Err(_) => return Ok(refused(ProposalRefusalReasonV1::MalformedDeclaration)),
     };
-    if authority.finding_identity_policy != review_core::CANONICAL_FINDING_IDENTITY_POLICY {
-        return Ok(refused(ProposalRefusalReasonV1::InvalidClaim));
-    }
     if declaration.patch.is_empty() || declaration.patch.len() > MAX_CHANGE_SET_BYTES {
         return Ok(refused(ProposalRefusalReasonV1::MalformedDeclaration));
     }

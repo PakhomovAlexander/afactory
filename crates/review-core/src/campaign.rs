@@ -6,10 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{SubjectKind, is_digest};
 
-/// Permanent replay policy for campaigns opened before canonical Finding identity landed.
-pub const LEGACY_FINDING_IDENTITY_POLICY: &str = "legacy-path-title@1";
-
-/// Path-independent identity policy used by every newly opened campaign.
+/// The path-independent Finding identity policy, the only one a Campaign manifest records.
 pub const CANONICAL_FINDING_IDENTITY_POLICY: &str = "report-derived@1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -140,10 +137,7 @@ impl CampaignManifestV1 {
         {
             return Err("CampaignManifest@1 contains empty policy text".into());
         }
-        if !matches!(
-            self.finding_identity_policy.as_str(),
-            LEGACY_FINDING_IDENTITY_POLICY | CANONICAL_FINDING_IDENTITY_POLICY
-        ) {
+        if self.finding_identity_policy != CANONICAL_FINDING_IDENTITY_POLICY {
             return Err(format!(
                 "CampaignManifest@1 contains unknown finding identity policy `{}`",
                 self.finding_identity_policy

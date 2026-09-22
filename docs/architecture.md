@@ -100,10 +100,12 @@ Four layers, strictly one-directional — `canonical` -> `cas` -> `store` -> `le
 - **`ledger`** — the projection. `rebuild` is its only constructor, so hand-edited state has no
   way in.
 
-New Campaigns use the canonical identity policy: a selected Report artifact creates one
-path-independent Finding unless an explicit relation or exact trusted occurrence key attaches it.
-Each barrier publishes an immutable, Subject-bound `FindingSet@1`; legacy Campaigns retain their
-recorded path/title fingerprint policy and permanent reader.
+Every Campaign records the canonical identity policy, `report-derived@1`: a selected Report
+artifact creates one path-independent Finding unless an explicit relation or exact trusted
+occurrence key attaches it. Each barrier publishes an immutable, Subject-bound `FindingSet@1`.
+The Ledger reads a Report only as an enveloped `FindingReport@1` whose locations are canonical
+repository paths; any other Report artifact projects as an unreadable-authority placeholder that
+blocks convergence.
 
 ### Replay and convergence
 

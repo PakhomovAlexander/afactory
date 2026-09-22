@@ -48,7 +48,7 @@ fn actual_round_capture_reopens_without_a_second_execution_log() {
     let store_path = temp.path().join("events.sqlite");
     let cas = Cas::open(&cas_root).unwrap();
     let mut store = EventStore::open(&store_path).unwrap();
-    let authority = support::test_canonical_round_authority_for_pipeline(
+    let authority = support::test_round_authority_for_pipeline(
         &cas,
         &mut store,
         "review",

@@ -168,7 +168,7 @@ runner = { program = "/bin/true" }
                 git_timeout_seconds: 300,
                 budgets: None,
                 focus: None,
-                finding_identity_policy: "legacy-path-title@1".into(),
+                finding_identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
                 finding_genesis_id: facts.clone(),
                 demand_genesis_id: facts.clone(),
             })

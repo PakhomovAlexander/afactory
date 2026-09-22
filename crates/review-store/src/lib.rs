@@ -29,7 +29,7 @@ pub use ledger::{
 };
 pub use legacy::{
     CanonicalReduction, CanonicalStage, Ingest, PreparedReviewReduction, canonical_finding_id,
-    legacy_fingerprint, prepare_canonical_task_review,
+    prepare_canonical_task_review,
 };
 pub use shared::SharedEventStore;
 pub use store::{

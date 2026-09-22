@@ -49,8 +49,8 @@ pub struct LegacyBenchmarkDemand {
     pub suggested_method: String,
 }
 
-/// A reviewer's position on a claim it was given: the 12-hex path/title key under the legacy
-/// Finding identity policy, or a canonical Finding ID from a `ReviewerResult@2` disposition.
+/// A reviewer's position on a prior Finding it was given, named by its canonical Finding ID: a
+/// `ReviewerResult@1` dispute's `claim_id`, or a `ReviewerResult@2` disposition's `finding_id`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LegacyDispute {

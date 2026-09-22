@@ -82,7 +82,6 @@ fn context(loaded: &Loaded) -> ReviewCompileContext {
         })
         .collect();
     ReviewCompileContext {
-        finding_identity_policy: review_core::LEGACY_FINDING_IDENTITY_POLICY.into(),
         inputs: BTreeMap::from([
             ("head".into(), input(contract::SOURCE_SNAPSHOT_V1)),
             ("round".into(), input(REVIEW_ROUND_V1)),
@@ -233,30 +232,23 @@ fn v1_opaque_generation_is_explicitly_adapted_but_v2_stays_strict() {
     let compilation = compile_legacy_review(&loaded, context(&loaded)).unwrap();
     assert_eq!(
         compilation.nodes["ledger"].outputs["o0"].codec,
-        ReviewArtifactCodec::Flat {
-            artifact_type: contract::OPAQUE_V1.into()
-        }
-    );
-    let mut canonical = context(&loaded);
-    canonical.finding_identity_policy = review_core::CANONICAL_FINDING_IDENTITY_POLICY.into();
-    let canonical = compile_legacy_review(&loaded, canonical).unwrap();
-    assert_eq!(
-        canonical.nodes["ledger"].outputs["o0"].codec,
         ReviewArtifactCodec::Envelope {
             artifact_type: contract::FINDING_SET_V1.into()
         }
     );
     assert_eq!(
-        canonical.contract.outputs["findings"].artifact_type,
+        compilation.contract.outputs["findings"].artifact_type,
+        contract::FINDING_SET_V1
+    );
+    let ledger = &compilation.graph.nodes[&compilation.nodes["ledger"].task_node];
+    assert_eq!(
+        ledger.contract.outputs["finding_set"].artifact_type,
         contract::FINDING_SET_V1
     );
     assert_eq!(
-        canonical.nodes["generation"],
-        compilation.nodes["generation"]
+        ledger.contract.outputs["demand_set"].artifact_type,
+        contract::DEMAND_SET_V1
     );
-    let mut unknown = context(&loaded);
-    unknown.finding_identity_policy = "inferred-from-result".into();
-    assert!(compile_legacy_review(&loaded, unknown).is_err());
     assert_eq!(
         compilation.nodes["generation"].outputs["o0"].codec,
         ReviewArtifactCodec::Flat {

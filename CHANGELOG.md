@@ -232,6 +232,17 @@ or needs a documented hand edit.
   and the `review-outcome-v2.json` and `-v3.json` schemas no longer list `gate_blocked`, and the
   review-outcome `ledger_production` no longer lists `not_produced_gate_blocked`. A stored report
   that carries `gate_blocked` no longer decodes.
+- A Campaign manifest records only the canonical `report-derived@1` Finding identity policy, and
+  `campaign-manifest-v1.json` no longer lists `legacy-path-title@1`. A Campaign whose manifest
+  pins that path/title policy (opened before path-independent Finding identity, ADR-0006) can no
+  longer be run or continued: its manifest is refused for an unknown finding identity policy, and
+  its Ledger reports the manifest as unavailable authority. The Ledger reads a Report only as an
+  enveloped `FindingReport@1` whose locations are canonical repository paths. An un-enveloped
+  Report, the flat pre-`FindingReport@1` shape, or a Report with a noncanonical location such as
+  `./src/a.rs` now projects as an unreadable-authority placeholder that blocks convergence; a
+  noncanonical location used to leave the claim readable with unknown Scope. A Ledger node's
+  `FindingSet@1` output must be an envelope: the untyped `{round, sources, findings}` summary is
+  refused.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

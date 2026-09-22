@@ -137,7 +137,6 @@ fn rendered_input_is_the_composed_prompt() {
         .with_focus("the parser");
     let inputs = review_runner::ReviewerInputs {
         result_contract: review_core::ReviewerResultContract::V2,
-        finding_identity_policy: Some(review_core::CANONICAL_FINDING_IDENTITY_POLICY.into()),
         refused_attempts: vec!["previous answer was not JSON".into()],
         ..Default::default()
     };
