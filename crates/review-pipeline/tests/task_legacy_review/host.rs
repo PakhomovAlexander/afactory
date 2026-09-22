@@ -10,6 +10,8 @@ use review_store::SharedEventStore;
 mod broker;
 #[path = "host/continuation.rs"]
 mod continuation;
+#[path = "host/domain.rs"]
+mod domain;
 #[path = "host/expired_waiting.rs"]
 mod expired_waiting;
 #[path = "host/integration.rs"]
@@ -22,6 +24,8 @@ mod owned;
 mod presentation;
 #[path = "host/probe_runtime.rs"]
 mod probe_runtime;
+#[path = "host/warm.rs"]
+mod warm;
 
 fn command_pipeline() -> String {
     let result = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}"#;

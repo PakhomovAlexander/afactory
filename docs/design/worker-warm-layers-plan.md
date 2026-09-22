@@ -292,8 +292,9 @@ selection before any dispatch, and at every capture and clone. Exit evidence liv
 `review-sandbox/tests/build_cache.rs` (closed layout, symlink and FIFO refusals, fixed modes,
 removal before seal), `review-config/tests/definition.rs` (declaration and safe-policy
 refusals), `review-core/tests/schema_parity.rs` (contracts) and
-`review-pipeline/tests/build_cache.rs` (a TDD reviewer reusing the Gate build across a resumed
-Round with a sealed diff byte-identical to a cold run, and a recorded symlink refusal). No
+`review-pipeline/tests/task_legacy_review/host/warm.rs` (a TDD reviewer reusing the Gate build
+on the Task host with a sealed diff byte-identical to a cold run, and a recorded symlink
+refusal). No
 cold-versus-warm dogfood comparison exists yet: the package was implemented without a live
 Campaign, so the build-minute Demand from the design review stays open until the first
 trusted-local warm Campaign records it.
@@ -400,10 +401,11 @@ interrupted preparation is never trusted. Per-Attempt sandboxes remain fresh clo
 verified template. Exit evidence lives in `review-source-git` unit tests (rebase byte-identical
 to a full materialization across modify, add, delete, type changes and pruned directories),
 `review-sandbox/tests/workspace.rs` (full, rebased, reused; tampering, a removed marker and a
-contradicted manifest each fail closed with their reason), `review-pipeline/tests/warm_workspace.rs`
-(a two-Round Campaign rebases once and reuses on resume, a tampered template records
-`digest_mismatch` and still serves the right tree, a pipeline without the policy creates no root)
-and `review-core/tests/schema_parity.rs`. The implementer Attempt of Task
+contradicted manifest each fail closed with their reason),
+`review-pipeline/tests/task_legacy_review/host/warm.rs` (a heavy Task rebases on its second Round
+and reuses on an unchanged third, a tampered or unrecorded template is rebuilt with its reason and
+still serves the right tree, a pipeline without the policy creates no root) and
+`review-core/tests/schema_parity.rs`. The implementer Attempt of Task
 `warm-p3-warm-workspace` cost 763,695 tokens; its Gate failed on `cargo fmt` only, and the
 Store's pinned warm-policy mirror needed the `workspace` field before a pinned pipeline with
 the policy parsed, both applied by hand before the gate went green.
@@ -448,14 +450,18 @@ and `ColdCloseoutDispatched@1`; `review-runner` carries the `SessionLayer` adapt
 resume render mode; `review-runner-claude` implements the pinned store layout, the bounded capture
 and the no-follow deletion; `review-pipeline` owns the protocol, the gates, the recovery sweep and
 the compiled Cold Closeout; `review-config` owns `warm.session`, `warm.session_max_age_secs` and
-`convergence.cold_closeout` with their load-time refusals. Exit evidence lives in
+`convergence.cold_closeout` with their load-time refusals. Exit evidence lived in
 `review-pipeline/tests/session_snapshot.rs` (capture and forked resume across two Rounds, recovery
 of a capture interrupted between its phases with no orphan and no ambient transcript, cache-read
 tokens recorded separately from input tokens, a confirmation dispatched only on a would-be-clean
-result, and a retry meeting the protected reservation), `review-runner-claude/tests/session.rs`
-(the pinned flags, the bounded capture, the idempotent deletion, a symlinked project directory
-that is never followed), `review-runner/tests/session_render.rs` (the delta prompt and its
-manifest), `review-config/tests/definition.rs` (policy defaults and the feasibility refusal) and
+result, and a retry meeting the protected reservation). That suite drove only the pre-Task
+Kernel executor and was removed for GA; its scenarios are the acceptance list for porting the
+layer to the Task host, and `review-pipeline/tests/task_legacy_review/host/warm.rs` covers what
+the Task host does today (`host_unsupported`, Notes carried). The layer's own evidence remains in
+`review-runner-claude/tests/session.rs` (the pinned flags, the bounded capture, the idempotent
+deletion, a symlinked project directory that is never followed),
+`review-runner/tests/session_render.rs` (the delta prompt and its manifest),
+`review-config/tests/definition.rs` (policy defaults and the feasibility refusal) and
 `review-core/tests/schema_parity.rs`.
 
 Two limits are carried deliberately. The session layer runs on the Kernel's own reviewer path; a

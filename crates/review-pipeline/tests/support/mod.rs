@@ -1,46 +1,10 @@
-use review_config::Definition;
 use review_core::{
-    AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1,
-    ChangeSetV1, EventType, RoundStartedPayloadV1, SubjectKind, SubjectV1,
+    AuthorityFileV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1, EventType,
+    RoundStartedPayloadV1, SubjectKind, SubjectV1,
 };
-use review_pipeline::{Kernel, RoundAuthority};
+use review_pipeline::RoundAuthority;
 use review_source_git::Manifest;
 use review_store::{Cas, EventStore, NewEvent};
-
-const TEST_PIPELINE: &str = r#"
-version = 2
-[subject]
-kind = "whole-tree"
-[[nodes]]
-id = "reviewer"
-kind = "reviewer"
-runner = { program = "/bin/true" }
-"#;
-
-#[derive(Clone, Copy)]
-enum TestSubject<'a> {
-    WholeTree,
-    Diff(&'a [u8]),
-}
-
-#[allow(dead_code)]
-pub fn test_round_authority(
-    cas: &Cas,
-    store: &mut EventStore,
-    run_id: &str,
-    snapshot: &Manifest,
-) -> RoundAuthority {
-    test_round_authority_with_prior(
-        cas,
-        store,
-        run_id,
-        snapshot,
-        None,
-        TEST_PIPELINE,
-        review_core::LEGACY_FINDING_IDENTITY_POLICY,
-    )
-    .unwrap()
-}
 
 #[allow(dead_code)]
 pub fn test_round_authority_for_pipeline(
@@ -50,37 +14,14 @@ pub fn test_round_authority_for_pipeline(
     snapshot: &Manifest,
     pipeline: &str,
 ) -> RoundAuthority {
-    test_round_authority_with_prior(
+    test_round_authority(
         cas,
         store,
         run_id,
         snapshot,
-        None,
         pipeline,
         review_core::LEGACY_FINDING_IDENTITY_POLICY,
     )
-    .unwrap()
-}
-
-#[allow(dead_code)]
-pub fn test_diff_round_authority(
-    cas: &Cas,
-    store: &mut EventStore,
-    run_id: &str,
-    snapshot: &Manifest,
-    pipeline: &str,
-) -> RoundAuthority {
-    test_round_authority_with_subject(
-        cas,
-        store,
-        run_id,
-        snapshot,
-        None,
-        pipeline,
-        TestSubject::Diff(b""),
-        review_core::LEGACY_FINDING_IDENTITY_POLICY,
-    )
-    .unwrap()
 }
 
 #[allow(dead_code)]
@@ -91,75 +32,25 @@ pub fn test_canonical_round_authority_for_pipeline(
     snapshot: &Manifest,
     pipeline: &str,
 ) -> RoundAuthority {
-    test_round_authority_with_prior(
+    test_round_authority(
         cas,
         store,
         run_id,
         snapshot,
-        None,
         pipeline,
         review_core::CANONICAL_FINDING_IDENTITY_POLICY,
     )
-    .unwrap()
 }
 
-#[allow(dead_code)]
-pub fn test_diff_round_authority_with_patch(
+/// Open a whole-tree Campaign over `snapshot` and its first Round, as the authority layer does.
+fn test_round_authority(
     cas: &Cas,
     store: &mut EventStore,
     run_id: &str,
     snapshot: &Manifest,
-    pipeline: &str,
-    patch: &[u8],
-) -> Result<RoundAuthority, String> {
-    test_round_authority_with_subject(
-        cas,
-        store,
-        run_id,
-        snapshot,
-        None,
-        pipeline,
-        TestSubject::Diff(patch),
-        review_core::LEGACY_FINDING_IDENTITY_POLICY,
-    )
-}
-
-fn test_round_authority_with_prior(
-    cas: &Cas,
-    store: &mut EventStore,
-    run_id: &str,
-    snapshot: &Manifest,
-    prior_finding_set_id: Option<String>,
     pipeline: &str,
     identity_policy: &str,
-) -> Result<RoundAuthority, String> {
-    test_round_authority_with_subject(
-        cas,
-        store,
-        run_id,
-        snapshot,
-        prior_finding_set_id,
-        pipeline,
-        TestSubject::WholeTree,
-        identity_policy,
-    )
-}
-
-#[allow(clippy::too_many_arguments)]
-fn test_round_authority_with_subject(
-    cas: &Cas,
-    store: &mut EventStore,
-    run_id: &str,
-    snapshot: &Manifest,
-    prior_finding_set_id: Option<String>,
-    pipeline: &str,
-    test_subject: TestSubject<'_>,
-    identity_policy: &str,
-) -> Result<RoundAuthority, String> {
-    let subject_kind = match test_subject {
-        TestSubject::WholeTree => SubjectKind::WholeTree,
-        TestSubject::Diff(_) => SubjectKind::Diff,
-    };
+) -> RoundAuthority {
     let authority_manifest = Manifest::new(vec![]).unwrap();
     let authority_manifest_id = cas
         .put_json(&serde_json::to_value(&authority_manifest).unwrap())
@@ -182,9 +73,8 @@ fn test_round_authority_with_subject(
         .put_json(
             &serde_json::to_value(CampaignManifestV1 {
                 authority_snapshot_id: authority_snapshot_id.clone(),
-                subject_kind,
-                base_snapshot_id: (subject_kind == SubjectKind::Diff)
-                    .then(|| authority_snapshot_id.clone()),
+                subject_kind: SubjectKind::WholeTree,
+                base_snapshot_id: None,
                 pipeline: AuthorityFileV1 {
                     path: "test.toml".into(),
                     artifact_id: pipeline_id.clone(),
@@ -229,39 +119,16 @@ fn test_round_authority_with_subject(
             "artifact_manifest": head_manifest_id,
         }))
         .unwrap();
-    let subject = if let TestSubject::Diff(change_set_patch) = test_subject {
-        let change_set = ChangeSetV1::new(
-            &authority_snapshot_id,
-            &head_snapshot_id,
-            snapshot
-                .entries
-                .iter()
-                .map(|entry| entry.path.clone())
-                .collect(),
-            vec![],
-            change_set_patch,
-            "git version test",
-            "review.kernel/git-tree-diff@test",
-        )
-        .unwrap();
-        let change_set_id = cas
-            .put_json(&serde_json::to_value(change_set).unwrap())
-            .unwrap();
-        SubjectV1::diff(&head_snapshot_id, &authority_snapshot_id, change_set_id)
-    } else {
-        SubjectV1::whole_tree(&head_snapshot_id)
-    };
     let subject_id = cas
-        .put_json(&serde_json::to_value(&subject).unwrap())
+        .put_json(&serde_json::to_value(SubjectV1::whole_tree(&head_snapshot_id)).unwrap())
         .unwrap();
-    let prior_finding_set_id = prior_finding_set_id.unwrap_or_else(|| {
-        cas.put_json(&serde_json::json!({
+    let prior_finding_set_id = cas
+        .put_json(&serde_json::json!({
             "subject_id": subject_id,
             "round": 1,
             "prior_findings": [],
         }))
-        .unwrap()
-    });
+        .unwrap();
     let prior_demand_set_id = demand_genesis_id;
     let opened = store
         .append(
@@ -281,16 +148,6 @@ fn test_round_authority_with_subject(
             ]),
         )
         .unwrap();
-    let mut round_refs = vec![
-        authority_snapshot_id.clone(),
-        campaign_manifest_id.clone(),
-        head_snapshot_id.clone(),
-        subject_id.clone(),
-        prior_finding_set_id.clone(),
-        prior_demand_set_id.clone(),
-    ];
-    round_refs.extend(subject.base_snapshot_id.clone());
-    round_refs.extend(subject.change_set_id.clone());
     let round = store
         .append(
             run_id,
@@ -308,83 +165,15 @@ fn test_round_authority_with_subject(
                 .unwrap(),
             )
             .caused_by(opened.event_id)
-            .referencing(round_refs),
+            .referencing(vec![
+                authority_snapshot_id,
+                campaign_manifest_id,
+                head_snapshot_id,
+                subject_id,
+                prior_finding_set_id,
+                prior_demand_set_id,
+            ]),
         )
         .unwrap();
-    RoundAuthority::load(store, cas, run_id, &round.event_id)
-}
-
-/// Test composition follows the same validated Subject path as production.
-#[allow(dead_code)]
-pub fn whole_tree_kernel<'a>(
-    cas: &'a Cas,
-    store: &'a mut EventStore,
-    run_id: impl Into<String>,
-    snapshot: Manifest,
-) -> Kernel<'a> {
-    whole_tree_kernel_with_prior(cas, store, run_id, snapshot, None)
-}
-
-pub fn whole_tree_kernel_with_prior<'a>(
-    cas: &'a Cas,
-    store: &'a mut EventStore,
-    run_id: impl Into<String>,
-    snapshot: Manifest,
-    prior_finding_set_id: Option<String>,
-) -> Kernel<'a> {
-    whole_tree_kernel_for_pipeline(
-        cas,
-        store,
-        run_id,
-        snapshot,
-        prior_finding_set_id,
-        TEST_PIPELINE,
-    )
-}
-
-pub fn whole_tree_kernel_for_pipeline<'a>(
-    cas: &'a Cas,
-    store: &'a mut EventStore,
-    run_id: impl Into<String>,
-    snapshot: Manifest,
-    prior_finding_set_id: Option<String>,
-    pipeline: &str,
-) -> Kernel<'a> {
-    let loaded = Definition::from_toml(pipeline).unwrap().load().unwrap();
-
-    let run_id = run_id.into();
-    let authority = test_round_authority_with_prior(
-        cas,
-        store,
-        &run_id,
-        &snapshot,
-        prior_finding_set_id,
-        pipeline,
-        review_core::LEGACY_FINDING_IDENTITY_POLICY,
-    )
-    .unwrap();
-    Kernel::from_loaded(cas, store, run_id, snapshot, &loaded, authority).unwrap()
-}
-
-#[allow(dead_code)]
-pub fn canonical_whole_tree_kernel_for_pipeline<'a>(
-    cas: &'a Cas,
-    store: &'a mut EventStore,
-    run_id: impl Into<String>,
-    snapshot: Manifest,
-    pipeline: &str,
-) -> Kernel<'a> {
-    let loaded = Definition::from_toml(pipeline).unwrap().load().unwrap();
-    let run_id = run_id.into();
-    let authority = test_round_authority_with_prior(
-        cas,
-        store,
-        &run_id,
-        &snapshot,
-        None,
-        pipeline,
-        review_core::CANONICAL_FINDING_IDENTITY_POLICY,
-    )
-    .unwrap();
-    Kernel::from_loaded(cas, store, run_id, snapshot, &loaded, authority).unwrap()
+    RoundAuthority::load(store, cas, run_id, &round.event_id).unwrap()
 }

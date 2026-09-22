@@ -879,3 +879,198 @@ fn a_final_check_that_could_not_run_remains_incomplete_with_its_raw_evidence() {
 fn delayed_prospective_review_preparation_renews_lease_and_refreshes_only_the_task_prefix() {
     fixture::run_integration_handoff_with(std::time::Duration::from_secs(16), 3);
 }
+
+/// A Proposal that touches a protected path is a recorded conflict: no Integration Snapshot is
+/// prepared or promoted, and no post-apply check runs.
+#[test]
+fn a_protected_path_refuses_integration_before_any_check_or_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let calls = dir.path().join("calls");
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+    let definition = definition(&cas, true, false, &calls).replace(
+        "\n[integration]\n",
+        "\n[integration]\nprotected_paths=[\"value.txt\"]\n",
+    );
+    assert!(definition.contains("protected_paths"), "{definition}");
+    let (compiler, lease) = admit_integration(&cas, &mut store, &definition, 3);
+    let shared = SharedEventStore::new(&mut store);
+    let host = LegacyReviewTaskHost::new(
+        &cas,
+        shared.clone(),
+        &compiler,
+        lease.clone(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+    let runtime =
+        TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host).unwrap();
+    assert!(runtime.execute().unwrap().complete());
+    let phase = host.select_recorded_integration(&cas).unwrap().unwrap();
+    assert!(
+        matches!(
+            phase.phase().selection,
+            TaskReviewIntegrationSelectionV1::Conflict { .. }
+        ),
+        "{:?}",
+        phase.phase()
+    );
+    assert!(phase.finished() && !phase.requires_checks());
+    let events = shared.lock().unwrap().replay("review").unwrap();
+    assert!(events.iter().any(|event| {
+        event.event_type == EventType::IntegrationConflictV1
+            && event.payload["reason"]
+                .as_str()
+                .is_some_and(|reason| reason.contains("protected"))
+    }));
+    assert!(!events.iter().any(|event| matches!(
+        event.event_type,
+        EventType::IntegrationPreparedV1 | EventType::IntegrationCommittedV1
+    )));
+    assert!(!calls.exists(), "no post-apply check ran");
+}
+
+/// A prepared Integration must be the deterministic composition of its selected Proposals.
+/// A Task-backed Campaign refuses a raw preparation event outright, and its protected phase
+/// publication refuses a plan whose derived Manifest is anything else.
+#[test]
+fn a_prepared_integration_must_be_the_deterministic_proposal_composition() {
+    let dir = tempfile::tempdir().unwrap();
+    let calls = dir.path().join("calls");
+    let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
+    let (compiler, lease) =
+        admit_integration(&cas, &mut store, &definition(&cas, true, false, &calls), 3);
+    let backup = dir.path().join("before-selection.sqlite");
+    let phase = {
+        let shared = SharedEventStore::new(&mut store);
+        let host = LegacyReviewTaskHost::new(
+            &cas,
+            shared.clone(),
+            &compiler,
+            lease.clone(),
+            BTreeMap::new(),
+        )
+        .unwrap();
+        let authority =
+            CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+        let runtime =
+            TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host)
+                .unwrap();
+        assert!(runtime.execute().unwrap().complete());
+        host.publish_recorded_round_conclusion(&cas).unwrap();
+        rusqlite::Connection::open(dir.path().join("events.sqlite"))
+            .unwrap()
+            .execute("VACUUM INTO ?1", [backup.to_str().unwrap()])
+            .unwrap();
+        host.select_recorded_integration(&cas).unwrap().unwrap()
+    };
+    let TaskReviewIntegrationSelectionV1::Prepared {
+        integration_plan_id,
+        derived_snapshot_id,
+    } = &phase.phase().selection
+    else {
+        panic!(
+            "the selected Proposal was not prepared: {:?}",
+            phase.phase()
+        )
+    };
+    let mut forged_plan: review_core::IntegrationPlanV1 =
+        serde_json::from_value(cas.get_json(integration_plan_id).unwrap()).unwrap();
+    let derived: review_core::SourceSnapshot =
+        serde_json::from_value(cas.get_json(derived_snapshot_id).unwrap()).unwrap();
+    let prior: review_core::SourceSnapshot = serde_json::from_value(
+        cas.get_json(derived.parent_snapshot_id.as_deref().unwrap())
+            .unwrap(),
+    )
+    .unwrap();
+    // The forged plan claims the unchanged head is the composition of the Proposal.
+    let original = prior.artifact_manifest.clone().unwrap();
+    let unchanged: Manifest = serde_json::from_value(cas.get_json(&original).unwrap()).unwrap();
+    forged_plan.derived_manifest_artifact_id = original.clone();
+    let forged_plan_id = cas
+        .put_json(&serde_json::to_value(&forged_plan).unwrap())
+        .unwrap();
+    let forged_batch = format!("integration-{}", &forged_plan_id[7..23]);
+    let forged_snapshot = review_core::SourceSnapshot {
+        capture: review_core::Capture::Derived {
+            tree_id: unchanged.content_digest(),
+            parent_snapshot_id: derived.parent_snapshot_id.clone().unwrap(),
+            integration_batch_id: forged_batch.clone(),
+        },
+        content_digest: unchanged.content_digest(),
+        artifact_manifest: Some(original.clone()),
+        ..derived.clone()
+    };
+    let forged_snapshot_id = cas
+        .put_json(&serde_json::to_value(forged_snapshot).unwrap())
+        .unwrap();
+
+    let mut store = EventStore::open(&backup).unwrap();
+    let raw = store
+        .append(
+            "review",
+            &cas,
+            review_store::NewEvent::new(
+                EventType::IntegrationPreparedV1,
+                serde_json::to_value(review_core::IntegrationPreparedPayloadV1 {
+                    batch_id: forged_batch,
+                    plan_artifact_id: forged_plan_id.clone(),
+                    derived_snapshot_id: forged_snapshot_id.clone(),
+                })
+                .unwrap(),
+            )
+            .correlating(forged_plan.subject_id.clone())
+            .referencing(vec![
+                forged_plan_id.clone(),
+                forged_snapshot_id.clone(),
+                original,
+            ]),
+        )
+        .unwrap_err();
+    assert!(
+        raw.to_string()
+            .contains("requires its protected phase publication"),
+        "{raw}"
+    );
+    let mut forged_phase = phase.phase().clone();
+    forged_phase.selection = TaskReviewIntegrationSelectionV1::Prepared {
+        integration_plan_id: forged_plan_id,
+        derived_snapshot_id: forged_snapshot_id,
+    };
+    let forged_phase_id =
+        review_store::store::task::review_integration::capture_task_review_integration(
+            &cas,
+            &forged_phase,
+        )
+        .unwrap();
+    let shared = SharedEventStore::new(&mut store);
+    let host = LegacyReviewTaskHost::new(
+        &cas,
+        shared.clone(),
+        &compiler,
+        lease.clone(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+    let before = shared.lock().unwrap().replay("review").unwrap();
+    let error = shared
+        .lock()
+        .unwrap()
+        .select_task_review_integration(&cas, &lease, &forged_phase_id, &authority)
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("deterministic Proposal composition"),
+        "{error}"
+    );
+    assert_eq!(shared.lock().unwrap().replay("review").unwrap(), before);
+    assert!(
+        !before
+            .iter()
+            .any(|event| event.event_type == EventType::IntegrationPreparedV1)
+    );
+}

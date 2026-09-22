@@ -216,9 +216,9 @@ in canonical order (by node ID), never in arrival order.
 The pipeline's gather node is that barrier. It runs only once every reviewer has finished, and
 `ReviewDomainState::run_gather` (`crates/review-pipeline/src/review_domain.rs`) flushes the
 buffered reviewer events in node order; Ledger reduction then ingests the gathered results sorted
-by reviewer node ID. The end-to-end pipeline suite (`crates/review-pipeline/tests/end_to_end.rs`)
-checks the outcome: a Finding that two reviewers report lists its sources in canonical order, not
-completion order.
+by reviewer node ID. The Task-host domain suite
+(`crates/review-pipeline/tests/task_legacy_review/host/domain.rs`) checks the outcome: a Finding
+that two reviewers report lists its sources in canonical order, not completion order.
 
 ### Seeing exactly what a Worker receives
 
@@ -267,8 +267,9 @@ Each execution also has a unique runtime name: if the supervised client fails or
 Afactory runs a bounded `rm -f` before sealing. An unconfirmed cleanup aborts the Gate and reports
 the preserved sandbox path rather than sealing or deleting the possibly live bind.
 `make review-kernel-container-probes` and its dedicated CI job carry the provider probes, live
-timeout/reap probe, ownership assertion, and v3 Gate route; they stay outside `make check`
-because a missing daemon must be a hard failure there, never a skip disguised as success.
+timeout/reap probe, ownership assertion, and a v3 container Gate on the Task host; they stay
+outside `make check` because a missing daemon must be a hard failure there, never a skip
+disguised as success.
 
 The distinction is enforced, not documented. Pipeline format v3 requires an explicit `[gate]`
 Execution Binding. `provider = "container"` requires an OCI image pinned by digest and can
@@ -333,20 +334,21 @@ been wrong.
                            └───────────────┴──> gather ──> ledger ──> convergence
 ```
 
-`crates/review-pipeline/tests/end_to_end.rs` runs it against a real git repository — real capture, real sandboxes, real
-check and reviewer processes. The only stub is the reviewers' *judgement*, which is a `command`
-runner emitting fixed findings: the one thing a test cannot supply honestly, and the one thing
-the kernel deliberately knows nothing about.
+The Task-host suites (`crates/review-pipeline/tests/task_legacy_review/host/`) run it through the
+common Task runtime — real sandboxes, real check and reviewer processes. The only stub is the
+reviewers' *judgement*, which is a `command` runner emitting fixed findings: the one thing a test
+cannot supply honestly, and the one thing the kernel deliberately knows nothing about.
 
 Three properties, end to end:
 
-- **A full review lands in the ledger.** Two reviewers report the same defect at different
+- **A full review lands in the ledger.** Two reviewers report the same occurrence at different
   severities; the ledger holds one finding with both reports attached, at the higher severity,
-  sourced in canonical order — and the checkout is byte-identical afterwards.
-- **A failing gate means no reviewer ever runs.** Not "their output is discarded": the event log
-  holds exactly one event, the `CheckCompleted@1` that failed, and the ledger is empty. A change
-  that does not build produces no reviewer artifacts at all.
-- **Two runs of the same review agree**, down to the fingerprint of every ledger row.
+  sourced in canonical order.
+- **A failing gate means no reviewer ever runs.** Not "their output is discarded": the failed
+  `CheckCompleted@1` and the blocking Gate Decision are recorded once, no reviewer Attempt
+  begins, and the ledger is empty. A change that does not build produces no reviewer artifacts.
+- **A reopened host replays, it does not re-run.** A second host on the same Task selects the
+  same recorded outputs, and the Gate's execution binding and cache receipts stay recorded once.
 
 ## Defining a pipeline
 

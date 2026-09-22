@@ -303,6 +303,186 @@ fn owned_review_runs_real_slice_attempts_under_one_task_and_replays_lossless_can
     }
 }
 
+/// Each Slice Worker is locally clean, yet the whole-Subject closeout sees what no slice can,
+/// and its cross-slice Finding reaches the Ledger with the Shard Set recorded and its semantic
+/// closure checked once. The Slice Set is accepted under its captured policy before any slice
+/// is invoked.
+#[test]
+fn owned_scatter_requires_whole_subject_closeout_after_semantic_closure() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let mut store = EventStore::open(temp.path().join("events.sqlite")).unwrap();
+    let clean = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
+    let boundary = json!({
+        "verdict": "request-changes", "summary": null, "benchmark_demands": [], "dispositions": [],
+        "findings": [{
+            "severity": "major", "file": ".af/af.lock", "line": 1,
+            "title": "cross-slice invariant is broken",
+            "body": "each slice is locally clean but the whole Subject is not",
+            "fix": "restore the invariant across both files", "confidence": 1.0,
+        }],
+    });
+    let runner = |command: String| {
+        format!(
+            "runner = {{ program=\"/bin/sh\", args=[{{value=\"-c\"}},{{value={}}}] }}",
+            serde_json::to_string(&command).unwrap()
+        )
+    };
+    let definition = include_str!("../../../../review-config/tests/fixtures/dynamic-v5.toml")
+        .replace(
+            "[budgets]\nunit = \"tokens\"\nattempt = 100\nfan_out = 200\nrun = 400\n",
+            "",
+        )
+        .replacen(
+            "runner = { program = \"/bin/true\" }",
+            &runner(format!("cat >/dev/null; printf '%s' '{clean}'")),
+            1,
+        )
+        .replacen(
+            "runner = { program = \"/bin/true\" }",
+            &runner(format!("cat >/dev/null; printf '%s' '{boundary}'")),
+            1,
+        )
+        + "\n[[checks]]\nname=\"required\"\nprogram=\"/bin/sh\"\nargs=[{value=\"-c\"},{value=\"exit 0\"}]\n";
+    let round = capture::open_round_with_pipeline(&cas, &mut store, &definition);
+    let mut settings = plan::settings();
+    settings.executions = BTreeMap::from([
+        ("scatter".into(), WorkerExecutionV1::Command {}),
+        ("closeout".into(), WorkerExecutionV1::Command {}),
+    ]);
+    let compiler = LegacyReviewPlanCompiler::capture(
+        &cas,
+        CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
+        cas.put(b"owned Review host fixture").unwrap(),
+        plan::without_probes(settings),
+    )
+    .unwrap();
+    let task = compiler
+        .prepare_revision(&cas, "owned-review", capture::limits())
+        .unwrap();
+    let revision = plan::artifact(&cas, review_core::task::TASK_REVISION_V1, &task);
+    let compiled = compiler.compile(&cas, &revision).unwrap().0;
+    let plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V1, &compiled);
+    let admission = CapturedTaskAuthority::for_legacy_review(
+        &compiler,
+        &plan::RefuseExecution,
+        &NoTaskDeveloper,
+    );
+    let lease = store
+        .open_task(&cas, &revision, "developer", 60000)
+        .unwrap();
+    store
+        .propose_task_plan(&cas, &lease, &plan_id, &admission)
+        .unwrap();
+    store.admit_task_plan(&cas, &lease, &admission).unwrap();
+    let shared = SharedEventStore::new(&mut store);
+    let host = LegacyReviewTaskHost::new(
+        &cas,
+        shared.clone(),
+        &compiler,
+        lease.clone(),
+        BTreeMap::new(),
+    )
+    .unwrap();
+    let authority = CapturedTaskAuthority::for_legacy_review(&compiler, &host, &NoTaskDeveloper);
+    let runtime =
+        TaskRuntime::with_store(shared.clone(), &cas, lease.clone(), &authority, &host).unwrap();
+    let report = runtime.execute().unwrap();
+    assert!(report.complete(), "{report:?}");
+
+    let events = shared.lock().unwrap().replay("review").unwrap();
+    let position = |event_type: EventType| {
+        events
+            .iter()
+            .position(|event| event.event_type == event_type)
+            .unwrap_or_else(|| panic!("{event_type} was not recorded"))
+    };
+    let count = |event_type: EventType| {
+        events
+            .iter()
+            .filter(|event| event.event_type == event_type)
+            .count()
+    };
+    let first_slice = events
+        .iter()
+        .position(|event| {
+            event.event_type == EventType::NodeInvocationV1
+                && event
+                    .node_id
+                    .as_deref()
+                    .is_some_and(|node| node.starts_with("scatter#slice:"))
+        })
+        .expect("a slice was invoked");
+    assert!(position(EventType::SliceSetAcceptedV1) < first_slice);
+    assert_eq!(count(EventType::ShardSetRecordedV1), 1);
+    assert_eq!(count(EventType::SemanticClosureCheckedV1), 1);
+    let closeout_reports: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == EventType::FindingReportedV1)
+        .map(|event| event.node_id.as_deref())
+        .collect();
+    assert_eq!(
+        closeout_reports,
+        [Some("closeout")],
+        "only the closeout reports"
+    );
+    let findings = host.ledger();
+    let findings = findings.findings();
+    assert_eq!(findings.len(), 1);
+    assert_eq!(findings[0].title, "cross-slice invariant is broken");
+
+    // The Store holds the accepted Slice Set to its exact captured slicing policy.
+    let round_event_id = shared
+        .lock()
+        .unwrap()
+        .latest_round_started("review")
+        .unwrap()
+        .unwrap()
+        .event_id;
+    let accepted = &events[position(EventType::SliceSetAcceptedV1)];
+    let accepted: review_core::SliceSetAcceptedPayloadV1 =
+        serde_json::from_value(accepted.payload.clone()).unwrap();
+    let envelope = cas.get_artifact(&accepted.slice_set_artifact_id).unwrap();
+    let mut forged: review_core::SliceSetV1 = serde_json::from_value(envelope.payload).unwrap();
+    forged.max_fanout += 1;
+    let (forged_record, forged_envelope) = cas
+        .put_artifact(
+            review_core::contract::SLICE_SET_V1,
+            review_core::Producer::KernelOperation {
+                run_id: "review".into(),
+                node_id: Some("slicer".into()),
+                operation_id: "forged-slice-policy".into(),
+            },
+            vec![],
+            envelope.subject_snapshot_id,
+            serde_json::to_value(forged).unwrap(),
+        )
+        .unwrap();
+    let error = shared
+        .lock()
+        .unwrap()
+        .append(
+            "review",
+            &cas,
+            review_store::NewEvent::new(
+                EventType::SliceSetAcceptedV1,
+                serde_json::to_value(review_core::SliceSetAcceptedPayloadV1 {
+                    slice_set_id: forged_envelope.artifact_id,
+                    slice_set_artifact_id: forged_record.clone(),
+                })
+                .unwrap(),
+            )
+            .node("slicer")
+            .caused_by(&round_event_id)
+            .referencing(vec![forged_record]),
+        )
+        .unwrap_err();
+    assert!(
+        error.to_string().contains("captured slicing policy"),
+        "{error}"
+    );
+}
+
 fn runtime_plan(
     cas: &Cas,
     state: &review_store::store::task::TaskProjection,
