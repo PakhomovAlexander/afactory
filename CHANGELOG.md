@@ -214,11 +214,14 @@ or needs a documented hand edit.
   and `-v5.json` schemas. `RunReport@6` is the only run conclusion. `run-report-v6.json` now
   defines its outcome, verdict, binding and cache shapes itself, and
   `task-review-gate-facts-v1.json` takes its Cache failure shape from it. A Campaign log that
-  holds a retired report, `RunReport@1` to `@5`, no longer replays: `af review run` and
-  `af provider doctor` refuse it with "Campaign predates the common Task runtime (af < 0.9);
-  start a new Campaign", `af review report`, `ledger` and `show` fail on it, and
-  `af review campaigns` lists it as a problem. The Round rows of `af review report` drop
-  `reported_tokens`, which only those reports' plain numeric spend filled. Every row now carries
+  holds a retired report, `RunReport@1` to `@5`, no longer replays. When that report is the
+  first record replay cannot read, `af review run` and `af provider doctor` refuse the Campaign
+  with "Campaign predates the common Task runtime (af < 0.9); start a new Campaign"; when a
+  retired Attempt, Provider Operation or broker event comes first, they print the unknown event
+  type message above. `af review report`, `ledger` and `show` fail on it, `af review campaigns`
+  lists it as a problem, and a new event for the Round such a report concluded is refused with
+  the unknown event type message. The Round rows of `af review report` drop `reported_tokens`,
+  which only those reports' plain numeric spend filled. Every row now carries
   `task_chargeable_tokens_at_report` and `task_accounting`, and the `review-report-v3.json` and
   `-v4.json` schemas require both.
 - The `gate_blocked` suppression reason is gone; only the pre-Task executor's scheduler wrote it.

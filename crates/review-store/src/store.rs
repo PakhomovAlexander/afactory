@@ -4077,8 +4077,11 @@ fn latest_round(
         .transpose()
 }
 
-const ROUND_TERMINAL_REPORT_SQL: &str = "SELECT payload FROM events
-     WHERE run_id = ?1 AND causation_id = ?2 AND type = 'RunReport@6'
+/// Scans every `RunReport@` row, not only the current version, so that a Round closed by a
+/// report this release cannot read refuses the append instead of looking open.
+const ROUND_TERMINAL_REPORT_SQL: &str = "SELECT type, payload FROM events
+     WHERE run_id = ?1 AND causation_id = ?2
+       AND type >= 'RunReport@' AND type < 'RunReportA'
      ORDER BY sequence";
 
 fn round_has_terminal_report(
@@ -4088,10 +4091,16 @@ fn round_has_terminal_report(
 ) -> Result<bool, StoreError> {
     let mut statement = tx.prepare(ROUND_TERMINAL_REPORT_SQL)?;
     let rows = statement.query_map(params![run_id, round_event_id], |row| {
-        row.get::<_, String>(0)
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
-    for payload in rows {
-        if report_closes(EventType::RunReportV6, &serde_json::from_str(&payload?)?)? {
+    for row in rows {
+        let (event_type, payload) = row?;
+        if event_type != EventType::RunReportV6.as_str() {
+            return Err(StoreError::Conflict(
+                review_core::UnknownEventType(event_type).to_string(),
+            ));
+        }
+        if report_closes(&payload)? {
             return Ok(true);
         }
     }
@@ -4746,23 +4755,15 @@ fn validate_report_receipts(
     Ok(())
 }
 
-fn report_closes(event_type: EventType, payload: &Value) -> Result<bool, StoreError> {
-    let event = RunEvent {
-        event_id: String::new(),
-        run_id: String::new(),
-        sequence: 0,
-        event_type,
-        occurred_at: "1970-01-01T00:00:00Z".into(),
-        node_id: None,
-        attempt_id: None,
-        causation_id: None,
-        correlation_id: None,
-        artifact_refs: Vec::new(),
-        payload: payload.clone(),
-    };
-    review_core::run_report_closes_round(&event)
-        .map_err(StoreError::Json)
-        .map(Option::unwrap_or_default)
+fn report_closes(payload: &str) -> Result<bool, StoreError> {
+    let report: review_core::RunReportPayloadV6 = serde_json::from_str(payload)?;
+    report
+        .validate()
+        .map_err(|error| StoreError::Json(serde::de::Error::custom(error)))?;
+    Ok(!matches!(
+        report.verdict,
+        review_core::RunVerdictV3::Incomplete { .. }
+    ))
 }
 
 /// Event IDs are derived, not random: a replay of the same run must reproduce them, and a
@@ -4912,8 +4913,31 @@ mod tests {
         assert!(
             details
                 .iter()
-                .any(|detail| detail.contains("causation_id=? AND type=?")),
-            "query plan did not seek the report type: {details:?}"
+                .any(|detail| detail.contains("type>? AND type<?")),
+            "query plan did not seek the report type range: {details:?}"
+        );
+    }
+
+    /// A Round concluded by a report this release cannot read is neither open nor closed: the
+    /// lookup refuses instead of letting a new event treat the Round as still open.
+    #[test]
+    fn a_round_with_a_retired_report_refuses_instead_of_looking_open() {
+        let (_dir, store, _cas) = fixture();
+        store
+            .conn
+            .execute(
+                "INSERT INTO events (run_id, sequence, event_id, type, occurred_at,
+                                     causation_id, artifact_refs, payload)
+                 VALUES ('run', 0, 'event', 'RunReport@5', '1970-01-01T00:00:00Z',
+                         'round', '[]', '{}')",
+                [],
+            )
+            .unwrap();
+        let error = round_has_terminal_report(&store.conn, "run", "round").unwrap_err();
+        assert!(
+            matches!(&error, StoreError::Conflict(message)
+                if message.contains("unknown review-kernel event type: RunReport@5")),
+            "{error}"
         );
     }
 

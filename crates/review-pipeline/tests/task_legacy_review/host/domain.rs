@@ -766,6 +766,77 @@ fn a_round_conclusion_must_match_every_durable_output_receipt() {
     );
 }
 
+/// A node that never recorded a durable output receipt cannot be reported complete: the Store
+/// refuses a conclusion that claims outputs for a reviewer which failed before publishing.
+#[test]
+fn a_round_conclusion_cannot_complete_a_node_without_a_durable_receipt() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let (compiler, lease) = admit_source(
+        &cas,
+        &mut store,
+        &gated_review(&clean_reader(), "cat >/dev/null; exit 1", None),
+        source(),
+        &["architecture", "performance"],
+        false,
+    );
+    let backup = directory.path().join("before-conclusion.sqlite");
+    let shared = SharedEventStore::new(&mut store);
+    hosted(
+        &cas,
+        &shared,
+        &compiler,
+        &lease,
+        |h| h,
+        |host, _, report| {
+            assert!(!report.complete(), "{report:?}");
+            snapshot_store(directory.path(), &backup);
+            host.publish_recorded_round_conclusion(&cas).unwrap();
+        },
+    );
+    let receipted: Vec<_> = events_of(&shared, EventType::NodeOutputReceiptV1)
+        .into_iter()
+        .filter_map(|event| event.node_id)
+        .collect();
+    assert!(
+        !receipted.iter().any(|node| node == "performance"),
+        "{receipted:?}"
+    );
+    let (event, report) = run_report(&shared);
+    assert!(matches!(
+        report.outcomes.iter().find(|o| o.node == "performance"),
+        Some(review_core::RunNodeReportV2 {
+            outcome: review_core::RunNodeOutcomeV2::Failed { .. },
+            ..
+        })
+    ));
+    let unreceipted = cas.put(b"unreceipted output").unwrap();
+    let error = refuse_forged_conclusion(&cas, &backup, &compiler, &lease, &event, |report, _| {
+        let performance = report
+            .outcomes
+            .iter_mut()
+            .find(|outcome| outcome.node == "performance")
+            .unwrap();
+        performance.outcome = review_core::RunNodeOutcomeV2::Completed {
+            output_artifacts: vec![unreceipted.clone()],
+        };
+        // Keep the conclusion self-consistent: the forged node is no longer missing.
+        let review_core::RunVerdictV3::Incomplete { missing_nodes } = &mut report.verdict else {
+            panic!(
+                "a failed reviewer leaves the Round incomplete: {:?}",
+                report.verdict
+            )
+        };
+        missing_nodes.retain(|missing| missing.node != "performance");
+        assert!(!missing_nodes.is_empty(), "downstream nodes stay missing");
+    });
+    assert!(
+        error.contains("RunReport@6 completed node 'performance' without a durable receipt"),
+        "{error}"
+    );
+}
+
 /// Copy the Campaign store at `root` to `backup`, as it is now.
 fn snapshot_store(root: &std::path::Path, backup: &std::path::Path) {
     rusqlite::Connection::open(root.join("events.sqlite"))

@@ -355,8 +355,10 @@ pub(super) fn require_common_campaign(
     Ok(())
 }
 
-/// Only the pre-Task executor wrote `RunReport@1` to `@5`. They are no longer event types, so
-/// replay stops at the first such row, which is named as the pre-common history it is.
+/// Only the pre-Task executor wrote `RunReport@1` to `@5`. They are no longer event types, and
+/// when replay stops at one of them the log is named as the pre-common history it is. A log
+/// whose earlier retired Attempt, Provider Operation or broker row stops replay first keeps the
+/// generic unknown event type message, which already says to start a new Campaign.
 fn holds_a_retired_run_report(error: &review_store::StoreError) -> bool {
     let review_store::StoreError::Sqlite(rusqlite::Error::FromSqlConversionFailure(_, _, cause)) =
         error
