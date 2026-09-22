@@ -214,7 +214,7 @@ impl ReviewTaskDomain {
                     line: original.line,
                     title: original.title,
                     body: original.body,
-                    remedy: original.fix.unwrap_or_default(),
+                    remedy: original.fix,
                     attestation_id,
                     attestation,
                 },

@@ -1,10 +1,9 @@
 # Adversarial Phase 0 cases — specified, not captured
 
 Phase 0 asks for adversarial fixtures alongside the behavioral ones: late receipt, malicious
-check, hostile Git config, cross-slice interaction. Unlike everything in
-[`../synthetic/`](../synthetic/README.md), these **cannot be generated from the shell harness**
-— it has no attempt fencing, no sandbox, no snapshot capture, and no scatter. There is nothing
-to record.
+check, hostile Git config, cross-slice interaction. These **could not be generated from the
+retired shell harness** — it had no attempt fencing, no sandbox, no snapshot capture, and no
+scatter. There was nothing to record.
 
 So they are written as specifications: preconditions, the exact behavior required, and the
 acceptance criterion each one discharges. They become executable fixtures in the phase that

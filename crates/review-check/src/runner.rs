@@ -1,7 +1,7 @@
 //! Executing a check and recording what happened.
 
 use review_process::{ExitPolicy, SupervisedError, run_supervised_with_policy};
-use review_store::{Cas, EventStore, NewEvent, StoreError};
+use review_store::{Cas, NewEvent};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::{Path, PathBuf};
@@ -84,9 +84,8 @@ impl CheckResult {
 /// Runs checks against a materialized tree.
 ///
 /// Deliberately absent from the record: elapsed time. Nothing in any policy reads it, and its
-/// presence would make an otherwise reproducible artifact differ on every run — the legacy
-/// `checks.tsv` carried seconds, and the fixture corpus has to normalize them away to reproduce
-/// at all.
+/// presence would make an otherwise reproducible artifact differ on every run. Callers that
+/// need the host clock get it beside the record, in [`CheckExecution`].
 pub struct CheckRunner<'a> {
     cas: &'a Cas,
     workdir: PathBuf,
@@ -351,23 +350,6 @@ impl<'a> CheckRunner<'a> {
             stderr,
             ..base
         }
-    }
-
-    /// Run a list, recording each execution as its own event.
-    pub fn run_all(
-        &self,
-        definitions: &[CheckDefinition],
-        store: &mut EventStore,
-        run_id: &str,
-        node_id: &str,
-    ) -> Result<Vec<CheckResult>, StoreError> {
-        let mut results = Vec::with_capacity(definitions.len());
-        for definition in definitions {
-            let result = self.run(definition);
-            store.append_legacy(run_id, self.cas, check_event(&result, node_id))?;
-            results.push(result);
-        }
-        Ok(results)
     }
 }
 

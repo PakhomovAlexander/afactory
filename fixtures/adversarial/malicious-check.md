@@ -6,8 +6,8 @@ network"* and *"Safe bindings expose no reusable credential bytes."*
 
 ## Why there is nothing to capture
 
-`checks.sh` runs `bash -c "$cmd"` in the working directory with the caller's full environment.
-Every command in a check list already has whatever the operator has. There is no boundary to
+The retired shell harness ran `bash -c "$cmd"` in the working directory with the caller's full
+environment, so every command in a check list had whatever the operator has. There is no boundary to
 test, so this case describes one the kernel must create.
 
 ## Setup

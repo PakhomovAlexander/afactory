@@ -137,7 +137,8 @@ pub fn extract_result(text: &str) -> &str {
     direct
 }
 
-/// Parse a model's answer into the contract, tolerating what can be tolerated losslessly.
+/// Parse a model's answer into the node's result contract, tolerating what can be tolerated
+/// losslessly.
 ///
 /// Two normalizations, both earned on live runs and both forensically free because the raw
 /// envelope is already immutable in the CAS: the JSON may arrive wrapped in prose or fences
@@ -146,10 +147,6 @@ pub fn extract_result(text: &str) -> &str {
 /// schema-strict parse refused a six-dollar answer over it. Unknown fields are dropped;
 /// missing or malformed *required* fields still fail, because inventing content is where
 /// tolerance would become fabrication.
-pub fn parse_stage_output(text: &str) -> Result<LegacyStageOutput, String> {
-    parse_stage_output_for(ReviewerResultContract::V1, text)
-}
-
 pub fn parse_stage_output_for(
     contract: ReviewerResultContract,
     text: &str,
@@ -313,7 +310,12 @@ fn normalize(value: &mut serde_json::Value, contract: ReviewerResultContract) {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_proposal_declaration, parse_stage_output};
+    use super::{parse_proposal_declaration, parse_stage_output_for};
+    use review_core::ReviewerResultContract;
+
+    fn parse_v1(text: &str) -> Result<review_core::LegacyStageOutput, String> {
+        parse_stage_output_for(ReviewerResultContract::V1, text)
+    }
 
     #[test]
     fn extra_fields_are_dropped_and_the_findings_survive() {
@@ -325,7 +327,7 @@ mod tests {
    "confidence":0.8,"failure_scenario":"a story the contract never asked for"}
 ],"benchmark_demands":[],"disputes":[],"reviewer_notes":"extra"}
 ```"#;
-        let output = parse_stage_output(answer).unwrap();
+        let output = parse_v1(answer).unwrap();
         assert_eq!(output.findings.len(), 1);
         assert_eq!(output.findings[0].title, "T");
     }
@@ -348,14 +350,14 @@ mod tests {
    "confidence":0.8}}
 ],"benchmark_demands":[],"disputes":[]}}"#
             );
-            let output = parse_stage_output(&answer).unwrap();
+            let output = parse_v1(&answer).unwrap();
             assert_eq!(output.findings.len(), 1);
         }
     }
 
     #[test]
     fn prose_with_no_json_anywhere_is_still_malformed() {
-        assert!(parse_stage_output("I looked at the code and it seems fine to me.").is_err());
+        assert!(parse_v1("I looked at the code and it seems fine to me.").is_err());
     }
 
     #[test]
@@ -367,7 +369,7 @@ mod tests {
 ```json
 {"verdict":"block","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}
 ```"#;
-        let output = parse_stage_output(answer).unwrap();
+        let output = parse_v1(answer).unwrap();
         assert_eq!(
             format!("{:?}", output.verdict),
             "Block",
@@ -377,13 +379,13 @@ mod tests {
 
     #[test]
     fn a_missing_required_field_still_fails() {
-        // (`fix` is deliberately not the probe: the legacy schema allows a null fix at parse
-        // time and the ledger's importer is what enforces it, as `ImportReason::MissingFix`.)
+        // (`fix` is deliberately not the probe: the flat result allows a null fix at parse
+        // time and ledger ingest is what enforces it, as `ImportReason::MissingFix`.)
         let answer = r#"{"verdict":"block","summary":null,"findings":[
   {"file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
 ],"benchmark_demands":[],"disputes":[]}"#;
         assert!(
-            parse_stage_output(answer).is_err(),
+            parse_v1(answer).is_err(),
             "a finding without a severity must not be normalized into one"
         );
     }
@@ -393,7 +395,7 @@ mod tests {
         let answer = r#"{"verdict":"block","summary":null,"findings":[
   {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
 ],"benchmark_demands":[],"disputes":[],"proposal":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\n","report_indexes":[0],"finding_ids":[],"evidence_ids":[],"paths":["src/lib.rs"],"description":"fix T","auto_apply_nominated":false}}"#;
-        let output = parse_stage_output(answer).unwrap();
+        let output = parse_v1(answer).unwrap();
         assert_eq!(output.findings.len(), 1);
         let proposal = parse_proposal_declaration(answer).unwrap().unwrap();
         assert_eq!(proposal.report_indexes, vec![0]);
@@ -410,7 +412,7 @@ mod tests {
     fn notes_transport_is_extracted_beside_the_flat_result() {
         use super::parse_notes_declaration;
         let answer = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[],"notes":{"inspected":["src/lib.rs"],"model_of_change":"one cap","open_questions":[],"hints":[{"path":"src/lib.rs","note":"cap read once"}]}}"#;
-        let output = parse_stage_output(answer).unwrap();
+        let output = parse_v1(answer).unwrap();
         assert!(output.findings.is_empty());
         let notes = parse_notes_declaration(answer).unwrap().unwrap();
         assert_eq!(notes.inspected, vec!["src/lib.rs"]);

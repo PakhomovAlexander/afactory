@@ -3,7 +3,7 @@
 //! Round 1 reviews a tree with a defect and fails to converge. The operator fixes the code,
 //! commits, records the resolution, and runs again. Round 2's reviewer — a script that answers
 //! from the sandbox's actual content — finds nothing, and the campaign converges. This is the
-//! whole loop `/self-review-heavy` drives, with none of the model spend.
+//! whole fix-and-re-review loop of a heavy Campaign, with none of the model spend.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

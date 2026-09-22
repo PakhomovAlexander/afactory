@@ -156,9 +156,8 @@ and budgets are described in [`docs/architecture.md`](docs/architecture.md).
 ## Development
 
 ```sh
-make check                              # fmt + clippy + tests + fixture reproduction
-fixtures/synthetic/generate.sh --check  # the synthetic corpus still reproduces byte-for-byte
-make review-kernel-container-probes     # live container probes; needs a usable runtime
+make check                           # fmt + clippy + tests + release-selection check
+make review-kernel-container-probes  # live container probes; needs a usable runtime
 ```
 
 The toolchain is pinned, the lockfile is committed, and `unsafe_code = "forbid"` is set

@@ -1,13 +1,9 @@
-//! Driving the kernel with the shell harness's own inputs, and importing its output.
+//! Ledger ingestion: reducing flat reviewer results into Finding events, and the operator
+//! transitions (resolution, grouping, Demand evidence) that follow them.
 //!
-//! Two directions, both needed for a safe migration:
-//!
-//! - [`Ingest`] replays a `ledger.sh add` / `resolve` / `bump` sequence as events, so the
-//!   frozen fixtures can be run through the new engine and compared decision by decision.
-//! - [`import_ledger_jsonl`] turns a committed `ledger.jsonl` into events, so an old run can be
-//!   read by new tooling. That direction is inherently lossy — the source is final state, not
-//!   history — and the import is honest about it: it produces one report and at most one
-//!   resolution per row, and claims nothing about what happened in between.
+//! [`Ingest`] appends to one run's log under its active Round and keeps the Ledger projection
+//! folded in step. The pure reduction it shares with the Task Review host lives in
+//! `reduction`.
 
 mod reduction;
 pub use reduction::{PreparedReviewReduction, prepare_canonical_task_review};
@@ -18,7 +14,6 @@ use review_core::{
     FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1, FindingReport,
     LegacyStageOutput, Producer, ReviewerResultContract, RunEvent, Severity,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -27,21 +22,20 @@ use crate::cas::Cas;
 use crate::ledger::{
     EVENT_FINDING_REPORTED, EVENT_FINDING_RESOLVED, EVENT_FINDINGS_GROUPED,
     EVENT_FINDINGS_UNGROUPED, EVENT_GENERATION_ADVANCED, Ledger, LedgerProjection, ReportScope,
-    Status, TransitionKind,
+    Status,
 };
 use crate::store::{EventStore, NewEvent, StoreError};
 
-/// The path the harness substitutes when a reviewer leaves `file` empty. It shares the
-/// fingerprint namespace with real paths, which is why the v1 contract drops it for an empty
-/// location list — but the fingerprint must still be computed over it to match.
+/// The path a change-wide finding (empty `file`) is keyed under. It shares the path/title key
+/// namespace with real paths, which is why `FindingReport@1` uses an empty location list
+/// instead — but the path/title key is still computed over it.
 pub const CHANGE_WIDE: &str = "(change-wide)";
 
-/// `ledger.sh`'s fingerprint: sha256 of `file|title`, first 12 hex, with the title normalized
+/// The path/title Finding key: sha256 of `file|title`, first 12 hex, with the title normalized
 /// for case and whitespace only.
 ///
-/// ASCII lowercasing on purpose: the original is `tr '[:upper:]' '[:lower:]'`, which does not
-/// touch non-ASCII. Unicode lowercasing here would silently disagree with every fingerprint the
-/// harness has ever produced — including every row of every frozen corpus.
+/// Lowercasing is ASCII-only on purpose: the key is persisted Finding identity, and it must not
+/// shift with Unicode case-mapping tables.
 pub fn legacy_fingerprint(file: &str, title: &str) -> String {
     let file = if file.trim().is_empty() {
         CHANGE_WIDE
@@ -62,8 +56,7 @@ pub fn legacy_fingerprint(file: &str, title: &str) -> String {
             in_space = false;
         }
     }
-    // `sed 's/^ //; s/ $//'` — one leading and one trailing space, which is all that can remain
-    // after the squeeze.
+    // Trim one leading and one trailing space, which is all that can remain after the squeeze.
     let normalized = normalized
         .strip_prefix(' ')
         .unwrap_or(&normalized)
@@ -86,30 +79,6 @@ fn report_identity_path(report: &review_core::FindingReport) -> &str {
         .map(|location| location.path.as_str())
         .min()
         .unwrap_or("")
-}
-
-/// What `ledger.sh add` prints. Compared against the frozen transcripts verbatim.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct AddSummary {
-    pub new: usize,
-    pub dup: usize,
-    pub reopened: usize,
-    pub escalated: usize,
-    pub open: usize,
-    /// Prior claims a reviewer refuted this stage. Deliberately absent from [`Display`], which
-    /// is compared verbatim against the frozen harness transcripts (the harness had no
-    /// disputes); it is a field for callers that want it, not part of the tally line.
-    pub contested: usize,
-}
-
-impl std::fmt::Display for AddSummary {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "new={} dup={} reopened={} escalated={} open={}",
-            self.new, self.dup, self.reopened, self.escalated, self.open
-        )
-    }
 }
 
 /// Drives a run: ingest stage outputs, record resolutions, advance generations.
@@ -138,7 +107,6 @@ pub struct CanonicalStage<'a> {
 /// The exact immutable inputs emitted by one canonical ledger reduction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalReduction {
-    pub summary: AddSummary,
     /// Domain-separated typed Report IDs recorded in `FindingSet@1`.
     pub selected_report_ids: Vec<String>,
     /// Same-result Report index authority for post-reduction Proposal finalization.
@@ -229,10 +197,11 @@ impl<'a> Ingest<'a> {
         self
     }
 
+    /// The store refuses a Round-runtime event that no Round is bound to.
     fn bind_round(&self, event: NewEvent) -> NewEvent {
         match &self.round_event_id {
             Some(round) => event.caused_by(round),
-            None => event.legacy_import(),
+            None => event,
         }
     }
 
@@ -244,7 +213,7 @@ impl<'a> Ingest<'a> {
         self.ledger.round
     }
 
-    /// `ledger.sh bump`.
+    /// Advance the Ledger's Round counter under the bound Round.
     pub fn advance(&mut self) -> Result<u32, StoreError> {
         let round = self.ledger.round + 1;
         let event = self.store.append(
@@ -261,79 +230,27 @@ impl<'a> Ingest<'a> {
         Ok(round)
     }
 
-    /// `ledger.sh add --source <source> <findings.json>`.
-    ///
-    /// Every ingested finding is validated against the `FindingReport@1` contract first
-    /// ([`LegacyFinding::into_report`]): a finding without a fix, with an empty title or body,
-    /// with an out-of-range confidence, or with a non-positive line is **not** ingested. This
-    /// is the enforcement point `FindingReport@1` was written for — before, the contract and
-    /// its acceptance corpus governed a conversion no run performed. An unusable entry is
-    /// skipped, not fatal: like the harness skipping an empty title, one bad finding must not
-    /// discard a batch that cannot be re-requested.
-    pub fn add_stage_output(
-        &mut self,
-        source: &str,
-        stage: &LegacyStageOutput,
-    ) -> Result<AddSummary, StoreError> {
-        self.add_stage_output_inner(source, stage, false)
-    }
-
-    /// Strict live admission. Unlike the frozen legacy bridge, one malformed finding rejects
-    /// the complete reviewer result so a blocking verdict cannot degrade into an empty pass.
-    pub fn add_live_stage_output(
-        &mut self,
-        source: &str,
-        stage: &LegacyStageOutput,
-    ) -> Result<AddSummary, StoreError> {
-        self.add_stage_output_inner(source, stage, true)
-    }
-
-    /// Atomically admit every live reviewer result feeding one ledger node. Validation or
+    /// Atomically admit every live reviewer result feeding one ledger node. Every finding must
+    /// satisfy `FindingReport@1` ([`LegacyFinding::into_report`]), and one violation refuses the
+    /// complete set, so a blocking verdict cannot degrade into an empty pass. Validation or
     /// storage failure leaves the event log untouched, so a retry cannot inherit half a
     /// reduction and duplicate the reviewers that were committed first.
+    ///
+    /// [`LegacyFinding::into_report`]: review_core::legacy::LegacyFinding::into_report
     pub fn add_live_stage_outputs(
         &mut self,
         stages: &[(&str, &LegacyStageOutput)],
-    ) -> Result<AddSummary, StoreError> {
-        self.add_stage_outputs_inner(stages, true)
-    }
-
-    fn add_stage_output_inner(
-        &mut self,
-        source: &str,
-        stage: &LegacyStageOutput,
-        strict: bool,
-    ) -> Result<AddSummary, StoreError> {
-        self.add_stage_outputs_inner(&[(source, stage)], strict)
-    }
-
-    fn add_stage_outputs_inner(
-        &mut self,
-        stages: &[(&str, &LegacyStageOutput)],
-        strict: bool,
-    ) -> Result<AddSummary, StoreError> {
+    ) -> Result<(), StoreError> {
         let mut prepared = Vec::with_capacity(stages.len());
         for (source, stage) in stages {
             let mut reports = Vec::with_capacity(stage.findings.len());
             for (index, finding) in stage.findings.iter().enumerate() {
-                // The frozen shell bridge trimmed titles before admission. Preserve that
-                // historical projection here, while the live LegacyFinding reader follows
-                // reviewer-result-v1 literally (where any non-empty string is content).
-                if !strict && finding.title.trim().is_empty() {
-                    eprintln!("add: skipping {source} finding (finding {index}: empty title)");
-                    continue;
-                }
-                match finding.clone().into_report(index) {
-                    Ok(report) => reports.push(report),
-                    Err(reason) if !strict => {
-                        eprintln!("add: skipping {source} finding ({reason})");
-                    }
-                    Err(reason) => {
-                        return Err(StoreError::Conflict(format!(
-                            "{source} finding {index} violates FindingReport@1: {reason}"
-                        )));
-                    }
-                }
+                let report = finding.clone().into_report(index).map_err(|reason| {
+                    StoreError::Conflict(format!(
+                        "{source} finding {index} violates FindingReport@1: {reason}"
+                    ))
+                })?;
+                reports.push(report);
             }
             prepared.push(PreparedStage {
                 source: (*source).to_string(),
@@ -345,8 +262,7 @@ impl<'a> Ingest<'a> {
                 result_contract: ReviewerResultContract::V1,
             });
         }
-        self.add_prepared_outputs(&prepared)
-            .map(|reduction| reduction.summary)
+        self.add_prepared_outputs(&prepared).map(|_| ())
     }
 
     /// Bridge selected flat results into typed, provenance-carrying Report artifacts and reduce
@@ -376,37 +292,6 @@ impl<'a> Ingest<'a> {
         }
         self.ledger = prepared.ledger;
         Ok(prepared.reduction)
-    }
-
-    /// `ledger.sh resolve <fp> <status> [--note ...]`.
-    pub fn resolve(
-        &mut self,
-        key: &str,
-        status: Status,
-        note: Option<&str>,
-    ) -> Result<(), StoreError> {
-        if self.ledger.get(key).is_none() {
-            return Err(StoreError::Conflict(format!(
-                "cannot resolve unknown finding key '{key}'"
-            )));
-        }
-        let payload = json!({
-            "key": key,
-            "status": status.as_str(),
-            "note": note,
-            "round": self.ledger.round,
-        });
-        let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string());
-        let event = if self.round_event_id.is_none() {
-            event.legacy_import()
-        } else {
-            event
-        };
-        let event = self.store.append(&self.run_id, self.cas, event)?;
-        self.validate_watermark(&event)?;
-        self.ledger.apply_event(&event, self.cas)?;
-        self.event_count += 1;
-        Ok(())
     }
 
     pub fn group(&mut self, from: &str, into: &str) -> Result<(), StoreError> {
@@ -1183,146 +1068,6 @@ fn resolve_canonical_group(
     Ok(finding)
 }
 
-/// One row of a committed `ledger.jsonl`.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LegacyRow {
-    pub fp: String,
-    pub round: u32,
-    pub last_seen_round: u32,
-    pub source: String,
-    pub status: String,
-    pub severity: Severity,
-    pub file: String,
-    pub line: Option<i64>,
-    pub title: String,
-    pub body: String,
-    pub confidence: Option<f64>,
-    #[serde(default)]
-    pub note: Option<String>,
-}
-
-/// Import a committed `ledger.jsonl` as events.
-///
-/// Lossy by nature, and deliberately not pretending otherwise: the file records final state, so
-/// each row becomes one report plus at most one resolution. Whether that finding was ever
-/// duplicated, escalated or reopened is not in the source and is not invented here.
-pub fn import_ledger_jsonl(
-    store: &mut EventStore,
-    cas: &Cas,
-    run_id: &str,
-    jsonl: &str,
-) -> Result<usize, StoreError> {
-    let mut imported = 0;
-    let mut max_round = 1;
-    let mut projected = LedgerProjection::rebuild(store, cas, run_id)?.into_ledger();
-    let mut events = Vec::new();
-    for line in jsonl.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let row: LegacyRow = serde_json::from_str(line)?;
-        if row.fp.trim().is_empty()
-            || row.round == 0
-            || row.last_seen_round < row.round
-            || row.source.trim().is_empty()
-            || row.file.trim().is_empty()
-            || row.title.trim().is_empty()
-            || row.body.trim().is_empty()
-            || row
-                .line
-                .is_some_and(|line| line <= 0 || u32::try_from(line).is_err())
-            || row
-                .confidence
-                .is_some_and(|confidence| !(0.0..=1.0).contains(&confidence))
-        {
-            return Err(StoreError::Conflict(format!(
-                "legacy row `{}` violates persisted ledger invariants",
-                row.fp
-            )));
-        }
-        let status = Status::parse(&row.status).ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "legacy row {} has invalid status `{}`",
-                row.fp, row.status
-            ))
-        })?;
-        let expected_fingerprint = legacy_fingerprint(&row.file, &row.title);
-        if row.fp != expected_fingerprint {
-            return Err(StoreError::Conflict(format!(
-                "legacy row fingerprint `{}` does not match `{expected_fingerprint}` for its file and title",
-                row.fp
-            )));
-        }
-        max_round = max_round.max(row.last_seen_round);
-
-        let payload = json!({
-            "key": row.fp,
-            "round": row.round,
-            "source": row.source,
-            "severity": severity_str(row.severity),
-            "file": row.file,
-            "line": row.line,
-            "title": row.title,
-            "body": row.body,
-            "confidence": row.confidence,
-            "imported": true,
-        });
-        let event = NewEvent::new(EVENT_FINDING_REPORTED, payload)
-            .correlating(row.fp.clone())
-            .legacy_import();
-        apply_candidate(&mut projected, &event, cas)?;
-        events.push(event);
-
-        // The row's own last_seen_round is restored by a second report only when it differs,
-        // so an imported finding keeps both round columns the file recorded.
-        if row.last_seen_round > row.round {
-            let payload = json!({
-                "key": row.fp,
-                "round": row.last_seen_round,
-                "source": row.source,
-                "severity": severity_str(row.severity),
-                "file": row.file,
-                "line": row.line,
-                "title": row.title,
-                "body": row.body,
-                "confidence": row.confidence,
-                "imported": true,
-            });
-            let event = NewEvent::new(EVENT_FINDING_REPORTED, payload)
-                .correlating(row.fp.clone())
-                .legacy_import();
-            apply_candidate(&mut projected, &event, cas)?;
-            events.push(event);
-        }
-
-        if status != Status::Open {
-            let payload = json!({
-                "key": row.fp,
-                "status": status.as_str(),
-                "note": row.note,
-                "round": row.last_seen_round,
-                "imported": true,
-            });
-            let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload)
-                .correlating(row.fp.clone())
-                .legacy_import();
-            apply_candidate(&mut projected, &event, cas)?;
-            events.push(event);
-        }
-        imported += 1;
-    }
-
-    if max_round > 1 {
-        let event =
-            NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": max_round })).legacy_import();
-        apply_candidate(&mut projected, &event, cas)?;
-        events.push(event);
-    }
-    store.append_batch(run_id, cas, &events)?;
-    Ok(imported)
-}
-
 /// Apply a not-yet-persisted event through the authoritative projection. Sequence and identity
 /// are irrelevant to Ledger, so placeholders let ingest validate the exact payload and artifact
 /// set before the atomic append makes any part of the batch durable.
@@ -1345,26 +1090,14 @@ fn apply_candidate(ledger: &mut Ledger, event: &NewEvent, cas: &Cas) -> Result<(
     )
 }
 
-pub fn severity_str(severity: Severity) -> &'static str {
-    match severity {
-        Severity::Blocker => "blocker",
-        Severity::Major => "major",
-        Severity::Minor => "minor",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Vectors traced through the actual scripts, not computed by hand — a digest this file
-    /// produced for itself would agree with itself and prove nothing.
-    ///
-    /// Only generic vectors live here. The broad check runs against every row of every ledger
-    /// under `fixtures/synthetic/`, which the real `ledger.sh` wrote and which carries nothing
-    /// private: `tests/legacy_ledgers.rs::the_synthetic_fingerprints_match_the_shell`.
+    /// Fixed vectors, not computed by the function under test: path/title Finding keys are
+    /// persisted identity, so a change to the digest must fail here.
     #[test]
-    fn fingerprints_match_the_shell_implementation() {
+    fn fingerprints_match_the_fixed_vectors() {
         assert_eq!(
             legacy_fingerprint("src/parser.rs", "Retry loop can spin forever"),
             "de15e7f49066"
@@ -1376,13 +1109,13 @@ mod tests {
     }
 
     #[test]
-    fn normalization_matches_tr_and_sed() {
+    fn normalization_folds_ascii_case_and_squeezes_whitespace() {
         // case-folded, runs of whitespace squeezed, one leading/trailing space trimmed
         assert_eq!(
             legacy_fingerprint("f", "  Retry   LOOP\tcan\nspin forever "),
             legacy_fingerprint("f", "retry loop can spin forever")
         );
-        // ASCII-only lowercasing, exactly as `tr '[:upper:]' '[:lower:]'` behaves
+        // ASCII-only lowercasing: non-ASCII case stays distinct
         assert_ne!(
             legacy_fingerprint("f", "ПРОВЕРКА"),
             legacy_fingerprint("f", "проверка")
@@ -1395,6 +1128,11 @@ mod tests {
             legacy_fingerprint("", "x"),
             legacy_fingerprint(CHANGE_WIDE, "x")
         );
+    }
+
+    /// An event the store admits without a Campaign Round, so sequencing can be tested alone.
+    fn unscoped_event() -> NewEvent {
+        NewEvent::new(EventType::SourceCapturedV1, json!({}))
     }
 
     #[test]
@@ -1417,17 +1155,10 @@ mod tests {
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
         let projection = LedgerProjection::rebuild(&store, &cas, "run").unwrap();
-        store
-            .append_legacy(
-                "run",
-                &cas,
-                NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": 2 })),
-            )
-            .unwrap();
+        store.append("run", &cas, unscoped_event()).unwrap();
 
         let ingest = Ingest::from_projection(&mut store, &cas, "run", projection).unwrap();
         assert_eq!(ingest.event_count, 1);
-        assert_eq!(ingest.ledger().round, 2);
     }
 
     #[test]
@@ -1435,13 +1166,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let mut source = EventStore::open(directory.path().join("source.sqlite")).unwrap();
-        source
-            .append_legacy(
-                "run",
-                &cas,
-                NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": 2 })),
-            )
-            .unwrap();
+        source.append("run", &cas, unscoped_event()).unwrap();
         let projection = LedgerProjection::rebuild(&source, &cas, "run").unwrap();
         let mut empty = EventStore::open(directory.path().join("empty.sqlite")).unwrap();
 
@@ -1459,13 +1184,7 @@ mod tests {
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
         let mut projection = LedgerProjection::rebuild(&store, &cas, "run").unwrap();
-        let event = store
-            .append_legacy(
-                "run",
-                &cas,
-                NewEvent::new(EVENT_GENERATION_ADVANCED, json!({ "round": 2 })),
-            )
-            .unwrap();
+        let event = store.append("run", &cas, unscoped_event()).unwrap();
         projection.apply_event(&event, &cas).unwrap();
 
         let repeated = projection.apply_event(&event, &cas).unwrap_err();

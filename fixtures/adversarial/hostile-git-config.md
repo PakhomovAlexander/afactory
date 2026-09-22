@@ -6,9 +6,9 @@ are immutable and reproducible by digest."*
 
 ## Why there is nothing to capture
 
-`bundle.sh` runs `git diff` in the user's checkout with the user's configuration. Filters and
-hooks fire as they normally would — that is not a bug in the harness, it simply has no
-capture boundary. The kernel does, and its snapshot must be a function of repository content
+The retired shell harness ran `git diff` in the user's checkout with the user's configuration.
+Filters and hooks fired as they normally would — that was not a bug in the harness, it simply had
+no capture boundary. The kernel does, and its snapshot must be a function of repository content
 alone.
 
 ## Setup

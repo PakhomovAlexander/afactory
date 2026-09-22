@@ -348,7 +348,7 @@ fn an_invalid_typed_report_is_diagnostic_unknown_instead_of_bricking_replay() {
     assert_eq!(finding.severity, Severity::Major);
     assert_eq!(finding.title, "bad path spelling");
     assert_eq!(finding.body, "body");
-    assert_eq!(finding.fix.as_deref(), Some("fix"));
+    assert_eq!(finding.fix, "fix");
     assert!(!finding.authority_diagnostic);
     assert_eq!(finding.convergence_scope, None);
     assert_eq!(finding.reports[0].scope, None);
@@ -634,7 +634,7 @@ fn frozen_flat_noncanonical_paths_remain_readable_and_fail_closed_unknown() {
         let finding = ledger.get(&key).unwrap();
         assert_eq!(finding.title, "claim");
         assert_eq!(finding.body, "body");
-        assert_eq!(finding.fix.as_deref(), Some("fix"));
+        assert_eq!(finding.fix, "fix");
         assert_eq!(finding.severity, Severity::Major);
         assert_eq!(finding.file, path);
         assert_eq!(finding.convergence_scope, None);
@@ -730,7 +730,7 @@ fn an_unreadable_later_report_does_not_overwrite_a_readable_claim() {
     assert_eq!(finding.severity, Severity::Major);
     assert_eq!(finding.title, "claim");
     assert_eq!(finding.body, "body");
-    assert_eq!(finding.fix.as_deref(), Some("fix"));
+    assert_eq!(finding.fix, "fix");
     assert_eq!(finding.reports.len(), 2);
     assert_eq!(finding.reports[1].scope, None);
     assert_eq!(
@@ -805,30 +805,6 @@ fn apply_report(
                     "report_id": report_id,
                 }),
                 vec![report_id],
-            ),
-            cas,
-        )
-        .unwrap();
-}
-
-fn apply_legacy_report(ledger: &mut Ledger, cas: &Cas) {
-    ledger
-        .apply_event(
-            &event(
-                EventType::FindingReportedV1,
-                serde_json::json!({
-                    "key": "legacy",
-                    "round": 1,
-                    "source": "legacy",
-                    "severity": "major",
-                    "file": "src/legacy.rs",
-                    "line": 1,
-                    "title": "legacy claim",
-                    "body": "body",
-                    "confidence": 0.5,
-                    "imported": true,
-                }),
-                Vec::new(),
             ),
             cas,
         )
@@ -1000,22 +976,6 @@ fn whole_tree_and_change_wide_reports_are_in_scope() {
         change_wide.get("wide").unwrap().reports[0].scope,
         Some(ReportScope::In)
     );
-}
-
-#[test]
-fn legacy_unknown_is_presentation_only_and_fails_closed() {
-    let dir = tempfile::tempdir().unwrap();
-    let cas = Cas::open(dir.path()).unwrap();
-    let mut ledger = Ledger::default();
-    apply_whole_tree_round(&mut ledger, &cas, 1);
-    apply_legacy_report(&mut ledger, &cas);
-    ledger.round = 1;
-
-    let finding = ledger.get("legacy").unwrap();
-    assert_eq!(finding.status, Status::Open);
-    assert_eq!(finding.reports[0].scope, None);
-    assert_eq!(finding.reports[0].scope_label(), "unknown");
-    assert_eq!(convergence(&ledger, Severity::Major).open_blocking, 1);
 }
 
 #[test]

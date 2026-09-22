@@ -28,8 +28,8 @@ pub use ledger::{
     ScopeAuthorityFailure, ScopeAuthorityKind, Status, Verdict,
 };
 pub use legacy::{
-    AddSummary, CanonicalReduction, CanonicalStage, Ingest, LegacyRow, PreparedReviewReduction,
-    canonical_finding_id, import_ledger_jsonl, legacy_fingerprint, prepare_canonical_task_review,
+    CanonicalReduction, CanonicalStage, Ingest, PreparedReviewReduction, canonical_finding_id,
+    legacy_fingerprint, prepare_canonical_task_review,
 };
 pub use shared::SharedEventStore;
 pub use store::{

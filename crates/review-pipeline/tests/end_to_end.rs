@@ -498,7 +498,11 @@ fn a_full_review_runs_and_lands_in_the_ledger() {
     assert_eq!(finding.status, Status::Open);
     assert_eq!(finding.reports.len(), 2, "both reports stay attached");
     assert_eq!(
-        finding.corroborating_sources(),
+        finding
+            .reports
+            .iter()
+            .map(|report| report.source.as_str())
+            .collect::<Vec<_>>(),
         vec!["architecture", "performance"],
         "canonical order, not completion order"
     );

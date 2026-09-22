@@ -1,29 +1,20 @@
-//! Importer for the shell harness's stage output.
+//! The flat reviewer result a model answers with, and its per-finding bridge to
+//! [`FindingReport`].
 //!
-//! `/self-review-heavy` reviewers emit one JSON object per stage per round, validated by
-//! `.agents/skills/self-review-heavy/scripts/findings.schema.json`. The acceptance corpus for
-//! [`FindingReport`] is a set of frozen real review bundles under
-//! `tools/review-kernel/fixtures/legacy/` — private review data, so the corpus ships only in
-//! the hub it was captured in, so the tests that read it are `#[ignore]`d rather than skipped
-//! at runtime — cargo shows `ignored`, where a runtime skip would print `ok`.
-//! The bar it set stands: a contract that cannot ingest real reviewer output unchanged is the
-//! wrong contract.
+//! [`LegacyFinding::into_report`] admits one flat finding only if it satisfies the stricter
+//! typed contract:
 //!
-//! Two places where the new contract is deliberately stricter than the old schema, both checked
-//! against the corpus before being imposed:
-//!
-//! - `fix` was nullable and is now required. A claim with no proposed remedy is one a triager
-//!   cannot act on. No real reviewer omitted it: every finding in the proving corpus
-//!   carried one, so requiring it lost nothing.
-//! - `file` was a required string, with the harness substituting the literal path
-//!   `(change-wide)` when a reviewer left it empty. That sentinel shares a namespace with real
-//!   paths, so it is dropped in favour of an empty location list.
+//! - `fix` parses as nullable but is required. A claim with no proposed remedy is one a triager
+//!   cannot act on.
+//! - An empty `file`, or the literal `(change-wide)` sentinel, is a change-wide claim. The
+//!   sentinel shares a namespace with real paths, so the report carries an empty location list
+//!   instead.
 
 use serde::{Deserialize, Serialize};
 
 use crate::finding::{FindingReport, Location, Severity};
 
-/// The sentinel the shell harness wrote into the path field for a change-wide finding.
+/// The path-field sentinel for a change-wide finding.
 pub const CHANGE_WIDE_SENTINEL: &str = "(change-wide)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -479,9 +470,8 @@ impl LegacyFinding {
         Ok(())
     }
 
-    /// Validate one legacy finding against the `FindingReport@1` contract and convert it.
-    /// The live ledger ingest calls this per finding so the contract governs what a run
-    /// actually produces, not only the acceptance corpus.
+    /// Validate one flat finding against the `FindingReport@1` contract and convert it.
+    /// Every ledger ingest calls this per finding, so the contract governs what a run produces.
     pub fn into_report(self, index: usize) -> Result<FindingReport, LegacyImportError> {
         let err = |reason| LegacyImportError { index, reason };
 
@@ -523,21 +513,6 @@ impl LegacyFinding {
             .validate()
             .map_err(|_| err(ImportReason::ReportContract))?;
         Ok(report)
-    }
-}
-
-impl LegacyStageOutput {
-    /// Convert every finding in this stage output into a report.
-    ///
-    /// Deliberately all-or-nothing per stage: the shell harness skipped an unusable finding and
-    /// ingested its siblings, which is right for a batch it cannot re-request, but an importer
-    /// that silently drops claims would make the migration's ledger-equivalence test meaningless.
-    pub fn into_reports(self) -> Result<Vec<FindingReport>, LegacyImportError> {
-        self.findings
-            .into_iter()
-            .enumerate()
-            .map(|(index, finding)| finding.into_report(index))
-            .collect()
     }
 }
 
@@ -646,23 +621,5 @@ mod tests {
                 reason: ImportReason::InvalidRuleId,
             }
         );
-    }
-
-    #[test]
-    fn one_bad_finding_fails_the_whole_stage() {
-        let stage = LegacyStageOutput {
-            verdict: LegacyVerdict::RequestChanges,
-            summary: None,
-            findings: vec![
-                finding(),
-                LegacyFinding {
-                    fix: None,
-                    ..finding()
-                },
-            ],
-            benchmark_demands: Vec::new(),
-            disputes: Vec::new(),
-        };
-        assert!(stage.into_reports().is_err());
     }
 }

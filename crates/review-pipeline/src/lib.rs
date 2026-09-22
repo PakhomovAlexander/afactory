@@ -3076,7 +3076,7 @@ fn finding_set_entries(ledger: &review_store::Ledger) -> Vec<review_core::Findin
                 location_unrecorded,
                 title: finding.title.clone(),
                 body: finding.body.clone(),
-                fix: finding.fix.clone(),
+                fix: Some(finding.fix.clone()),
                 confidence: finding.confidence,
                 source: finding.source.clone(),
                 last_seen_round: finding.last_seen_round,

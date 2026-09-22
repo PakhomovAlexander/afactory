@@ -124,7 +124,6 @@ pub struct NewEvent {
     pub correlation_id: Option<String>,
     pub artifact_refs: Vec<String>,
     pub payload: Value,
-    legacy_import: bool,
 }
 
 impl NewEvent {
@@ -140,7 +139,6 @@ impl NewEvent {
             correlation_id: None,
             artifact_refs: Vec::new(),
             payload,
-            legacy_import: false,
         }
     }
 
@@ -171,11 +169,6 @@ impl NewEvent {
 
     pub fn referencing(mut self, artifact_refs: Vec<String>) -> Self {
         self.artifact_refs = artifact_refs;
-        self
-    }
-
-    pub(crate) fn legacy_import(mut self) -> Self {
-        self.legacy_import = true;
         self
     }
 }
@@ -336,19 +329,6 @@ impl EventStore {
             .into_iter()
             .next()
             .ok_or_else(|| StoreError::Conflict("single-event append produced no event".into()))
-    }
-
-    /// Append through the frozen pre-campaign compatibility path.
-    ///
-    /// New campaign code must use [`append`](Self::append); this explicit entry point exists for
-    /// import/parity tooling whose historical events predate CampaignOpened@1.
-    pub fn append_legacy(
-        &mut self,
-        run_id: &str,
-        cas: &Cas,
-        event: NewEvent,
-    ) -> Result<RunEvent, StoreError> {
-        self.append(run_id, cas, event.legacy_import())
     }
 
     /// Atomically append an ordered event batch.
@@ -2545,24 +2525,6 @@ fn validate_campaign_transition(
             }
             event_type if round_runtime_event(event_type) => {
                 if active.is_none() {
-                    if event.legacy_import
-                        && matches!(
-                            event_type,
-                            EventType::CheckCompletedV1
-                                | EventType::FindingReportedV1
-                                | EventType::GenerationAdvancedV1
-                        )
-                    {
-                        if event_type == EventType::FindingReportedV1 {
-                            let key = event.payload["key"].as_str().ok_or_else(|| {
-                                StoreError::Conflict(
-                                    "legacy FindingReported@1 has no finding key".into(),
-                                )
-                            })?;
-                            batch_findings.insert(key.to_string());
-                        }
-                        continue;
-                    }
                     return Err(StoreError::Conflict(format!(
                         "{event_type} requires an active Round"
                     )));
@@ -3940,9 +3902,6 @@ fn validate_campaign_transition(
                                             .into(),
                                     ));
                                 }
-                                None if event.payload.get("imported").and_then(Value::as_bool)
-                                    == Some(true)
-                                    && event.artifact_refs.is_empty() => {}
                                 None => {
                                     return Err(StoreError::Conflict(
                                         "FindingReported@1 has no authoritative report artifact"

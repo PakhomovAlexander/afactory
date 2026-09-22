@@ -1787,13 +1787,7 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
         }
         if options.long {
             print_indented("body", &finding.body);
-            print_indented(
-                "fix",
-                finding
-                    .fix
-                    .as_deref()
-                    .unwrap_or("(unavailable: artifact-less legacy import)"),
-            );
+            print_indented("fix", &finding.fix);
             print_indented(
                 "report scopes",
                 &finding
@@ -1929,9 +1923,6 @@ fn finding_claim_ids(
     findings.extend(finding.aliases.iter().cloned());
     let mut reports = BTreeSet::new();
     for report in &finding.reports {
-        if report.report_id.is_empty() {
-            continue;
-        }
         let envelope: review_core::ArtifactEnvelope = serde_json::from_value(
             cas.get_json(&report.report_id)
                 .map_err(|error| error.to_string())?,
@@ -2057,30 +2048,15 @@ fn show(options: &ShowOptions) -> Result<(), String> {
             attached
                 .line
                 .map_or("-".to_string(), |line| line.to_string()),
-            if attached.report_id.is_empty() {
-                "(unavailable: legacy import)"
-            } else {
-                &attached.report_id
-            }
+            attached.report_id
         );
-        if attached.report_id.is_empty() {
-            print_indented("body", &finding.body);
-            print_indented("fix", "(unavailable: artifact-less legacy import)");
-            println!(
-                "  confidence: {}",
-                finding
-                    .confidence
-                    .map_or("(unavailable)".to_string(), |value| value.to_string())
-            );
-        } else {
-            let report = cas
-                .get_json(&attached.report_id)
-                .map_err(|e| format!("reading report {}: {e}", attached.report_id))?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
-            );
-        }
+        let report = cas
+            .get_json(&attached.report_id)
+            .map_err(|e| format!("reading report {}: {e}", attached.report_id))?;
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|e| e.to_string())?
+        );
     }
 
     println!("\nhistory:");
@@ -2972,15 +2948,7 @@ fn print_report_text(report: &ReviewReportView) {
                 .map_or("-".to_string(), |line| line.to_string())
         );
         println!("    body: {}", one_line(&finding.body));
-        println!(
-            "    fix: {}",
-            one_line(
-                finding
-                    .fix
-                    .as_deref()
-                    .unwrap_or("unavailable: artifact-less legacy import")
-            )
-        );
+        println!("    fix: {}", one_line(&finding.fix));
         for transition in &finding.history {
             println!(
                 "    history round {}: {} - {}",
@@ -3094,43 +3062,22 @@ fn print_report_markdown(report: &ReviewReportView) {
                     .map_or("-".to_string(), |line| line.to_string())
             );
             println!("  - Body: {}", markdown_line(&finding.body));
-            println!(
-                "  - Fix: {}",
-                markdown_line(
-                    finding
-                        .fix
-                        .as_deref()
-                        .unwrap_or("unavailable: artifact-less legacy import")
-                )
-            );
+            println!("  - Fix: {}", markdown_line(&finding.fix));
             let evidence = finding
                 .reports
                 .iter()
                 .map(|attached| {
-                    if attached.report_id.is_empty() {
-                        format!(
-                            "{} round {} scope={} at {}:{} (legacy import)",
-                            attached.source,
-                            attached.round,
-                            attached.scope_label(),
-                            attached.file,
-                            attached
-                                .line
-                                .map_or("-".to_string(), |line| line.to_string())
-                        )
-                    } else {
-                        format!(
-                            "{} round {} scope={} at {}:{} `{}`",
-                            attached.source,
-                            attached.round,
-                            attached.scope_label(),
-                            attached.file,
-                            attached
-                                .line
-                                .map_or("-".to_string(), |line| line.to_string()),
-                            attached.report_id
-                        )
-                    }
+                    format!(
+                        "{} round {} scope={} at {}:{} `{}`",
+                        attached.source,
+                        attached.round,
+                        attached.scope_label(),
+                        attached.file,
+                        attached
+                            .line
+                            .map_or("-".to_string(), |line| line.to_string()),
+                        attached.report_id
+                    )
                 })
                 .collect::<Vec<_>>()
                 .join("; ");

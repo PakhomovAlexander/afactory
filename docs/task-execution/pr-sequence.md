@@ -3,11 +3,11 @@
 The Task runtime was delivered as one increment of numbered packages. The package numbers are an
 acceptance checklist, not separate releases: each package's contracts are covered by the linked
 walkthroughs and decision records, and later packages extend earlier evidence without rewriting
-the frozen fixture corpus or treating a generic Task completion as review approval.
+earlier fixtures or treating a generic Task completion as review approval.
 
 | Package | Scope | Reference |
 |---|---|---|
-| P00 | Unchanged-source baseline gate and frozen fixture identities | `fixtures/synthetic/` |
+| P00 | Unchanged-source baseline gate and frozen fixture identities | Retired at GA ([ADR-0113](../adr/0113-ga-reads-only-what-ga-writes.md)) |
 | P01 | Versioned Task/Pipeline contracts, schemas and parity fixtures | [ADR-0046](../adr/0046-add-versioned-task-contracts-with-exact-plan-approval.md), [ADR-0047](../adr/0047-preserve-task-wire-identity-and-review-completeness.md) |
 | P02–P03 | Common Store lifecycle, developer decisions and typed compilation | [ADR-0048](../adr/0048-compile-task-ports-and-fence-developer-plan-decisions.md) |
 | P04–P06 | Worker execution through durable Attempts, Task-file CLI, local delivery and Review Tasks | [Task file](task-file.md), [Review Tasks](review-task.md), [ADR-0049](../adr/0049-run-task-workers-through-shared-durable-attempts.md), [ADR-0050](../adr/0050-reduce-review-tasks-with-the-canonical-domain-ledger.md) |

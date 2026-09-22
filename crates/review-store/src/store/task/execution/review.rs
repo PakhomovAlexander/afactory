@@ -86,7 +86,6 @@ impl WritePermit {
             || event.attempt_id != self.event.attempt_id
             || event.causation_id != self.event.causation_id
             || event.correlation_id != self.event.correlation_id
-            || event.legacy_import
         {
             return Err(conflict(
                 "Task Review publication lost its exact execution/lease comparison",
@@ -186,7 +185,6 @@ impl EventStore {
         if !event.event_type.is_run_report()
             || event.node_id.is_some()
             || event.attempt_id.is_some()
-            || event.legacy_import
             || event.causation_id.as_deref() != Some(&round.round_event_id)
             || event.correlation_id.as_deref() != Some(&round.subject_id)
             || !event.artifact_refs.iter().any(|id| id == report_id)

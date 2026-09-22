@@ -158,7 +158,6 @@ pub(super) fn prepare_review_outputs(
     stages: &[PreparedStage],
 ) -> Result<PreparedReviewReduction, StoreError> {
     let round = ledger.round;
-    let mut summary = AddSummary::default();
     let mut projected = (*ledger).clone();
     let mut events = Vec::new();
     let existing_reports: BTreeSet<(&str, &str, u32, &str)> = ledger
@@ -301,10 +300,10 @@ pub(super) fn prepare_review_outputs(
                 if replayed {
                     continue;
                 }
-                let (Some(fix), Some(confidence)) = (finding.fix.clone(), finding.confidence)
-                else {
+                let Some(confidence) = finding.confidence else {
                     continue;
                 };
+                let fix = finding.fix.clone();
                 let locations =
                     if finding.identity_file == review_core::legacy::CHANGE_WIDE_SENTINEL {
                         Vec::new()
@@ -383,9 +382,8 @@ pub(super) fn prepare_review_outputs(
                 pending_occurrences.insert((rule_id.clone(), occurrence_key.clone()), key.clone());
             }
 
-            // The report is an immutable artifact; the event references it. Even a duplicate
-            // gets stored — that is the whole difference from the shell ledger, which counted
-            // it and threw it away.
+            // The report is an immutable artifact; the event references it. A duplicate from
+            // another reviewer is stored too, so every reviewer's evidence stays attached.
             let report_identity = (key.clone(), source.to_string(), round, report_id.clone());
 
             if stage.provenance.is_some() {
@@ -400,7 +398,6 @@ pub(super) fn prepare_review_outputs(
             if existing_reports.contains(&(key.as_str(), source, round, report_id.as_str()))
                 || pending_reports.contains(&report_identity)
             {
-                summary.dup += 1;
                 continue;
             }
             pending_reports.insert(report_identity);
@@ -477,24 +474,6 @@ pub(super) fn prepare_review_outputs(
                 apply_candidate(&mut projected, &challenge_event, cas)?;
                 events.push(challenge_event);
             }
-
-            match projected
-                .get(&key)
-                .and_then(|f| f.history.last())
-                .map(|t| t.kind)
-            {
-                Some(TransitionKind::Reported) => summary.new += 1,
-                Some(TransitionKind::Reopened) => summary.reopened += 1,
-                Some(TransitionKind::Escalated) => summary.escalated += 1,
-                // `AdoptedWhileDeclined` counts as a duplicate in the harness's tally, even
-                // though it adopts the higher severity — the entry did not become actionable.
-                Some(
-                    TransitionKind::Duplicate
-                    | TransitionKind::AdoptedWhileDeclined
-                    | TransitionKind::AuthorityRecovered,
-                ) => summary.dup += 1,
-                _ => {}
-            }
         }
 
         if stage.result_contract == ReviewerResultContract::V2 {
@@ -562,7 +541,6 @@ pub(super) fn prepare_review_outputs(
                     .referencing(vec![record_id]);
                 apply_candidate(&mut projected, &event, cas)?;
                 events.push(event);
-                summary.contested += 1;
             }
         }
 
@@ -597,17 +575,10 @@ pub(super) fn prepare_review_outputs(
             let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string());
             apply_candidate(&mut projected, &event, cas)?;
             events.push(event);
-            summary.contested += 1;
         }
     }
 
-    summary.open = projected
-        .findings()
-        .iter()
-        .filter(|f| f.status == Status::Open)
-        .count();
     let reduction = CanonicalReduction {
-        summary,
         selected_report_ids,
         report_ids_by_source,
         relation_ids,

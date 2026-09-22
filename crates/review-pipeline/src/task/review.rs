@@ -895,7 +895,7 @@ impl ReviewTaskDomain {
                         line: finding.line,
                         title: finding.title,
                         body: finding.body,
-                        remedy: finding.fix.unwrap_or_default(),
+                        remedy: finding.fix,
                     },
                 );
             }

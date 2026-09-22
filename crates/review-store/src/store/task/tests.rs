@@ -590,12 +590,7 @@ fn worker_output_and_generic_event_append_cannot_supply_developer_authority() {
     );
     assert!(
         f.store
-            .append(&task_run_id("task-1").unwrap(), &f.cas, fake.clone())
-            .is_err()
-    );
-    assert!(
-        f.store
-            .append_legacy(&task_run_id("task-1").unwrap(), &f.cas, fake)
+            .append(&task_run_id("task-1").unwrap(), &f.cas, fake)
             .is_err()
     );
     let campaign = NewEvent::new(

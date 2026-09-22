@@ -1,131 +1,13 @@
+mod support;
+
 use review_core::{
-    AuthorityFileV1, CANONICAL_FINDING_IDENTITY_POLICY, CampaignConvergenceV1, CampaignManifestV1,
-    CampaignOpenedPayloadV1, EventType, FindingGroupingAction, FindingGroupingEventPayloadV1,
-    FindingGroupingV1, LegacyStageOutput, Producer, RoundStartedPayloadV1, RunEvent, SubjectKind,
-    SubjectV1,
+    EventType, FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1,
+    LegacyStageOutput, Producer, RoundStartedPayloadV1, RunEvent, SubjectV1,
 };
 use review_store::{
     CanonicalStage, Cas, ConvergencePolicy, EventStore, Ingest, LedgerProjection, NewEvent,
 };
-
-struct Authority {
-    authority: String,
-    manifest: String,
-    subject: String,
-    head: String,
-    findings: String,
-    demands: String,
-    round_event_id: String,
-}
-
-fn opened_round(store: &mut EventStore, cas: &Cas, run_id: &str) -> Authority {
-    let authority = cas.put(b"authority").unwrap();
-    let pipeline = cas
-        .put(
-            br#"version = 2
-[subject]
-kind = "whole-tree"
-[[nodes]]
-id = "reviewer"
-kind = "reviewer"
-outputs = [{ name = "out", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
-runner = { program = "/bin/true" }
-"#,
-        )
-        .unwrap();
-    let lock = cas.put(b"lock").unwrap();
-    let findings = cas.put(b"finding genesis").unwrap();
-    let demands = cas.put(b"demand genesis").unwrap();
-    let manifest = cas
-        .put_json(
-            &serde_json::to_value(CampaignManifestV1 {
-                authority_snapshot_id: authority.clone(),
-                subject_kind: SubjectKind::WholeTree,
-                base_snapshot_id: None,
-                pipeline: AuthorityFileV1 {
-                    path: "review.toml".into(),
-                    artifact_id: pipeline.clone(),
-                },
-                reviewer_lock: AuthorityFileV1 {
-                    path: "review.lock".into(),
-                    artifact_id: lock,
-                },
-                reviewers: vec![],
-                execution_policy_ids: vec![pipeline],
-                project_policy_ids: vec![],
-                convergence: CampaignConvergenceV1 {
-                    clean_rounds: 1,
-                    max_rounds: 2,
-                    gate: "major".into(),
-                },
-                reviewer_timeout_seconds: 60,
-                check_timeout_seconds: 3600,
-                git_timeout_seconds: 300,
-                budgets: None,
-                focus: None,
-                finding_identity_policy: CANONICAL_FINDING_IDENTITY_POLICY.into(),
-                finding_genesis_id: findings.clone(),
-                demand_genesis_id: demands.clone(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
-    let head = cas.put(b"head snapshot").unwrap();
-    let subject = cas
-        .put_json(&serde_json::to_value(SubjectV1::whole_tree(&head)).unwrap())
-        .unwrap();
-    let opened = store
-        .append(
-            run_id,
-            cas,
-            NewEvent::new(
-                EventType::CampaignOpenedV1,
-                serde_json::to_value(CampaignOpenedPayloadV1 {
-                    campaign_manifest_id: manifest.clone(),
-                    authority_snapshot_id: authority.clone(),
-                })
-                .unwrap(),
-            )
-            .referencing(vec![authority.clone(), manifest.clone()]),
-        )
-        .unwrap();
-    let round = store
-        .append(
-            run_id,
-            cas,
-            NewEvent::new(
-                EventType::RoundStartedV1,
-                serde_json::to_value(RoundStartedPayloadV1 {
-                    round: 1,
-                    epoch: 1,
-                    campaign_manifest_id: manifest.clone(),
-                    subject_id: subject.clone(),
-                    prior_finding_set_id: findings.clone(),
-                    prior_demand_set_id: demands.clone(),
-                })
-                .unwrap(),
-            )
-            .caused_by(opened.event_id)
-            .referencing(vec![
-                authority.clone(),
-                manifest.clone(),
-                subject.clone(),
-                head.clone(),
-                findings.clone(),
-                demands.clone(),
-            ]),
-        )
-        .unwrap();
-    Authority {
-        authority,
-        manifest,
-        subject,
-        head,
-        findings,
-        demands,
-        round_event_id: round.event_id,
-    }
-}
+use support::opened_round;
 
 fn stage() -> LegacyStageOutput {
     serde_json::from_value(serde_json::json!({
@@ -795,7 +677,7 @@ fn grouping_is_reversible_and_preserves_each_report_obligation() {
             &cas,
         )
         .unwrap();
-    let mut lower_report = stage().into_reports().unwrap().remove(0);
+    let mut lower_report = stage().findings.remove(0).into_report(0).unwrap();
     lower_report.severity = review_core::Severity::Minor;
     lower_report.body = "lower-severity evidence from a different Subject".into();
     let (lower_record, _) = cas
@@ -1155,9 +1037,19 @@ fn explicit_dispositions_are_immutable_and_only_disputes_contest() {
         .iter()
         .map(|finding| finding.key.clone())
         .collect();
-    ingest
-        .resolve(&ids[0], review_store::Status::Fixed, Some("candidate fix"))
-        .unwrap();
+    drop(ingest);
+    support::resolve(
+        &mut store,
+        &cas,
+        run_id,
+        &authority,
+        &ids[0],
+        review_store::Status::Fixed,
+        "candidate fix",
+    );
+    let mut ingest = Ingest::new(&mut store, &cas, run_id)
+        .unwrap()
+        .under_round(&authority.round_event_id);
     ingest.advance().unwrap();
     assert_eq!(
         ingest.ledger().get(&ids[0]).unwrap().status,
@@ -1561,5 +1453,195 @@ fn fixed_requires_current_attestation_and_verification_and_resolutions_can_expir
     assert_eq!(
         ledger.finding_view(&finding_id).unwrap().status,
         review_store::Status::Contested
+    );
+}
+
+// Flat reviewer results on the path/title identity policy take the live strict gate: every
+// finding must satisfy FindingReport@1, and one violation refuses the whole result, so a
+// blocking verdict cannot degrade into an empty pass.
+
+fn live_stage(findings: serde_json::Value, disputes: serde_json::Value) -> LegacyStageOutput {
+    serde_json::from_value(serde_json::json!({
+        "verdict": "request-changes",
+        "summary": null,
+        "findings": findings,
+        "benchmark_demands": [],
+        "disputes": disputes,
+    }))
+    .unwrap()
+}
+
+fn live_finding(file: &str, title: &str, body: &str) -> serde_json::Value {
+    serde_json::json!({
+        "severity": "major",
+        "file": file,
+        "line": 7,
+        "title": title,
+        "body": body,
+        "fix": "bound it",
+        "confidence": 0.9
+    })
+}
+
+/// Admit one flat result under a path/title Round; on refusal, prove nothing was appended.
+fn ingest_live(finding: serde_json::Value) -> Result<review_store::Ledger, String> {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let authority = support::opened_legacy_round(&mut store, &cas, "run");
+    let before = store.len("run").unwrap();
+    let stage = live_stage(serde_json::json!([finding]), serde_json::json!([]));
+    let mut ingest = Ingest::new(&mut store, &cas, "run")
+        .unwrap()
+        .under_round(&authority.round_event_id);
+    match ingest.add_live_stage_outputs(&[("deep", &stage)]) {
+        Ok(()) => Ok(ingest.into_projection().into_ledger()),
+        Err(error) => {
+            assert!(ingest.ledger().is_empty());
+            drop(ingest);
+            assert_eq!(
+                store.len("run").unwrap(),
+                before,
+                "a refusal appends nothing"
+            );
+            Err(error.to_string())
+        }
+    }
+}
+
+#[test]
+fn a_contract_complete_live_finding_is_ingested() {
+    let ledger = ingest_live(live_finding("src/a.rs", "T", "b")).unwrap();
+    assert_eq!(ledger.len(), 1);
+    assert_eq!(ledger.findings()[0].fix, "bound it");
+}
+
+#[test]
+fn a_live_finding_that_violates_finding_report_v1_refuses_the_whole_result() {
+    for (field, value) in [
+        ("fix", serde_json::Value::Null),
+        ("confidence", serde_json::json!(1.5)),
+        ("line", serde_json::json!(0)),
+    ] {
+        let mut finding = live_finding("src/a.rs", "T", "b");
+        finding[field] = value;
+        let error = ingest_live(finding).unwrap_err();
+        assert!(
+            error.contains("violates FindingReport@1"),
+            "{field}: {error}"
+        );
+    }
+}
+
+/// An empty file is a change-wide claim: empty locations are valid FindingReport@1.
+#[test]
+fn a_change_wide_live_finding_is_admitted() {
+    let mut finding = live_finding("", "Whole-change concern", "b");
+    finding["line"] = serde_json::Value::Null;
+    let ledger = ingest_live(finding).unwrap();
+    assert_eq!(ledger.findings()[0].file, "(change-wide)");
+}
+
+#[test]
+fn a_noncanonical_report_path_is_refused_instead_of_projecting_out() {
+    let error = ingest_live(live_finding("./src/in.rs", "bad spelling", "body")).unwrap_err();
+    assert!(
+        error.contains("canonical repository-relative path"),
+        "{error}"
+    );
+}
+
+/// Two reviewers naming the same path and title in one Round share one path/title Finding and
+/// both Reports stay attached; the same title at another path is another Finding.
+#[test]
+fn live_flat_results_group_by_path_and_title_and_keep_every_report() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let authority = support::opened_legacy_round(&mut store, &cas, "run");
+    let deep = live_stage(
+        serde_json::json!([live_finding(
+            "src/a.rs",
+            "Retry loop can spin forever",
+            "deep"
+        )]),
+        serde_json::json!([]),
+    );
+    let cross = live_stage(
+        serde_json::json!([
+            live_finding("src/a.rs", "Retry loop can spin forever", "cross"),
+            live_finding("src/b.rs", "Retry loop can spin forever", "elsewhere"),
+        ]),
+        serde_json::json!([]),
+    );
+    let mut ingest = Ingest::new(&mut store, &cas, "run")
+        .unwrap()
+        .under_round(&authority.round_event_id);
+    ingest
+        .add_live_stage_outputs(&[("deep-r1", &deep), ("cross-r1", &cross)])
+        .unwrap();
+    drop(ingest);
+
+    let ledger = LedgerProjection::rebuild(&store, &cas, "run")
+        .unwrap()
+        .into_ledger();
+    assert_eq!(ledger.len(), 2);
+    let shared = ledger
+        .get(&review_store::legacy_fingerprint(
+            "src/a.rs",
+            "Retry loop can spin forever",
+        ))
+        .unwrap();
+    assert_eq!(shared.source, "deep-r1");
+    assert_eq!(shared.body, "deep");
+    let sources: Vec<&str> = shared.reports.iter().map(|r| r.source.as_str()).collect();
+    assert_eq!(sources, ["deep-r1", "cross-r1"]);
+    assert_ne!(shared.reports[0].report_id, shared.reports[1].report_id);
+}
+
+/// A reviewer's `refute` on a prior claim contests it, which blocks convergence and flags the
+/// claim for human adjudication.
+#[test]
+fn a_refute_dispute_contests_the_prior_claim() {
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let authority = support::opened_legacy_round(&mut store, &cas, "run");
+    let mut ingest = Ingest::new(&mut store, &cas, "run")
+        .unwrap()
+        .under_round(&authority.round_event_id);
+    ingest
+        .add_live_stage_outputs(&[(
+            "architecture",
+            &live_stage(
+                serde_json::json!([live_finding("src/a.rs", "Claim", "b")]),
+                serde_json::json!([]),
+            ),
+        )])
+        .unwrap();
+    let key = ingest.ledger().findings()[0].key.clone();
+    assert_eq!(
+        ingest.ledger().get(&key).unwrap().status,
+        review_store::Status::Open
+    );
+
+    let refutation = live_stage(
+        serde_json::json!([]),
+        serde_json::json!([{"claim_id": key, "position": "refute", "reason": "not reproducible"}]),
+    );
+    ingest
+        .add_live_stage_outputs(&[("performance", &refutation)])
+        .unwrap();
+    drop(ingest);
+
+    // Rebuilt from the log alone, the claim is contested: the dispute reached the Ledger.
+    let ledger = LedgerProjection::rebuild(&store, &cas, "run")
+        .unwrap()
+        .into_ledger();
+    let finding = ledger.get(&key).unwrap();
+    assert_eq!(finding.status, review_store::Status::Contested);
+    assert_eq!(
+        finding.current_note(),
+        Some("contested by performance: not reproducible")
     );
 }

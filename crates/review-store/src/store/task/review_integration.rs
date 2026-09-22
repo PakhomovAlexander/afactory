@@ -1424,7 +1424,6 @@ pub(super) fn validate_cached(
             let events: Vec<_> = canonical
                 .iter()
                 .map(|e| NewEvent {
-                    legacy_import: false,
                     event_type: e.event_type,
                     occurred_at: e.occurred_at.clone(),
                     node_id: e.node_id.clone(),

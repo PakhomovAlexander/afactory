@@ -168,6 +168,13 @@ or needs a documented hand edit.
   a Campaign whose log holds one can no longer be run, reported or listed. The unused
   `run-report-v2.json` and `review-report-v2.json` schemas are gone, and `review-report-v3.json`
   now has its own `$id`, `urn:af:schema:review-report-view:3`, instead of repeating `@2`'s.
+- The retired shell review harness is gone from the repository: `compat/legacy-harness/`, the
+  `fixtures/synthetic/` corpus generated from it, and the `fixtures/legacy/` private-corpus
+  tests. `make fixtures` and `make review-kernel-test-corpus` no longer exist, and `make check`
+  no longer regenerates the corpus. A Campaign event log that holds an artifact-less
+  `FindingReported@1` (the `"imported": true` shape that only the unused `ledger.jsonl` importer
+  wrote) no longer replays, and `af review ledger`, `af review show` and `af review report` no
+  longer print an "unavailable: legacy import" placeholder.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

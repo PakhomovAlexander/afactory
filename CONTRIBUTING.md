@@ -25,9 +25,9 @@ make check
 ```
 
 That is `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`,
-`cargo test --locked`, and `fixtures/synthetic/generate.sh --check`. CI runs exactly this, so
-a green local run is a green PR. Clippy warnings are errors; fix them rather than allowing
-them.
+`cargo test --locked`, and the release-selection check (`scripts/test-release-resolve.py`). CI
+runs exactly this, so a green local run is a green PR. Clippy warnings are errors; fix them
+rather than allowing them.
 
 If you touch `crates/review-sandbox`, also run the live probes:
 
@@ -43,9 +43,6 @@ fail loudly there, never skip.
 - Unit tests live next to the code; integration tests live in `crates/<crate>/tests/`, one
   file per subject (`capture.rs`, `crash_replay.rs`, `container_probes.rs`, …), with shared
   helpers under `tests/support/` or `tests/common/`.
-- Synthetic fixtures under `fixtures/synthetic/` are generated: change the generator, run
-  `fixtures/synthetic/generate.sh`, and commit the output; `--check` in `make check` refuses
-  drift.
 - A test that reproduces a bug goes in first and fails; the fix follows in the same PR.
 
 ## Design changes and ADRs

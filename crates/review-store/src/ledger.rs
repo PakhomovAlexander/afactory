@@ -1,14 +1,10 @@
 //! The Findings Ledger projection, and the convergence policy it feeds.
 //!
 //! This is a *projection*: it holds no truth of its own and is rebuilt by folding the event log.
-//! Delete it and replay; you get the same answer. That is the property the shell harness could
-//! not have, because its JSONL file was the only copy of its own state.
+//! Delete it and replay; you get the same answer.
 //!
-//! The fold reproduces `ledger.sh`'s decisions exactly — same statuses, same effective
-//! severities, same news rounds, same verdict. It has to: the migration is only safe if the new
-//! engine reaches the old conclusions on every case the old one has ever seen. What it does
-//! *not* reproduce is the loss — every report stays attached, and a resolution never overwrites
-//! the note that preceded it.
+//! Nothing is lost in the fold: every report stays attached, and a resolution never overwrites
+//! the note that preceded it. `tests/ledger_convergence.rs` pins the transitions and verdicts.
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -80,7 +76,7 @@ pub struct ScopeAuthorityFailure {
     pub reason: String,
 }
 
-/// The legacy status set, kept verbatim so equivalence can be checked field by field.
+/// A Finding's adjudication status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Status {
@@ -131,10 +127,10 @@ impl Status {
     }
 }
 
-/// One report, kept immutable. The shell harness discarded every report after the first.
+/// One report, kept immutable, however many reviewers made the same claim.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttachedReport {
-    /// CAS ID of the complete envelope or frozen payload referenced by the event.
+    /// CAS ID of the complete envelope or payload referenced by the event.
     pub report_id: String,
     /// Domain-separated typed Report identity. Absent for pre-envelope history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -161,8 +157,8 @@ impl AttachedReport {
     }
 }
 
-/// One transition, appended rather than overwritten. `ledger.sh resolve` wrote over `.note`,
-/// which is how a reopen erased the fix note that came before it.
+/// One transition, appended rather than overwritten, so a reopen never erases the fix note that
+/// came before it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Transition {
     pub round: u32,
@@ -196,7 +192,7 @@ pub struct Finding {
     pub aliases: Vec<String>,
     pub status: Status,
     pub severity: Severity,
-    /// `ledger.sh`'s `.round`: when this finding last counted as convergence news.
+    /// When this finding last counted as convergence news, whatever the Report Scope.
     pub news_round: u32,
     pub last_seen_round: u32,
     pub source: String,
@@ -210,8 +206,8 @@ pub struct Finding {
     pub line: Option<i64>,
     pub title: String,
     pub body: String,
-    /// The currently adopted remedy. Absent only for artifact-less legacy imports.
-    pub fix: Option<String>,
+    /// The currently adopted remedy.
+    pub fix: String,
     pub confidence: Option<f64>,
     /// The claim content is an actionable placeholder for unreadable Report authority. The first
     /// readable Report for this key replaces it regardless of relative severity.
@@ -225,27 +221,21 @@ pub struct Finding {
     pub convergence_scope: Option<ReportScope>,
     /// Highest active non-out claim severity. `None` means active claims are wholly out.
     pub convergence_severity: Option<Severity>,
-    /// Scope-aware News used by convergence; separate from frozen legacy `news_round`.
+    /// Scope-aware News used by convergence; separate from `news_round`.
     pub scoped_news_round: Option<u32>,
-    /// Every report, in arrival order — including the ones the shell harness dropped.
+    /// Every report, in arrival order, duplicates included.
     pub reports: Vec<AttachedReport>,
     /// Every transition, in order — including the notes a resolution used to overwrite.
     pub history: Vec<Transition>,
 }
 
 impl Finding {
-    /// The note the shell harness would have been left holding: the last one written.
+    /// The last non-empty note written.
     pub fn current_note(&self) -> Option<&str> {
         self.history
             .iter()
             .rev()
             .find_map(|t| t.note.as_deref().filter(|n| !n.is_empty()))
-    }
-
-    pub fn corroborating_sources(&self) -> Vec<&str> {
-        let mut sources: Vec<&str> = self.reports.iter().map(|r| r.source.as_str()).collect();
-        sources.dedup();
-        sources
     }
 
     pub fn convergence_scope_label(&self) -> &'static str {
@@ -397,17 +387,6 @@ pub enum Verdict {
     NotConverged,
     /// The round cap was reached with work outstanding. A third verdict, never a pass.
     Exhausted,
-}
-
-impl Verdict {
-    /// The exit codes `ledger.sh converged` uses, preserved so callers can be compared directly.
-    pub fn exit_code(self) -> i32 {
-        match self {
-            Verdict::Converged => 0,
-            Verdict::NotConverged => 1,
-            Verdict::Exhausted => 3,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -661,9 +640,8 @@ impl Ledger {
         let key = required_string(payload, "FindingReported@1", "key")?;
         let source = required_string(payload, "FindingReported@1", "source")?;
         let round = required_round(payload, "FindingReported@1")?;
-        let imported = payload.get("imported").and_then(Value::as_bool) == Some(true);
-        let (report_id, mut report) = match (artifact_refs, imported) {
-            ([report_id], false) => {
+        let (report_id, mut report) = match artifact_refs {
+            [report_id] => {
                 if payload.get("report_id").and_then(Value::as_str) != Some(report_id) {
                     return Err(malformed(
                         "FindingReported@1",
@@ -701,20 +679,10 @@ impl Ledger {
                 }
                 (report_id.clone(), report)
             }
-            ([], true) => (
-                String::new(),
-                ReportProjection::from_legacy_payload(payload)?,
-            ),
-            ([], false) => {
-                return Err(malformed(
-                    "FindingReported@1",
-                    "artifact-less reports require `imported: true`",
-                ));
-            }
             _ => {
                 return Err(malformed(
                     "FindingReported@1",
-                    "expected exactly one report artifact, or none for an explicit import",
+                    "expected exactly one report artifact",
                 ));
             }
         };
@@ -766,11 +734,9 @@ impl Ledger {
         // an actionable placeholder that the first readable Report replaces unconditionally.
         if unreadable && self.findings.contains_key(&key) {
             if let Some(existing) = self.findings.get_mut(&key) {
-                if !attached.report_id.is_empty() {
-                    existing
-                        .unreadable_reports
-                        .insert(attached.report_id.clone());
-                }
+                existing
+                    .unreadable_reports
+                    .insert(attached.report_id.clone());
                 existing.reports.push(attached);
             }
             return Ok(());
@@ -1895,7 +1861,7 @@ impl Ledger {
         Some(view)
     }
 
-    /// Findings in first-reported order, which is the order the shell ledger's file had.
+    /// Findings in first-reported order.
     pub fn findings(&self) -> Vec<&Finding> {
         self.order
             .iter()
@@ -2188,11 +2154,11 @@ impl Ledger {
         &self.scope_authority_failures
     }
 
-    /// The convergence decision, computed exactly as `ledger.sh converged` computes it.
+    /// The convergence decision.
     ///
     /// `new_recent` counts by news round and **ignores status** — so a finding fixed in the
-    /// current round still blocks. That is not an oversight in the original: it is what forces a
-    /// fix to survive another review before the run may call itself converged.
+    /// current round still blocks. That is deliberate: it is what forces a fix to survive
+    /// another review before the run may call itself converged.
     pub fn convergence(&self, policy: ConvergencePolicy) -> Convergence {
         let gate = policy.gate.rank();
         let views = self.finding_views();
@@ -2374,7 +2340,7 @@ struct ReportProjection {
     line: Option<i64>,
     title: String,
     body: String,
-    fix: Option<String>,
+    fix: String,
     confidence: Option<f64>,
     rule_id: Option<String>,
     occurrence_key: Option<String>,
@@ -2518,7 +2484,7 @@ impl ReportProjection {
                 line,
                 title: report.title,
                 body: report.body,
-                fix: Some(report.fix),
+                fix: report.fix,
                 confidence: Some(report.confidence),
                 rule_id: report.rule_id,
                 occurrence_key: report.occurrence_key,
@@ -2599,40 +2565,13 @@ impl ReportProjection {
             line,
             title: required("title")?.to_string(),
             body: required("body")?.to_string(),
-            fix: Some(required("fix")?.to_string()),
+            fix: required("fix")?.to_string(),
             confidence,
             rule_id: None,
             occurrence_key: None,
             relations: Vec::new(),
             unreadable: false,
             scope_authority_reason,
-        })
-    }
-
-    fn from_legacy_payload(payload: &Value) -> Result<Self, crate::store::StoreError> {
-        let severity_name = required_string(payload, "imported FindingReported@1", "severity")?;
-        let severity = parse_severity(&severity_name).ok_or_else(|| {
-            malformed(
-                "imported FindingReported@1",
-                &format!("invalid severity `{severity_name}`"),
-            )
-        })?;
-        Ok(Self {
-            artifact_id: None,
-            subject_snapshot_id: None,
-            severity,
-            file: required_string(payload, "imported FindingReported@1", "file")?,
-            location: ReportLocation::Unrecorded,
-            line: payload["line"].as_i64(),
-            title: required_string(payload, "imported FindingReported@1", "title")?,
-            body: required_string(payload, "imported FindingReported@1", "body")?,
-            fix: None,
-            confidence: payload["confidence"].as_f64(),
-            rule_id: None,
-            occurrence_key: None,
-            relations: Vec::new(),
-            unreadable: false,
-            scope_authority_reason: None,
         })
     }
 
@@ -2646,7 +2585,7 @@ impl ReportProjection {
             line: None,
             title: format!("Unreadable Report artifact {report_id}"),
             body: reason.to_string(),
-            fix: Some("Restore or migrate the exact content-addressed Report artifact".into()),
+            fix: "Restore or migrate the exact content-addressed Report artifact".into(),
             confidence: None,
             rule_id: None,
             occurrence_key: None,

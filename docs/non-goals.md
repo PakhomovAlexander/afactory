@@ -99,17 +99,10 @@ transition cannot reset spent tokens, Attempt counts or the deadline
 ([ADR-0049](adr/0049-run-task-workers-through-shared-durable-attempts.md),
 [ADR-0056](adr/0056-share-planning-accounting-and-authenticate-generated-plan-decisions.md)).
 
-## Distribution and fixtures
+## Distribution
 
 ### Vendoring the kernel into consuming repositories
 
 A consuming repository pins one `af` release in its `af.lock` and dispatches to it; it does not
 vendor this workspace ([ADR-0044](adr/0044-af-manages-itself-and-dispatches-to-the-pinned-release.md),
 [ADR-0045](adr/0045-one-release-train-and-a-pin-that-binds-bytes.md)).
-
-### Shipping a legacy review corpus
-
-The legacy-corpus tests are `#[ignore]`d because a real review bundle contains real findings
-about real code. A project that captured its own bundles runs them locally with
-`make review-kernel-test-corpus`; the same contracts are covered in every checkout by
-`fixtures/synthetic/`. See [`fixtures/legacy/README.md`](../fixtures/legacy/README.md).

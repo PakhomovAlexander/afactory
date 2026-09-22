@@ -8,10 +8,13 @@
 //! The failure being hunted is not a lost event. It is a run that replays into a different state
 //! than it committed, silently, so that "rebuild the ledger" quietly becomes "invent one".
 
+mod support;
+
 use std::path::Path;
 
 use review_core::LegacyStageOutput;
 use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, NewEvent, Status};
+use support::opened_legacy_round;
 
 fn stage(json: &str) -> LegacyStageOutput {
     serde_json::from_str(json).unwrap()
@@ -42,26 +45,50 @@ fn snapshot(ledger: &Ledger) -> Vec<(String, Status, u32, u32, usize)> {
         .collect()
 }
 
+/// Ingest one live reviewer result under a freshly opened Round of `run_id`.
+fn ingest_one(store: &mut EventStore, cas: &Cas, run_id: &str, output: &LegacyStageOutput) {
+    let authority = opened_legacy_round(store, cas, run_id);
+    Ingest::new(store, cas, run_id)
+        .unwrap()
+        .under_round(&authority.round_event_id)
+        .add_live_stage_outputs(&[("deep", output)])
+        .unwrap();
+}
+
 /// Build a run of a few rounds against a store on disk, then hand back its directory.
 fn build_run(dir: &Path) -> Vec<(String, Status, u32, u32, usize)> {
     let mut store = EventStore::open(dir.join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.join("cas")).unwrap();
-    let mut ingest = Ingest::new(&mut store, &cas, "run").unwrap();
-
+    let authority = opened_legacy_round(&mut store, &cas, "run");
+    let mut ingest = Ingest::new(&mut store, &cas, "run")
+        .unwrap()
+        .under_round(&authority.round_event_id);
     ingest
-        .add_stage_output(
+        .add_live_stage_outputs(&[(
             "deep-r1",
             &one_finding("major", "src/a.rs", "Retry loop can spin forever"),
-        )
+        )])
         .unwrap();
     let key = ingest.ledger().findings()[0].key.clone();
-    ingest.resolve(&key, Status::Fixed, Some("capped")).unwrap();
+    drop(ingest);
+    support::resolve(
+        &mut store,
+        &cas,
+        "run",
+        &authority,
+        &key,
+        Status::Fixed,
+        "capped",
+    );
+    let mut ingest = Ingest::new(&mut store, &cas, "run")
+        .unwrap()
+        .under_round(&authority.round_event_id);
     ingest.advance().unwrap();
     ingest
-        .add_stage_output(
+        .add_live_stage_outputs(&[(
             "deep-r2",
             &one_finding("blocker", "src/a.rs", "Retry loop can spin forever"),
-        )
+        )])
         .unwrap();
     snapshot(ingest.ledger())
 }
@@ -107,26 +134,37 @@ fn rebuilding_twice_is_the_same_rebuild() {
     assert_eq!(first, second);
 }
 
+/// Claim content comes from the referenced `FindingReport@1` artifact. Fields a writer copies
+/// into the event payload beside `report_id` are never projection authority.
 #[test]
 fn the_report_artifact_not_the_event_copy_is_projection_authority() {
     let dir = tempfile::tempdir().unwrap();
     let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
+    let authority = opened_legacy_round(&mut store, &cas, "run");
     let report_id = cas
-        .put_json(&serde_json::json!({
-            "title": "Canonical title",
-            "severity": "blocker",
-            "file": "src/authority.rs",
-            "line": 19,
-            "body": "canonical body",
-            "fix": "canonical fix",
-            "confidence": 0.99,
-            "source": "architecture",
-            "round": 1,
-        }))
+        .put_json(
+            &serde_json::to_value(review_core::FindingReport {
+                title: "Canonical title".into(),
+                severity: review_core::Severity::Blocker,
+                locations: vec![review_core::Location {
+                    path: "src/authority.rs".into(),
+                    line: Some(19),
+                    end_line: None,
+                }],
+                body: "canonical body".into(),
+                fix: "canonical fix".into(),
+                confidence: 0.99,
+                failure_trace: None,
+                rule_id: None,
+                occurrence_key: None,
+                relations: Vec::new(),
+            })
+            .unwrap(),
+        )
         .unwrap();
     store
-        .append_legacy(
+        .append(
             "run",
             &cas,
             NewEvent::new(
@@ -144,6 +182,7 @@ fn the_report_artifact_not_the_event_copy_is_projection_authority() {
                     "report_id": report_id,
                 }),
             )
+            .caused_by(authority.round_event_id)
             .correlating("claim")
             .referencing(vec![report_id]),
         )
@@ -155,7 +194,7 @@ fn the_report_artifact_not_the_event_copy_is_projection_authority() {
     let finding = ledger.get("claim").unwrap();
     assert_eq!(finding.title, "Canonical title");
     assert_eq!(finding.body, "canonical body");
-    assert_eq!(finding.fix.as_deref(), Some("canonical fix"));
+    assert_eq!(finding.fix, "canonical fix");
     assert_eq!(finding.file, "src/authority.rs");
     assert_eq!(finding.line, Some(19));
     assert_eq!(finding.severity, review_core::Severity::Blocker);
@@ -176,10 +215,12 @@ fn a_crash_after_publish_but_before_append_leaves_only_garbage() {
     assert!(store.is_empty("run").unwrap());
 
     // The run continues normally; the orphan is inert.
-    let mut ingest = Ingest::new(&mut store, &cas, "run").unwrap();
-    ingest
-        .add_stage_output("deep-r1", &one_finding("major", "src/a.rs", "t"))
-        .unwrap();
+    ingest_one(
+        &mut store,
+        &cas,
+        "run",
+        &one_finding("major", "src/a.rs", "t"),
+    );
     let ledger = LedgerProjection::rebuild(&store, &cas, "run")
         .unwrap()
         .into_ledger();
@@ -205,10 +246,12 @@ fn a_refused_append_does_not_consume_a_sequence() {
     let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
 
-    let mut ingest = Ingest::new(&mut store, &cas, "run").unwrap();
-    ingest
-        .add_stage_output("deep-r1", &one_finding("major", "src/a.rs", "t"))
-        .unwrap();
+    ingest_one(
+        &mut store,
+        &cas,
+        "run",
+        &one_finding("major", "src/a.rs", "t"),
+    );
 
     let missing = review_store::canonical::blob_content_id(b"not stored");
     let before = store.len("run").unwrap();
@@ -245,16 +288,18 @@ fn runs_are_isolated_in_one_store() {
     let mut store = EventStore::open(dir.path().join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.path().join("cas")).unwrap();
 
-    {
-        let mut a = Ingest::new(&mut store, &cas, "run-a").unwrap();
-        a.add_stage_output("deep", &one_finding("major", "src/a.rs", "only in a"))
-            .unwrap();
-    }
-    {
-        let mut b = Ingest::new(&mut store, &cas, "run-b").unwrap();
-        b.add_stage_output("deep", &one_finding("minor", "src/b.rs", "only in b"))
-            .unwrap();
-    }
+    ingest_one(
+        &mut store,
+        &cas,
+        "run-a",
+        &one_finding("major", "src/a.rs", "only in a"),
+    );
+    ingest_one(
+        &mut store,
+        &cas,
+        "run-b",
+        &one_finding("minor", "src/b.rs", "only in b"),
+    );
 
     let a = LedgerProjection::rebuild(&store, &cas, "run-a")
         .unwrap()

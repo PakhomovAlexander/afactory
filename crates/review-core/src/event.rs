@@ -1276,8 +1276,8 @@ struct GenerationAdvancedPayloadV1 {
 }
 
 /// Validate payloads whose versioned Rust contract is authoritative at the event boundary.
-/// Legacy finding events retain their frozen projection validator in `review-store`; new typed
-/// node and report payloads are rejected before append and again during replay.
+/// Finding event payloads are checked for shape here; `review-store` projects the Report
+/// artifacts they reference. Invalid payloads are rejected before append and again during replay.
 pub fn validate_event_payload(
     event_type: EventType,
     payload: &serde_json::Value,
@@ -1707,41 +1707,12 @@ fn validate_finding_reported(payload: &serde_json::Value) -> Result<(), String> 
         .filter(|source| !source.is_empty())
         .ok_or("FindingReported@1 has no source")?;
     let _ = source;
-    if let Some(report_id) = object.get("report_id").and_then(serde_json::Value::as_str) {
-        if !crate::is_digest(report_id) {
-            return Err("FindingReported@1 has invalid live report provenance".into());
-        }
-    } else {
-        if object.get("imported").and_then(serde_json::Value::as_bool) != Some(true) {
-            return Err("FindingReported@1 is neither a live report nor a legacy import".into());
-        }
-        if !matches!(
-            object.get("severity").and_then(serde_json::Value::as_str),
-            Some("minor" | "major" | "blocker")
-        ) || object
-            .get("file")
-            .and_then(serde_json::Value::as_str)
-            .is_none()
-            || object
-                .get("title")
-                .and_then(serde_json::Value::as_str)
-                .is_none_or(str::is_empty)
-            || object
-                .get("body")
-                .and_then(serde_json::Value::as_str)
-                .is_none_or(str::is_empty)
-            || object
-                .get("line")
-                .is_some_and(|line| !line.is_null() && line.as_i64().is_none_or(|line| line <= 0))
-            || object.get("confidence").is_some_and(|confidence| {
-                !confidence.is_null()
-                    && confidence
-                        .as_f64()
-                        .is_none_or(|confidence| !(0.0..=1.0).contains(&confidence))
-            })
-        {
-            return Err("FindingReported@1 has an invalid legacy projection".into());
-        }
+    if !object
+        .get("report_id")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(crate::is_digest)
+    {
+        return Err("FindingReported@1 has no valid report provenance".into());
     }
     Ok(())
 }

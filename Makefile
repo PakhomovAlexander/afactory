@@ -1,11 +1,11 @@
-.PHONY: release-check check fmt lint test fixtures release review-kernel-container-probes review-kernel-test-corpus
+.PHONY: release-check check fmt lint test release review-kernel-container-probes
 
 # Cargo remains the gate; nextest is an explicit cross-binary benchmark until validated in CI.
 TEST_RUNNER ?= cargo
 TEST_THREADS ?= 4
 CI_STEP = python3 scripts/ci-step.py
 
-check: fmt lint test fixtures release-check
+check: fmt lint test release-check
 
 fmt:
 	$(CI_STEP) fmt cargo fmt --all -- --check
@@ -25,9 +25,6 @@ else
 	$(error TEST_RUNNER must be cargo or nextest)
 endif
 
-fixtures:
-	$(CI_STEP) fixtures fixtures/synthetic/generate.sh --check
-
 # Open the release PR for VERSION (bump + CHANGELOG section). Merging it is the release: the
 # workflow tags, checks, builds, signs, and publishes. COMPAT states authority compatibility.
 release:
@@ -39,13 +36,6 @@ review-kernel-container-probes:
 	cargo test --locked -p review-sandbox --test container_probes -- --ignored
 	cargo test --locked -p review-sandbox container::tests::a_timed_out_container_is_removed_before_execution_returns -- --ignored --exact
 	cargo test --locked -p review-pipeline --test end_to_end a_v3_container_gate_executes_through_the_pipeline -- --ignored --exact
-
-# The legacy review corpus is private data (see fixtures/legacy/README.md). Its tests are
-# `#[ignore]`d in `make check`; a project that captured a corpus runs them here, where a missing
-# corpus is a failure, not a skip.
-review-kernel-test-corpus:
-	cargo test --locked -p review-core --test legacy_corpus -- --ignored
-	cargo test --locked -p review-store --test legacy_ledgers -- --ignored
 
 # Exercise release selection and tag races against disposable local Git remotes.
 release-check:
