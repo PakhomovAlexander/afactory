@@ -558,7 +558,8 @@ impl WarmSetV1 {
     }
 }
 
-/// Payload of `WarmSetSelected@1`, appended before the node's first `AttemptDispatched@1`.
+/// Payload of `WarmSetSelected@1`, appended before the node's first Attempt of the Round is
+/// reserved.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WarmSetSelectedPayloadV1 {

@@ -1,7 +1,9 @@
 # ADR-0107: Carry Worker Notes and Head Deltas as declared warm layers
 
 Date: 2026-09-17
-Status: Accepted
+Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
+legacy path, where `WarmSetSelected@1` preceded the node's first `AttemptDispatched@1`. The Task
+path records it before the common runtime reserves the node's first Attempt of the Round.
 
 Implements package P1 of [`docs/design/worker-warm-layers.md`](../design/worker-warm-layers.md)
 under [ADR-0028](0028-prioritize-wise-token-use-and-minimum-worker-context.md) (minimum Worker

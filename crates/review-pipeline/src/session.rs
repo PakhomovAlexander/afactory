@@ -366,15 +366,17 @@ pub(crate) fn capture_session(
     append_cleanup(domain, node_id, Some(attempt_id), session_id, deletion)
 }
 
-/// Finish every cleanup this Campaign still owes, and remove every harness transcript its
+/// Finish every cleanup this Campaign still owes, and remove every harness transcript the node's
 /// Attempts could have left, before the Round's first dispatch. No provider process is started:
-/// a session identity is derived from an Attempt ID the log already records, and the deletion
-/// is a filesystem operation.
+/// a session identity is derived from an Attempt ID the host already records (`attempt_ids`,
+/// every earlier Attempt of this node; the Campaign log holds none), and the deletion is a
+/// filesystem operation.
 #[allow(dead_code)] // kept for the Task-host port of ADR-0110
 pub(crate) fn sweep_sessions(
     domain: &ReviewDomainState<'_>,
     layer: Option<&dyn SessionLayer>,
     node_id: &str,
+    attempt_ids: &[String],
 ) -> Result<(), String> {
     let Some(layer) = layer else {
         return Ok(());
@@ -388,17 +390,10 @@ pub(crate) fn sweep_sessions(
     // Every session this node could have written, derived from its own Attempt IDs, plus every
     // session a resume of this node materialized as a working copy — which is one of the same
     // Attempt IDs, from the Round before.
-    let mut sessions: BTreeSet<String> = BTreeSet::new();
-    for event in events.iter().filter(|event| {
-        event.event_type == EventType::AttemptDispatchedV1
-            && event.node_id.as_deref() == Some(node_id)
-    }) {
-        if let Some(attempt_id) = &event.attempt_id
-            && let Some(session_id) = session_id_for_attempt(attempt_id)
-        {
-            sessions.insert(session_id);
-        }
-    }
+    let mut sessions: BTreeSet<String> = attempt_ids
+        .iter()
+        .filter_map(|attempt_id| session_id_for_attempt(attempt_id))
+        .collect();
     let unpaired = unpaired_captures(&events, node_id)?;
     sessions.extend(unpaired.iter().map(|(session, _)| session.clone()));
     for session_id in &sessions {

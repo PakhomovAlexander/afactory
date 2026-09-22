@@ -176,9 +176,10 @@ or needs a documented hand edit.
   longer print an "unavailable: legacy import" placeholder.
 - `af review run` and `af provider doctor` run every Campaign on the common Task runtime; the
   pre-Task executor they fell back to is gone. A Campaign whose log holds events only that
-  executor wrote (its reviewer Attempts, Provider Operations, broker bindings, `RunReport@3` to
-  `@5`, Cold Closeout or Session Snapshot events, from Rounds run by af 0.9.0-rc.0 or earlier) is
-  refused with "Campaign predates the common Task runtime (af < 0.9); start a new Campaign". A
+  executor wrote (`RunReport@3` to `@5`, Cold Closeout or Session Snapshot events, from Rounds run
+  by af 0.9.0-rc.0 or earlier) is refused with "Campaign predates the common Task runtime
+  (af < 0.9); start a new Campaign"; one that holds its reviewer Attempt, Provider Operation or
+  broker events no longer replays at all (see below). A
   Campaign whose first Task capture failed now retries capture on the common runtime, including
   after `--restart-round`, `af review policy-time advance`, `af review evidence add` or
   `af review demand waive`, where it used to run on the pre-Task executor. `--resume-provider` is
@@ -192,6 +193,20 @@ or needs a documented hand edit.
   the Task exists now keeps Round 1's original prior Finding Set even when the candidate
   changed, so the Task captured on the new epoch resumes; each later run used to fail with
   "restarted Review changed its original prior sets or adjacent epoch".
+- The pre-Task executor's Campaign event types are gone from the event vocabulary and from
+  `run-event-v1.json`: `AttemptAdmitted@1`, `AttemptDispatched@1`, `AttemptFailed@1`,
+  `AttemptFenced@1`, `AttemptFeedback@1`, `AttemptInput@1`, `AttemptReleased@1`,
+  `ReviewerExecutionBound@1`, `BrokerOperationCompleted@1` and `ProviderOperationTransition@1`,
+  with the `provider-operation-transition-v1.json` schema and the `review.kernel/RefusalHistory@1`
+  artifact type. No current command wrote them. A Campaign log that holds one fails to replay with
+  "unknown review-kernel event type", so `af review run`, `report`, `ledger` and `show` fail on
+  it, and `af review campaigns` lists it as a problem. `af review report` no longer carries the
+  optional `recorded_not_gathered` field, or prints its "Recorded, not gathered" section, which
+  only such events filled; the field is gone from `review-report-v3.json` and `-v4.json`.
+  `af review run` still lists recorded, not gathered results from the Round's Task Attempts. The
+  `af review ledger` notice for an absent latest-Round Ledger drops its
+  "(N admitted result(s) remain recorded, not gathered)" clause, which always counted 0.
+  ADR-0022 and ADR-0023 are superseded.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

@@ -2213,21 +2213,6 @@ fn validate_campaign_transition(
                 active_subject = None;
                 terminal = false;
             }
-            EventType::AttemptDispatchedV1
-            | EventType::AttemptAdmittedV1
-            | EventType::AttemptFailedV1
-            | EventType::AttemptFencedV1
-            | EventType::AttemptReleasedV1
-            | EventType::AttemptInputV1
-            | EventType::AttemptFeedbackV1
-            | EventType::ReviewerExecutionBoundV1
-            | EventType::BrokerOperationCompletedV1
-            | EventType::ProviderOperationTransitionV1 => {
-                return Err(StoreError::Conflict(format!(
-                    "{} is a retired pre-common event type",
-                    event.event_type
-                )));
-            }
             event_type if round_runtime_event(event_type) => {
                 if active.is_none() {
                     return Err(StoreError::Conflict(format!(

@@ -1,6 +1,10 @@
 # Safe attempts receive handles, not reusable secrets
 
-**Status:** accepted (2026-08-20)
+**Status:** accepted (2026-08-20); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): the pre-Task reviewer's `ReviewerExecutionBound@1`
+binding and `BrokerOperationCompleted@1` receipts in the Campaign log. A Task Attempt's Broker
+binding and receipts are Task-log evidence: `TaskBrokerTransition@1` names its
+`af/TaskBrokerBinding@1` or an `af/TaskBrokerOperation@1` carrying a `BrokerOperationReceipt@2`.
 
 Safe Execution Bindings never place reusable provider or service credential bytes inside an
 executable sandbox. External operations use a non-secret broker handle bound to Campaign, node,

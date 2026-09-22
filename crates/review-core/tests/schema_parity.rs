@@ -7,19 +7,17 @@
 use std::path::PathBuf;
 
 use review_core::{
-    ArtifactEnvelope, AuthorityFileV1, BrokerCredentialModeV1, BrokerOperationOutcomeV1,
-    BrokerOperationPolicyV1, BrokerOperationReceiptV1, CacheManifestEntryV1, CacheManifestV1,
-    CachePathEncodingV1, CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1,
-    ChangeAttestationV1, ChangeSetV1, ChangedRegionV1, ClaimRef, ClaimRefKind, CloseoutPolicyV1,
-    DEMAND_REDUCER_VERSION, DemandRequirement, DemandSetEntryV1, DemandSetV1, DemandStatus,
-    DemandV1, DemandWaiverV1, EventType, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1,
-    EvidenceV1, FindingDispositionPosition, FindingDispositionV1, FindingGroupingAction,
-    FindingGroupingV1, FindingReport, FindingResolutionOutcome, FindingResolutionV1,
-    FindingSetEntryV1, FindingSetV1, FixVerificationV1, IntegrationCandidateV1, IntegrationCheckV1,
-    IntegrationChecksV1, IntegrationPlanV1, Location, MissingNodeV2, NodeInvocationPayloadV1,
+    ArtifactEnvelope, AuthorityFileV1, CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1,
+    CampaignConvergenceV1, CampaignManifestV1, CampaignOpenedPayloadV1, ChangeAttestationV1,
+    ChangeSetV1, ChangedRegionV1, ClaimRef, ClaimRefKind, CloseoutPolicyV1, DEMAND_REDUCER_VERSION,
+    DemandRequirement, DemandSetEntryV1, DemandSetV1, DemandStatus, DemandV1, DemandWaiverV1,
+    EventType, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1, EvidenceV1,
+    FindingDispositionPosition, FindingDispositionV1, FindingGroupingAction, FindingGroupingV1,
+    FindingReport, FindingResolutionOutcome, FindingResolutionV1, FindingSetEntryV1, FindingSetV1,
+    FixVerificationV1, IntegrationCandidateV1, IntegrationCheckV1, IntegrationChecksV1,
+    IntegrationPlanV1, Location, MissingNodeV2, NodeInvocationPayloadV1,
     NodeOutputReceiptPayloadV1, PatchProposal, PathRenameV1, PolicyTimeV1, PortArtifactsV1,
-    PortCardinality, Producer, ProviderOperationStateV1, ProviderOperationTransitionPayloadV1,
-    ResolutionChallengeKind, ResolutionChallengeV1, ReviewSliceV1, ReviewerExecutionBindingV1,
+    PortCardinality, Producer, ResolutionChallengeKind, ResolutionChallengeV1, ReviewSliceV1,
     ReviewerPackageV1, RunCacheFailureReasonV5, RunCacheFailureV5, RunCacheKindV5,
     RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
     RunExecutionProviderV4, RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2,
@@ -32,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 187] = [
+const SCHEMAS: [&str; 186] = [
     "session-snapshot-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -203,7 +201,6 @@ const SCHEMAS: [&str; 187] = [
     "node-output-receipt-v1.json",
     "patch-proposal-v1.json",
     "policy-time-v1.json",
-    "provider-operation-transition-v1.json",
     "review-slice-v1.json",
     "reviewer-package-v1.json",
     "reviewer-result-v1.json",
@@ -1549,105 +1546,6 @@ fn run_event_schema_and_rust_vocabulary_are_identical() {
 }
 
 #[test]
-fn broker_binding_and_receipt_payloads_match_the_event_schema() {
-    let policy = BrokerOperationPolicyV1 {
-        name: "model_inference".into(),
-        destination: "provider.test".into(),
-        method: "responses.create".into(),
-        max_request_bytes: 1024,
-        max_response_bytes: 2048,
-        max_calls: 1,
-        max_usage: 10_000,
-    };
-    let attempt_id = "a".repeat(26);
-    let handle_id = "b".repeat(26);
-    let binding = ReviewerExecutionBindingV1 {
-        node: "correctness".into(),
-        attempt_id: attempt_id.clone(),
-        lease_epoch: 1,
-        credential_mode: BrokerCredentialModeV1::Brokered,
-        auto_apply: false,
-        broker_handle: Some(handle_id.clone()),
-        operations: vec![policy.clone()],
-        admitted: true,
-    };
-    binding.validate().unwrap();
-    let binding_payload = serde_json::to_value(binding).unwrap();
-    review_core::event::validate_event_payload(
-        EventType::ReviewerExecutionBoundV1,
-        &binding_payload,
-    )
-    .unwrap();
-
-    let receipt = BrokerOperationReceiptV1 {
-        handle_id,
-        node: "correctness".into(),
-        attempt_id: attempt_id.clone(),
-        lease_epoch: 1,
-        operation: policy.name,
-        destination: policy.destination,
-        method: policy.method,
-        ordinal: 1,
-        outcome: BrokerOperationOutcomeV1::Succeeded,
-        failure_reason: None,
-        request_digest: format!("sha256:{}", "c".repeat(64)),
-        response_digest: Some(format!("sha256:{}", "d".repeat(64))),
-        request_bytes: 128,
-        response_bytes: 256,
-        reserved_usage: 1000,
-        charged_usage: 900,
-    };
-    receipt.validate().unwrap();
-    let contradictory = BrokerOperationReceiptV1 {
-        outcome: review_core::BrokerOperationOutcomeV1::Failed,
-        failure_reason: Some(review_core::BrokerFailureReasonV1::UsageOverrun),
-        ..receipt.clone()
-    };
-    assert!(contradictory.validate().is_err());
-    let redacted_overrun = BrokerOperationReceiptV1 {
-        outcome: review_core::BrokerOperationOutcomeV1::Failed,
-        failure_reason: Some(review_core::BrokerFailureReasonV1::UsageOverrun),
-        response_digest: None,
-        response_bytes: 0,
-        charged_usage: 1_001,
-        ..receipt.clone()
-    };
-    redacted_overrun.validate().unwrap();
-    let overcharged_exposure = BrokerOperationReceiptV1 {
-        failure_reason: Some(review_core::BrokerFailureReasonV1::CredentialExposure),
-        charged_usage: 1_001,
-        ..redacted_overrun
-    };
-    assert!(overcharged_exposure.validate().is_err());
-    let receipt_payload = serde_json::to_value(receipt).unwrap();
-    review_core::event::validate_event_payload(
-        EventType::BrokerOperationCompletedV1,
-        &receipt_payload,
-    )
-    .unwrap();
-
-    for (event_type, payload) in [
-        (EventType::ReviewerExecutionBoundV1, binding_payload),
-        (EventType::BrokerOperationCompletedV1, receipt_payload),
-    ] {
-        let event = RunEvent {
-            event_id: "e".repeat(26),
-            run_id: "f".repeat(26),
-            sequence: 1,
-            event_type,
-            occurred_at: "2026-08-31T12:00:00Z".into(),
-            node_id: Some("correctness".into()),
-            attempt_id: Some(attempt_id.clone()),
-            causation_id: Some("g".repeat(26)),
-            correlation_id: None,
-            artifact_refs: vec![],
-            payload,
-        };
-        assert_valid("run-event-v1.json", &serde_json::to_value(event).unwrap());
-    }
-}
-
-#[test]
 fn bootstrap_event_payloads_are_semantically_validated() {
     let digest = format!("sha256:{}", "b".repeat(64));
     let opened = CampaignOpenedPayloadV1 {
@@ -1695,128 +1593,6 @@ fn bootstrap_event_payloads_are_semantically_validated() {
         payload,
     };
     assert_valid("run-event-v1.json", &serde_json::to_value(event).unwrap());
-}
-
-#[test]
-fn provider_operation_payload_is_closed_and_schema_valid() {
-    let payload = ProviderOperationTransitionPayloadV1 {
-        operation_id: "a".repeat(26),
-        provider_id: "claude-work".into(),
-        capability_id: format!("sha256:{}", "b".repeat(64)),
-        node_id: "architecture".into(),
-        round: 1,
-        round_epoch: 1,
-        operation_epoch: 1,
-        state: ProviderOperationStateV1::Running,
-        attempt: Some(1),
-        attempt_id: Some("c".repeat(26)),
-        failure_class: None,
-        failure_fingerprint: None,
-        continuation_handle: None,
-        reserved_tokens: 4096,
-        charged_tokens: 0,
-        elapsed_ms: 0,
-        retry_permitted: false,
-        circuit_open: false,
-        next_action: None,
-    };
-    let value = serde_json::to_value(payload).unwrap();
-    assert_valid("provider-operation-transition-v1.json", &value);
-    let mut secret = value;
-    secret["oauth_code"] = json!("must-never-be-stored");
-    assert_invalid(
-        "provider-operation-transition-v1.json",
-        &secret,
-        "secret-bearing fields must be rejected",
-    );
-}
-
-#[test]
-fn provider_operation_continuation_is_exact_and_secret_free() {
-    let running = ProviderOperationTransitionPayloadV1 {
-        operation_id: "a".repeat(26),
-        provider_id: "claude-work".into(),
-        capability_id: format!("sha256:{}", "b".repeat(64)),
-        node_id: "architecture".into(),
-        round: 1,
-        round_epoch: 1,
-        operation_epoch: 1,
-        state: ProviderOperationStateV1::Running,
-        attempt: Some(1),
-        attempt_id: Some("c".repeat(26)),
-        failure_class: None,
-        failure_fingerprint: None,
-        continuation_handle: None,
-        reserved_tokens: 4096,
-        charged_tokens: 0,
-        elapsed_ms: 0,
-        retry_permitted: false,
-        circuit_open: false,
-        next_action: None,
-    };
-    let mut waiting = running.clone();
-    waiting.state = ProviderOperationStateV1::WaitingForHuman;
-    waiting.failure_class =
-        Some(review_core::ProviderFailureClassV1::InvalidOrExpiredAuthentication);
-    waiting.failure_fingerprint = Some(format!("sha256:{}", "d".repeat(64)));
-    waiting.continuation_handle = Some("e".repeat(26));
-    waiting.charged_tokens = 4096;
-    waiting.elapsed_ms = 12;
-    waiting.retry_permitted = true;
-    waiting.next_action = Some(review_core::ProviderNextActionV1::CompleteInteractiveLogin);
-    waiting.validate_after(Some(&running)).unwrap();
-
-    let mut resumed = waiting.clone();
-    resumed.state = ProviderOperationStateV1::Resumed;
-    resumed.operation_epoch = 1;
-    resumed.attempt = Some(2);
-    resumed.attempt_id = Some("f".repeat(26));
-    resumed.failure_class = None;
-    resumed.failure_fingerprint = None;
-    resumed.reserved_tokens = 0;
-    resumed.charged_tokens = 0;
-    resumed.elapsed_ms = 0;
-    resumed.retry_permitted = false;
-    resumed.next_action = None;
-    assert!(resumed.validate_after(Some(&waiting)).is_err());
-    resumed.operation_epoch = 2;
-    resumed.validate_after(Some(&waiting)).unwrap();
-
-    let mut resumed_running = resumed.clone();
-    resumed_running.state = ProviderOperationStateV1::Running;
-    resumed_running.continuation_handle = None;
-    resumed_running.reserved_tokens = 4096;
-    resumed_running.validate_after(Some(&resumed)).unwrap();
-
-    let mut done = resumed_running.clone();
-    done.state = ProviderOperationStateV1::Done;
-    done.charged_tokens = 7;
-    done.elapsed_ms = 4;
-    done.validate_after(Some(&resumed_running)).unwrap();
-
-    let mut transient = running.clone();
-    transient.failure_class = Some(review_core::ProviderFailureClassV1::TransientTransportFailure);
-    transient.failure_fingerprint = Some(format!("sha256:{}", "1".repeat(64)));
-    transient.charged_tokens = 5;
-    transient.retry_permitted = true;
-    transient.validate_after(Some(&running)).unwrap();
-    let mut automatic_retry = running.clone();
-    automatic_retry.attempt = Some(2);
-    automatic_retry.attempt_id = Some("2".repeat(26));
-    automatic_retry.validate_after(Some(&transient)).unwrap();
-
-    let persisted = serde_json::to_string(&[
-        running,
-        waiting,
-        resumed,
-        resumed_running,
-        done,
-        transient,
-        automatic_retry,
-    ])
-    .unwrap();
-    assert!(!persisted.contains("oauth-code-value"));
-    assert!(!persisted.contains("access-token-value"));
 }
 
 #[test]

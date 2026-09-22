@@ -77,7 +77,7 @@ pub use task::broker::{
 pub use broker::{
     BrokerCredentialModeV1, BrokerFailureReasonV1, BrokerLeaseV1, BrokerOperationOutcomeV1,
     BrokerOperationPolicyV1, BrokerOperationReceiptV1, BrokerOperationReceiptV2,
-    ReviewerExecutionBindingV1, broker_authority_usage,
+    broker_authority_usage,
 };
 pub use cache::{
     CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1, MAX_CACHE_BYTES_V1,
@@ -99,9 +99,8 @@ pub use disposition::{FindingDispositionPosition, FindingDispositionV1};
 pub use envelope::{ArtifactEnvelope, Producer};
 pub use event::{
     EventType, MissingNodeV2, NodeInvocationPayloadV1, NodeOutputReceiptPayloadV1, PortArtifactsV1,
-    PortCardinality, ProviderFailureClassV1, ProviderNextActionV1, ProviderOperationStateV1,
-    ProviderOperationTransitionPayloadV1, RunCacheFailureReasonV5, RunCacheFailureV5,
-    RunCacheKindV5, RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
+    PortCardinality, RunCacheFailureReasonV5, RunCacheFailureV5, RunCacheKindV5,
+    RunCacheMaterializationV5, RunCacheSnapshotV5, RunEvent, RunExecutionBindingV4,
     RunExecutionProviderV4, RunFailureReasonV3, RunIsolationV4, RunNodeOutcomeV2, RunNodeReportV2,
     RunReportExecutionV6, RunReportPayloadV3, RunReportPayloadV4, RunReportPayloadV5,
     RunReportPayloadV6, RunSandboxModeV4, RunSuppressionReasonV2, RunVerdictV3, SnapshotAffinity,
@@ -182,7 +181,6 @@ pub mod contract {
     pub const OPAQUE_V1: &str = "review.kernel/Opaque@1";
     pub const PATCH_PROPOSAL_V1: &str = "review.kernel/PatchProposal@1";
     pub const PRIOR_FINDINGS_V1: &str = "review.kernel/PriorFindings@1";
-    pub const REFUSAL_HISTORY_V1: &str = "review.kernel/RefusalHistory@1";
     pub const REPORT_SET_V1: &str = "review.kernel/ReportSet@1";
     pub const REVIEW_SLICE_V1: &str = "review.kernel/ReviewSlice@1";
     pub const REVIEWER_RESULT_V1: &str = "review.kernel/ReviewerResult@1";

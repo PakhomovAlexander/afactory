@@ -435,8 +435,9 @@ credentials. It cannot authorize `auto_apply`. The current Codex and Claude CLI 
 `trusted_unsafe`; a v4 brokered pipeline without a broker-capable adapter and machine-local
 provider is refused before any reviewer dispatch.
 
-For each admitted Attempt, `ReviewerExecutionBound@1` records the exact mode, lease epoch, handle,
-and operation policy; admission without that durable binding is invalid. The broker checks durable
+A handle belongs to one started Task Attempt. Its `af/TaskBrokerBinding@1`, recorded in the Task
+log by a `TaskBrokerTransition@1`, holds the exact target, lease epoch, handle and operation
+policy; a handle without that durable binding authorizes nothing. The broker checks durable
 authority before and after every connector call. Public revocation marks the handle immediately,
 waits for an in-flight call, and prevents that call from releasing a response. A trusted connector
 consumes raw authenticated wire bytes and returns only its decoded application response. Before
@@ -444,7 +445,8 @@ that response can cross the boundary, the broker rejects raw, base64/base64url, 
 and mixed-case percent forms of the credential. Connector errors and panics become normalized
 charged receipts.
 
-`BrokerOperationCompleted@1` is durable before any response returns and records only digests,
+Each operation's `BrokerOperationReceipt@2`, recorded in the Task log as an
+`af/TaskBrokerOperation@1`, is durable before any response returns and records only digests,
 sizes, usage, and normalized outcomes. Fence races, credential exposure, numeric-domain overruns,
 receipt failures, and terminal handle revocation all withhold the response. Attempt settlement
 must cover durable broker usage; crash, timeout, and Round-supersession fences conservatively

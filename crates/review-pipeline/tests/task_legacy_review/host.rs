@@ -175,10 +175,6 @@ fn captured_command_review_uses_common_attempt_selection_and_replays_canonical_o
                 .count(),
             1
         );
-        assert!(!events.iter().any(|event| matches!(
-            event.event_type,
-            EventType::AttemptDispatchedV1 | EventType::AttemptAdmittedV1
-        )));
         for node in ["generation", "reviewer", "ledger"] {
             assert_eq!(
                 events

@@ -15,7 +15,6 @@
     "rounds": {"type": "array", "items": {"$ref": "#/$defs/round"}},
     "task_accounting": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/task"}},
     "demands": {"type": "array", "items": {"type": "object"}},
-    "recorded_not_gathered": {"type": "object"},
     "wall_ms": {"$ref": "#/$defs/count"},
     "findings_summary": {"type": "object"},
     "findings": {"type": "array", "items": {"type": "object"}}

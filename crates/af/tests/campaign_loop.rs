@@ -1905,7 +1905,6 @@ fn committed_and_dirty_diff_subjects_execute_the_wired_change_set() {
                     event.event_type,
                     review_core::EventType::TaskReviewResultSelectedV1
                         | review_core::EventType::RunReportV6
-                        | review_core::EventType::AttemptDispatchedV1
                 ))
         );
     }

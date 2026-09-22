@@ -38,11 +38,12 @@ review corpora belong in consuming repositories, not here.
 - A rename-limit warning does not erase a complete diff Subject: preserve the full Add/Delete
   path set, record truncated rename linkage, and keep the fixed limit in the diff-policy identity
   ([ADR-0017](docs/adr/0017-record-rename-truncation-and-continue.md)).
-- Retry-only reviewer input is durable invocation authority: publish it as an Attempt input before
-  dispatch, and publish produced feedback separately from terminal diagnostics; never derive a
-  retry prompt from process memory or diagnostic prose, or mutate a frozen dispatch event
-  ([ADR-0022](docs/adr/0022-persist-retry-feedback-as-attempt-input.md),
-  [ADR-0023](docs/adr/0023-separate-retry-feedback-from-terminal-diagnostics.md)).
+- Retry-only Worker input is durable invocation authority: a Task Attempt's reservation names
+  the admitted retry feedback (`feedback_ids`) before its context is bound, and a failed Attempt
+  records typed feedback separately from its diagnostic; never derive a retry prompt from process
+  memory or diagnostic prose
+  ([ADR-0066](docs/adr/0066-reserve-task-attempts-before-binding-exact-context.md),
+  [ADR-0095](docs/adr/0095-bind-legacy-task-context-and-retry-output-admission.md)).
 - A source Manifest spells every path one way, with `review_core::encode_path`, and Snapshot
   content identity hashes that stored spelling; never add a second path alphabet or a spelling
   that differs by baseline ([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)).

@@ -26,22 +26,6 @@ pub enum EventType {
     TaskBrokerTransitionV1,
     #[serde(rename = "TaskReviewResultSelected@1")]
     TaskReviewResultSelectedV1,
-    #[serde(rename = "BrokerOperationCompleted@1")]
-    BrokerOperationCompletedV1,
-    #[serde(rename = "AttemptAdmitted@1")]
-    AttemptAdmittedV1,
-    #[serde(rename = "AttemptDispatched@1")]
-    AttemptDispatchedV1,
-    #[serde(rename = "AttemptFailed@1")]
-    AttemptFailedV1,
-    #[serde(rename = "AttemptFenced@1")]
-    AttemptFencedV1,
-    #[serde(rename = "AttemptFeedback@1")]
-    AttemptFeedbackV1,
-    #[serde(rename = "AttemptInput@1")]
-    AttemptInputV1,
-    #[serde(rename = "AttemptReleased@1")]
-    AttemptReleasedV1,
     #[serde(rename = "CheckCompleted@1")]
     CheckCompletedV1,
     #[serde(rename = "CampaignOpened@1")]
@@ -94,16 +78,12 @@ pub enum EventType {
     NodeOutputReceiptV1,
     #[serde(rename = "PolicyTimeAdvanced@1")]
     PolicyTimeAdvancedV1,
-    #[serde(rename = "ProviderOperationTransition@1")]
-    ProviderOperationTransitionV1,
     #[serde(rename = "ProposalAccepted@1")]
     ProposalAcceptedV1,
     #[serde(rename = "ProposalPrepared@1")]
     ProposalPreparedV1,
     #[serde(rename = "ProposalRefused@1")]
     ProposalRefusedV1,
-    #[serde(rename = "ReviewerExecutionBound@1")]
-    ReviewerExecutionBoundV1,
     #[serde(rename = "RunReport@3")]
     RunReportV3,
     #[serde(rename = "RunReport@4")]
@@ -141,7 +121,7 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 63] = [
+    pub const ALL: [Self; 53] = [
         Self::TaskTransitionV1,
         Self::TaskTransitionV2,
         Self::TaskTransitionV3,
@@ -149,14 +129,6 @@ impl EventType {
         Self::TaskTransitionV5,
         Self::TaskBrokerTransitionV1,
         Self::TaskReviewResultSelectedV1,
-        Self::BrokerOperationCompletedV1,
-        Self::AttemptAdmittedV1,
-        Self::AttemptDispatchedV1,
-        Self::AttemptFailedV1,
-        Self::AttemptFencedV1,
-        Self::AttemptFeedbackV1,
-        Self::AttemptInputV1,
-        Self::AttemptReleasedV1,
         Self::CheckCompletedV1,
         Self::CampaignOpenedV1,
         Self::ChangeAttestedV1,
@@ -183,11 +155,9 @@ impl EventType {
         Self::NodeInvocationV1,
         Self::NodeOutputReceiptV1,
         Self::PolicyTimeAdvancedV1,
-        Self::ProviderOperationTransitionV1,
         Self::ProposalAcceptedV1,
         Self::ProposalPreparedV1,
         Self::ProposalRefusedV1,
-        Self::ReviewerExecutionBoundV1,
         Self::RunReportV3,
         Self::RunReportV4,
         Self::RunReportV5,
@@ -216,14 +186,6 @@ impl EventType {
             Self::TaskTransitionV5 => "TaskTransition@5",
             Self::TaskBrokerTransitionV1 => "TaskBrokerTransition@1",
             Self::TaskReviewResultSelectedV1 => "TaskReviewResultSelected@1",
-            Self::BrokerOperationCompletedV1 => "BrokerOperationCompleted@1",
-            Self::AttemptAdmittedV1 => "AttemptAdmitted@1",
-            Self::AttemptDispatchedV1 => "AttemptDispatched@1",
-            Self::AttemptFailedV1 => "AttemptFailed@1",
-            Self::AttemptFencedV1 => "AttemptFenced@1",
-            Self::AttemptFeedbackV1 => "AttemptFeedback@1",
-            Self::AttemptInputV1 => "AttemptInput@1",
-            Self::AttemptReleasedV1 => "AttemptReleased@1",
             Self::CheckCompletedV1 => "CheckCompleted@1",
             Self::CampaignOpenedV1 => "CampaignOpened@1",
             Self::ChangeAttestedV1 => "ChangeAttested@1",
@@ -250,11 +212,9 @@ impl EventType {
             Self::NodeInvocationV1 => "NodeInvocation@1",
             Self::NodeOutputReceiptV1 => "NodeOutputReceipt@1",
             Self::PolicyTimeAdvancedV1 => "PolicyTimeAdvanced@1",
-            Self::ProviderOperationTransitionV1 => "ProviderOperationTransition@1",
             Self::ProposalAcceptedV1 => "ProposalAccepted@1",
             Self::ProposalPreparedV1 => "ProposalPrepared@1",
             Self::ProposalRefusedV1 => "ProposalRefused@1",
-            Self::ReviewerExecutionBoundV1 => "ReviewerExecutionBound@1",
             Self::RunReportV3 => "RunReport@3",
             Self::RunReportV4 => "RunReport@4",
             Self::RunReportV5 => "RunReport@5",
@@ -292,14 +252,6 @@ impl EventType {
             Self::TaskTransitionV5 => ("TaskTransition", 5),
             Self::TaskBrokerTransitionV1 => ("TaskBrokerTransition", 1),
             Self::TaskReviewResultSelectedV1 => ("TaskReviewResultSelected", 1),
-            Self::BrokerOperationCompletedV1 => ("BrokerOperationCompleted", 1),
-            Self::AttemptAdmittedV1 => ("AttemptAdmitted", 1),
-            Self::AttemptDispatchedV1 => ("AttemptDispatched", 1),
-            Self::AttemptFailedV1 => ("AttemptFailed", 1),
-            Self::AttemptFencedV1 => ("AttemptFenced", 1),
-            Self::AttemptFeedbackV1 => ("AttemptFeedback", 1),
-            Self::AttemptInputV1 => ("AttemptInput", 1),
-            Self::AttemptReleasedV1 => ("AttemptReleased", 1),
             Self::CheckCompletedV1 => ("CheckCompleted", 1),
             Self::CampaignOpenedV1 => ("CampaignOpened", 1),
             Self::ChangeAttestedV1 => ("ChangeAttested", 1),
@@ -326,11 +278,9 @@ impl EventType {
             Self::NodeInvocationV1 => ("NodeInvocation", 1),
             Self::NodeOutputReceiptV1 => ("NodeOutputReceipt", 1),
             Self::PolicyTimeAdvancedV1 => ("PolicyTimeAdvanced", 1),
-            Self::ProviderOperationTransitionV1 => ("ProviderOperationTransition", 1),
             Self::ProposalAcceptedV1 => ("ProposalAccepted", 1),
             Self::ProposalPreparedV1 => ("ProposalPrepared", 1),
             Self::ProposalRefusedV1 => ("ProposalRefused", 1),
-            Self::ReviewerExecutionBoundV1 => ("ReviewerExecutionBound", 1),
             Self::RunReportV3 => ("RunReport", 3),
             Self::RunReportV4 => ("RunReport", 4),
             Self::RunReportV5 => ("RunReport", 5),
@@ -393,14 +343,6 @@ impl std::str::FromStr for EventType {
             "TaskTransition@5" => Ok(Self::TaskTransitionV5),
             "TaskBrokerTransition@1" => Ok(Self::TaskBrokerTransitionV1),
             "TaskReviewResultSelected@1" => Ok(Self::TaskReviewResultSelectedV1),
-            "AttemptAdmitted@1" => Ok(Self::AttemptAdmittedV1),
-            "AttemptDispatched@1" => Ok(Self::AttemptDispatchedV1),
-            "AttemptFailed@1" => Ok(Self::AttemptFailedV1),
-            "AttemptFenced@1" => Ok(Self::AttemptFencedV1),
-            "AttemptFeedback@1" => Ok(Self::AttemptFeedbackV1),
-            "AttemptInput@1" => Ok(Self::AttemptInputV1),
-            "AttemptReleased@1" => Ok(Self::AttemptReleasedV1),
-            "BrokerOperationCompleted@1" => Ok(Self::BrokerOperationCompletedV1),
             "CheckCompleted@1" => Ok(Self::CheckCompletedV1),
             "CampaignOpened@1" => Ok(Self::CampaignOpenedV1),
             "ChangeAttested@1" => Ok(Self::ChangeAttestedV1),
@@ -427,7 +369,6 @@ impl std::str::FromStr for EventType {
             "NodeInvocation@1" => Ok(Self::NodeInvocationV1),
             "NodeOutputReceipt@1" => Ok(Self::NodeOutputReceiptV1),
             "PolicyTimeAdvanced@1" => Ok(Self::PolicyTimeAdvancedV1),
-            "ProviderOperationTransition@1" => Ok(Self::ProviderOperationTransitionV1),
             "ProposalAccepted@1" => Ok(Self::ProposalAcceptedV1),
             "ProposalPrepared@1" => Ok(Self::ProposalPreparedV1),
             "ProposalRefused@1" => Ok(Self::ProposalRefusedV1),
@@ -437,7 +378,6 @@ impl std::str::FromStr for EventType {
             "RunReport@6" => Ok(Self::RunReportV6),
             "RoundInputSuperseded@1" => Ok(Self::RoundInputSupersededV1),
             "RoundStarted@1" => Ok(Self::RoundStartedV1),
-            "ReviewerExecutionBound@1" => Ok(Self::ReviewerExecutionBoundV1),
             "SourceCaptured@1" => Ok(Self::SourceCapturedV1),
             "SliceSetAccepted@1" => Ok(Self::SliceSetAcceptedV1),
             "ShardSetRecorded@1" => Ok(Self::ShardSetRecordedV1),
@@ -732,244 +672,6 @@ pub struct RunReportPayloadV5 {
     pub cache_failures: Vec<RunCacheFailureV5>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderOperationStateV1 {
-    Running,
-    WaitingForHuman,
-    Resumed,
-    Done,
-    Failed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderFailureClassV1 {
-    InvalidOrExpiredAuthentication,
-    InteractiveLoginRequired,
-    TransientTransportFailure,
-    RateLimitOrQuotaExhaustion,
-    UnavailableModelOrCapability,
-    SmokeTimeout,
-    UnknownProviderFailure,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ProviderNextActionV1 {
-    CompleteInteractiveLogin,
-    RefreshAuthentication,
-    RetryExplicitly,
-    CheckTransport,
-    WaitForQuota,
-    SelectAvailableModel,
-    IncreaseSmokeTimeout,
-    InspectProviderFailure,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ProviderOperationTransitionPayloadV1 {
-    pub operation_id: String,
-    pub provider_id: String,
-    pub capability_id: String,
-    pub node_id: String,
-    pub round: u32,
-    pub round_epoch: u32,
-    pub operation_epoch: u64,
-    pub state: ProviderOperationStateV1,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure_class: Option<ProviderFailureClassV1>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure_fingerprint: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub continuation_handle: Option<String>,
-    pub reserved_tokens: u64,
-    pub charged_tokens: u64,
-    pub elapsed_ms: u64,
-    pub retry_permitted: bool,
-    pub circuit_open: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub next_action: Option<ProviderNextActionV1>,
-}
-
-impl ProviderOperationTransitionPayloadV1 {
-    pub fn validate(&self) -> Result<(), String> {
-        let valid_id = |value: &str| {
-            value.len() == 26
-                && value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        };
-        let valid_provider = !self.provider_id.is_empty()
-            && self.provider_id.bytes().enumerate().all(|(index, byte)| {
-                byte.is_ascii_alphanumeric() || (index > 0 && matches!(byte, b'-' | b'_'))
-            });
-        if !valid_id(&self.operation_id)
-            || !valid_provider
-            || !crate::is_digest(&self.capability_id)
-            || self.node_id.trim().is_empty()
-            || self.round == 0
-            || self.round_epoch == 0
-            || self.operation_epoch == 0
-            || self.attempt_id.as_deref().is_some_and(|id| !valid_id(id))
-            || self
-                .failure_fingerprint
-                .as_deref()
-                .is_some_and(|fingerprint| !crate::is_digest(fingerprint))
-            || self
-                .continuation_handle
-                .as_deref()
-                .is_some_and(|handle| !valid_id(handle))
-            || [self.reserved_tokens, self.charged_tokens, self.elapsed_ms]
-                .into_iter()
-                .any(|value| value > 9_007_199_254_740_991)
-        {
-            return Err(
-                "ProviderOperationTransition@1 has invalid identity or numeric bounds".into(),
-            );
-        }
-        let has_attempt = self.attempt.is_some() && self.attempt_id.is_some();
-        let has_failure = self.failure_class.is_some() && self.failure_fingerprint.is_some();
-        let valid_shape = match self.state {
-            ProviderOperationStateV1::Running => {
-                has_attempt
-                    && self.continuation_handle.is_none()
-                    && self.next_action.is_none()
-                    && !self.circuit_open
-                    && if has_failure {
-                        self.retry_permitted
-                    } else {
-                        self.failure_class.is_none()
-                            && self.failure_fingerprint.is_none()
-                            && self.charged_tokens == 0
-                            && !self.retry_permitted
-                    }
-            }
-            ProviderOperationStateV1::WaitingForHuman => {
-                has_attempt
-                    && has_failure
-                    && self.continuation_handle.is_some()
-                    && self.retry_permitted
-                    && !self.circuit_open
-                    && self.next_action == Some(ProviderNextActionV1::CompleteInteractiveLogin)
-            }
-            ProviderOperationStateV1::Resumed => {
-                has_attempt
-                    && self.failure_class.is_none()
-                    && self.failure_fingerprint.is_none()
-                    && self.reserved_tokens == 0
-                    && self.charged_tokens == 0
-                    && self.elapsed_ms == 0
-                    && !self.retry_permitted
-                    && !self.circuit_open
-                    && self.next_action.is_none()
-            }
-            ProviderOperationStateV1::Done => {
-                has_attempt
-                    && !has_failure
-                    && self.failure_class.is_none()
-                    && self.failure_fingerprint.is_none()
-                    && self.continuation_handle.is_none()
-                    && !self.retry_permitted
-                    && !self.circuit_open
-                    && self.next_action.is_none()
-            }
-            ProviderOperationStateV1::Failed => {
-                has_attempt
-                    && has_failure
-                    && self.continuation_handle.is_none()
-                    && self.next_action.is_some()
-                    && (!self.circuit_open || !self.retry_permitted)
-            }
-        };
-        if !valid_shape {
-            return Err("ProviderOperationTransition@1 fields contradict its state".into());
-        }
-        Ok(())
-    }
-
-    pub fn validate_after(&self, previous: Option<&Self>) -> Result<(), String> {
-        self.validate()?;
-        let Some(previous) = previous else {
-            if self.state != ProviderOperationStateV1::Running
-                || self.operation_epoch != 1
-                || self.attempt != Some(1)
-                || self.failure_class.is_some()
-            {
-                return Err(
-                    "a provider operation must start running at operation epoch 1, attempt 1"
-                        .into(),
-                );
-            }
-            return Ok(());
-        };
-        if self.operation_id != previous.operation_id
-            || self.provider_id != previous.provider_id
-            || self.capability_id != previous.capability_id
-            || self.node_id != previous.node_id
-            || self.round != previous.round
-            || self.round_epoch != previous.round_epoch
-        {
-            return Err("a provider operation transition changes immutable authority".into());
-        }
-        let valid = match (previous.state, self.state) {
-            (ProviderOperationStateV1::Running, ProviderOperationStateV1::Running) => {
-                if previous.failure_class.is_none() {
-                    self.operation_epoch == previous.operation_epoch
-                        && self.attempt == previous.attempt
-                        && self.attempt_id == previous.attempt_id
-                        && self.failure_class.is_some()
-                } else {
-                    self.operation_epoch == previous.operation_epoch
-                        && self.attempt == previous.attempt.and_then(|value| value.checked_add(1))
-                        && self.attempt_id != previous.attempt_id
-                        && self.failure_class.is_none()
-                }
-            }
-            (ProviderOperationStateV1::Running, ProviderOperationStateV1::WaitingForHuman)
-            | (ProviderOperationStateV1::Running, ProviderOperationStateV1::Done) => {
-                self.operation_epoch == previous.operation_epoch
-                    && self.attempt == previous.attempt
-                    && self.attempt_id == previous.attempt_id
-                    && previous.failure_class.is_none()
-            }
-            (ProviderOperationStateV1::Running, ProviderOperationStateV1::Failed) => {
-                self.operation_epoch == previous.operation_epoch
-                    && self.attempt == previous.attempt
-                    && self.attempt_id == previous.attempt_id
-                    && (previous.failure_class.is_none()
-                        || (self.failure_class == previous.failure_class
-                            && self.failure_fingerprint == previous.failure_fingerprint
-                            && self.charged_tokens == 0))
-            }
-            (ProviderOperationStateV1::WaitingForHuman, ProviderOperationStateV1::Resumed)
-            | (ProviderOperationStateV1::Failed, ProviderOperationStateV1::Resumed) => {
-                previous.retry_permitted
-                    && self.operation_epoch == previous.operation_epoch + 1
-                    && self.continuation_handle == previous.continuation_handle
-                    && self.attempt == previous.attempt.and_then(|value| value.checked_add(1))
-                    && self.attempt_id != previous.attempt_id
-            }
-            (ProviderOperationStateV1::Resumed, ProviderOperationStateV1::Running) => {
-                self.operation_epoch == previous.operation_epoch
-                    && self.attempt == previous.attempt
-                    && self.attempt_id == previous.attempt_id
-                    && self.failure_class.is_none()
-            }
-            _ => false,
-        };
-        if !valid {
-            return Err("invalid or stale provider operation transition".into());
-        }
-        Ok(())
-    }
-}
-
 impl RunReportPayloadV3 {
     pub fn validate(&self) -> Result<(), String> {
         if self.outcomes.is_empty() {
@@ -1177,59 +879,6 @@ impl RunReportPayloadV5 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AttemptDispatchedPayloadV1 {
-    pub reserved: Option<u64>,
-    pub prior_findings: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AttemptInputPayloadV1 {
-    pub refusal_history_id: String,
-}
-
-/// Exact feedback produced by one retryable terminal attempt. Unlike the terminal diagnostic,
-/// this artifact is prompt-input authority and may be carried into a later `AttemptInput@1`.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AttemptFeedbackPayloadV1 {
-    pub refusal_history_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AttemptAdmittedPayloadV1 {
-    pub selection: String,
-    pub cost_tokens: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub result_artifact: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provenance_artifact: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AttemptFailedPayloadV1 {
-    pub error: String,
-    pub charged: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AttemptFencedPayloadV1 {
-    pub reason: String,
-    pub charged: Option<u64>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct AttemptReleasedPayloadV1 {
-    pub error: String,
-    pub released: Option<u64>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum CheckStatusV1 {
@@ -1317,83 +966,6 @@ pub fn validate_event_payload(
             serde_json::from_value::<crate::TaskBrokerTransitionV1>(payload.clone())
                 .map_err(|error| error.to_string())?
                 .validate()
-        }
-        EventType::BrokerOperationCompletedV1 => {
-            let receipt =
-                serde_json::from_value::<crate::BrokerOperationReceiptV1>(payload.clone())
-                    .map_err(|error| format!("BrokerOperationCompleted@1: {error}"))?;
-            receipt
-                .validate()
-                .map_err(|error| format!("BrokerOperationCompleted@1: {error}"))
-        }
-        EventType::AttemptDispatchedV1 => {
-            let value: AttemptDispatchedPayloadV1 = serde_json::from_value(payload.clone())
-                .map_err(|error| format!("AttemptDispatched@1: {error}"))?;
-            if value
-                .prior_findings
-                .as_deref()
-                .is_some_and(|artifact| !crate::is_digest(artifact))
-            {
-                return Err("AttemptDispatched@1 has an invalid prior Finding Set ID".into());
-            }
-            Ok(())
-        }
-        EventType::AttemptInputV1 => {
-            let value: AttemptInputPayloadV1 = serde_json::from_value(payload.clone())
-                .map_err(|error| format!("AttemptInput@1: {error}"))?;
-            if !crate::is_digest(&value.refusal_history_id) {
-                return Err("AttemptInput@1 has an invalid refusal history ID".into());
-            }
-            Ok(())
-        }
-        EventType::AttemptFeedbackV1 => {
-            let value: AttemptFeedbackPayloadV1 = serde_json::from_value(payload.clone())
-                .map_err(|error| format!("AttemptFeedback@1: {error}"))?;
-            if !crate::is_digest(&value.refusal_history_id) {
-                return Err("AttemptFeedback@1 has an invalid refusal history ID".into());
-            }
-            Ok(())
-        }
-        EventType::AttemptAdmittedV1 => {
-            let value: AttemptAdmittedPayloadV1 = serde_json::from_value(payload.clone())
-                .map_err(|error| format!("AttemptAdmitted@1: {error}"))?;
-            if !matches!(value.selection.as_str(), "selected" | "quarantined")
-                || value
-                    .result_artifact
-                    .as_deref()
-                    .is_some_and(|artifact| !crate::is_digest(artifact))
-                || value
-                    .provenance_artifact
-                    .as_deref()
-                    .is_some_and(|artifact| !crate::is_digest(artifact))
-            {
-                return Err("AttemptAdmitted@1 has invalid selection or artifact IDs".into());
-            }
-            Ok(())
-        }
-        EventType::AttemptFailedV1 => {
-            let value: AttemptFailedPayloadV1 = serde_json::from_value(payload.clone())
-                .map_err(|error| format!("AttemptFailed@1: {error}"))?;
-            if value.error.trim().is_empty() {
-                return Err("AttemptFailed@1 has an empty error".into());
-            }
-            Ok(())
-        }
-        EventType::AttemptFencedV1 => {
-            let value: AttemptFencedPayloadV1 = serde_json::from_value(payload.clone())
-                .map_err(|error| format!("AttemptFenced@1: {error}"))?;
-            if value.reason.trim().is_empty() {
-                return Err("AttemptFenced@1 has an empty reason".into());
-            }
-            Ok(())
-        }
-        EventType::AttemptReleasedV1 => {
-            let value: AttemptReleasedPayloadV1 = serde_json::from_value(payload.clone())
-                .map_err(|error| format!("AttemptReleased@1: {error}"))?;
-            if value.error.trim().is_empty() {
-                return Err("AttemptReleased@1 has an empty error".into());
-            }
-            Ok(())
         }
         EventType::CheckCompletedV1 => {
             let value: CheckCompletedPayloadV1 = serde_json::from_value(payload.clone())
@@ -1508,14 +1080,6 @@ pub fn validate_event_payload(
                 .validate()
                 .map_err(|error| format!("NodeOutputReceipt@1: {error}"))
         }
-        EventType::ProviderOperationTransitionV1 => {
-            let transition =
-                serde_json::from_value::<ProviderOperationTransitionPayloadV1>(payload.clone())
-                    .map_err(|error| format!("ProviderOperationTransition@1: {error}"))?;
-            transition
-                .validate()
-                .map_err(|error| format!("ProviderOperationTransition@1: {error}"))
-        }
         EventType::ProposalAcceptedV1 => {
             let accepted =
                 serde_json::from_value::<crate::ProposalAcceptedPayloadV1>(payload.clone())
@@ -1539,14 +1103,6 @@ pub fn validate_event_payload(
             refused
                 .validate()
                 .map_err(|error| format!("ProposalRefused@1: {error}"))
-        }
-        EventType::ReviewerExecutionBoundV1 => {
-            let binding =
-                serde_json::from_value::<crate::ReviewerExecutionBindingV1>(payload.clone())
-                    .map_err(|error| format!("ReviewerExecutionBound@1: {error}"))?;
-            binding
-                .validate()
-                .map_err(|error| format!("ReviewerExecutionBound@1: {error}"))
         }
         EventType::RunReportV3 => {
             let report = serde_json::from_value::<RunReportPayloadV3>(payload.clone())

@@ -1,9 +1,7 @@
-//! Durable M6.3 contracts for reviewer Execution Bindings and broker operation receipts.
+//! Durable M6.3 contracts for broker leases, operation policies and operation receipts.
 
 mod exact;
 pub use exact::BrokerOperationReceiptV2;
-
-use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
@@ -110,59 +108,6 @@ pub fn broker_authority_usage(operations: &[BrokerOperationPolicyV1]) -> Result<
         }
         Ok(total)
     })
-}
-
-/// Durable evidence that one reviewer Attempt was admitted under its exact execution policy.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReviewerExecutionBindingV1 {
-    pub node: String,
-    pub attempt_id: String,
-    pub lease_epoch: u64,
-    pub credential_mode: BrokerCredentialModeV1,
-    pub auto_apply: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub broker_handle: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub operations: Vec<BrokerOperationPolicyV1>,
-    pub admitted: bool,
-}
-
-impl ReviewerExecutionBindingV1 {
-    pub fn validate(&self) -> Result<(), String> {
-        if self.node.trim().is_empty()
-            || !opaque_id(&self.attempt_id)
-            || self.lease_epoch == 0
-            || self.lease_epoch > JSON_SAFE_INTEGER
-            || self
-                .broker_handle
-                .as_deref()
-                .is_some_and(|handle| !opaque_id(handle))
-        {
-            return Err("Reviewer Execution Binding has invalid identity or epoch".into());
-        }
-        let mut names = BTreeSet::new();
-        for policy in &self.operations {
-            policy.validate()?;
-            if !names.insert(policy.name.as_str()) {
-                return Err("Reviewer Execution Binding has duplicate Broker operations".into());
-            }
-        }
-        broker_authority_usage(&self.operations)?;
-        match self.credential_mode {
-            BrokerCredentialModeV1::Brokered
-                if self.broker_handle.is_some() && !self.operations.is_empty() => {}
-            BrokerCredentialModeV1::CredentialFree | BrokerCredentialModeV1::TrustedUnsafe
-                if self.broker_handle.is_none() && self.operations.is_empty() => {}
-            _ => {
-                return Err("Reviewer Execution Binding contradicts its credential mode".into());
-            }
-        }
-        if self.auto_apply && self.credential_mode == BrokerCredentialModeV1::TrustedUnsafe {
-            return Err("trusted_unsafe reviewer bindings cannot authorize auto_apply".into());
-        }
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

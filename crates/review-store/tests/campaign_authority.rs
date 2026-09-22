@@ -287,63 +287,6 @@ fn node_metadata_must_match_its_payload() {
 }
 
 #[test]
-fn retired_pre_common_event_types_are_refused() {
-    let directory = tempfile::tempdir().unwrap();
-    let cas = Cas::open(directory.path().join("cas")).unwrap();
-    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
-    let ids = authority(&cas, "retired");
-    let round = opened_round(&mut store, &cas, "run", &ids);
-    let history = cas.put_json(&serde_json::json!(["refused"])).unwrap();
-
-    for (event_type, payload) in [
-        (EventType::AttemptDispatchedV1, serde_json::json!({})),
-        (
-            EventType::AttemptAdmittedV1,
-            serde_json::json!({"selection": "quarantined", "cost_tokens": 0}),
-        ),
-        (
-            EventType::AttemptFailedV1,
-            serde_json::json!({"error": "x"}),
-        ),
-        (
-            EventType::AttemptFencedV1,
-            serde_json::json!({"reason": "x"}),
-        ),
-        (
-            EventType::AttemptReleasedV1,
-            serde_json::json!({"error": "x"}),
-        ),
-        (
-            EventType::AttemptInputV1,
-            serde_json::json!({"refusal_history_id": history}),
-        ),
-        (
-            EventType::AttemptFeedbackV1,
-            serde_json::json!({"refusal_history_id": history}),
-        ),
-    ] {
-        let error = store
-            .append(
-                "run",
-                &cas,
-                NewEvent::new(event_type, payload)
-                    .node("reviewer")
-                    .attempt("a".repeat(26))
-                    .caused_by(&round.event_id)
-                    .referencing(vec![history.clone()]),
-            )
-            .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains(&format!("{event_type} is a retired pre-common event type")),
-            "{event_type}: {error}"
-        );
-    }
-    assert_eq!(store.replay("run").unwrap().len(), 2);
-}
-
-#[test]
 fn a_superseded_epoch_cannot_publish_late_output() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();

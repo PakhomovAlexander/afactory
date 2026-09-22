@@ -550,12 +550,7 @@ fn failures_before_first_conclusion_use_common_provider_and_business_attempts() 
             .replay(&crate::campaign_run_id("accounting"))
             .unwrap()
             .iter()
-            .all(|event| !event.event_type.is_run_report()
-                && !matches!(
-                    event.event_type,
-                    review_core::EventType::AttemptDispatchedV1
-                        | review_core::EventType::AttemptAdmittedV1
-                ))
+            .all(|event| !event.event_type.is_run_report())
     );
     let report = f.read(&[]);
     assert_eq!(report.tasks.len(), 1);

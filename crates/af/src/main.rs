@@ -1722,9 +1722,8 @@ fn print_ledger(options: &LedgerOptions) -> Result<(), String> {
         && evidence.ledger_was_not_produced()
     {
         eprintln!(
-            "latest round Ledger: not produced because {}; showing the last gathered projection ({} admitted result(s) remain recorded, not gathered)",
-            evidence.absence_reason(),
-            evidence.available_node_results.len()
+            "latest round Ledger: not produced because {}; showing the last gathered projection",
+            evidence.absence_reason()
         );
     }
     print_scope_authority_warnings(&ledger);
@@ -2535,8 +2534,6 @@ struct ReviewReportView {
     task_accounting: Vec<report_tasks::TaskAccountingView>,
     demands: Vec<review_core::DemandSetEntryV1>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    recorded_not_gathered: Option<LatestRoundEvidence>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     wall_ms: Option<u64>,
     findings_summary: FindingsSummaryView,
     findings: Vec<review_store::Finding>,
@@ -2753,9 +2750,6 @@ fn read_report_view(
         .collect();
     let round_authority = report_round_authority(&events)?;
     let rounds = report_rounds(&reports, &round_authority)?;
-    let recorded_not_gathered = latest_round_evidence(&events, cas)?.filter(|evidence| {
-        evidence.ledger_was_not_produced() && !evidence.available_node_results.is_empty()
-    });
     let task_accounting = report_tasks::read(store, cas, &run_id, &events)?;
     let wall_ms = task_accounting.wall_ms();
     let findings = ledger.finding_views();
@@ -2777,7 +2771,6 @@ fn read_report_view(
         rounds,
         task_accounting: task_accounting.tasks,
         demands: ledger.demand_views(),
-        recorded_not_gathered,
         wall_ms,
         findings_summary: findings_summary(&findings),
         findings,
@@ -2878,7 +2871,6 @@ fn print_report_text(report: &ReviewReportView) {
         );
         println!("    source: {}", demand.source);
     }
-    print_recorded_not_gathered_text(report.recorded_not_gathered.as_ref());
     println!("Findings:");
     if report.findings.is_empty() {
         println!("  none");
@@ -2967,7 +2959,6 @@ fn print_report_markdown(report: &ReviewReportView) {
         );
         println!("  - Source: {}", demand.source);
     }
-    print_recorded_not_gathered_markdown(report.recorded_not_gathered.as_ref());
     println!();
     println!("## Findings");
     for effective_severity in [
@@ -3043,60 +3034,6 @@ fn print_report_markdown(report: &ReviewReportView) {
                     markdown_line(transition.note.as_deref().unwrap_or("(no note)"))
                 );
             }
-        }
-    }
-}
-
-fn print_recorded_not_gathered_text(evidence: Option<&LatestRoundEvidence>) {
-    let Some(evidence) = evidence else { return };
-    println!("Recorded, not gathered:");
-    println!("  reason: {}", evidence.absence_reason());
-    for result in &evidence.available_node_results {
-        println!(
-            "  {} attempt {}: result {}, {} tokens, severities {}",
-            result.node,
-            result.attempt_id,
-            result.result_artifact_id,
-            result.spend_tokens,
-            if result.severities.is_empty() {
-                "none recorded".to_string()
-            } else {
-                result.severities.join(", ")
-            }
-        );
-    }
-}
-
-fn print_recorded_not_gathered_markdown(evidence: Option<&LatestRoundEvidence>) {
-    let Some(evidence) = evidence else { return };
-    println!();
-    println!("## Recorded, not gathered");
-    println!();
-    println!(
-        "The latest Round did not produce a Ledger because {}. These admitted results remain evidence only; they are not Findings, a clean Ledger, or convergence input.",
-        evidence.absence_reason()
-    );
-    for result in &evidence.available_node_results {
-        println!();
-        println!(
-            "- **{}**, Attempt `{}`, result `{}`, spend {} tokens, severities: {}",
-            result.node,
-            result.attempt_id,
-            result.result_artifact_id,
-            result.spend_tokens,
-            if result.severities.is_empty() {
-                "none recorded".to_string()
-            } else {
-                result.severities.join(", ")
-            }
-        );
-        for finding in &result.findings {
-            println!(
-                "  - [{}] {} — {}",
-                finding["severity"].as_str().unwrap_or("unknown"),
-                markdown_line(finding["title"].as_str().unwrap_or("untitled finding")),
-                markdown_line(finding["body"].as_str().unwrap_or("(no body)"))
-            );
         }
     }
 }
@@ -3553,20 +3490,8 @@ fn next_action_value(mode: CampaignMode, verdict: &RunVerdict) -> serde_json::Va
     }
 }
 
-#[derive(Debug, serde::Serialize)]
-struct AvailableNodeResult {
-    node: String,
-    attempt_id: String,
-    result_artifact_id: String,
-    severities: Vec<String>,
-    spend_tokens: u64,
-    findings: Vec<serde_json::Value>,
-}
-
-#[derive(serde::Serialize)]
 struct LatestRoundEvidence {
     ledger_production: &'static str,
-    available_node_results: Vec<AvailableNodeResult>,
 }
 
 impl LatestRoundEvidence {
@@ -3690,7 +3615,6 @@ fn latest_round_evidence(
             } else {
                 "produced_with_findings"
             },
-            available_node_results: Vec::new(),
         }));
     }
 
@@ -3718,69 +3642,7 @@ fn latest_round_evidence(
             return Err("Ledger completed without a NodeOutputReceipt".into());
         }
     };
-    let mut available = Vec::new();
-    for event in events.iter().filter(|event| {
-        event.event_type == EventType::AttemptAdmittedV1
-            && event.causation_id.as_deref() == Some(round_event.event_id.as_str())
-    }) {
-        let payload: review_core::event::AttemptAdmittedPayloadV1 =
-            serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
-        if payload.selection != "selected" {
-            continue;
-        }
-        let result_artifact_id = payload
-            .result_artifact
-            .ok_or("selected Attempt has no result artifact")?;
-        let value = cas
-            .get_json(&result_artifact_id)
-            .map_err(|error| error.to_string())?;
-        let reports = value
-            .get("reports")
-            .or_else(|| value.get("findings"))
-            .and_then(serde_json::Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let findings = reports
-            .into_iter()
-            .map(|report| {
-                serde_json::json!({
-                    "severity": report.get("severity").cloned().unwrap_or(serde_json::Value::Null),
-                    "title": report.get("title").cloned().unwrap_or(serde_json::Value::Null),
-                    "body": report.get("body").cloned().unwrap_or(serde_json::Value::Null),
-                    "file": report.get("file").cloned().unwrap_or(serde_json::Value::Null),
-                    "line": report.get("line").cloned().unwrap_or(serde_json::Value::Null),
-                    "locations": report.get("locations").cloned().unwrap_or(serde_json::Value::Null),
-                })
-            })
-            .collect::<Vec<_>>();
-        let severities = findings
-            .iter()
-            .filter_map(|finding| finding["severity"].as_str().map(str::to_string))
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect();
-        available.push(AvailableNodeResult {
-            node: event
-                .node_id
-                .clone()
-                .ok_or("selected Attempt has no node ID")?,
-            attempt_id: event
-                .attempt_id
-                .clone()
-                .ok_or("selected Attempt has no Attempt ID")?,
-            result_artifact_id,
-            severities,
-            spend_tokens: payload.cost_tokens,
-            findings,
-        });
-    }
-    available.sort_by(|left, right| {
-        (&left.node, &left.attempt_id).cmp(&(&right.node, &right.attempt_id))
-    });
-    Ok(Some(LatestRoundEvidence {
-        ledger_production,
-        available_node_results: available,
-    }))
+    Ok(Some(LatestRoundEvidence { ledger_production }))
 }
 
 fn packaged_runner(command: &review_core::Command) -> String {
@@ -4065,28 +3927,35 @@ mod option_tests {
         assert!(error.contains("state must live under XDG state"));
     }
 
+    /// `af review run` JSON and the `af review ledger` notice classify the latest Round's Ledger
+    /// from its output receipt, or from the Round's Run Report when the Ledger produced none.
     #[test]
-    fn admitted_result_is_visible_without_becoming_a_ledger() {
+    fn latest_round_ledger_production_is_read_from_its_receipt_or_run_report() {
         let temp = tempfile::tempdir().unwrap();
         let cas = review_store::Cas::open(temp.path()).unwrap();
         let (manifest_id, findings_id, demands_id) = campaign_manifest(&cas, "reduce");
-        let result_id = cas
-            .put_json(&serde_json::json!({
-                "verdict": "request-changes",
-                "summary": null,
-                "reports": [{
-                    "severity": "major",
-                    "file": "src/lib.rs",
-                    "line": 9,
-                    "title": "partial finding",
-                    "body": "the sibling reviewer failed before gather",
-                    "fix": "repair it",
-                    "confidence": 0.9
+        let report = |outcome: review_core::RunNodeOutcomeV2| {
+            serde_json::to_value(review_core::RunReportPayloadV6 {
+                outcomes: vec![review_core::RunNodeReportV2 {
+                    node: "reduce".into(),
+                    outcome,
                 }],
-                "benchmark_demands": [],
-                "dispositions": []
-            }))
-            .unwrap();
+                blocked_gates: Vec::new(),
+                verdict: review_core::RunVerdictV3::Incomplete {
+                    missing_nodes: Vec::new(),
+                },
+                spent_tokens: 37_u128.into(),
+                task_accounting: review_core::TaskReviewAccountingV1 {
+                    task_id: "review".into(),
+                    task_revision_id: findings_id.clone(),
+                    plan_id: findings_id.clone(),
+                    task_report_id: findings_id.clone(),
+                    through_sequence: 1,
+                },
+                execution: review_core::RunReportExecutionV6::Unbound {},
+            })
+            .unwrap()
+        };
         let events = vec![
             event(
                 0,
@@ -4099,61 +3968,31 @@ mod option_tests {
                     epoch: 1,
                     campaign_manifest_id: manifest_id,
                     subject_id: findings_id.clone(),
-                    prior_finding_set_id: findings_id,
+                    prior_finding_set_id: findings_id.clone(),
                     prior_demand_set_id: demands_id,
                 })
                 .unwrap(),
             ),
             event(
                 1,
-                review_core::EventType::AttemptAdmittedV1,
+                review_core::EventType::RunReportV6,
                 Some("event-0"),
-                Some("correctness"),
-                Some("attempt-1"),
-                serde_json::json!({
-                    "selection": "selected",
-                    "cost_tokens": 37,
-                    "result_artifact": result_id,
-                    "provenance_artifact": null
+                None,
+                None,
+                report(review_core::RunNodeOutcomeV2::Suppressed {
+                    reason: review_core::RunSuppressionReasonV2::UpstreamMissing,
                 }),
-            ),
-            event(
-                2,
-                review_core::EventType::RunReportV3,
-                Some("event-0"),
-                None,
-                None,
-                serde_json::to_value(review_core::RunReportPayloadV3 {
-                    outcomes: vec![review_core::RunNodeReportV2 {
-                        node: "reduce".into(),
-                        outcome: review_core::RunNodeOutcomeV2::Suppressed {
-                            reason: review_core::RunSuppressionReasonV2::UpstreamMissing,
-                        },
-                    }],
-                    blocked_gates: Vec::new(),
-                    verdict: review_core::RunVerdictV3::Incomplete {
-                        missing_nodes: Vec::new(),
-                    },
-                    spent_tokens: Some(37),
-                })
-                .unwrap(),
             ),
         ];
         let evidence = latest_round_evidence(&events, &cas).unwrap().unwrap();
         assert_eq!(evidence.ledger_production, "not_produced_upstream_missing");
-        assert_eq!(evidence.available_node_results.len(), 1);
-        let result = &evidence.available_node_results[0];
-        assert_eq!(result.node, "correctness");
-        assert_eq!(result.attempt_id, "attempt-1");
-        assert_eq!(result.spend_tokens, 37);
-        assert_eq!(result.severities, ["major"]);
-        assert_eq!(result.findings[0]["title"], "partial finding");
+        assert!(evidence.ledger_was_not_produced());
 
         let mut gathered = events.clone();
         gathered.insert(
-            2,
+            1,
             event(
-                2,
+                1,
                 review_core::EventType::NodeOutputReceiptV1,
                 Some("event-0"),
                 Some("reduce"),
@@ -4163,24 +4002,11 @@ mod option_tests {
         );
         let evidence = latest_round_evidence(&gathered, &cas).unwrap().unwrap();
         assert_eq!(evidence.ledger_production, "produced_with_findings");
-        assert!(evidence.available_node_results.is_empty());
 
         let mut failed = events;
-        failed.last_mut().unwrap().payload =
-            serde_json::to_value(review_core::RunReportPayloadV3 {
-                outcomes: vec![review_core::RunNodeReportV2 {
-                    node: "reduce".into(),
-                    outcome: review_core::RunNodeOutcomeV2::Failed {
-                        error: "invalid Ledger output".into(),
-                    },
-                }],
-                blocked_gates: Vec::new(),
-                verdict: review_core::RunVerdictV3::Incomplete {
-                    missing_nodes: Vec::new(),
-                },
-                spent_tokens: Some(37),
-            })
-            .unwrap();
+        failed.last_mut().unwrap().payload = report(review_core::RunNodeOutcomeV2::Failed {
+            error: "invalid Ledger output".into(),
+        });
         let evidence = latest_round_evidence(&failed, &cas).unwrap().unwrap();
         assert_eq!(evidence.ledger_production, "not_produced_failed");
     }

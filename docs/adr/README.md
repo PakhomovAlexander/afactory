@@ -58,10 +58,6 @@ Record the options you rejected and why — that is the part future readers need
   files](0020-stream-cas-materialization-and-clone-duplicates.md)
 - [0021 — Keep the ReviewerResult wire shape
   flat](0021-keep-reviewer-result-wire-shape-flat.md)
-- [0022 — Persist retry feedback as an Attempt
-  input](0022-persist-retry-feedback-as-attempt-input.md)
-- [0023 — Separate retry feedback from terminal
-  diagnostics](0023-separate-retry-feedback-from-terminal-diagnostics.md)
 - [0025 — Require typed Generation outputs in pipeline version
   2](0025-require-typed-generation-outputs-in-version-2.md)
 - [0026 — Share process supervision through a leaf

@@ -61,3 +61,56 @@ fn exact_broker_receipt_has_a_distinct_bounded_wire_contract() {
     assert!(!validator.is_valid(&bad));
     assert!(serde_json::from_value::<BrokerOperationReceiptV2>(bad).is_err());
 }
+
+/// The exact receipt keeps the historical receipt's outcome-shape rules: only its charge bound
+/// widens. A usage overrun needs a charge above the reservation, and a redacted credential
+/// exposure may never charge more than was reserved.
+#[test]
+fn exact_broker_receipt_keeps_the_outcome_shape_rules() {
+    let receipt = BrokerOperationReceiptV1 {
+        handle_id: "b".repeat(26),
+        node: "correctness".into(),
+        attempt_id: "a".repeat(26),
+        lease_epoch: 1,
+        operation: "model_inference".into(),
+        destination: "provider.test".into(),
+        method: "responses.create".into(),
+        ordinal: 1,
+        outcome: BrokerOperationOutcomeV1::Succeeded,
+        failure_reason: None,
+        request_digest: format!("sha256:{}", "c".repeat(64)),
+        response_digest: Some(format!("sha256:{}", "d".repeat(64))),
+        request_bytes: 128,
+        response_bytes: 256,
+        reserved_usage: 1000,
+        charged_usage: 900,
+    };
+    let contradictory = BrokerOperationReceiptV1 {
+        outcome: BrokerOperationOutcomeV1::Failed,
+        failure_reason: Some(BrokerFailureReasonV1::UsageOverrun),
+        ..receipt.clone()
+    };
+    let redacted_overrun = BrokerOperationReceiptV1 {
+        outcome: BrokerOperationOutcomeV1::Failed,
+        failure_reason: Some(BrokerFailureReasonV1::UsageOverrun),
+        response_digest: None,
+        response_bytes: 0,
+        charged_usage: 1_001,
+        ..receipt.clone()
+    };
+    let overcharged_exposure = BrokerOperationReceiptV1 {
+        failure_reason: Some(BrokerFailureReasonV1::CredentialExposure),
+        charged_usage: 1_001,
+        ..redacted_overrun.clone()
+    };
+    for (receipt, valid) in [
+        (receipt, true),
+        (contradictory, false),
+        (redacted_overrun, true),
+        (overcharged_exposure, false),
+    ] {
+        assert_eq!(receipt.validate().is_ok(), valid, "{receipt:?}");
+        let exact = BrokerOperationReceiptV2::from(receipt);
+        assert_eq!(exact.validate().is_ok(), valid, "{exact:?}");
+    }
+}

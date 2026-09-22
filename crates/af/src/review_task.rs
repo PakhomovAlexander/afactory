@@ -350,22 +350,14 @@ pub(super) fn require_common_campaign(
 
 /// A denylist, never an allowlist: the shared Review domain also writes Node invocations,
 /// output receipts, Gate decisions and Check results on the Task path, and ledger commands
-/// append operator events before any Task exists.
+/// append operator events before any Task exists. The pre-Task executor's Attempt, broker and
+/// Provider Operation events are not listed: they are no longer event types, so a log holding
+/// them fails replay before this check.
 fn written_only_by_the_pre_task_executor(event_type: review_core::EventType) -> bool {
     use review_core::EventType;
     matches!(
         event_type,
-        EventType::AttemptDispatchedV1
-            | EventType::AttemptAdmittedV1
-            | EventType::AttemptFailedV1
-            | EventType::AttemptFencedV1
-            | EventType::AttemptInputV1
-            | EventType::AttemptFeedbackV1
-            | EventType::AttemptReleasedV1
-            | EventType::ReviewerExecutionBoundV1
-            | EventType::BrokerOperationCompletedV1
-            | EventType::ProviderOperationTransitionV1
-            | EventType::RunReportV3
+        EventType::RunReportV3
             | EventType::RunReportV4
             | EventType::RunReportV5
             // Refusable only while the Task-host port of ADR-0110 writes these after Task
@@ -610,16 +602,6 @@ mod tests {
         assert_eq!(
             refused,
             [
-                EventType::BrokerOperationCompletedV1,
-                EventType::AttemptAdmittedV1,
-                EventType::AttemptDispatchedV1,
-                EventType::AttemptFailedV1,
-                EventType::AttemptFencedV1,
-                EventType::AttemptFeedbackV1,
-                EventType::AttemptInputV1,
-                EventType::AttemptReleasedV1,
-                EventType::ProviderOperationTransitionV1,
-                EventType::ReviewerExecutionBoundV1,
                 EventType::RunReportV3,
                 EventType::RunReportV4,
                 EventType::RunReportV5,

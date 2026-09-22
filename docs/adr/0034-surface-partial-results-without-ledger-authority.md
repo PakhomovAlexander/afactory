@@ -1,6 +1,10 @@
 # Surface partial results without granting Ledger authority
 
-**Status:** accepted (2026-08-28)
+**Status:** accepted (2026-08-28); superseded in part by
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md): `af review report` no longer lists recorded, not
+gathered results, which it read only from the pre-Task reviewer's `AttemptAdmitted@1`. The
+`af review run` output lists them from the Round's selected Task Attempts, and `af review ledger`
+labels an absent latest-Round Ledger.
 
 A required reviewer may publish an admitted `ReviewerResult` before a sibling reviewer becomes
 unavailable. The scheduler then correctly suppresses gather and Ledger nodes with

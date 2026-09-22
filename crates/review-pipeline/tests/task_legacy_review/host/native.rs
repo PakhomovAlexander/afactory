@@ -239,12 +239,7 @@ fn check_native_provider_reuse(provider_only: bool) {
                         .replay("review")
                         .unwrap()
                         .iter()
-                        .any(|e| matches!(
-                            e.event_type,
-                            EventType::AttemptDispatchedV1
-                                | EventType::AttemptAdmittedV1
-                                | EventType::RunReportV6
-                        ))
+                        .any(|e| e.event_type == EventType::RunReportV6)
                 );
                 continue; // Drop and reconstruct the host/runtime from the same durable Task.
             }

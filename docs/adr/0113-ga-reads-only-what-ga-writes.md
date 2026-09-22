@@ -1,7 +1,7 @@
 # ADR-0113: GA reads only what GA writes
 
 **Status:** accepted (2026-09-21). Supersedes in part the ADRs listed under *Superseded clauses*
-and ADR-0016, ADR-0024, ADR-0043 and ADR-0051 in full.
+and ADR-0016, ADR-0022, ADR-0023, ADR-0024, ADR-0043 and ADR-0051 in full.
 
 Before GA, Afactory treated everything it had ever written as a permanent obligation.
 [ADR-0002](0002-event-payload-changes-bump-the-type-version.md) made every superseded event reader
@@ -86,16 +86,18 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   fingerprint kept for replaying existing Campaigns.
 - [ADR-0011](0011-silence-is-not-a-drop.md): the `RunReport@2` it names; GA writes only
   `RunReport@6`.
+- [ADR-0015](0015-safe-attempts-receive-handles-not-secrets.md): the pre-Task reviewer's
+  `ReviewerExecutionBound@1` binding and `BrokerOperationCompleted@1` receipts in the Campaign log;
+  a Task Attempt records its Broker binding and receipts in the Task log.
 - [ADR-0019](0019-report-authority-failures-explicitly.md): the permanent `RunReport@1` and `@2`
   readers.
 - [ADR-0021](0021-keep-reviewer-result-wire-shape-flat.md): the permanence of `ReviewerResult@1`,
   and the new-version rule for pre-GA reviewer-result shapes.
-- [ADR-0022](0022-persist-retry-feedback-as-attempt-input.md): `AttemptInput@1` as a permanent
-  event type.
-- [ADR-0023](0023-separate-retry-feedback-from-terminal-diagnostics.md): `AttemptFeedback@1` as a
-  permanent event type.
 - [ADR-0025](0025-require-typed-generation-outputs-in-version-2.md): the untyped port shorthand
   kept readable for older pipeline files.
+- [ADR-0034](0034-surface-partial-results-without-ledger-authority.md): recorded, not gathered
+  results in `af review report`. `af review run` still lists them, from the Round's selected Task
+  Attempts.
 - [ADR-0035](0035-address-campaign-state-by-opaque-id.md): the permanent compatibility path for
   label-named Campaign directories.
 - [ADR-0036](0036-resolve-gate-caches-through-machine-local-bounded-policy.md): the permanent
@@ -131,6 +133,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   older Tasks without run reports.
 - [ADR-0066](0066-reserve-task-attempts-before-binding-exact-context.md): the historical combined
   `Prepared` record and its Store API.
+- [ADR-0067](0067-project-common-task-selections-into-canonical-review.md): the legacy Store's
+  selection from `AttemptAdmitted@1`.
 - [ADR-0068](0068-retain-inflight-task-usage-in-the-common-budget.md): usage observations and
   settlements encoded as `TaskExecutionRecord@1` with numeric charges.
 - [ADR-0070](0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md): the
@@ -186,12 +190,16 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   legacy goal entry point; `task start` takes only a Task file.
 - [ADR-0106](0106-authorize-experimental-children-separately.md): earlier inspection and execution
   generations.
+- [ADR-0107](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md): the legacy path
+  that recorded the Warm Set before the node's first `AttemptDispatched@1`.
 - [ADR-0108](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md): the legacy
   Kernel's in-memory record of a Worker's clone measurement.
 - [ADR-0110](0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md): the Kernel
   reviewer path that ran the session protocol and dispatched Cold Closeout. The protocol, the
   selection gates and the Ledger fold stay as the base for running them on the Task host; until
-  then Task-hosted Attempts record `host_unsupported` and no confirmation is dispatched.
+  then Task-hosted Attempts record `host_unsupported` and no confirmation is dispatched. The
+  `AttemptDispatched@1`, `AttemptAdmitted@1` and `AttemptFailed@1` records a confirmation wrote
+  are no longer event types; on the Task host a confirmation is a Task Attempt.
 
 ADR-0016 is superseded in full. Its Provider Operation admitted a Provider before the pre-Task
 Review executor dispatched a reviewer: a Round-bound, epoch-fenced structural probe and inference
@@ -202,6 +210,17 @@ Provider through the Task's own captured probe Attempt
 together with the executor, the flag and `af/provider-doctor@1`. Provider selection keeps its
 decision: repeatable `--provider NODE=PROVIDER_ID` bindings resolve against the machine-local
 registry and appear in neither the pipeline nor the Campaign Manifest.
+
+ADR-0022 and ADR-0023 are superseded in full. They made a pre-Task reviewer retry's refusal
+history durable in the Campaign log: `AttemptInput@1` named the history a retry consumed and was
+appended with its `AttemptDispatched@1`, and `AttemptFeedback@1` named the feedback a failed or
+fenced Attempt produced, beside its terminal diagnostic. GA writes neither event, nor any other
+pre-Task Attempt, Broker binding or receipt event, so both records are deleted together with those
+types. Their rule holds for every Task Attempt: retry input is durable authority fixed before the
+Attempt runs, as the admitted `feedback_ids` its reservation names
+([ADR-0066](0066-reserve-task-attempts-before-binding-exact-context.md)), and produced feedback is
+typed and kept apart from diagnostic prose, which is never retry input
+([ADR-0095](0095-bind-legacy-task-context-and-retry-output-admission.md)).
 
 ADR-0024 is superseded in full. It gave source Manifests a `path_encoding` generation so that
 Manifests written before `percent_v2` stayed readable and an unchanged tree kept its Snapshot
