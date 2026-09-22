@@ -255,8 +255,8 @@ in canonical order (by node ID), never in arrival order.
 The pipeline's gather node is that barrier. It runs only once every reviewer has finished, and
 `ReviewDomainState::run_gather` (`crates/review-pipeline/src/review_domain.rs`) flushes the
 buffered reviewer events in node order; Ledger reduction then ingests the gathered results sorted
-by reviewer node ID. `crates/review-pipeline/tests/end_to_end.rs` checks the outcome on a live
-pipeline: a Finding that two reviewers report lists its sources in canonical order, not
+by reviewer node ID. The end-to-end pipeline suite (`crates/review-pipeline/tests/end_to_end.rs`)
+checks the outcome: a Finding that two reviewers report lists its sources in canonical order, not
 completion order.
 
 ### Seeing exactly what a Worker receives

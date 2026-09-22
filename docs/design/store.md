@@ -45,7 +45,8 @@ design may change representation, never these.
 5. **Views are rebuildable.** `rebuild` is the only constructor of a Ledger; a view is cached,
    versioned by the reducer's version, and discardable.
 6. **Replay is the proof.** Delete every view, replay the log and objects, get the same
-   bytes; a Store conformance test checks this against every backend.
+   bytes; once a second backend exists, a Store conformance test must check this against
+   every backend.
 7. **No secrets, ever.** Redacted fingerprints, handles, ids, timings, spend, dispositions —
    never a token, code, or raw secret-bearing output.
 8. **No wall clock in identity.** Timestamps are payload facts where they matter; envelopes

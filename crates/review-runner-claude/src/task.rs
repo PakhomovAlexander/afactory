@@ -48,13 +48,12 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         "claude"
     }
     fn model_settings(&self) -> Option<(String, String)> {
-        let value = |flag| {
-            self.model_flags
-                .chunks_exact(2)
-                .find(|args| args[0] == flag)
-                .map(|args| args[1].clone())
-        };
-        value("--model").zip(value("--effort"))
+        let effort = self
+            .model_flags
+            .chunks_exact(2)
+            .find(|args| args[0] == "--effort")
+            .map(|args| args[1].clone())?;
+        Some((self.model.clone(), effort))
     }
     fn invoke(
         &self,
