@@ -63,12 +63,8 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         input: Vec<u8>,
         timeout: Duration,
         writable: bool,
-        broker: Option<&dyn review_runner::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> ModelWorkerReturn {
-        if broker.is_some() {
-            return self.invoke_with_broker(cas, workdir, input, timeout, writable, broker);
-        }
         self.invoke_inner(cas, workdir, input, timeout, writable, cancellation, &[])
     }
 
@@ -79,13 +75,9 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         input: Vec<u8>,
         timeout: Duration,
         writable: bool,
-        broker: Option<&dyn review_runner::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
-        if broker.is_some() {
-            return self.invoke_with_broker(cas, workdir, input, timeout, writable, broker);
-        }
         self.invoke_inner(
             cas,
             workdir,

@@ -5,7 +5,6 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::time::Duration;
 
-use review_broker::ExactBrokerClient;
 use review_core::task::execution::TaskInvocationV1;
 use review_core::task::feedback::TaskFeedbackCodeV1;
 use review_core::{ArtifactEnvelope, BrokerCredentialModeV1, Command, Producer};
@@ -401,8 +400,8 @@ pub struct ModelWorkerReturn {
 }
 
 pub trait WorkerModelAdapter: Send + Sync {
-    /// Credential boundary this adapter actually provides. Existing model transports retain
-    /// trusted execution; accepting an optional capability does not itself establish Brokered.
+    /// Credential boundary this adapter actually provides. Model transports run trusted and
+    /// may hold ambient Provider credentials.
     fn credential_mode(&self) -> BrokerCredentialModeV1 {
         BrokerCredentialModeV1::TrustedUnsafe
     }
@@ -422,34 +421,9 @@ pub trait WorkerModelAdapter: Send + Sync {
         writable: bool,
     ) -> ModelWorkerReturn;
 
-    /// The execution owner binds this capability to the already-started common Attempt and
-    /// retains its exact charge independently of the adapter's native usage or final message.
-    /// A Brokered adapter must override this method and consume only the opaque client.
-    #[allow(clippy::too_many_arguments)]
-    fn invoke_with_broker(
-        &self,
-        cas: &Cas,
-        workdir: &Path,
-        input: Vec<u8>,
-        timeout: Duration,
-        writable: bool,
-        broker: Option<&dyn ExactBrokerClient>,
-    ) -> ModelWorkerReturn {
-        if broker.is_some() {
-            return ModelWorkerReturn {
-                usage_observation: None,
-                message: Err("Worker model adapter does not consume Broker Handles".into()),
-                usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
-                raw_artifact_ids: vec![],
-            };
-        }
-        self.invoke(cas, workdir, input, timeout, writable)
-    }
-
     /// Optional cooperative cancellation is an installed transport capability. An adapter
     /// must implement in-flight cancellation before accepting Some; a preflight flag check
-    /// alone cannot establish support. None preserves the existing Broker/native hook.
-    #[allow(clippy::too_many_arguments)]
+    /// alone cannot establish support. None forwards to the native `invoke`.
     fn invoke_controlled(
         &self,
         cas: &Cas,
@@ -457,7 +431,6 @@ pub trait WorkerModelAdapter: Send + Sync {
         input: Vec<u8>,
         timeout: Duration,
         writable: bool,
-        broker: Option<&dyn ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> ModelWorkerReturn {
         if cancellation.is_some() {
@@ -468,7 +441,7 @@ pub trait WorkerModelAdapter: Send + Sync {
                 raw_artifact_ids: vec![],
             };
         }
-        self.invoke_with_broker(cas, workdir, input, timeout, writable, broker)
+        self.invoke(cas, workdir, input, timeout, writable)
     }
 
     /// Controlled invocation with sandbox-local, non-secret variables the kernel resolved for
@@ -483,7 +456,6 @@ pub trait WorkerModelAdapter: Send + Sync {
         input: Vec<u8>,
         timeout: Duration,
         writable: bool,
-        broker: Option<&dyn ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
@@ -497,7 +469,7 @@ pub trait WorkerModelAdapter: Send + Sync {
                 raw_artifact_ids: vec![],
             };
         }
-        self.invoke_controlled(cas, workdir, input, timeout, writable, broker, cancellation)
+        self.invoke_controlled(cas, workdir, input, timeout, writable, cancellation)
     }
 }
 
@@ -525,26 +497,8 @@ pub fn invoke_model(
     timeout: Duration,
     writable: bool,
 ) -> WorkerReturn {
-    invoke_model_with_broker(
-        cas, workdir, adapter, contract, context_id, timeout, writable, None,
-    )
-}
-
-/// Typed context and output admission are identical with and without a Broker capability.
-/// Only the execution owner may supply the client after binding the current Task Attempt.
-#[allow(clippy::too_many_arguments)]
-pub fn invoke_model_with_broker(
-    cas: &Cas,
-    workdir: &Path,
-    adapter: &dyn WorkerModelAdapter,
-    contract: &WorkerContract,
-    context_id: &str,
-    timeout: Duration,
-    writable: bool,
-    broker: Option<&dyn ExactBrokerClient>,
-) -> WorkerReturn {
     invoke_model_controlled(
-        cas, workdir, adapter, contract, context_id, timeout, writable, broker, None,
+        cas, workdir, adapter, contract, context_id, timeout, writable, None,
     )
 }
 
@@ -558,7 +512,6 @@ pub fn invoke_model_controlled(
     context_id: &str,
     timeout: Duration,
     writable: bool,
-    broker: Option<&dyn ExactBrokerClient>,
     cancellation: Option<&std::sync::atomic::AtomicBool>,
 ) -> WorkerReturn {
     let bytes = match contract.read_context(cas, context_id) {
@@ -573,8 +526,7 @@ pub fn invoke_model_controlled(
             };
         }
     };
-    let returned =
-        adapter.invoke_controlled(cas, workdir, bytes, timeout, writable, broker, cancellation);
+    let returned = adapter.invoke_controlled(cas, workdir, bytes, timeout, writable, cancellation);
     let (reply, feedback_code) = match returned.message {
         Ok(bytes) => {
             let reply = contract.validate_reply(&bytes);

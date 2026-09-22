@@ -8,7 +8,7 @@ use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDo
 use review_pipeline::task::legacy_review::{
     CapturedLegacyReviewRound,
     host::LegacyReviewTaskHost,
-    plan::{LegacyReviewPlanCompiler, ReviewPlanSettings, ReviewPlanSettingsV2},
+    plan::{LegacyReviewPlanCompiler, ReviewPlanSettings},
 };
 use review_pipeline::task::{TaskOperatorHost, TaskRuntime, TaskWorkOutput};
 use review_store::store::task::execution::PreparedTaskAttempt;
@@ -153,30 +153,27 @@ fn owned_inspection_reopens_typed_membership_failed_and_missing_children_with_fr
         .replace("[budgets]\nunit = \"tokens\"\nattempt = 100\nfan_out = 200\nrun = 400\n","")
         .replace("runner = { program = \"/bin/true\" }","runner = { program = \"/bin/sh\", args = [{value=\"-c\"},{value=\"cat >/dev/null; exit 1\"}] }");
     let round = captured_fixture::open_round_authority(&cas, &mut store, &definition, None);
-    let settings = ReviewPlanSettingsV2 {
-        review: ReviewPlanSettings {
-            mode: "light".into(),
-            resources: review_config::task::legacy_review::resources::ReviewResourcePolicy {
-                uncapped_attempt_tokens: 1,
-            },
-            outputs: BTreeMap::from([(
-                "findings".into(),
-                Address {
-                    node: "ledger".into(),
-                    port: "findings".into(),
-                },
-            )]),
-            executions: BTreeMap::from([
-                ("scatter".into(), WorkerExecutionV1::Command {}),
-                ("closeout".into(), WorkerExecutionV1::Command {}),
-            ]),
-            provider_admission: OperatorAttemptCost {
-                tokens: 1,
-                wall_ms: 1000,
-            },
-            allowed_effects: Default::default(),
+    let settings = ReviewPlanSettings {
+        mode: "light".into(),
+        resources: review_config::task::legacy_review::resources::ReviewResourcePolicy {
+            uncapped_attempt_tokens: 1,
         },
-        provider_probes: BTreeMap::new(),
+        outputs: BTreeMap::from([(
+            "findings".into(),
+            Address {
+                node: "ledger".into(),
+                port: "findings".into(),
+            },
+        )]),
+        executions: BTreeMap::from([
+            ("scatter".into(), WorkerExecutionV1::Command {}),
+            ("closeout".into(), WorkerExecutionV1::Command {}),
+        ]),
+        provider_admission: OperatorAttemptCost {
+            tokens: 1,
+            wall_ms: 1000,
+        },
+        allowed_effects: Default::default(),
     };
     let compiler = LegacyReviewPlanCompiler::capture(
         &cas,

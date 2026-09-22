@@ -178,10 +178,7 @@ fn outcome(
     let mut admissions = Vec::new();
     for (node, outcome) in &report.outcomes {
         let bindings = match graph.nodes.get(node).map(|node| &node.operator) {
-            Some(
-                CompiledOperator::ProviderAdmission { bindings }
-                | CompiledOperator::ProviderAdmissionBrokered { bindings, .. },
-            ) => bindings,
+            Some(CompiledOperator::ProviderAdmission { bindings }) => bindings,
             _ => return Err("Provider doctor outcome is not captured admission".into()),
         };
         let binding = captured

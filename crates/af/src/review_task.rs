@@ -9,9 +9,7 @@ use review_core::task::{EXECUTION_PLAN_V1, TASK_REVISION_V1, TaskRevisionV1};
 use review_graph::NodeKind;
 use review_graph::task::{Address, CompiledOperator, OperatorAttemptCost, ReviewOperation};
 use review_pipeline::task::host::TaskModelBinding;
-use review_pipeline::task::legacy_review::plan::{
-    LegacyReviewPlanCompiler, ReviewPlanSettings, ReviewPlanSettingsV2,
-};
+use review_pipeline::task::legacy_review::plan::{LegacyReviewPlanCompiler, ReviewPlanSettings};
 use review_pipeline::task::legacy_review::{CapturedLegacyReviewRound, CapturedReviewCompilation};
 use review_runner::task::WorkerModelAdapter;
 use review_store::{Cas, EventStore};
@@ -187,18 +185,13 @@ fn capture_new(
         &provider_admission,
         now_unix_ms,
     )?;
-    let settings = ReviewPlanSettingsV2 {
-        review: ReviewPlanSettings {
-            mode: options.mode.as_str().into(),
-            resources,
-            outputs: public_outputs(&prepared.loaded)?,
-            executions: workers.executions.clone(),
-            provider_admission,
-            allowed_effects: BTreeSet::new(),
-        },
-        // Brokered capability probes require their own explicit authority. Business
-        // operation permissions are never copied to an admission probe.
-        provider_probes: BTreeMap::new(),
+    let settings = ReviewPlanSettings {
+        mode: options.mode.as_str().into(),
+        resources,
+        outputs: public_outputs(&prepared.loaded)?,
+        executions: workers.executions.clone(),
+        provider_admission,
+        allowed_effects: BTreeSet::new(),
     };
     let compiler = LegacyReviewPlanCompiler::capture(cas, round, engine_id, settings)?;
     let revision = compiler.prepare_revision(cas, task_id, limits)?;

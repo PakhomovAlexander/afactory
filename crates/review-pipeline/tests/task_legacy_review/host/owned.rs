@@ -57,7 +57,7 @@ fn admit_owned_with_limits(
         cas,
         CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap(),
         cas.put(b"owned Review host fixture").unwrap(),
-        plan::without_probes(settings),
+        settings,
     )
     .unwrap();
     let task = compiler
@@ -352,7 +352,7 @@ fn owned_scatter_requires_whole_subject_closeout_after_semantic_closure() {
         &cas,
         CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
         cas.put(b"owned Review host fixture").unwrap(),
-        plan::without_probes(settings),
+        settings,
     )
     .unwrap();
     let task = compiler

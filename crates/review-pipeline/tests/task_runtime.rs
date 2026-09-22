@@ -14,8 +14,6 @@ use review_store::store::task::execution::PreparedTaskAttempt;
 use review_store::{Cas, EventStore};
 use serde_json::json;
 
-#[path = "task_runtime/broker.rs"]
-mod broker;
 #[path = "task_runtime/control.rs"]
 mod control;
 #[path = "task_runtime/output_admission.rs"]

@@ -138,7 +138,6 @@ impl WorkerModelAdapter for Recording {
         _input: Vec<u8>,
         _timeout: Duration,
         _writable: bool,
-        _broker: Option<&dyn ExactBrokerClient>,
         _cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
@@ -183,7 +182,6 @@ fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_nativ
         Duration::from_secs(5),
         false,
         None,
-        None,
         &environment,
     );
     let error = returned.message.unwrap_err().to_string();
@@ -202,7 +200,6 @@ fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_nativ
         b"{}".to_vec(),
         Duration::from_secs(5),
         false,
-        None,
         None,
     );
     assert_eq!(

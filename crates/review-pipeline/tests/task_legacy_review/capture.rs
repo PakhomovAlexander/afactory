@@ -21,14 +21,6 @@ pub(super) fn open_round_with_pipeline(
     open_round_authority(cas, store, definition, None)
 }
 
-pub(super) fn open_round_with_package(
-    cas: &Cas,
-    store: &mut EventStore,
-    definition: &str,
-) -> String {
-    open_round_authority(cas, store, definition, Some(claude_package()))
-}
-
 /// The packaged `claude` fixture Worker's files.
 pub(super) fn claude_package() -> BTreeMap<String, Vec<u8>> {
     BTreeMap::from([

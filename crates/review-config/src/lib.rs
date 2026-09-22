@@ -542,47 +542,10 @@ pub struct ReviewerExecutionSpec {
     pub credential_mode: review_core::BrokerCredentialModeV1,
     #[serde(default)]
     pub auto_apply: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub operations: Vec<review_core::BrokerOperationPolicyV1>,
 }
 
 impl ReviewerExecutionSpec {
     fn validate(&self, node: &str) -> Result<(), ConfigError> {
-        let mut names = std::collections::BTreeSet::new();
-        for operation in &self.operations {
-            operation.validate().map_err(|error| {
-                ConfigError::Binding(format!(
-                    "reviewer `{node}` has an invalid Broker operation: {error}"
-                ))
-            })?;
-            if !names.insert(operation.name.as_str()) {
-                return Err(ConfigError::Binding(format!(
-                    "reviewer `{node}` has duplicate Broker operation `{}`",
-                    operation.name
-                )));
-            }
-        }
-        review_core::broker_authority_usage(&self.operations).map_err(|error| {
-            ConfigError::Binding(format!(
-                "reviewer `{node}` has invalid aggregate Broker authority: {error}"
-            ))
-        })?;
-        match self.credential_mode {
-            review_core::BrokerCredentialModeV1::Brokered if !self.operations.is_empty() => {}
-            review_core::BrokerCredentialModeV1::CredentialFree
-            | review_core::BrokerCredentialModeV1::TrustedUnsafe
-                if self.operations.is_empty() => {}
-            review_core::BrokerCredentialModeV1::Brokered => {
-                return Err(ConfigError::Binding(format!(
-                    "brokered reviewer `{node}` must declare at least one bounded operation"
-                )));
-            }
-            _ => {
-                return Err(ConfigError::Binding(format!(
-                    "reviewer `{node}` declares Broker operations without brokered credentials"
-                )));
-            }
-        }
         if self.auto_apply
             && self.credential_mode == review_core::BrokerCredentialModeV1::TrustedUnsafe
         {
@@ -1441,18 +1404,6 @@ fn cold_closeout_nodes(
             "convergence.cold_closeout names a confirmation Attempt but no reviewer declares warm layers; a cold reviewer needs no cold confirmation".into(),
         ));
     }
-    for node in &selected {
-        // A brokered reviewer's Attempt runs under a Broker Handle issued for exactly that
-        // Attempt. A closeout would need its own lease, which this package does not compile.
-        if node.execution.as_ref().is_some_and(|execution| {
-            execution.credential_mode == review_core::BrokerCredentialModeV1::Brokered
-        }) {
-            return Err(ConfigError::Binding(format!(
-                "reviewer `{}` is brokered and cannot take a compiled Cold Closeout: its confirmation Attempt would need a Broker Handle of its own",
-                node.id
-            )));
-        }
-    }
     if let Some(budgets) = budgets {
         let reservation = |node: &NodeSpec| {
             node.budget
@@ -1785,19 +1736,6 @@ impl Definition {
                 match (self.version, &spec.execution) {
                     (4 | 5, Some(execution)) => {
                         execution.validate(&spec.id)?;
-                        if let Some(budgets) = &self.budgets {
-                            let authority =
-                                review_core::broker_authority_usage(&execution.operations)
-                                    .expect("validated Broker authority");
-                            let attempt_cap =
-                                spec.budget.map_or(budgets.attempt, |budget| budget.attempt);
-                            if authority > attempt_cap {
-                                return Err(ConfigError::Binding(format!(
-                                    "brokered reviewer `{}` aggregate Broker authority ({authority}) exceeds its attempt cap ({attempt_cap}); the dispatch reservation would not cover its capability",
-                                    spec.id
-                                )));
-                            }
-                        }
                         reviewer_execution.insert(spec.id.clone(), execution.clone());
                     }
                     (4 | 5, None) => {

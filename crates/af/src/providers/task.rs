@@ -2,7 +2,6 @@
 //! later as paid nodes by the common Task runtime. Credentials and raw account data stay local.
 use super::*;
 use review_core::task::plan::WorkerExecutionV1;
-use review_runner::ExactBrokerClient;
 use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
 
 #[derive(Clone)]
@@ -211,7 +210,7 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         timeout: Duration,
         writable: bool,
     ) -> ModelWorkerReturn {
-        self.invoke_controlled(cas, workdir, input, timeout, writable, None, None)
+        self.invoke_controlled(cas, workdir, input, timeout, writable, None)
     }
     fn invoke_controlled(
         &self,
@@ -220,7 +219,6 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         input: Vec<u8>,
         timeout: Duration,
         writable: bool,
-        broker: Option<&dyn ExactBrokerClient>,
         cancellation: Option<&AtomicBool>,
     ) -> ModelWorkerReturn {
         self.invoke_controlled_with_environment(
@@ -229,7 +227,6 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             input,
             timeout,
             writable,
-            broker,
             cancellation,
             &[],
         )
@@ -244,7 +241,6 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
         input: Vec<u8>,
         timeout: Duration,
         writable: bool,
-        broker: Option<&dyn ExactBrokerClient>,
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
@@ -258,22 +254,6 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             usage_observation: None,
             raw_artifact_ids: vec![],
         };
-        // Native clients do not consume Broker handles. Keep the native refusal, before any check.
-        if broker.is_some() {
-            if !environment.is_empty() {
-                return ModelWorkerReturn {
-                    message: Err(
-                        "Brokered Task Provider invocation cannot carry sandbox environment".into(),
-                    ),
-                    usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
-                    usage_observation: None,
-                    raw_artifact_ids: vec![],
-                };
-            }
-            return self
-                .inner
-                .invoke_with_broker(cas, workdir, input, timeout, writable, broker);
-        }
         let Some(deadline) = Instant::now().checked_add(timeout) else {
             return refused();
         };
@@ -292,7 +272,6 @@ impl WorkerModelAdapter for CurrentTaskProviderAdapter {
             input,
             remaining,
             writable,
-            None,
             cancellation,
             environment,
         )

@@ -6,9 +6,6 @@ use review_core::task::plan::{
     EffectiveWorkerBindingV1, ExecutionPlanV1, GeneratedOriginV1, PlanDependencyV1,
     WorkerExecutionV1,
 };
-use review_core::task::provider::{
-    TASK_PROVIDER_PROBE_POLICY_V1, TaskProviderProbePolicyV1, TaskProviderProbeProtocolV1,
-};
 use review_core::task::{
     AcceptanceObligationV1, PipelineChoiceV1, PipelineFallbackV1, RequiredOutputV1,
     TaskAuthorityV1, TaskProvenanceV1, TaskRevisionV1,
@@ -74,22 +71,6 @@ impl ReviewPlanSettings {
     }
 }
 
-/// Probe operations are separately approved; business operations are never copied here.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReviewProviderProbeSettingsV1 {
-    pub probe_protocol: TaskProviderProbeProtocolV1,
-    pub operations: Vec<review_core::BrokerOperationPolicyV1>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ReviewPlanSettingsV2 {
-    pub review: ReviewPlanSettings,
-    /// Original Review node IDs with explicitly configured Brokered Provider probes.
-    pub provider_probes: BTreeMap<String, ReviewProviderProbeSettingsV1>,
-}
-
 /// The `af/LegacyReviewTaskPolicy@4` payload. Its bytes are Task authority: resume and later
 /// Rounds recheck them exactly, so the shape and field names must not change.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,7 +78,7 @@ pub struct ReviewPlanSettingsV2 {
 struct ReviewTaskPolicy {
     engine_id: String,
     campaign_manifest_id: String,
-    settings: ReviewPlanSettingsV2,
+    settings: ReviewPlanSettings,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -173,9 +154,9 @@ impl LegacyReviewPlanCompiler {
         cas: &Cas,
         round: CapturedLegacyReviewRound,
         engine_id: String,
-        settings: ReviewPlanSettingsV2,
+        settings: ReviewPlanSettings,
     ) -> Result<Self, String> {
-        settings.review.validate()?;
+        settings.validate()?;
         cas.verify(&engine_id).map_err(|e| e.to_string())?;
         let policy = ReviewTaskPolicy {
             engine_id,
@@ -210,7 +191,7 @@ impl LegacyReviewPlanCompiler {
         }
         let policy: ReviewTaskPolicy =
             serde_json::from_value(envelope.payload).map_err(|e| e.to_string())?;
-        policy.settings.review.validate()?;
+        policy.settings.validate()?;
         if policy.engine_id != engine_id
             || policy.campaign_manifest_id != round.binding().campaign_manifest_id
         {
@@ -237,7 +218,7 @@ impl LegacyReviewPlanCompiler {
         let loaded = review_config::captured_review::load_captured_review(
             cas,
             &manifest,
-            policy.settings.review.mode()?,
+            policy.settings.mode()?,
         )?;
         let workers: BTreeSet<_> = loaded
             .planned()
@@ -246,29 +227,11 @@ impl LegacyReviewPlanCompiler {
             .filter(|(_, node)| matches!(node.kind, NodeKind::Reviewer | NodeKind::Scatter))
             .map(|(name, _)| name)
             .collect();
-        let review = &policy.settings.review;
+        let review = &policy.settings;
         if workers != review.executions.keys().collect() {
             return Err("Review executions differ from captured Worker nodes".into());
         }
         validate_executions(&loaded, &review.executions)?;
-        for (node, settings) in &policy.settings.provider_probes {
-            let execution = review
-                .executions
-                .get(node)
-                .ok_or("Provider probe refers to an unknown Review Worker")?;
-            if loaded.reviewer_execution().get(node).is_none_or(|binding| {
-                binding.credential_mode != review_core::BrokerCredentialModeV1::Brokered
-            }) {
-                return Err("Provider probe requires a captured Brokered Reviewer policy".into());
-            }
-            let probe = probe_policy(policy_id, execution, settings);
-            probe.validate()?;
-            if review_core::broker_authority_usage(&probe.operations)?
-                > review.provider_admission.tokens
-            {
-                return Err("Provider probe exceeds the original admission reservation".into());
-            }
-        }
         Ok(Self {
             round,
             policy_id: policy_id.into(),
@@ -278,7 +241,7 @@ impl LegacyReviewPlanCompiler {
     }
 
     fn settings(&self) -> &ReviewPlanSettings {
-        &self.policy.settings.review
+        &self.policy.settings
     }
 
     pub fn resources(&self) -> &ReviewResourcePolicy {
@@ -647,57 +610,8 @@ impl LegacyReviewPlanCompiler {
             );
             dependencies.insert(package.name.clone(), package);
         }
-        let mut probes = BTreeMap::new();
-        for (index, (node, settings)) in self.policy.settings.provider_probes.iter().enumerate() {
-            let mapping = &captured.compilation.nodes[node];
-            let slot = match &captured.compilation.graph.nodes[&mapping.task_node].operator {
-                CompiledOperator::ReviewDomain {
-                    operation:
-                        ReviewOperation::Reviewer { slot } | ReviewOperation::Scatter { slot },
-                    ..
-                } => slot,
-                _ => return Err("Provider probe requires a Review Worker slot".into()),
-            };
-            let policy = probe_policy(&self.policy_id, &bindings[slot].execution, settings);
-            let name = format!("af/provider-probe-{index}");
-            let recorded_id = recorded
-                .map(|plan| {
-                    plan.dependencies
-                        .get(&name)
-                        .map(|dependency| dependency.artifact_id.as_str())
-                        .ok_or("Recorded Review plan lacks its Provider probe policy")
-                })
-                .transpose()?;
-            let envelope = capture_or_read(
-                cas,
-                TASK_PROVIDER_PROBE_POLICY_V1,
-                "provider-probe",
-                vec![self.policy_id.clone()],
-                &policy,
-                recorded_id,
-            )?;
-            dependencies.insert(
-                name.clone(),
-                PlanDependencyV1 {
-                    name,
-                    artifact_id: envelope.artifact_id.clone(),
-                    content_digest: envelope.content_id,
-                },
-            );
-            probes.insert(
-                slot.clone(),
-                review_graph::task::CapturedProviderProbe {
-                    policy_id: envelope.artifact_id,
-                    policy,
-                },
-            );
-        }
         let graph = &mut captured.compilation.graph;
-        graph.install_provider_admission_with_probes(
-            &bindings,
-            &self.settings().provider_admission,
-            &probes,
-        )?;
+        graph.install_provider_admission(&bindings, &self.settings().provider_admission)?;
         let integration_policy_id = self.install_integration_phase(
             cas,
             &captured.loaded,
@@ -711,12 +625,6 @@ impl LegacyReviewPlanCompiler {
             self.policy.engine_id.clone(),
             self.policy_id.clone(),
         ];
-        graph_refs.extend(
-            probes
-                .values()
-                .map(|probe| probe.policy_id.clone())
-                .collect::<BTreeSet<_>>(),
-        );
         graph_refs.extend(integration_policy_id);
         let graph = capture_or_read(
             cas,
@@ -940,20 +848,6 @@ fn capture_or_read<T: Serialize>(
         cas.put_artifact(ty, producer, refs, None, payload)
             .map(|(_, artifact)| artifact)
             .map_err(|e| e.to_string())
-    }
-}
-
-fn probe_policy(
-    authority_policy_id: &str,
-    execution: &WorkerExecutionV1,
-    settings: &ReviewProviderProbeSettingsV1,
-) -> TaskProviderProbePolicyV1 {
-    TaskProviderProbePolicyV1 {
-        authority_policy_id: authority_policy_id.into(),
-        execution: execution.clone(),
-        credential_mode: review_core::BrokerCredentialModeV1::Brokered,
-        probe_protocol: settings.probe_protocol,
-        operations: settings.operations.clone(),
     }
 }
 

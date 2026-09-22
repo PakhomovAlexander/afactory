@@ -293,6 +293,18 @@ or needs a documented hand edit.
   Ledger `review.kernel/FindingSet@1` or `review.kernel/DemandSet@1`. `af onboard` and every
   shipped pipeline already write typed ports. A Campaign whose manifest pinned a pipeline with the
   shorthand can no longer be resumed or continued.
+- Brokered credentials are gone; GA has no broker. A format 4 or 5 reviewer's `execution` accepts
+  only `credential_mode = "credential_free"` or `"trusted_unsafe"` and `auto_apply`:
+  `credential_mode = "brokered"` and an `operations` list are refused when the pipeline is parsed,
+  in `af review plan` too. They used to pass `plan` and fail only at `af review run`, because no
+  adapter could serve them. No shipped pipeline declares either. Provider admission always
+  compiles to `af/TaskProviderAdmission@1` with the `af/TaskProviderContext@1` readiness context.
+  The captured `af/LegacyReviewTaskPolicy@4` drops `settings.provider_probes`, which was always
+  empty, and holds the review settings directly under `settings`, so a new Review Task's policy
+  digest differs from an earlier release's. The `task-provider-admission-v2.json`,
+  `task-provider-context-v2.json` and `task-provider-probe-policy-v1.json` schemas are deleted,
+  `compiled-task-v1.json` loses the `provider_admission_brokered` operator, and
+  `task-broker-binding-v1.json` loses its `provider_admission` target.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

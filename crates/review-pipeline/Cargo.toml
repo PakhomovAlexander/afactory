@@ -9,7 +9,6 @@ license.workspace = true
 
 [dependencies]
 review-attempt = { path = "../review-attempt" }
-review-broker = { path = "../review-broker" }
 review-check = { path = "../review-check" }
 review-config = { path = "../review-config" }
 review-core = { path = "../review-core" }

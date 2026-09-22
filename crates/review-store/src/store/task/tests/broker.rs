@@ -1,5 +1,4 @@
 //! Broker operations are observations inside one Task Attempt, including late paid work.
-mod provider;
 use super::*;
 use execution::PreparedTaskAttempt;
 use execution::broker::{
@@ -381,14 +380,9 @@ fn binding_requires_started_original_attempt_and_captured_slot_policy() {
     let mut wrong = binding.clone();
     wrong.target = TaskBrokerTargetV1::Worker {
         slot: SLOT.into(),
-        invocation_policy_id: alternative.clone(),
+        invocation_policy_id: alternative,
     };
     variants.push(("invocation policy", wrong));
-    let mut wrong = binding.clone();
-    wrong.target = TaskBrokerTargetV1::ProviderAdmission {
-        probe_policy_id: alternative,
-    };
-    variants.push(("Provider target on Worker Attempt", wrong));
     let mut wrong = binding.clone();
     wrong.node = "root.nodes.other".into();
     variants.push(("node", wrong));

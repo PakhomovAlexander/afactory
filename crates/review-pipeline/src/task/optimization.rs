@@ -686,14 +686,10 @@ impl TaskOperatorHost for OptimizationTaskDomain {
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         if let Err(error) = super::control::check(cancellation) {
             return super::control::refused(error);
-        }
-        if broker.is_some() {
-            return super::control::refused("Pure optimization does not consume Broker Handles");
         }
         let output = self.execute(cas, input, attempt);
         if let Err(error) = super::control::check(cancellation) {
@@ -1875,14 +1871,10 @@ impl TaskOperatorHost for OptimizationCandidateTaskDomain {
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         if let Err(error) = super::control::check(cancellation) {
             return super::control::refused(error);
-        }
-        if broker.is_some() {
-            return super::control::refused("Pure optimizer operations have no Broker effects");
         }
         let output = self.execute(cas, input, attempt);
         if let Err(error) = super::control::check(cancellation) {

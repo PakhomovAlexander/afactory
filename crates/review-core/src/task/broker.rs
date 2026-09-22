@@ -10,7 +10,7 @@ use std::collections::BTreeSet;
 pub const TASK_BROKER_BINDING_V1: &str = "af/TaskBrokerBinding@1";
 pub const TASK_BROKER_OPERATION_V1: &str = "af/TaskBrokerOperation@1";
 
-/// A business Worker and its Provider probe have separate captured authority.
+/// The business Worker slot whose captured authority one Broker handle serves.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TaskBrokerTargetV1 {
@@ -18,20 +18,15 @@ pub enum TaskBrokerTargetV1 {
         slot: String,
         invocation_policy_id: String,
     },
-    ProviderAdmission {
-        probe_policy_id: String,
-    },
 }
 
 impl TaskBrokerTargetV1 {
     pub fn policy_id(&self) -> &str {
-        match self {
-            Self::Worker {
-                invocation_policy_id,
-                ..
-            } => invocation_policy_id,
-            Self::ProviderAdmission { probe_policy_id } => probe_policy_id,
-        }
+        let Self::Worker {
+            invocation_policy_id,
+            ..
+        } = self;
+        invocation_policy_id
     }
 
     pub fn validate(&self) -> Result<(), String> {
@@ -39,20 +34,17 @@ impl TaskBrokerTargetV1 {
             is_digest(self.policy_id()),
             "Task Broker target needs an exact captured policy",
         )?;
-        if let Self::Worker { slot, .. } = self {
-            require(
-                slot.split('.').all(is_name),
-                "Task Broker Worker needs a qualified slot",
-            )?;
-        }
-        Ok(())
+        let Self::Worker { slot, .. } = self;
+        require(
+            slot.split('.').all(is_name),
+            "Task Broker Worker needs a qualified slot",
+        )
     }
 }
 
 /// The exact captured binding and started Attempt behind one opaque Broker handle.
-/// Worker identity comes from its exact plan slot; Provider admission identity comes
-/// from its independent probe policy. Neither target installs a package binding,
-/// enlarges its reservation, or creates another Attempt.
+/// Worker identity comes from its exact plan slot. The target installs no package binding,
+/// enlarges no reservation, and creates no other Attempt.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskBrokerBindingV1 {

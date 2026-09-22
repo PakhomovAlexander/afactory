@@ -109,10 +109,7 @@ fn node_label(id: &str, node: &CompiledNode, plan: &ExecutionPlanV1) -> String {
         binding(plan, slot)
     } else {
         match &node.operator {
-            CompiledOperator::ProviderAdmission { .. }
-            | CompiledOperator::ProviderAdmissionBrokered { .. } => {
-                "Provider admission (budgeted)".into()
-            }
+            CompiledOperator::ProviderAdmission { .. } => "Provider admission (budgeted)".into(),
             CompiledOperator::Primitive { operator, .. } => match operator {
                 TaskOperatorV1::Check { checks } => format!(
                     "checks: {}",

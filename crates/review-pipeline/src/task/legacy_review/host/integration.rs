@@ -233,14 +233,10 @@ impl LegacyReviewTaskHost<'_, '_> {
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         let mut raw_artifact_ids = Vec::new();
         let outputs = (|| {
-            if broker.is_some() {
-                return Err("Integration checks do not consume Broker Handles".into());
-            }
             let attempt =
                 attempt.ok_or("Integration checks require their started common Attempt")?;
             if attempt.node() != input.node || attempt.context_id() != self.invocation(input)?.0 {

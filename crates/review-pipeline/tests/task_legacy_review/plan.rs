@@ -7,12 +7,8 @@ use review_graph::task::OperatorAttemptCost;
 mod integration;
 #[path = "plan/owned.rs"]
 mod owned;
-#[path = "plan/provider_probe.rs"]
-mod provider_probe;
 use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
-use review_pipeline::task::legacy_review::plan::{
-    LegacyReviewPlanCompiler, ReviewPlanSettings, ReviewPlanSettingsV2,
-};
+use review_pipeline::task::legacy_review::plan::{LegacyReviewPlanCompiler, ReviewPlanSettings};
 use review_pipeline::task::{TaskOperatorHost, TaskWorkOutput};
 use review_store::store::task::execution::PreparedTaskAttempt;
 
@@ -74,13 +70,6 @@ pub(super) fn settings() -> ReviewPlanSettings {
             wall_ms: 1000,
         },
         allowed_effects: Default::default(),
-    }
-}
-/// The captured policy settings with no Brokered Provider probe, as `af review run` writes them.
-pub(super) fn without_probes(review: ReviewPlanSettings) -> ReviewPlanSettingsV2 {
-    ReviewPlanSettingsV2 {
-        review,
-        provider_probes: BTreeMap::new(),
     }
 }
 pub(super) fn artifact(cas: &Cas, ty: &str, value: impl serde::Serialize) -> String {
@@ -212,7 +201,7 @@ fn captured_review_plan_admits_reopens_and_refuses_changed_or_missing_authority(
         &cas,
         CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
         engine.clone(),
-        without_probes(settings()),
+        settings(),
     )
     .unwrap();
     let task = compiler
@@ -345,7 +334,7 @@ fn captured_native_runner_requires_exact_model_binding_and_common_provider_budge
             &cas,
             CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
             engine.clone(),
-            without_probes(settings),
+            settings,
         )
     };
     assert!(
@@ -424,10 +413,6 @@ fn assert_plan_schemas(cas: &Cas, compiler: &LegacyReviewPlanCompiler, plan: &Ex
                 "af/LegacyReviewTaskPolicy@4",
                 "legacy-review-task-policy-v4.json",
             ),
-            (
-                "af/TaskProviderProbePolicy@1",
-                "task-provider-probe-policy-v1.json",
-            ),
             ("af/CompiledTask@1", "compiled-task-v1.json"),
             (
                 "af/LegacyReviewDependency@1",
@@ -443,19 +428,10 @@ fn assert_plan_schemas(cas: &Cas, compiler: &LegacyReviewPlanCompiler, plan: &Ex
             let schema: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(root.join("schemas").join(file)).unwrap())
                     .unwrap();
-            let broker: serde_json::Value = serde_json::from_slice(
-                &std::fs::read(root.join("schemas/task-broker-binding-v1.json")).unwrap(),
-            )
-            .unwrap();
             let registry = jsonschema::Registry::new()
                 .add(
                     common["$id"].as_str().unwrap(),
                     jsonschema::Resource::from_contents(common.clone()),
-                )
-                .unwrap()
-                .add(
-                    broker["$id"].as_str().unwrap(),
-                    jsonschema::Resource::from_contents(broker.clone()),
                 )
                 .unwrap();
             (ty, {

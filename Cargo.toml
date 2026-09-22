@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/review-core", "crates/review-broker", "crates/review-parallel", "crates/review-process", "crates/review-store", "crates/review-source-git", "crates/review-source-task", "crates/review-check", "crates/review-runner", "crates/review-sandbox", "crates/review-graph", "crates/review-pipeline", "crates/review-config", "crates/review-attempt", "crates/review-runner-codex", "crates/review-runner-claude", "crates/af"]
+members = ["crates/review-core", "crates/review-parallel", "crates/review-process", "crates/review-store", "crates/review-source-git", "crates/review-source-task", "crates/review-check", "crates/review-runner", "crates/review-sandbox", "crates/review-graph", "crates/review-pipeline", "crates/review-config", "crates/review-attempt", "crates/review-runner-codex", "crates/review-runner-claude", "crates/af"]
 
 [workspace.package]
 version = "0.9.0-rc.6"

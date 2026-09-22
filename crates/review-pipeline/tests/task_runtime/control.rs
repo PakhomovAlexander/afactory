@@ -219,12 +219,12 @@ fn unsupported_host_control_refuses_before_execution_and_none_forwards() {
         inputs: BTreeMap::new(),
     };
     let flag = AtomicBool::new(false);
-    let refused = host.execute_controlled(&cas, &input, None, None, Some(&flag));
+    let refused = host.execute_controlled(&cas, &input, None, Some(&flag));
     assert!(refused.outputs.is_err());
     assert_eq!(refused.charged_tokens, Some(0));
     assert_eq!(host.0.load(Ordering::SeqCst), 0);
     assert!(
-        host.execute_controlled(&cas, &input, None, None, None)
+        host.execute_controlled(&cas, &input, None, None)
             .outputs
             .is_ok()
     );
@@ -256,12 +256,9 @@ fn cancellation_between_successful_work_and_selection_retains_spend_but_refuses_
             cas: &Cas,
             input: &TaskInvocationV1,
             attempt: Option<&PreparedTaskAttempt>,
-            broker: Option<&dyn review_broker::ExactBrokerClient>,
             cancellation: Option<&AtomicBool>,
         ) -> TaskWorkOutput {
-            let mut returned = self
-                .0
-                .execute_controlled(cas, input, attempt, broker, cancellation);
+            let mut returned = self.0.execute_controlled(cas, input, attempt, cancellation);
             assert!(returned.outputs.is_ok());
             returned.charged_tokens = Some(7);
             cancellation.unwrap().store(true, Ordering::Release);

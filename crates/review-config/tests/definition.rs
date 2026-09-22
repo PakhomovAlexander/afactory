@@ -776,7 +776,7 @@ fn a_future_version_is_refused_rather_than_guessed_at() {
     ));
 }
 
-fn version_four(mode: &str, operations: &str) -> String {
+fn version_four(mode: &str, extra: &str) -> String {
     MINIMAL
         .replace(
             "version = 2",
@@ -785,7 +785,7 @@ fn version_four(mode: &str, operations: &str) -> String {
         .replace(
             "id = \"architecture\"\nkind = \"reviewer\"",
             &format!(
-                "id = \"architecture\"\nkind = \"reviewer\"\nexecution = {{ credential_mode = \"{mode}\"{operations} }}"
+                "id = \"architecture\"\nkind = \"reviewer\"\nexecution = {{ credential_mode = \"{mode}\"{extra} }}"
             ),
         )
 }
@@ -821,55 +821,25 @@ fn version_four_requires_an_explicit_reviewer_execution_binding() {
 }
 
 #[test]
-fn brokered_reviewer_authority_is_bounded_and_trusted_unsafe_cannot_auto_apply() {
-    let operation = ", operations = [{ name = \"model_inference\", destination = \"provider.openai\", method = \"responses.create\", max_request_bytes = 1024, max_response_bytes = 2048, max_calls = 2, max_usage = 300000 }]";
-    let loaded = Definition::from_toml(&version_four("brokered", operation))
-        .unwrap()
-        .load()
-        .unwrap();
-    assert_eq!(
-        loaded.reviewer_execution()["architecture"].operations[0].destination,
-        "provider.openai"
-    );
-
-    assert!(matches!(
-        Definition::from_toml(&version_four("brokered", "")).unwrap().load(),
-        Err(ConfigError::Binding(message)) if message.contains("at least one bounded operation")
-    ));
-    let max_domain = ", operations = [{ name = \"model_inference\", destination = \"provider.openai\", method = \"responses.create\", max_request_bytes = 1024, max_response_bytes = 2048, max_calls = 1, max_usage = 9007199254740991 }]";
-    assert!(matches!(
-        Definition::from_toml(&version_four("brokered", max_domain))
-            .unwrap()
-            .load(),
-        Err(ConfigError::Binding(message)) if message.contains("invalid Broker operation")
-    ));
-    let aggregate = ", operations = [{ name = \"first\", destination = \"provider.openai\", method = \"responses.create\", max_request_bytes = 1024, max_response_bytes = 2048, max_calls = 1, max_usage = 5000000000000000 }, { name = \"second\", destination = \"provider.openai\", method = \"responses.create\", max_request_bytes = 1024, max_response_bytes = 2048, max_calls = 1, max_usage = 5000000000000000 }]";
-    assert!(matches!(
-        Definition::from_toml(&version_four("brokered", aggregate))
-            .unwrap()
-            .load(),
-        Err(ConfigError::Binding(message)) if message.contains("aggregate Broker authority")
-    ));
+fn trusted_unsafe_reviewers_cannot_auto_apply_and_only_two_credential_modes_parse() {
     let unsafe_auto = version_four("trusted_unsafe", ", auto_apply = true");
     assert!(matches!(
         Definition::from_toml(&unsafe_auto).unwrap().load(),
         Err(ConfigError::Binding(message)) if message.contains("cannot authorize auto_apply")
     ));
-}
-
-#[test]
-fn brokered_authority_must_fit_the_pre_dispatch_budget_reservation() {
-    let operation = ", operations = [{ name = \"model_inference\", destination = \"provider.openai\", method = \"responses.create\", max_request_bytes = 1024, max_response_bytes = 2048, max_calls = 1, max_usage = 200 }]";
-    let over_budget = version_four("brokered", operation).replace(
-        "version = 4",
-        "version = 4\n\n[budgets]\nunit = \"tokens\"\nattempt = 100\nrun = 150",
-    );
-
+    let loaded = Definition::from_toml(&version_four("credential_free", ", auto_apply = true"))
+        .unwrap()
+        .load()
+        .unwrap();
+    assert!(loaded.reviewer_execution()["architecture"].auto_apply);
     assert!(matches!(
-        Definition::from_toml(&over_budget).unwrap().load(),
-        Err(ConfigError::Binding(message))
-            if message.contains("aggregate Broker authority (200)")
-                && message.contains("attempt cap (100)")
+        Definition::from_toml(&version_four("brokered", "")),
+        Err(ConfigError::Parse(message)) if message.contains("brokered")
+    ));
+    let operation = ", operations = [{ name = \"model_inference\", destination = \"provider.openai\", method = \"responses.create\", max_request_bytes = 1024, max_response_bytes = 2048, max_calls = 1, max_usage = 200 }]";
+    assert!(matches!(
+        Definition::from_toml(&version_four("trusted_unsafe", operation)),
+        Err(ConfigError::Parse(message)) if message.contains("operations")
     ));
 }
 

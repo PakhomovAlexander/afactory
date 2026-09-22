@@ -868,23 +868,17 @@ impl TaskOperatorHost for CodeTaskDomain {
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput {
-        self.execute_controlled(cas, input, attempt, None, None)
+        self.execute_controlled(cas, input, attempt, None)
     }
     fn execute_controlled(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         if let Err(error) = super::control::check(cancellation) {
             return super::control::refused(error);
-        }
-        if broker.is_some() {
-            return super::control::refused(
-                "Pure domain operation does not consume Broker Handles",
-            );
         }
 
         let mut raw_artifact_ids = Vec::new();

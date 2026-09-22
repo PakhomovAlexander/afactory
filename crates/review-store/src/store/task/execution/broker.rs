@@ -170,7 +170,6 @@ fn check_receipt(
 }
 
 fn broker_target(
-    cas: &Cas,
     state: &TaskProjection,
     plan: &ExecutionPlanV1,
     node: &str,
@@ -197,53 +196,8 @@ fn broker_target(
                 .invocation_policy_id
                 .clone(),
         }),
-        CompiledOperator::ProviderAdmissionBrokered {
-            bindings,
-            probe_policy_id,
-        } => {
-            let policy = provider_policy(cas, plan, probe_policy_id)?;
-            if bindings.is_empty()
-                || bindings.iter().any(|slot| {
-                    plan.bindings
-                        .get(slot)
-                        .is_none_or(|binding| binding.execution != policy.execution)
-                })
-            {
-                return Err(conflict(
-                    "Task Broker probe changed its protected Provider execution",
-                ));
-            }
-            Ok(TaskBrokerTargetV1::ProviderAdmission {
-                probe_policy_id: probe_policy_id.clone(),
-            })
-        }
-        _ => Err(conflict(
-            "Task Broker requires captured Worker or Provider probe authority",
-        )),
+        _ => Err(conflict("Task Broker requires captured Worker authority")),
     }
-}
-
-fn provider_policy(
-    cas: &Cas,
-    plan: &ExecutionPlanV1,
-    id: &str,
-) -> Result<review_core::task::provider::TaskProviderProbePolicyV1, StoreError> {
-    use review_core::task::provider::*;
-    let envelope = envelope(cas, id, TASK_PROVIDER_PROBE_POLICY_V1)?;
-    let policy: TaskProviderProbePolicyV1 = serde_json::from_value(envelope.payload)?;
-    policy.validate().map_err(conflict)?;
-    if policy.authority_policy_id != plan.authority.policy_id
-        || envelope.input_artifacts != policy.artifact_refs()
-        || envelope.subject_snapshot_id.is_some()
-        || !plan.dependencies.values().any(|dependency| {
-            dependency.artifact_id == id && dependency.content_digest == envelope.content_id
-        })
-    {
-        return Err(conflict(
-            "Task Broker probe is not an exact captured plan dependency",
-        ));
-    }
-    Ok(policy)
 }
 
 fn broker_lease(
@@ -279,11 +233,8 @@ fn broker_lease(
                     .and_then(|owner| owner.review_node.clone())
                     .unwrap_or_else(|| review_node.clone())
             }
-            CompiledOperator::ProviderAdmissionBrokered { .. } => {}
             _ => {
-                return Err(conflict(
-                    "Captured Review Broker requires a Review Worker or Provider probe",
-                ));
+                return Err(conflict("Captured Review Broker requires a Review Worker"));
             }
         }
         lease.campaign_id = round.campaign_id;
@@ -396,7 +347,7 @@ impl EventStore {
                 .ok_or_else(|| conflict("Task has no plan"))?,
             &state,
         )?;
-        broker_target(cas, &state, &plan, attempt.node())?;
+        broker_target(&state, &plan, attempt.node())?;
         broker_lease(cas, &state, attempt)
     }
 
@@ -411,7 +362,7 @@ impl EventStore {
     ) -> Result<BoundTaskBroker, StoreError> {
         self.check_task_attempt_current(cas, lease, attempt, authority)?;
         let (state, plan) = self.checked_task_dispatch(cas, lease, authority)?;
-        let target = broker_target(cas, &state, &plan, attempt.node())?;
+        let target = broker_target(&state, &plan, attempt.node())?;
         let recorded = &state
             .execution
             .as_ref()
@@ -750,14 +701,7 @@ pub(in crate::store::task) fn apply_event(
                 || attempt.released
                 || attempt.settlement.is_some()
                 || transition.now_unix_ms >= attempt.reservation.deadline_unix_ms
-                || binding.target != broker_target(cas, state, &plan, &binding.node)?
-                || match &binding.target {
-                    TaskBrokerTargetV1::ProviderAdmission { probe_policy_id } => {
-                        provider_policy(cas, &plan, probe_policy_id)?.operations
-                            != binding.operations
-                    }
-                    TaskBrokerTargetV1::Worker { .. } => false,
-                }
+                || binding.target != broker_target(state, &plan, &binding.node)?
                 || binding.lease != broker_lease(cas, state, &prepared)?
                 || review_core::broker_authority_usage(&binding.operations).map_err(conflict)?
                     > attempt.reservation.tokens

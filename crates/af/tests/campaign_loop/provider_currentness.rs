@@ -106,7 +106,6 @@ fn review_account_change_after_admission_refuses_private_context_and_keeps_admis
             matches!(
                 node.operator,
                 review_graph::task::CompiledOperator::ProviderAdmission { .. }
-                    | review_graph::task::CompiledOperator::ProviderAdmissionBrokered { .. }
             )
         })
         .collect();

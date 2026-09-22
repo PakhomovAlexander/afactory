@@ -25,11 +25,12 @@ fn symbolic_name(value: &str) -> bool {
 }
 
 /// How one reviewer obtains external capability. Formats before pipeline v4 have no such claim.
+/// `trusted_unsafe` Workers may hold ambient Provider credentials; `credential_free` ones hold
+/// none.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BrokerCredentialModeV1 {
     CredentialFree,
-    Brokered,
     TrustedUnsafe,
 }
 

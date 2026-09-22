@@ -23,7 +23,7 @@ fn owned_scatter_children_are_captured_in_the_plan_and_reopen_exactly() {
         &cas,
         CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
         engine.clone(),
-        without_probes(settings),
+        settings,
     )
     .unwrap();
     assert_eq!(

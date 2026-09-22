@@ -54,7 +54,6 @@ pub fn check(
             b"exact context".to_vec(),
             Duration::from_secs(10),
             false,
-            None,
             Some(&flag),
         );
         assert!(pre.message.is_err());
@@ -104,7 +103,6 @@ pub fn check(
                 b"exact context".to_vec(),
                 Duration::from_secs(10),
                 false,
-                None,
                 Some(&flag),
             );
             let (pids, stopped) = cancel.join().unwrap();

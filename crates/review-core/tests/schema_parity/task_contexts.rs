@@ -113,46 +113,31 @@ fn builtin_and_document_contexts_keep_their_distinct_existing_shapes() {
 }
 
 #[test]
-fn provider_context_generations_pin_readiness_and_keep_business_authority_out() {
-    for version in [1, 2] {
-        let schema = format!("task-provider-context-v{version}.json");
-        let mut capability = json!({"plan_id":id(),"bindings":["root.writer"],"execution":{"kind":"model","provider":"alias","provider_kind":"fixture","principal_id":"account","model":"resolved","effort":"high"},"outcome":"passed"});
-        capability[if version == 1 {
-            "invocation_policy_id"
-        } else {
-            "probe_policy_id"
-        }] = json!(id());
-        let value = json!({"invocation":invocation(),"capability":capability,"rendered_id":id(),"manifest":{"entries":[{"name":"capability_probe","required_by":"installed Provider admission","artifact_id":id(),"rendered_bytes":23,"estimated_tokens":6}],"rendered_bytes":23,"estimated_tokens":6}});
-        assert_valid(&schema, &value);
-        for (path, replacement) in [
-            (
-                "/invocation/inputs",
-                json!({"undeclared":{"artifact_type":"af/Source@1","artifact_ids":[id()],"cardinality":"one"}}),
-            ),
-            ("/capability/execution", json!({"kind":"command"})),
-            ("/capability/bindings", json!([])),
-            ("/rendered_id", json!("ambient-request")),
-            ("/manifest/rendered_bytes", json!(u64::MAX)),
-            ("/manifest/entries/0/name", json!("business-input")),
-        ] {
-            let mut invalid = value.clone();
-            *invalid.pointer_mut(path).unwrap() = replacement;
-            assert_invalid(&schema, &invalid, path);
-        }
-        for key in [
-            "instructions",
-            "feedback_ids",
-            "credentials",
-            "broker_handle",
-        ] {
-            let mut invalid = value.clone();
-            invalid[key] = json!("hidden");
-            assert_invalid(&schema, &invalid, key);
-        }
-        assert_invalid(
-            &format!("task-provider-context-v{}.json", 3 - version),
-            &value,
-            "Provider generations retain disjoint policy identities",
-        );
+fn provider_context_pins_readiness_and_keeps_business_authority_out() {
+    let schema = "task-provider-context-v1.json";
+    let value = json!({"invocation":invocation(),"capability":{"plan_id":id(),"bindings":["root.writer"],"execution":{"kind":"model","provider":"alias","provider_kind":"fixture","principal_id":"account","model":"resolved","effort":"high"},"invocation_policy_id":id(),"outcome":"passed"},"rendered_id":id(),"manifest":{"entries":[{"name":"capability_probe","required_by":"installed Provider admission","artifact_id":id(),"rendered_bytes":23,"estimated_tokens":6}],"rendered_bytes":23,"estimated_tokens":6}});
+    assert_valid(schema, &value);
+    for (path, replacement) in [
+        (
+            "/invocation/inputs",
+            json!({"undeclared":{"artifact_type":"af/Source@1","artifact_ids":[id()],"cardinality":"one"}}),
+        ),
+        ("/capability/execution", json!({"kind":"command"})),
+        ("/capability/bindings", json!([])),
+        ("/rendered_id", json!("ambient-request")),
+        ("/manifest/rendered_bytes", json!(u64::MAX)),
+        ("/manifest/entries/0/name", json!("business-input")),
+    ] {
+        let mut invalid = value.clone();
+        *invalid.pointer_mut(path).unwrap() = replacement;
+        assert_invalid(schema, &invalid, path);
     }
+    for key in ["instructions", "feedback_ids", "credentials"] {
+        let mut invalid = value.clone();
+        invalid[key] = json!("hidden");
+        assert_invalid(schema, &invalid, key);
+    }
+    let mut invalid = value.clone();
+    invalid["capability"]["policy"] = json!(id());
+    assert_invalid(schema, &invalid, "undeclared capability field");
 }

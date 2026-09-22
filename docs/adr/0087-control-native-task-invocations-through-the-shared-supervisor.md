@@ -24,7 +24,7 @@ Add controlled settled capture to `ModelRunner` and optional controlled invocati
 behavior. An adapter that cannot consume a supplied control refuses before invocation; it must
 not silently ignore the caller's request. Native Claude and Codex share their existing command
 construction and result parsing between ordinary and controlled invocation. Model, effort,
-credential, Broker and writable authority do not change.
+credential and writable authority do not change.
 
 A cancelled native capture refuses its business message even if that message was already
 printed. Raw output and reported usage remain available for capture and accounting, including

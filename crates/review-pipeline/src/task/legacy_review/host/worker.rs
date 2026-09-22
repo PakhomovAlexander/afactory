@@ -60,16 +60,6 @@ impl LegacyReviewTaskHost<'_, '_> {
             {
                 return Err("Review transport differs from the captured credential mode".into());
             }
-            if actual_mode == review_core::BrokerCredentialModeV1::Brokered
-                && self
-                    .captured
-                    .loaded
-                    .reviewer_execution()
-                    .get(node)
-                    .is_none_or(|policy| policy.operations.is_empty())
-            {
-                return Err("Brokered Review requires exact captured operation authority".into());
-            }
             match self.execution(node)? {
                 WorkerExecutionV1::Command {} => {}
                 WorkerExecutionV1::Model {
@@ -262,7 +252,6 @@ impl LegacyReviewTaskHost<'_, '_> {
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         let mut result = TaskWorkOutput {
@@ -280,16 +269,6 @@ impl LegacyReviewTaskHost<'_, '_> {
             let attempt = attempt.ok_or("Review Worker has no started common Attempt")?;
             let deadline = self.current(attempt)?;
             let (node, mapping, _) = self.operation(input)?.ok_or("Not a Review Worker")?;
-            let brokered = match self.execution(&node.id)? {
-                WorkerExecutionV1::Command {} => false,
-                WorkerExecutionV1::Model { .. } => {
-                    self.model(&node.id)?.adapter.credential_mode()
-                        == review_core::BrokerCredentialModeV1::Brokered
-                }
-            };
-            if brokered != broker.is_some() {
-                return Err("Review transport differs from its runtime Broker capability".into());
-            }
             let context: TaskReviewContextV1 = serde_json::from_value(
                 cas.get_artifact(attempt.context_id())
                     .map_err(|e| e.to_string())?
@@ -372,7 +351,6 @@ impl LegacyReviewTaskHost<'_, '_> {
                         bytes,
                         timeout,
                         provider_kind == "codex",
-                        broker,
                         cancellation,
                         &environment,
                     ),

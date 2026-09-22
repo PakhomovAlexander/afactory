@@ -330,3 +330,30 @@ fn task_broker_transition_is_a_closed_additive_event_with_one_record_reference()
         assert_invalid("run-event-v1.json", &invalid_event, field);
     }
 }
+
+#[test]
+fn task_broker_target_is_one_exact_worker_slot() {
+    let value = serde_json::to_value(binding()).unwrap();
+    assert_valid("task-broker-binding-v1.json", &value);
+    let policy = digest('5');
+    for replacement in [
+        json!({"kind":"provider_admission","probe_policy_id":policy}),
+        json!({"kind":"worker","probe_policy_id":policy}),
+        json!({"kind":"worker","slot":"root..writer","invocation_policy_id":policy}),
+        json!({"kind":"worker","slot":"root.writer","invocation_policy_id":policy,"probe_policy_id":policy}),
+    ] {
+        let mut invalid = value.clone();
+        invalid["target"] = replacement;
+        assert_invalid(
+            "task-broker-binding-v1.json",
+            &invalid,
+            "retired or malformed target",
+        );
+        assert!(
+            serde_json::from_value::<TaskBrokerBindingV1>(invalid)
+                .map_err(|e| e.to_string())
+                .and_then(|b| b.validate())
+                .is_err()
+        );
+    }
+}

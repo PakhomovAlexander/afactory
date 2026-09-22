@@ -1,5 +1,5 @@
 use super::*;
-use review_pipeline::task::legacy_review::plan::{REVIEW_TASK_POLICY_V4, ReviewPlanSettingsV2};
+use review_pipeline::task::legacy_review::plan::REVIEW_TASK_POLICY_V4;
 
 fn definition(order: &[&str]) -> String {
     include_str!("../../../../review-config/tests/fixtures/dynamic-v5.toml").replace(
@@ -11,14 +11,14 @@ fn definition(order: &[&str]) -> String {
     )
 }
 
-fn settings_for(mode: &str) -> ReviewPlanSettingsV2 {
+fn settings_for(mode: &str) -> ReviewPlanSettings {
     let mut review = settings();
     review.mode = mode.into();
     review.executions = BTreeMap::from([
         ("scatter".into(), WorkerExecutionV1::Command {}),
         ("closeout".into(), WorkerExecutionV1::Command {}),
     ]);
-    without_probes(review)
+    review
 }
 
 /// A light Campaign closes after its one Round; a heavy one may continue to a third.

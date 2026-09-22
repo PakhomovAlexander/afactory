@@ -129,7 +129,7 @@ fn admitted_plan_with_provider(
         cas,
         CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap(),
         cas.put(b"native Review test engine").unwrap(),
-        plan::without_probes(settings),
+        settings,
     )
     .unwrap();
     let mut limits = capture::limits();
@@ -463,6 +463,181 @@ fn dispatched_review_prompt_starts_with_the_rendered_instructions_and_focus() {
             "{provider_kind}: the Task host dispatched other instructions than render shows"
         );
     }
+}
+
+/// An adapter reporting another Provider identity than the captured binding it serves.
+struct Substituted<'a> {
+    inner: &'a Model,
+    kind: &'static str,
+    model: &'static str,
+    effort: &'static str,
+}
+impl WorkerModelAdapter for Substituted<'_> {
+    fn provider_kind(&self) -> &'static str {
+        self.kind
+    }
+    fn model_settings(&self) -> Option<(String, String)> {
+        Some((self.model.into(), self.effort.into()))
+    }
+    fn invoke(
+        &self,
+        cas: &Cas,
+        workdir: &std::path::Path,
+        input: Vec<u8>,
+        timeout: std::time::Duration,
+        writable: bool,
+    ) -> ModelWorkerReturn {
+        self.inner.invoke(cas, workdir, input, timeout, writable)
+    }
+}
+
+fn model_bindings<'a>(
+    plan: &ExecutionPlanV1,
+    adapter: &'a dyn WorkerModelAdapter,
+) -> BTreeMap<String, TaskModelBinding<'a>> {
+    plan.bindings
+        .iter()
+        .map(|(slot, binding)| {
+            (
+                slot.clone(),
+                TaskModelBinding {
+                    binding: binding.clone(),
+                    adapter,
+                },
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn provider_admission_renders_only_its_fixed_context_and_refuses_changed_identity() {
+    use review_core::task::execution::TaskInvocationV1;
+    use review_graph::task::{CompiledOperator, CompiledTask};
+    use review_pipeline::task::TaskOperatorHost;
+    use review_pipeline::task::host::TaskDomain;
+    use review_pipeline::task::provider::ProviderTaskDomain;
+    use review_runner::task::provider::PROBE_INPUT;
+    let directory = tempfile::tempdir().unwrap();
+    let cas = Cas::open(directory.path().join("cas")).unwrap();
+    let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
+    let (compiler, lease, compiled) = admitted_plan(&cas, &mut store, "trusted_unsafe");
+    let plan_id = plan::artifact(&cas, review_core::task::EXECUTION_PLAN_V1, &compiled);
+    let graph: CompiledTask = serde_json::from_value(
+        cas.get_artifact(&compiled.compiled_graph_id)
+            .unwrap()
+            .payload,
+    )
+    .unwrap();
+    let node = graph
+        .nodes
+        .iter()
+        .find(|(_, node)| matches!(node.operator, CompiledOperator::ProviderAdmission { .. }))
+        .unwrap()
+        .0
+        .clone();
+    let input = TaskInvocationV1 {
+        plan_id: plan_id.clone(),
+        node,
+        inputs: BTreeMap::new(),
+    };
+    let model = Model {
+        provider_kind: "claude",
+        calls: AtomicUsize::new(0),
+        admitted: true,
+        retry: false,
+        wide: false,
+    };
+    let host = LegacyReviewTaskHost::new(
+        &cas,
+        SharedEventStore::new(&mut store),
+        &compiler,
+        lease,
+        model_bindings(&compiled, &model),
+    )
+    .unwrap();
+    let context_id = host.prepare_context(&cas, &input, &[]).unwrap();
+    let envelope = cas.get_artifact(&context_id).unwrap();
+    assert_eq!(envelope.artifact_type, "af/TaskProviderContext@1");
+    let binding = compiled.bindings.values().next().unwrap();
+    let context = &envelope.payload;
+    assert_eq!(context["invocation"], serde_json::to_value(&input).unwrap());
+    assert_eq!(
+        context["capability"]["invocation_policy_id"],
+        binding.invocation_policy_id
+    );
+    assert_eq!(
+        context["capability"]["execution"],
+        serde_json::to_value(&binding.execution).unwrap()
+    );
+    let rendered = context["rendered_id"].as_str().unwrap().to_owned();
+    assert_eq!(cas.get(&rendered).unwrap(), PROBE_INPUT);
+    assert_eq!(envelope.input_artifacts, [plan_id, rendered]);
+    host.validate_context(&cas, &input, &[], &context_id)
+        .unwrap();
+    assert!(
+        host.prepare_context(&cas, &input, &[context_id.clone()])
+            .is_err()
+    );
+    let mut private_input = input.clone();
+    private_input.inputs = compiled.inputs.clone();
+    assert!(!private_input.inputs.is_empty());
+    assert!(host.prepare_context(&cas, &private_input, &[]).is_err());
+
+    let domain_for = |models: &BTreeMap<String, TaskModelBinding<'_>>| {
+        ProviderTaskDomain {
+            graph: &graph,
+            models,
+            inner: &plan::RefuseExecution,
+        }
+        .prepare_context(&cas, &input, &[])
+    };
+    assert_eq!(
+        domain_for(&model_bindings(&compiled, &model)).unwrap(),
+        context_id
+    );
+    for (kind, selected_model, effort) in [
+        ("other-provider", "claude-fixture", "high"),
+        ("claude", "other-model", "high"),
+        ("claude", "claude-fixture", "low"),
+    ] {
+        let adapter = Substituted {
+            inner: &model,
+            kind,
+            model: selected_model,
+            effort,
+        };
+        assert!(domain_for(&model_bindings(&compiled, &adapter)).is_err());
+    }
+    for mutation in 0..7 {
+        let mut models = model_bindings(&compiled, &model);
+        let binding = &mut models.values_mut().next().unwrap().binding;
+        match mutation {
+            0 => binding.package_artifact_id = context_id.clone(),
+            1 => binding.invocation_policy_id = context_id.clone(),
+            _ => {
+                let WorkerExecutionV1::Model {
+                    provider,
+                    provider_kind,
+                    principal_id,
+                    model,
+                    effort,
+                } = &mut binding.execution
+                else {
+                    unreachable!()
+                };
+                match mutation {
+                    2 => *provider = "other-alias".into(),
+                    3 => *provider_kind = "other-kind".into(),
+                    4 => *principal_id = "other-account".into(),
+                    5 => *model = "other-model".into(),
+                    6 => *effort = "low".into(),
+                    _ => unreachable!(),
+                }
+            }
+        }
+        assert!(domain_for(&models).is_err(), "mutation {mutation}");
+    }
+    assert_eq!(model.calls.load(Ordering::SeqCst), 0);
 }
 
 #[test]

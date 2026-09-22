@@ -6,8 +6,6 @@ use review_pipeline::task::legacy_review::host::LegacyReviewTaskHost;
 use review_pipeline::task::legacy_review::plan::LegacyReviewPlanCompiler;
 use review_store::SharedEventStore;
 
-#[path = "host/broker.rs"]
-mod broker;
 #[path = "host/continuation.rs"]
 mod continuation;
 #[path = "host/domain.rs"]
@@ -22,8 +20,6 @@ mod native;
 mod owned;
 #[path = "host/presentation.rs"]
 mod presentation;
-#[path = "host/probe_runtime.rs"]
-mod probe_runtime;
 #[path = "host/warm.rs"]
 mod warm;
 
@@ -68,7 +64,7 @@ fn admit_with_limits(
         cas,
         CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap(),
         cas.put(b"Review host test engine").unwrap(),
-        plan::without_probes(plan::settings()),
+        plan::settings(),
     )
     .unwrap();
     let task = compiler
@@ -101,7 +97,7 @@ fn captured_command_review_uses_common_attempt_selection_and_replays_canonical_o
         &cas,
         CapturedLegacyReviewRound::load(&cas, &store, "review", &round).unwrap(),
         cas.put(b"Review host test engine").unwrap(),
-        plan::without_probes(plan::settings()),
+        plan::settings(),
     )
     .unwrap();
     let task = compiler

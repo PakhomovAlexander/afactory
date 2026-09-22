@@ -225,18 +225,6 @@ pub trait TaskDomain: TaskOperatorHost {
         Err("Task domain has no installed child completion".into())
     }
 
-    /// Re-derive Broker authority from installed domain policy and exact captured inputs.
-    /// A serialized Worker binding alone does not install an external capability.
-    fn validate_broker_binding(
-        &self,
-        _cas: &Cas,
-        _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV1,
-        _binding: &review_core::task::broker::TaskBrokerBindingV1,
-    ) -> Result<(), String> {
-        Err("Task domain has no installed Broker authority".into())
-    }
-
     fn validate_retry(
         &self,
         _cas: &Cas,
@@ -492,18 +480,6 @@ impl TaskAuthority for CapturedTaskAuthority<'_> {
         self.validate_plan(cas, task, plan)?;
         self.domain
             .validate_owned_completion(cas, task, plan, parent, children, facts, output)
-    }
-
-    fn validate_broker_binding(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        binding: &review_core::task::broker::TaskBrokerBindingV1,
-    ) -> Result<(), String> {
-        self.validate_plan(cas, task, plan)?;
-        self.domain
-            .validate_broker_binding(cas, task, plan, binding)
     }
 
     fn validate_retry(
@@ -947,7 +923,6 @@ impl<'a> CapturedTaskHost<'a> {
         input: &TaskInvocationV1,
         attempt: &PreparedTaskAttempt,
         worker: &CapturedWorker<'_>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         use review_core::task::feedback::*;
@@ -957,15 +932,6 @@ impl<'a> CapturedTaskHost<'a> {
         let mut usage_observation = None;
         let mut feedback_code = None;
         let outputs = (|| {
-            let brokered = match &worker.transport {
-                WorkerTransport::Command(_) => false,
-                WorkerTransport::Model(adapter) => {
-                    adapter.credential_mode() == review_core::BrokerCredentialModeV1::Brokered
-                }
-            };
-            if brokered != broker.is_some() {
-                return Err("Worker transport differs from its runtime Broker capability".into());
-            }
             let (context, _) = worker.contract.read_context(cas, attempt.context_id())?;
             if context.invocation != *input {
                 return Err("Worker context belongs to another invocation".into());
@@ -1039,7 +1005,6 @@ impl<'a> CapturedTaskHost<'a> {
                     attempt.context_id(),
                     Duration::from_millis(remaining),
                     worker.signature.effects.contains("write-source"),
-                    broker,
                     cancellation,
                 ),
             };
@@ -1221,7 +1186,6 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         input: &TaskInvocationV1,
         definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         let worker = match self.resolved_worker(cas, definition) {
@@ -1230,7 +1194,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         };
         match (worker, attempt) {
             (Some(worker), Some(attempt)) => {
-                self.worker_execute(cas, input, attempt, &worker, broker, cancellation)
+                self.worker_execute(cas, input, attempt, &worker, cancellation)
             }
             (Some(_), None) => TaskWorkOutput {
                 usage_observation: None,
@@ -1243,7 +1207,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
             },
             (None, _) => self
                 .domain
-                .execute_controlled(cas, input, attempt, broker, cancellation),
+                .execute_controlled(cas, input, attempt, cancellation),
         }
     }
     fn prepare_experiment(
@@ -1280,21 +1244,6 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
     ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
         self.domain
             .complete_owned_children(cas, parent, children, facts)
-    }
-
-    fn broker_operations(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-    ) -> Result<Option<Vec<review_core::BrokerOperationPolicyV1>>, String> {
-        if self
-            .workers
-            .get(&input.node)
-            .is_some_and(|worker| matches!(worker.transport, WorkerTransport::Command(_)))
-        {
-            return Ok(None);
-        }
-        self.domain.broker_operations(cas, input)
     }
 
     fn commit_domain_invocation(
@@ -1367,17 +1316,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput {
-        self.execute_with_broker(cas, input, attempt, None)
-    }
-
-    fn execute_with_broker(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
-    ) -> TaskWorkOutput {
-        self.execute_controlled(cas, input, attempt, broker, None)
+        self.execute_controlled(cas, input, attempt, None)
     }
 
     fn execute_controlled(
@@ -1385,7 +1324,6 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         if let Err(error) = crate::task::control::check(cancellation) {
@@ -1394,7 +1332,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
 
         match (self.workers.get(&input.node), attempt) {
             (Some(worker), Some(attempt)) => {
-                self.worker_execute(cas, input, attempt, worker, broker, cancellation)
+                self.worker_execute(cas, input, attempt, worker, cancellation)
             }
             (Some(_), None) => TaskWorkOutput {
                 usage_observation: None,
@@ -1407,7 +1345,7 @@ impl TaskOperatorHost for CapturedTaskHost<'_> {
             },
             (None, _) => self
                 .domain
-                .execute_controlled(cas, input, attempt, broker, cancellation),
+                .execute_controlled(cas, input, attempt, cancellation),
         }
     }
 }
@@ -1492,24 +1430,6 @@ impl TaskDomain for CapturedTaskHost<'_> {
     ) -> Result<(), String> {
         self.domain
             .validate_owned_completion(cas, task, plan, parent, children, facts, output)
-    }
-
-    fn validate_broker_binding(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        binding: &review_core::task::broker::TaskBrokerBindingV1,
-    ) -> Result<(), String> {
-        if self
-            .workers
-            .get(&binding.node)
-            .is_some_and(|worker| matches!(worker.transport, WorkerTransport::Command(_)))
-        {
-            return Err("Command Workers have no installed Broker transport".into());
-        }
-        self.domain
-            .validate_broker_binding(cas, task, plan, binding)
     }
 
     fn validate_retry(

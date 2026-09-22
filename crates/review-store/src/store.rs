@@ -790,8 +790,6 @@ struct AuthorityReviewerExecution {
     credential_mode: review_core::BrokerCredentialModeV1,
     #[serde(default)]
     auto_apply: bool,
-    #[serde(default)]
-    operations: Vec<review_core::BrokerOperationPolicyV1>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize)]
@@ -1025,30 +1023,9 @@ fn load_authority_plan_id(
     for node in nodes.values() {
         match (definition.version, node.kind.as_str(), &node.execution) {
             (4, "reviewer", Some(execution)) | (5, "reviewer" | "scatter", Some(execution)) => {
-                let mut names = std::collections::BTreeSet::new();
-                for operation in &execution.operations {
-                    operation.validate().map_err(StoreError::Conflict)?;
-                    if !names.insert(operation.name.as_str()) {
-                        return Err(StoreError::Conflict(
-                            "pinned reviewer execution has duplicate Broker operations".into(),
-                        ));
-                    }
-                }
-                review_core::broker_authority_usage(&execution.operations)
-                    .map_err(StoreError::Conflict)?;
-                let valid_shape = match execution.credential_mode {
-                    review_core::BrokerCredentialModeV1::Brokered => {
-                        !execution.operations.is_empty()
-                    }
-                    review_core::BrokerCredentialModeV1::CredentialFree
-                    | review_core::BrokerCredentialModeV1::TrustedUnsafe => {
-                        execution.operations.is_empty()
-                    }
-                };
-                if !valid_shape
-                    || (execution.auto_apply
-                        && execution.credential_mode
-                            == review_core::BrokerCredentialModeV1::TrustedUnsafe)
+                if execution.auto_apply
+                    && execution.credential_mode
+                        == review_core::BrokerCredentialModeV1::TrustedUnsafe
                 {
                     return Err(StoreError::Conflict(
                         "pinned reviewer Execution Binding contradicts its credential mode".into(),

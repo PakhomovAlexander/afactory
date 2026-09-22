@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 182] = [
+const SCHEMAS: [&str; 179] = [
     "session-snapshot-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -80,7 +80,6 @@ const SCHEMAS: [&str; 182] = [
     "task-plan-inspection-v1.json",
     "task-inspection-v6.json",
     "task-inspection-v5.json",
-    "task-provider-context-v2.json",
     "task-broker-binding-v1.json",
     "task-broker-operation-v1.json",
     "task-broker-transition-v1.json",
@@ -120,8 +119,6 @@ const SCHEMAS: [&str; 182] = [
     "task-operator-signature-v1.json",
     "pipeline-proposal-v1.json",
     "task-provider-admission-v1.json",
-    "task-provider-admission-v2.json",
-    "task-provider-probe-policy-v1.json",
     "task-review-subject-v2.json",
     "task-review-assignment-v1.json",
     "task-review-round-v1.json",
@@ -3567,9 +3564,6 @@ fn task_review_conclusions_preserve_exact_cumulative_charge_and_execution_contra
 
 #[path = "schema_parity/task_broker.rs"]
 mod task_broker;
-
-#[path = "schema_parity/task_provider_probe.rs"]
-mod task_provider_probe;
 
 #[path = "schema_parity/task_owned.rs"]
 mod task_owned;

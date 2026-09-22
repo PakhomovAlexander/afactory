@@ -3,9 +3,7 @@ use super::captured_fixture;
 use review_core::EventType;
 use review_core::task::TaskRevisionV1;
 use review_pipeline::task::host::{CapturedTaskAuthority, NoTaskDeveloper, TaskDomain};
-use review_pipeline::task::legacy_review::plan::{
-    LegacyReviewPlanCompiler, ReviewPlanSettings, ReviewPlanSettingsV2,
-};
+use review_pipeline::task::legacy_review::plan::{LegacyReviewPlanCompiler, ReviewPlanSettings};
 use review_pipeline::task::legacy_review::{CapturedLegacyReviewRound, host::LegacyReviewTaskHost};
 use review_pipeline::task::{TaskOperatorHost, TaskRuntime, TaskWorkOutput};
 use review_source_git::{Entry, EntryKind, Manifest, manifest_diff};
@@ -215,10 +213,7 @@ pub(super) fn admit_integration_with_source(
         cas,
         CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap(),
         cas.put(b"Integration host fixture").unwrap(),
-        ReviewPlanSettingsV2 {
-            review: settings,
-            provider_probes: BTreeMap::new(),
-        },
+        settings,
     )
     .unwrap();
     let mut limits = limits();

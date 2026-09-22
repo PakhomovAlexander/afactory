@@ -1,7 +1,6 @@
 //! One Task dispatcher over the existing graph scheduler and common Store. Domain handlers
 //! supply typed operations; they do not schedule children or create their own Attempt budgets.
 
-pub mod broker;
 pub mod code;
 pub(crate) mod control;
 pub mod document;
@@ -85,10 +84,9 @@ pub trait TaskOperatorHost: Sync {
         input: &TaskInvocationV1,
         _definition: &review_graph::task::CompiledNode,
         attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&AtomicBool>,
     ) -> TaskWorkOutput {
-        self.execute_controlled(cas, input, attempt, broker, cancellation)
+        self.execute_controlled(cas, input, attempt, cancellation)
     }
 
     fn complete_experiment(
@@ -118,16 +116,6 @@ pub trait TaskOperatorHost: Sync {
         _facts: &[review_store::store::task::execution::owned::TaskOwnedChildEvidence],
     ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
         Err("Task operator has no installed child completion".into())
-    }
-
-    /// Pure lookup of the exact captured operations for this invocation. None grants no
-    /// Broker authority; this hook cannot create an Attempt or enlarge its reservation.
-    fn broker_operations(
-        &self,
-        _cas: &Cas,
-        _input: &TaskInvocationV1,
-    ) -> Result<Option<Vec<review_core::BrokerOperationPolicyV1>>, String> {
-        Ok(None)
     }
 
     /// Publish domain input identity after the common invocation is durable, before context
@@ -195,40 +183,16 @@ pub trait TaskOperatorHost: Sync {
         attempt: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput;
 
-    /// Optional host interruption must be consumed explicitly; None retains existing hosts.
+    /// Optional host interruption must be consumed explicitly; None forwards to `execute`.
     fn execute_controlled(
         &self,
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&AtomicBool>,
     ) -> TaskWorkOutput {
         if cancellation.is_some() {
             return control::refused("Task operator does not support cancellation");
-        }
-        self.execute_with_broker(cas, input, attempt, broker)
-    }
-
-    /// The runtime supplies an opaque client only after binding the already-started Attempt.
-    /// Existing hosts refuse a capability they do not consume before performing any work.
-    fn execute_with_broker(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
-    ) -> TaskWorkOutput {
-        if broker.is_some() {
-            return TaskWorkOutput {
-                usage_observation: None,
-                usage: None,
-                outputs: Err("Task operator does not consume Broker Handles".into()),
-                charged_tokens: Some(0),
-                raw_artifact_ids: vec![],
-                usage_id: None,
-                feedback_id: None,
-            };
         }
         self.execute(cas, input, attempt)
     }
@@ -245,8 +209,6 @@ pub struct TaskRuntime<'store, 'host> {
     authority: &'host dyn TaskAuthority,
     host: &'host dyn TaskOperatorHost,
     cancellation: Option<&'host AtomicBool>,
-    broker_providers: BTreeMap<String, &'host broker::TaskBrokerProvider>,
-    broker_probes: BTreeMap<String, &'host broker::TaskBrokerProvider>,
     prepared: Mutex<BTreeMap<String, PreparedTaskAttempt>>,
     pending_outputs: Mutex<BTreeMap<String, (String, Option<String>)>>,
     failures: Mutex<BTreeMap<String, NodeFailureClass>>,
@@ -275,8 +237,8 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
         Self::with_store(SharedEventStore::new(store), cas, lease, authority, host)
     }
 
-    /// Domain handlers may retain a clone for durable evidence and broker checks. Locks must
-    /// be released before calling a handler or starting an external operation.
+    /// Domain handlers may retain a clone for durable evidence checks. Locks must be released
+    /// before calling a handler or starting an external operation.
     pub fn with_store(
         store: SharedEventStore<'store>,
         cas: &'store Cas,
@@ -339,8 +301,6 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
             authority,
             host,
             cancellation: None,
-            broker_providers: BTreeMap::new(),
-            broker_probes: BTreeMap::new(),
             prepared: Mutex::new(BTreeMap::new()),
             pending_outputs: Mutex::new(BTreeMap::new()),
             failures: Mutex::new(BTreeMap::new()),
@@ -351,6 +311,29 @@ impl<'store, 'host> TaskRuntime<'store, 'host> {
     pub fn with_cancellation(mut self, cancellation: &'host AtomicBool) -> Self {
         self.cancellation = Some(cancellation);
         self
+    }
+
+    /// The one dispatch entry for every Task node: a cancelled or unresolvable node is
+    /// refused before the host runs, charging nothing.
+    fn execute_host(
+        &self,
+        input: &TaskInvocationV1,
+        attempt: Option<&PreparedTaskAttempt>,
+    ) -> TaskWorkOutput {
+        if let Err(error) = control::check(self.cancellation) {
+            return control::refused(error);
+        }
+        let resolved = match self.resolve_node(&input.node) {
+            Ok(value) => value,
+            Err(error) => return control::refused(error),
+        };
+        self.host.execute_resolved_controlled(
+            self.cas,
+            input,
+            &resolved.definition,
+            attempt,
+            self.cancellation,
+        )
     }
 
     pub fn execute(&self) -> Result<RunReport, String> {

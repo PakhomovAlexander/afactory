@@ -18,7 +18,6 @@ pub use model::{
     compose_command_input, compose_model_prompt, estimate_tokens, extract_result,
     parse_notes_declaration, parse_proposal_declaration, parse_reviewer_result, unfence,
 };
-pub use review_broker::ExactBrokerClient;
 pub use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 pub use review_process::{
     ExitPolicy, SupervisedDuplexOutput, SupervisedError, SupervisedOutput, SupervisedStreamError,

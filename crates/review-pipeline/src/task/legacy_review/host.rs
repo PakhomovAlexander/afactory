@@ -209,11 +209,7 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
                 .nodes
                 .get(&input.node)
                 .is_some_and(|node| {
-                    matches!(
-                        node.operator,
-                        CompiledOperator::ProviderAdmission { .. }
-                            | CompiledOperator::ProviderAdmissionBrokered { .. }
-                    )
+                    matches!(node.operator, CompiledOperator::ProviderAdmission { .. })
                 })
     }
 
@@ -596,30 +592,6 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
         self.complete_owned_review(cas, parent, children, facts)
     }
 
-    fn broker_operations(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-    ) -> Result<Option<Vec<review_core::BrokerOperationPolicyV1>>, String> {
-        if self.is_provider(input) {
-            return self.providers().broker_operations(cas, input);
-        }
-        let Some((node, _, ReviewOperation::Reviewer { .. })) = self.operation(input)? else {
-            return Ok(None);
-        };
-        let base = self.domain.reviewer_binding_node(&node.id);
-        let Some(policy) = self.captured.loaded.reviewer_execution().get(&base) else {
-            return Ok(None);
-        };
-        if policy.credential_mode != review_core::BrokerCredentialModeV1::Brokered {
-            return Ok(None);
-        }
-        if policy.operations.is_empty() {
-            return Err("Brokered Review has no captured operations".into());
-        }
-        Ok(Some(policy.operations.clone()))
-    }
-
     fn commit_domain_invocation(
         &self,
         cas: &Cas,
@@ -823,17 +795,7 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
     ) -> TaskWorkOutput {
-        self.execute_with_broker(cas, input, attempt, None)
-    }
-
-    fn execute_with_broker(
-        &self,
-        cas: &Cas,
-        input: &TaskInvocationV1,
-        attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
-    ) -> TaskWorkOutput {
-        self.execute_controlled(cas, input, attempt, broker, None)
+        self.execute_controlled(cas, input, attempt, None)
     }
 
     fn execute_controlled(
@@ -841,7 +803,6 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         if let Err(error) = crate::task::control::check(cancellation) {
@@ -851,10 +812,10 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
         if self.is_provider(input) {
             return self
                 .providers()
-                .execute_controlled(cas, input, attempt, broker, cancellation);
+                .execute_controlled(cas, input, attempt, cancellation);
         }
         if self.is_integration(input) {
-            return self.execute_integration(cas, input, attempt, broker, cancellation);
+            return self.execute_integration(cas, input, attempt, cancellation);
         }
         let reviewer = self
             .operation(input)
@@ -862,16 +823,12 @@ impl TaskOperatorHost for LegacyReviewTaskHost<'_, '_> {
             .flatten()
             .is_some_and(|(_, _, op)| matches!(op, ReviewOperation::Reviewer { .. }));
         let mut result = if reviewer {
-            self.execute_reviewer(cas, input, attempt, broker, cancellation)
+            self.execute_reviewer(cas, input, attempt, cancellation)
         } else {
             TaskWorkOutput {
                 usage_observation: None,
                 usage: Some(review_core::task::usage::TaskTokenUsageV3::charge_only(0)),
-                outputs: if broker.is_some() {
-                    Err("Review domain operation does not consume Broker Handles".into())
-                } else {
-                    self.execute_operation(cas, input, attempt, cancellation)
-                },
+                outputs: self.execute_operation(cas, input, attempt, cancellation),
                 charged_tokens: Some(0),
                 raw_artifact_ids: vec![],
                 usage_id: None,
@@ -963,102 +920,6 @@ impl TaskDomain for LegacyReviewTaskHost<'_, '_> {
             return Err("Owned Review changed captured Task authority".into());
         }
         self.check_owned_completion(cas, parent, children, facts, output)
-    }
-
-    fn validate_broker_binding(
-        &self,
-        cas: &Cas,
-        task: &TaskRevisionV1,
-        plan: &ExecutionPlanV1,
-        binding: &review_core::task::broker::TaskBrokerBindingV1,
-    ) -> Result<(), String> {
-        binding.validate()?;
-        if task != &self.task
-            || plan != &self.plan
-            || binding.task_id != self.task.task_id
-            || binding.task_revision_id != self.plan.task_revision_id
-            || binding.plan_id != self.plan_id
-            || binding.writer_epoch != self.lease.epoch()
-            || binding.lease.campaign_id != self.domain.authority.run_id
-            || binding.lease.round_event_id != self.domain.authority.round_event_id
-        {
-            return Err("Review Broker binding changed its captured Task or plan".into());
-        }
-        let owned = self
-            .owned
-            .lock()
-            .expect("owned Review mappings")
-            .get(&binding.node)
-            .cloned();
-        let (operator, canonical_node) = if let Some(child) = owned {
-            (
-                self.captured.compilation.graph.owned_children[child.registered.parent_node()]
-                    .operator
-                    .clone(),
-                Some(child.node.id),
-            )
-        } else {
-            (
-                self.captured
-                    .compilation
-                    .graph
-                    .nodes
-                    .get(&binding.node)
-                    .ok_or("Review Broker binding has an unknown Task node")?
-                    .operator
-                    .clone(),
-                None,
-            )
-        };
-        if matches!(
-            operator,
-            CompiledOperator::ProviderAdmission { .. }
-                | CompiledOperator::ProviderAdmissionBrokered { .. }
-        ) {
-            return self
-                .providers()
-                .validate_broker_binding(cas, task, plan, binding);
-        }
-        let CompiledOperator::ReviewDomain {
-            review_node,
-            operation: ReviewOperation::Reviewer { slot },
-        } = &operator
-        else {
-            return Err("Review Broker binding requires an original Reviewer operation".into());
-        };
-        let canonical_node = canonical_node.as_ref().unwrap_or(review_node);
-        let worker = self
-            .plan
-            .bindings
-            .get(slot)
-            .ok_or("Review Broker Worker slot is absent")?;
-        let policy = self
-            .captured
-            .loaded
-            .reviewer_execution()
-            .get(review_node)
-            .ok_or("Review Broker binding lacks captured execution policy")?;
-        if binding.target
-            != (review_core::task::broker::TaskBrokerTargetV1::Worker {
-                slot: slot.clone(),
-                invocation_policy_id: worker.invocation_policy_id.clone(),
-            })
-            || binding.lease.campaign_id != self.domain.authority.run_id
-            || binding.lease.round_event_id != self.domain.authority.round_event_id
-            || binding.lease.node_id != *canonical_node
-            || policy.credential_mode != review_core::BrokerCredentialModeV1::Brokered
-            || policy.operations.is_empty()
-            || binding.operations != policy.operations
-        {
-            return Err("Review Broker binding changed its captured Reviewer operations".into());
-        }
-        if self.models.get(slot).is_none_or(|model| {
-            model.binding != *worker
-                || model.adapter.credential_mode() != review_core::BrokerCredentialModeV1::Brokered
-        }) {
-            return Err("Review Broker binding has no exact Brokered transport".into());
-        }
-        Ok(())
     }
 
     fn assemble_result(

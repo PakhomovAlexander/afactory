@@ -24,8 +24,8 @@ Failure refuses before private input is sent, with known-zero usage for that inv
 admission and paid usage remain intact. Raw account responses, email addresses and detailed
 local authentication diagnostics are neither Worker evidence nor ordinary error output.
 
-Keep model/effort settings, credential mode, native sandbox flags, Broker refusal and usage
-accounting unchanged. Install the wrapper through the factory shared by Task files, planning,
+Keep model/effort settings, credential mode, native sandbox flags and usage accounting
+unchanged. Install the wrapper through the factory shared by Task files, planning,
 Review and doctor. Finished inspection still needs no Provider call.
 
 ## Considered options

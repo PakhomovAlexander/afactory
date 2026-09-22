@@ -465,8 +465,7 @@ fn bound_context_size(cas: &Cas, context_id: &str) -> Option<(u64, u64)> {
 
 fn classify(operator: &CompiledOperator) -> (Category, Option<String>, Vec<String>) {
     match operator {
-        CompiledOperator::ProviderAdmission { bindings }
-        | CompiledOperator::ProviderAdmissionBrokered { bindings, .. } => {
+        CompiledOperator::ProviderAdmission { bindings } => {
             (Category::Provider, None, bindings.iter().cloned().collect())
         }
         CompiledOperator::ReviewDomain {

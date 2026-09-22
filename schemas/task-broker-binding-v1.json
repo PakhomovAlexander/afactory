@@ -73,44 +73,24 @@
       }
     },
     "target": {
-      "oneOf": [
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "slot",
-            "invocation_policy_id"
-          ],
-          "properties": {
-            "kind": {
-              "const": "worker"
-            },
-            "slot": {
-              "$ref": "#/$defs/qualified"
-            },
-            "invocation_policy_id": {
-              "$ref": "#/$defs/digest"
-            }
-          }
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "slot",
+        "invocation_policy_id"
+      ],
+      "properties": {
+        "kind": {
+          "const": "worker"
         },
-        {
-          "type": "object",
-          "additionalProperties": false,
-          "required": [
-            "kind",
-            "probe_policy_id"
-          ],
-          "properties": {
-            "kind": {
-              "const": "provider_admission"
-            },
-            "probe_policy_id": {
-              "$ref": "#/$defs/digest"
-            }
-          }
+        "slot": {
+          "$ref": "#/$defs/qualified"
+        },
+        "invocation_policy_id": {
+          "$ref": "#/$defs/digest"
         }
-      ]
+      }
     }
   },
   "description": "Captured authority for an existing Task Attempt. Store checks exact plan, reservation, binding, Review Round, and live authority; this artifact grants none independently.",

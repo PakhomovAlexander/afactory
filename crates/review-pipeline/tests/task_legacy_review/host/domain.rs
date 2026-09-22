@@ -101,7 +101,7 @@ pub(super) fn admit_source(
         cas,
         CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap(),
         cas.put(b"Review domain host fixture").unwrap(),
-        plan::without_probes(settings),
+        settings,
     )
     .unwrap();
     let mut limits = capture::limits();

@@ -82,5 +82,5 @@
       }
     }
   },
-  "$comment": "Existing af/TaskProviderContext@1 readiness payload. The fixed request and manifest are rederived by Provider admission; Rust/domain checks require matching plan IDs and rendered digest/manifest artifact identity. Business inputs, feedback and ambient credentials are absent. Version 1 retains its invocation policy identity; version 2 uses independent probe policy authority."
+  "$comment": "af/TaskProviderContext@1 readiness payload. The fixed request and manifest are rederived by Provider admission; Rust/domain checks require matching plan IDs and rendered digest/manifest artifact identity. Business inputs, feedback and ambient credentials are absent. The capability carries the invocation policy identity of the admitted bindings."
 }

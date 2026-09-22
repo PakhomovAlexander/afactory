@@ -214,7 +214,7 @@ fn doctor_resume_keeps_old_cost_and_refuses_changed_tokens_or_wall_before_events
         .get_artifact(&before.revision.authority.policy_id)
         .unwrap();
     assert_eq!(
-        policy.payload["settings"]["review"]["provider_admission"],
+        policy.payload["settings"]["provider_admission"],
         json!({"tokens":4096,"wall_ms":45000})
     );
     // The live checkout cannot replace captured Review policy or package bytes on resume.

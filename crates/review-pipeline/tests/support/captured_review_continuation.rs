@@ -240,10 +240,7 @@ pub(super) fn admit_heavy_definition_with_limits(
         cas,
         CapturedLegacyReviewRound::load(cas, store, "review", &round).unwrap(),
         cas.put(b"heavy Review fixture engine").unwrap(),
-        review_pipeline::task::legacy_review::plan::ReviewPlanSettingsV2 {
-            review: settings,
-            provider_probes: BTreeMap::new(),
-        },
+        settings,
     )
     .unwrap();
     let task = compiler

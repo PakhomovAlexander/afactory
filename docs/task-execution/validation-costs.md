@@ -18,7 +18,6 @@ All authority replacement/removal checks passed before measurement.
 | Basic Review | 17 | 1701 / 2178 | 611 / 637 |
 | Heavy Review V3 | 19 | 2989 / 3405 | 880 / 905 |
 | Heavy Review V4 with Integration | 20 | 3190 / 3482 | 944 / 983 |
-| Brokered Provider probe | 21 | 2411 / 2880 | 785 / 794 |
 
 A captured two-Round handoff fixture retained 26 references / 24,543 bytes, or 27 references /
 26,211 bytes with generated approval. Each cold or warm projection loaded the canonical Campaign
@@ -55,7 +54,7 @@ not that contract.
 The normal `review-store` unit suite asserts exact per-path counts, cold/warm handoff replay,
 revocation replay, callback corruption, and large raw/typed usage evidence. The captured Review
 plan tests mutate engine, Campaign, policy, pipeline, lock, package files, dependencies, invocation,
-probe, Integration and graph identities. The public runtime tests preserve retry and billing rules.
+Integration and graph identities. The public runtime tests preserve retry and billing rules.
 
 For the serial measurement fixtures:
 

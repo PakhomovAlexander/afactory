@@ -731,13 +731,12 @@ impl TaskOperatorHost for DocumentTaskDomain {
         cas: &Cas,
         input: &TaskInvocationV1,
         attempt: Option<&PreparedTaskAttempt>,
-        broker: Option<&dyn review_broker::ExactBrokerClient>,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
     ) -> TaskWorkOutput {
         if let Err(error) = super::control::check(cancellation) {
             return super::control::refused(error);
         }
-        self.execute_with_broker(cas, input, attempt, broker)
+        self.execute(cas, input, attempt)
     }
 
     fn prepare_context(
