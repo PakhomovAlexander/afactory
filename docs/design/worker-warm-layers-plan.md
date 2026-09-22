@@ -275,8 +275,8 @@ af 0.9.0-rc.3, plan `d9618b70…`.
   verified. Later packages whose Task ends unsatisfied on mechanical Gate failures follow
   the same path: fix, verify, review.
 - **Known limitation carried:** rendered-input size for a failed or released Attempt is
-  reported on the common Task path from its bound context; the frozen legacy path still
-  reports it only for admitted Attempts.
+  reported on the common Task path from its bound context; the pre-Task executor, removed for
+  GA, reported it only for admitted Attempts.
 
 ## 8. P2 implementation record
 
@@ -449,12 +449,12 @@ rather than hashed or random and a crashed kernel can still name the file it owe
 and `ColdCloseoutDispatched@1`; `review-runner` carries the `SessionLayer` adapter surface and the
 resume render mode; `review-runner-claude` implements the pinned store layout, the bounded capture
 and the no-follow deletion; `review-pipeline` owns the protocol, the gates, the recovery sweep,
-the Cold Closeout rules and the Ledger fold of a recorded confirmation; `review-config` owns `warm.session`, `warm.session_max_age_secs` and
-`convergence.cold_closeout` with their load-time refusals. Exit evidence lived in
-`review-pipeline/tests/session_snapshot.rs`. That suite drove only the pre-Task Kernel executor
-and was removed for GA; it is recoverable with
-`git show 0b9431b:crates/review-pipeline/tests/session_snapshot.rs` (or, if history was
-rewritten, from the parent of the commit that
+the Cold Closeout rules and the Ledger fold of a recorded confirmation; `review-config` owns
+`warm.session`, `warm.session_max_age_secs` and `convergence.cold_closeout` with their load-time
+refusals. Exit evidence lived in `review-pipeline/tests/session_snapshot.rs`. That suite drove
+only the pre-Task Kernel executor and was removed for GA; it is recoverable with
+`git show 0b9431b:crates/review-pipeline/tests/session_snapshot.rs` (or, if history was rewritten,
+from the parent of the commit that
 `git log --diff-filter=D -- crates/review-pipeline/tests/session_snapshot.rs` names). Its
 scenarios are the acceptance list for porting the layer to the Task host:
 
@@ -482,12 +482,13 @@ deletion, a symlinked project directory that is never followed),
 
 Two limits are carried deliberately. The session protocol and the Cold Closeout dispatch ran on
 the pre-Task Kernel's own reviewer path, which was removed for GA; the Task host installs no
-session capability and dispatches no confirmation yet, so a Task-hosted Review Attempt records
-the drop reason `host_unsupported` and runs on Notes, which is recorded rather than silent. And no cold-versus-warm dogfood comparison exists: the package was
-implemented without a live Campaign, so the design review's forked-resume Demand — net token and
-wall-time savings over cold and Notes-only Attempts at several ages — stays open until the first
-Campaign runs with `session = "if_recent"`. Both policy defaults are off, which is what the design
-asks for until that Evidence exists.
+session capability and dispatches no confirmation yet, so a Task-hosted Review Attempt records the
+drop reason `host_unsupported` and runs on Notes, which is recorded rather than silent. And no
+cold-versus-warm dogfood comparison exists: the package was implemented without a live Campaign,
+so the design review's forked-resume Demand — net token and wall-time savings over cold and
+Notes-only Attempts at several ages — stays open until the first Campaign runs with
+`session = "if_recent"`. Both policy defaults are off, which is what the design asks for until
+that Evidence exists.
 
 The P4 review (Campaign `warm-p4-review`, the same two reviewers) closed with one Blocker and
 eight Majors that reduce to six fixes, all applied before verification:

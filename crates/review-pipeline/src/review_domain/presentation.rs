@@ -222,20 +222,20 @@ mod tests {
         ];
 
         let evidence = selected_attempt_evidence(&cas, &events, ROUND).unwrap();
+        let expected = |node: &str, attempt_id: &str, charged: u128| crate::AttemptEvidence {
+            node: node.into(),
+            attempt_id: attempt_id.into(),
+            cost_tokens: charged,
+            usage: review_core::task::usage::TaskTokenUsageV3::charge_only(charged),
+            context_manifest: manifest(),
+            raw_artifact: cas.put(format!("{node}:raw").as_bytes()).unwrap(),
+            result_artifact: cas.put(format!("{node}:result").as_bytes()).unwrap(),
+        };
         assert_eq!(
-            evidence
-                .iter()
-                .map(|item| (
-                    item.node.as_str(),
-                    item.attempt_id.as_str(),
-                    item.cost_tokens
-                ))
-                .collect::<Vec<_>>(),
-            [("alpha", alpha.as_str(), 5), ("zeta", zeta.as_str(), 17)],
+            evidence,
+            [expected("alpha", &alpha, 5), expected("zeta", &zeta, 17)],
             "a prior Round's selection never counts, and order is node then Attempt"
         );
-        assert_eq!(evidence[0].usage.chargeable_tokens.get(), 5);
-        assert_eq!(evidence[0].context_manifest, manifest());
 
         let mut contradicted = events;
         contradicted[0].attempt_id = Some("x".repeat(26));

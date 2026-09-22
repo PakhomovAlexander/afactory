@@ -392,7 +392,7 @@ impl<'a> ReviewDomainState<'a> {
                     .map_or(Isolation::None, ContainerProvider::isolation);
                 let admitted = gate_provider_admitted(binding.provider, provided, required);
                 // Record the resolved provider claim before materialization. A broken CAS or
-                // failed clone must still leave RunReport@4 able to explain which binding was
+                // failed clone must still leave RunReport@6 able to explain which binding was
                 // selected and whether its isolation was sufficient.
                 let report = RunExecutionBindingV4 {
                     node: node_id.to_string(),

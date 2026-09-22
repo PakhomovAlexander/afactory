@@ -95,7 +95,7 @@ fn presentation_retains_original_review_ports_and_selected_transport_fields_with
     };
     assert_eq!(evidence, [expected]);
     assert_eq!(host.ledger().findings().len(), 1);
-    // Fresh presentation shares the same durable facts, with no legacy Kernel construction.
+    // A fresh host reads the same durable facts.
     let reopened =
         LegacyReviewTaskHost::new(&cas, shared.clone(), &compiler, lease, BTreeMap::new()).unwrap();
     assert_eq!(reopened.selected_attempt_evidence().unwrap(), evidence);

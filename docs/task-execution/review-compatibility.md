@@ -144,7 +144,7 @@ producer, changed Round or changed head; it does not recreate missing CAS object
 Round reconstruction is separate from the active-epoch check used for dispatch. Opaque v1 Ledger
 ports use the captured finding identity policy to select either the canonical Finding Set
 envelope or the frozen legacy flat encoding. Scatter result version follows its inherited
-Finding Set input contract, matching the original executor.
+Finding Set input contract.
 
 ## Common operation host
 
