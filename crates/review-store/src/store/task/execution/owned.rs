@@ -891,7 +891,8 @@ fn resolve_child(
 
 /// The canonical receipt may follow its Task selection in a later transaction. Recheck the
 /// ownership seal under that same canonical writer lock, without calling a host or opening a
-/// second Store. Static Review selections and historical legacy Attempts retain their path.
+/// second Store. A reviewer receipt always follows its Task selection; static Review selections
+/// retain their path.
 pub(in crate::store) fn check_canonical_child_receipt(
     connection: &rusqlite::Connection,
     cas: &Cas,
@@ -907,7 +908,7 @@ pub(in crate::store) fn check_canonical_child_receipt(
         params![campaign,round,node,attempt], |row|row.get(0),
     ).optional()?;
     let Some(selection) = selection else {
-        return Ok(());
+        return Err(conflict("Reviewer receipt has no Task Review selection"));
     };
     let selected: TaskReviewResultSelectedV1 = serde_json::from_str(&selection)?;
     selected.validate().map_err(conflict)?;

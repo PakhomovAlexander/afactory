@@ -426,7 +426,7 @@ pub(in crate::store) fn validate_selection(
     )?;
     let prior: u64 = tx.query_row(
         "SELECT COUNT(*) FROM events WHERE run_id = ?1 AND causation_id = ?2 AND node_id = ?3
-         AND type IN ('TaskReviewResultSelected@1', 'AttemptDispatched@1', 'AttemptAdmitted@1', 'NodeOutputReceipt@1')",
+         AND type IN ('TaskReviewResultSelected@1', 'NodeOutputReceipt@1')",
         params![run_id, round_id, context.review_node],
         |row| u64_column(row, 0),
     )?;
@@ -528,7 +528,6 @@ fn validate_attempt_provenance(
 }
 
 /// A Task result's side metadata fixes its Proposal disposition before common selection.
-/// Legacy admissions retain their original guard; they have no Task metadata to reinterpret.
 pub(in crate::store) fn validate_proposal(
     tx: &rusqlite::Transaction<'_>,
     cas: &Cas,
@@ -545,7 +544,7 @@ pub(in crate::store) fn validate_proposal(
         )
         .optional()?;
     let Some(selected) = selected else {
-        return Ok(());
+        return Err(conflict("Proposal has no Task Review selection"));
     };
     let selected: TaskReviewResultSelectedV1 = serde_json::from_str(&selected)?;
     let metadata: TaskReviewResultMetadataV1 = payload(

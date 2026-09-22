@@ -9,7 +9,6 @@
 //! a filesystem CAS object only after that object is durable"), and enforcing it at append time
 //! turns a class of crash-corruption into an immediate error.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -50,8 +49,6 @@ pub enum StoreError {
     /// The captured domain rejected structurally valid output. This is distinct from
     /// an authority, artifact or persistence failure at the Store boundary.
     TaskOutputRejected(String),
-    /// A Broker completion lost the atomic race with Attempt fencing or replacement.
-    AttemptNotCurrent,
     /// The CAS could not make a referenced object durable.
     Durability(String),
     /// A referenced artifact required for replay was missing or malformed.
@@ -70,12 +67,6 @@ impl std::fmt::Display for StoreError {
             StoreError::Conflict(what) => write!(f, "event store conflict: {what}"),
             StoreError::TaskOutputRejected(what) => {
                 write!(f, "Task output admission rejected: {what}")
-            }
-            StoreError::AttemptNotCurrent => {
-                write!(
-                    f,
-                    "event store conflict: Broker Attempt is no longer current"
-                )
             }
             StoreError::Durability(what) => {
                 write!(f, "a referenced artifact could not be made durable: {what}")
@@ -513,224 +504,6 @@ impl EventStore {
         Ok(prepared)
     }
 
-    /// Ordered transitions for one provider operation. The correlation index keeps admission
-    /// proportional to that operation rather than to the Campaign's entire append-only log.
-    pub fn provider_operation_transitions(
-        &self,
-        run_id: &str,
-        operation_id: &str,
-    ) -> Result<Vec<review_core::ProviderOperationTransitionPayloadV1>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT payload FROM events
-             WHERE run_id = ?1 AND type = 'ProviderOperationTransition@1'
-               AND correlation_id = ?2 ORDER BY sequence",
-        )?;
-        let rows = stmt.query_map(params![run_id, operation_id], |row| row.get::<_, String>(0))?;
-        rows.map(|row| {
-            let payload = row?;
-            serde_json::from_str(&payload).map_err(StoreError::from)
-        })
-        .collect()
-    }
-
-    /// Reviewer nodes carrying Provider Operations under one exact Round authority epoch.
-    pub fn provider_operation_nodes(
-        &self,
-        run_id: &str,
-        round_event_id: &str,
-    ) -> Result<Vec<String>, StoreError> {
-        let mut stmt = self.conn.prepare(
-            "SELECT DISTINCT node_id FROM events
-             WHERE run_id = ?1 AND causation_id = ?2
-               AND type = 'ProviderOperationTransition@1' AND node_id IS NOT NULL
-             ORDER BY node_id",
-        )?;
-        stmt.query_map(params![run_id, round_event_id], |row| row.get(0))?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(StoreError::from)
-    }
-
-    /// Committed and crash-reserved token spend for one Round lineage, without replaying
-    /// unrelated Campaign events or re-reading output artifacts from the CAS. Every epoch with
-    /// the active Round's number and Campaign Manifest contributes because supersession never
-    /// refunds already-spent work.
-    pub fn round_committed_tokens(
-        &self,
-        run_id: &str,
-        round_event_id: &str,
-    ) -> Result<u64, StoreError> {
-        let round_payload: String = self.conn.query_row(
-            "SELECT payload FROM events
-             WHERE run_id = ?1 AND event_id = ?2 AND type = 'RoundStarted@1'",
-            params![run_id, round_event_id],
-            |row| row.get(0),
-        )?;
-        let round: review_core::RoundStartedPayloadV1 = serde_json::from_str(&round_payload)?;
-        let round_number = i64::from(round.round);
-        let sum = |query: &str| -> Result<u64, StoreError> {
-            let value: i64 = self.conn.query_row(
-                query,
-                params![run_id, round_number, round.campaign_manifest_id.as_str()],
-                |row| row.get(0),
-            )?;
-            u64::try_from(value)
-                .map_err(|_| StoreError::Conflict("replayed token charge overflow".into()))
-        };
-        #[derive(Default)]
-        struct AttemptCommitment {
-            dispatched: u64,
-            broker_authority: u64,
-            broker_observed: u64,
-            terminal: Option<u64>,
-        }
-        let mut attempts: BTreeMap<String, AttemptCommitment> = BTreeMap::new();
-        let mut statement = self.conn.prepare(
-            "SELECT event.type, event.attempt_id, event.payload
-             FROM events AS event
-             WHERE event.run_id = ?1 AND event.attempt_id IS NOT NULL
-               AND event.type IN ('AttemptDispatched@1', 'ReviewerExecutionBound@1',
-                                  'BrokerOperationCompleted@1', 'AttemptAdmitted@1',
-                                  'AttemptFailed@1', 'AttemptFenced@1', 'AttemptReleased@1')
-               AND EXISTS (
-                 SELECT 1 FROM events AS round
-                 WHERE round.run_id = event.run_id
-                   AND round.event_id = event.causation_id
-                   AND round.type = 'RoundStarted@1'
-                   AND json_extract(round.payload, '$.round') = ?2
-                   AND json_extract(round.payload, '$.campaign_manifest_id') = ?3
-               )
-             ORDER BY event.sequence",
-        )?;
-        let rows = statement.query_map(
-            params![run_id, round_number, round.campaign_manifest_id.as_str()],
-            |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                ))
-            },
-        )?;
-        for row in rows {
-            let (event_type, attempt_id, payload) = row?;
-            let event_type: EventType =
-                event_type
-                    .parse()
-                    .map_err(|error: review_core::UnknownEventType| {
-                        StoreError::Conflict(error.to_string())
-                    })?;
-            let commitment = attempts.entry(attempt_id).or_default();
-            match event_type {
-                EventType::AttemptDispatchedV1 => {
-                    let payload: review_core::event::AttemptDispatchedPayloadV1 =
-                        serde_json::from_str(&payload)?;
-                    commitment.dispatched = payload.reserved.unwrap_or(0);
-                }
-                EventType::ReviewerExecutionBoundV1 => {
-                    let binding: review_core::ReviewerExecutionBindingV1 =
-                        serde_json::from_str(&payload)?;
-                    commitment.broker_authority =
-                        review_core::broker_authority_usage(&binding.operations)
-                            .map_err(StoreError::Conflict)?;
-                }
-                EventType::BrokerOperationCompletedV1 => {
-                    let receipt: review_core::BrokerOperationReceiptV1 =
-                        serde_json::from_str(&payload)?;
-                    commitment.broker_observed = commitment
-                        .broker_observed
-                        .checked_add(receipt.charged_usage)
-                        .ok_or_else(|| {
-                            StoreError::Conflict("Broker Attempt usage overflow".into())
-                        })?;
-                }
-                EventType::AttemptAdmittedV1 if commitment.terminal.is_none() => {
-                    commitment.terminal = Some(
-                        serde_json::from_str::<review_core::event::AttemptAdmittedPayloadV1>(
-                            &payload,
-                        )?
-                        .cost_tokens,
-                    );
-                }
-                EventType::AttemptFailedV1 if commitment.terminal.is_none() => {
-                    commitment.terminal = Some(
-                        serde_json::from_str::<review_core::event::AttemptFailedPayloadV1>(
-                            &payload,
-                        )?
-                        .charged
-                        .unwrap_or(0),
-                    );
-                }
-                EventType::AttemptFencedV1 if commitment.terminal.is_none() => {
-                    commitment.terminal = Some(
-                        serde_json::from_str::<review_core::event::AttemptFencedPayloadV1>(
-                            &payload,
-                        )?
-                        .charged
-                        .unwrap_or(0),
-                    );
-                }
-                EventType::AttemptReleasedV1 if commitment.terminal.is_none() => {
-                    commitment.terminal = Some(0);
-                }
-                _ => {}
-            }
-        }
-        let attempt_charges = attempts.into_values().try_fold(0_u64, |sum, attempt| {
-            let charged = attempt.terminal.map_or_else(
-                || {
-                    attempt
-                        .dispatched
-                        .max(attempt.broker_authority)
-                        .max(attempt.broker_observed)
-                },
-                |settled| settled.max(attempt.broker_observed),
-            );
-            sum.checked_add(charged)
-                .ok_or_else(|| StoreError::Conflict("replayed token charge overflow".into()))
-        })?;
-        let provider_charges = sum(
-            "SELECT COALESCE(SUM(CAST(json_extract(operation.payload, '$.charged_tokens') AS INTEGER)), 0)
-             FROM events AS operation
-             WHERE operation.run_id = ?1
-               AND operation.type = 'ProviderOperationTransition@1'
-               AND EXISTS (
-                 SELECT 1 FROM events AS round
-                 WHERE round.run_id = operation.run_id
-                   AND round.event_id = operation.causation_id
-                   AND round.type = 'RoundStarted@1'
-                   AND json_extract(round.payload, '$.round') = ?2
-                   AND json_extract(round.payload, '$.campaign_manifest_id') = ?3
-               )",
-        )?;
-        let outstanding_providers = sum(
-            "SELECT COALESCE(SUM(CAST(json_extract(operation.payload, '$.reserved_tokens') AS INTEGER)), 0)
-             FROM events AS operation
-             WHERE operation.run_id = ?1
-               AND operation.type = 'ProviderOperationTransition@1'
-               AND EXISTS (
-                 SELECT 1 FROM events AS round
-                 WHERE round.run_id = operation.run_id
-                   AND round.event_id = operation.causation_id
-                   AND round.type = 'RoundStarted@1'
-                   AND json_extract(round.payload, '$.round') = ?2
-                   AND json_extract(round.payload, '$.campaign_manifest_id') = ?3
-               )
-               AND json_extract(operation.payload, '$.state') = 'running'
-               AND json_type(operation.payload, '$.failure_class') IS NULL
-               AND operation.sequence = (
-                 SELECT MAX(latest.sequence) FROM events AS latest
-                 WHERE latest.run_id = operation.run_id
-                   AND latest.causation_id = operation.causation_id
-                   AND latest.type = operation.type
-                   AND latest.correlation_id = operation.correlation_id
-               )",
-        )?;
-        attempt_charges
-            .checked_add(provider_charges)
-            .and_then(|value| value.checked_add(outstanding_providers))
-            .ok_or_else(|| StoreError::Conflict("replayed token charge overflow".into()))
-    }
-
     /// Stable identifiers for every run that has at least one event.
     pub fn run_ids(&self) -> Result<Vec<String>, StoreError> {
         let mut stmt = self
@@ -1087,7 +860,6 @@ struct AuthorityPlan {
     version: u32,
     pipeline_policy_id: String,
     nodes: std::collections::BTreeMap<String, AuthorityNode>,
-    budgeted: bool,
     gate_bound: bool,
     gate_nodes: std::collections::BTreeSet<String>,
     cache_kinds: std::collections::BTreeSet<String>,
@@ -1258,7 +1030,6 @@ fn load_authority_plan_id(
             "CampaignManifest authority does not match CampaignOpened@1".into(),
         ));
     }
-    let budgeted = manifest.budgets.is_some();
     let pipeline = cas
         .get(&manifest.pipeline.artifact_id)
         .map_err(|error| StoreError::Conflict(error.to_string()))?;
@@ -1370,7 +1141,6 @@ fn load_authority_plan_id(
         version,
         pipeline_policy_id: manifest.pipeline.artifact_id,
         nodes,
-        budgeted,
         gate_bound,
         gate_nodes,
         cache_kinds,
@@ -1397,26 +1167,6 @@ fn typed_json_artifacts(
                     event.payload.clone(),
                 )?
                 .outputs
-            }
-            EventType::AttemptInputV1 => {
-                let payload: review_core::event::AttemptInputPayloadV1 =
-                    serde_json::from_value(event.payload.clone())?;
-                insert_artifact_type(
-                    &mut artifacts,
-                    payload.refusal_history_id,
-                    review_core::contract::REFUSAL_HISTORY_V1.into(),
-                )?;
-                continue;
-            }
-            EventType::AttemptFeedbackV1 => {
-                let payload: review_core::event::AttemptFeedbackPayloadV1 =
-                    serde_json::from_value(event.payload.clone())?;
-                insert_artifact_type(
-                    &mut artifacts,
-                    payload.refusal_history_id,
-                    review_core::contract::REFUSAL_HISTORY_V1.into(),
-                )?;
-                continue;
             }
             EventType::CacheSnapshotMaterializedV1 => {
                 let snapshot: review_core::RunCacheSnapshotV5 =
@@ -1958,32 +1708,6 @@ fn validate_artifact_payload(
     Ok(None)
 }
 
-fn validate_prepared_refusal_history(
-    prepared: &PreparedArtifacts,
-    artifact_id: &str,
-    event_type: &str,
-) -> Result<(), StoreError> {
-    let history = prepared
-        .json
-        .get(artifact_id)
-        .and_then(Value::as_array)
-        .ok_or_else(|| {
-            StoreError::Conflict(format!(
-                "{event_type} refusal history is not a verified JSON array"
-            ))
-        })?;
-    if history.is_empty()
-        || history
-            .iter()
-            .any(|entry| entry.as_str().is_none_or(|entry| entry.trim().is_empty()))
-    {
-        return Err(StoreError::Conflict(format!(
-            "{event_type} has empty refusal history"
-        )));
-    }
-    Ok(())
-}
-
 fn validated_envelope_payload<T: serde::de::DeserializeOwned>(
     value: &Value,
     expected_type: &str,
@@ -2362,14 +2086,6 @@ fn validate_campaign_transition(
         None => false,
     };
     let mut pending_supersession: Option<review_core::RoundInputSupersededPayloadV1> = None;
-    let mut pending_fences = std::collections::BTreeSet::new();
-    let mut batch_dispatches = std::collections::BTreeMap::new();
-    let mut batch_latest_dispatch = std::collections::BTreeMap::new();
-    let mut batch_attempt_inputs = std::collections::BTreeMap::new();
-    let mut batch_attempt_feedback = std::collections::BTreeMap::new();
-    let mut batch_terminals: std::collections::BTreeMap<String, EventType> =
-        std::collections::BTreeMap::new();
-    let mut batch_terminal_nodes = std::collections::BTreeMap::new();
     let mut batch_selected = std::collections::BTreeMap::new();
     let mut batch_proposal_attempts = std::collections::BTreeSet::new();
     let mut batch_prepared_proposals = std::collections::BTreeMap::new();
@@ -2388,10 +2104,6 @@ fn validate_campaign_transition(
         })
         .collect();
     let mut active_groupings = load_active_groupings(tx, run_id)?;
-    let mut batch_provider_operations: std::collections::BTreeMap<
-        String,
-        review_core::ProviderOperationTransitionPayloadV1,
-    > = std::collections::BTreeMap::new();
 
     for (offset, event) in events.iter().enumerate() {
         let sequence = first_sequence
@@ -2456,22 +2168,6 @@ fn validate_campaign_transition(
                         "cannot supersede a Round after it published finding state".into(),
                     ));
                 }
-                let mut statement = tx.prepare(
-                    "SELECT dispatch.attempt_id FROM events AS dispatch
-                     WHERE dispatch.run_id = ?1 AND dispatch.causation_id = ?2
-                       AND dispatch.type = 'AttemptDispatched@1'
-                       AND NOT EXISTS (
-                           SELECT 1 FROM events AS terminal
-                           WHERE terminal.run_id = dispatch.run_id
-                             AND terminal.causation_id = dispatch.causation_id
-                             AND terminal.attempt_id = dispatch.attempt_id
-                             AND terminal.type IN ('AttemptAdmitted@1', 'AttemptFailed@1',
-                                                   'AttemptFenced@1', 'AttemptReleased@1')
-                       )",
-                )?;
-                pending_fences = statement
-                    .query_map(params![run_id, active_id], |row| row.get::<_, String>(0))?
-                    .collect::<Result<_, _>>()?;
                 pending_supersession = Some(payload);
             }
             EventType::RoundStartedV1 => {
@@ -2498,12 +2194,6 @@ fn validate_campaign_transition(
                             "replacement RoundStarted@1 disagrees with its supersession".into(),
                         ));
                     }
-                    if !pending_fences.is_empty() {
-                        return Err(StoreError::Conflict(format!(
-                            "replacement RoundStarted@1 leaves {} outstanding attempts unfenced",
-                            pending_fences.len()
-                        )));
-                    }
                 } else if let Some((_, prior)) = &active {
                     if !terminal
                         || prior.round.checked_add(1) != Some(payload.round)
@@ -2522,6 +2212,21 @@ fn validate_campaign_transition(
                 active = Some((event_id, payload));
                 active_subject = None;
                 terminal = false;
+            }
+            EventType::AttemptDispatchedV1
+            | EventType::AttemptAdmittedV1
+            | EventType::AttemptFailedV1
+            | EventType::AttemptFencedV1
+            | EventType::AttemptReleasedV1
+            | EventType::AttemptInputV1
+            | EventType::AttemptFeedbackV1
+            | EventType::ReviewerExecutionBoundV1
+            | EventType::BrokerOperationCompletedV1
+            | EventType::ProviderOperationTransitionV1 => {
+                return Err(StoreError::Conflict(format!(
+                    "{} is a retired pre-common event type",
+                    event.event_type
+                )));
             }
             event_type if round_runtime_event(event_type) => {
                 if active.is_none() {
@@ -2545,45 +2250,15 @@ fn validate_campaign_transition(
                     let subject_snapshot_id = &subject.head_snapshot_id;
                     let subject_base_snapshot_id = &subject.base_snapshot_id;
                     let subject_change_set_id = &subject.change_set_id;
-                    let authority_revoked_receipt =
-                        if event_type == EventType::BrokerOperationCompletedV1 {
-                            let receipt: review_core::BrokerOperationReceiptV1 =
-                                serde_json::from_value(event.payload.clone())?;
-                            receipt.outcome == review_core::BrokerOperationOutcomeV1::Revoked
-                                && receipt.failure_reason
-                                    == Some(review_core::BrokerFailureReasonV1::AuthorityRevoked)
-                        } else {
-                            false
-                        };
-                    if terminal && !authority_revoked_receipt {
+                    if terminal {
                         return Err(StoreError::Conflict(format!(
                             "{event_type} cannot publish after the active Round concluded"
                         )));
                     }
-                    if event.causation_id.as_deref() != Some(active_id)
-                        && !authority_revoked_receipt
-                    {
+                    if event.causation_id.as_deref() != Some(active_id) {
                         return Err(StoreError::Conflict(format!(
                             "{event_type} is not bound to the active Round epoch"
                         )));
-                    }
-                    if event.causation_id.as_deref() != Some(active_id) {
-                        let receipt_round = event.causation_id.as_deref().ok_or_else(|| {
-                            StoreError::Conflict(
-                                "late revoked Broker receipt has no Round causation".into(),
-                            )
-                        })?;
-                        let prior_round: i64 = tx.query_row(
-                            "SELECT COUNT(*) FROM events
-                             WHERE run_id = ?1 AND event_id = ?2 AND type = 'RoundStarted@1'",
-                            params![run_id, receipt_round],
-                            |row| row.get(0),
-                        )?;
-                        if prior_round != 1 {
-                            return Err(StoreError::Conflict(
-                                "late revoked Broker receipt has no durable prior Round".into(),
-                            ));
-                        }
                     }
                     if event.attempt_id.as_deref().is_some_and(|attempt| {
                         attempt.len() != 26
@@ -2657,356 +2332,6 @@ fn validate_campaign_transition(
                                 event.attempt_id.clone().expect("validated Review Attempt"),
                                 (node.into(), selected.result_artifact_id),
                             );
-                        }
-                        EventType::ReviewerExecutionBoundV1 => {
-                            let node = event.node_id.as_deref().ok_or_else(|| {
-                                StoreError::Conflict(
-                                    "ReviewerExecutionBound@1 has no node ID".into(),
-                                )
-                            })?;
-                            let attempt = event.attempt_id.as_deref().ok_or_else(|| {
-                                StoreError::Conflict(
-                                    "ReviewerExecutionBound@1 has no Attempt ID".into(),
-                                )
-                            })?;
-                            let binding: review_core::ReviewerExecutionBindingV1 =
-                                serde_json::from_value(event.payload.clone())?;
-                            if binding.node != node
-                                || binding.attempt_id != attempt
-                                || !binding.admitted
-                            {
-                                return Err(StoreError::Conflict(
-                                    "ReviewerExecutionBound@1 metadata or admission disagrees with its payload"
-                                        .into(),
-                                ));
-                            }
-                            let expected = plan
-                                .and_then(|plan| plan.reviewer_execution_for(node))
-                                .ok_or_else(|| {
-                                    StoreError::Conflict(format!(
-                                        "reviewer Execution Binding node '{node}' is absent from pinned v4 authority"
-                                    ))
-                                })?;
-                            if binding.credential_mode != expected.credential_mode
-                                || binding.auto_apply != expected.auto_apply
-                                || binding.operations != expected.operations
-                            {
-                                return Err(StoreError::Conflict(
-                                    "ReviewerExecutionBound@1 contradicts pinned reviewer authority"
-                                        .into(),
-                                ));
-                            }
-                            let dispatched: i64 = tx.query_row(
-                                "SELECT COUNT(*) FROM events
-                                 WHERE run_id = ?1 AND causation_id = ?2
-                                   AND type = 'AttemptDispatched@1' AND node_id = ?3 AND attempt_id = ?4",
-                                params![run_id, active_id, node, attempt],
-                                |row| row.get(0),
-                            )?;
-                            let duplicate: i64 = tx.query_row(
-                                "SELECT COUNT(*) FROM events
-                                 WHERE run_id = ?1 AND causation_id = ?2
-                                   AND type = 'ReviewerExecutionBound@1' AND attempt_id = ?3",
-                                params![run_id, active_id, attempt],
-                                |row| row.get(0),
-                            )?;
-                            let node_dispatches: i64 = tx.query_row(
-                                "SELECT COUNT(*) FROM events
-                                 WHERE run_id = ?1 AND causation_id = ?2
-                                   AND type = 'AttemptDispatched@1' AND node_id = ?3",
-                                params![run_id, active_id, node],
-                                |row| row.get(0),
-                            )?;
-                            if dispatched != 1
-                                || duplicate != 0
-                                || u64::try_from(node_dispatches).ok() != Some(binding.lease_epoch)
-                            {
-                                return Err(StoreError::Conflict(
-                                    "Reviewer Execution Binding requires the exact current dispatch epoch and may bind an Attempt only once"
-                                        .into(),
-                                ));
-                            }
-                        }
-                        EventType::BrokerOperationCompletedV1 => {
-                            let node = event.node_id.as_deref().ok_or_else(|| {
-                                StoreError::Conflict(
-                                    "BrokerOperationCompleted@1 has no node ID".into(),
-                                )
-                            })?;
-                            let attempt = event.attempt_id.as_deref().ok_or_else(|| {
-                                StoreError::Conflict(
-                                    "BrokerOperationCompleted@1 has no Attempt ID".into(),
-                                )
-                            })?;
-                            let receipt: review_core::BrokerOperationReceiptV1 =
-                                serde_json::from_value(event.payload.clone())?;
-                            if receipt.node != node || receipt.attempt_id != attempt {
-                                return Err(StoreError::Conflict(
-                                    "BrokerOperationCompleted@1 metadata disagrees with its receipt"
-                                        .into(),
-                                ));
-                            }
-                            let receipt_round_id =
-                                event.causation_id.as_deref().ok_or_else(|| {
-                                    StoreError::Conflict(
-                                        "BrokerOperationCompleted@1 has no Round causation".into(),
-                                    )
-                                })?;
-                            let latest_attempt: Option<String> = tx
-                                .query_row(
-                                    "SELECT attempt_id FROM events
-                                     WHERE run_id = ?1 AND causation_id = ?2
-                                       AND type = 'AttemptDispatched@1' AND node_id = ?3
-                                     ORDER BY sequence DESC LIMIT 1",
-                                    params![run_id, receipt_round_id, node],
-                                    |row| row.get(0),
-                                )
-                                .optional()?;
-                            let terminal: i64 = tx.query_row(
-                                "SELECT COUNT(*) FROM events
-                                 WHERE run_id = ?1 AND causation_id = ?2 AND attempt_id = ?3
-                                   AND type IN ('AttemptAdmitted@1', 'AttemptFailed@1',
-                                                'AttemptFenced@1', 'AttemptReleased@1')",
-                                params![run_id, receipt_round_id, attempt],
-                                |row| row.get(0),
-                            )?;
-                            if receipt.outcome != review_core::BrokerOperationOutcomeV1::Revoked
-                                && (latest_attempt.as_deref() != Some(attempt) || terminal > 0)
-                            {
-                                return Err(StoreError::AttemptNotCurrent);
-                            }
-                            if receipt_round_id != active_id.as_str() && terminal == 0 {
-                                return Err(StoreError::Conflict(
-                                    "late revoked Broker receipt has no fenced prior Attempt"
-                                        .into(),
-                                ));
-                            }
-                            let binding_payload: String = tx
-                                .query_row(
-                                    "SELECT payload FROM events
-                                     WHERE run_id = ?1 AND causation_id = ?2
-                                       AND type = 'ReviewerExecutionBound@1'
-                                       AND node_id = ?3 AND attempt_id = ?4
-                                     ORDER BY sequence DESC LIMIT 1",
-                                    params![run_id, receipt_round_id, node, attempt],
-                                    |row| row.get(0),
-                                )
-                                .optional()?
-                                .ok_or_else(|| {
-                                    StoreError::Conflict(
-                                        "Broker operation has no durable reviewer Execution Binding"
-                                            .into(),
-                                    )
-                                })?;
-                            let binding: review_core::ReviewerExecutionBindingV1 =
-                                serde_json::from_str(&binding_payload)?;
-                            if binding.credential_mode
-                                != review_core::BrokerCredentialModeV1::Brokered
-                                || binding.broker_handle.as_deref()
-                                    != Some(receipt.handle_id.as_str())
-                                || binding.lease_epoch != receipt.lease_epoch
-                            {
-                                return Err(StoreError::Conflict(
-                                    "Broker operation receipt contradicts its durable handle binding"
-                                        .into(),
-                                ));
-                            }
-                            let policy = binding
-                                .operations
-                                .iter()
-                                .find(|policy| policy.name == receipt.operation)
-                                .ok_or_else(|| {
-                                    StoreError::Conflict(
-                                        "Broker operation is absent from durable project authority"
-                                            .into(),
-                                    )
-                                })?;
-                            if policy.destination != receipt.destination
-                                || policy.method != receipt.method
-                            {
-                                return Err(StoreError::Conflict(
-                                    "Broker operation receipt exceeds or contradicts its pinned policy"
-                                        .into(),
-                                ));
-                            }
-                            let mut statement = tx.prepare(
-                                "SELECT payload FROM events
-                                 WHERE run_id = ?1 AND causation_id = ?2
-                                   AND type = 'BrokerOperationCompleted@1'
-                                   AND node_id = ?3 AND attempt_id = ?4
-                                 ORDER BY sequence",
-                            )?;
-                            let prior_receipts = statement
-                                .query_map(
-                                    params![run_id, receipt_round_id, node, attempt],
-                                    |row| row.get::<_, String>(0),
-                                )?
-                                .collect::<Result<Vec<_>, _>>()?;
-                            if prior_receipts.len().checked_add(1)
-                                != usize::try_from(receipt.ordinal).ok()
-                            {
-                                return Err(StoreError::Conflict(
-                                    "Broker operation receipt ordinal is not dense for its Attempt"
-                                        .into(),
-                                ));
-                            }
-                            let mut prior_calls = 0_u32;
-                            let mut prior_charged = 0_u64;
-                            let mut prior_total_charged = 0_u64;
-                            let mut prior_terminal_broker_state = false;
-                            for prior in prior_receipts {
-                                let prior: review_core::BrokerOperationReceiptV1 =
-                                    serde_json::from_str(&prior)?;
-                                prior_total_charged = prior_total_charged
-                                    .checked_add(prior.charged_usage)
-                                    .ok_or_else(|| {
-                                        StoreError::Conflict("Broker Attempt usage overflow".into())
-                                    })?;
-                                if prior.operation != receipt.operation {
-                                    if broker_receipt_terminates_handle(&prior) {
-                                        prior_terminal_broker_state = true;
-                                    }
-                                    continue;
-                                }
-                                if broker_receipt_consumes_call(&prior) {
-                                    prior_calls = prior_calls.checked_add(1).ok_or_else(|| {
-                                        StoreError::Conflict(
-                                            "Broker operation call count overflow".into(),
-                                        )
-                                    })?;
-                                    prior_charged = prior_charged
-                                        .checked_add(prior.charged_usage.min(prior.reserved_usage))
-                                        .ok_or_else(|| {
-                                            StoreError::Conflict(
-                                                "Broker operation usage overflow".into(),
-                                            )
-                                        })?;
-                                }
-                                if broker_receipt_terminates_handle(&prior) {
-                                    prior_terminal_broker_state = true;
-                                }
-                            }
-                            let projected_usage = prior_charged.checked_add(receipt.reserved_usage);
-                            let consumes_call = broker_receipt_consumes_call(&receipt);
-                            if prior_terminal_broker_state
-                                && !(receipt.outcome
-                                    == review_core::BrokerOperationOutcomeV1::Revoked
-                                    && receipt.failure_reason
-                                        == Some(
-                                            review_core::BrokerFailureReasonV1::AuthorityRevoked,
-                                        )
-                                    && !consumes_call
-                                    && receipt.response_digest.is_none()
-                                    && receipt.response_bytes == 0
-                                    && receipt.charged_usage == 0)
-                            {
-                                return Err(StoreError::Conflict(
-                                    "Broker operation receipt follows terminal handle revocation"
-                                        .into(),
-                                ));
-                            }
-                            let exact_policy_result = match (
-                                receipt.outcome,
-                                receipt.failure_reason,
-                                consumes_call,
-                            ) {
-                                (
-                                    review_core::BrokerOperationOutcomeV1::Refused,
-                                    Some(review_core::BrokerFailureReasonV1::RequestTooLarge),
-                                    false,
-                                ) => receipt.request_bytes > policy.max_request_bytes,
-                                (
-                                    review_core::BrokerOperationOutcomeV1::Refused,
-                                    Some(review_core::BrokerFailureReasonV1::QuotaExceeded),
-                                    false,
-                                ) => {
-                                    receipt.request_bytes <= policy.max_request_bytes
-                                        && (receipt.reserved_usage == 0
-                                            || prior_calls >= policy.max_calls
-                                            || projected_usage
-                                                .is_none_or(|usage| usage > policy.max_usage))
-                                }
-                                (_, _, true) => receipt.request_bytes <= policy.max_request_bytes
-                                    && receipt.reserved_usage > 0
-                                    && prior_calls < policy.max_calls
-                                    && projected_usage
-                                        .is_some_and(|usage| usage <= policy.max_usage)
-                                    && match receipt.failure_reason {
-                                        None => receipt.response_bytes <= policy.max_response_bytes,
-                                        Some(
-                                            review_core::BrokerFailureReasonV1::ResponseTooLarge,
-                                        ) => receipt.response_bytes > policy.max_response_bytes,
-                                        Some(
-                                            review_core::BrokerFailureReasonV1::ConnectorFailed
-                                            | review_core::BrokerFailureReasonV1::AuthorityRevoked,
-                                        ) => true,
-                                        Some(
-                                            review_core::BrokerFailureReasonV1::CredentialExposure,
-                                        ) => receipt.charged_usage <= receipt.reserved_usage,
-                                        Some(review_core::BrokerFailureReasonV1::UsageOverrun) => {
-                                            receipt.charged_usage > receipt.reserved_usage
-                                        }
-                                        _ => false,
-                                    },
-                                (
-                                    review_core::BrokerOperationOutcomeV1::Revoked,
-                                    Some(review_core::BrokerFailureReasonV1::AuthorityRevoked),
-                                    false,
-                                ) => true,
-                                _ => false,
-                            };
-                            if !exact_policy_result {
-                                return Err(StoreError::Conflict(
-                                    "Broker operation receipt exceeds or contradicts its pinned policy"
-                                        .into(),
-                                ));
-                            }
-                            if terminal > 0
-                                && receipt.outcome == review_core::BrokerOperationOutcomeV1::Revoked
-                            {
-                                prior_total_charged
-                                    .checked_add(receipt.charged_usage)
-                                    .ok_or_else(|| {
-                                        StoreError::Conflict("Broker Attempt usage overflow".into())
-                                    })?;
-                                // Late observed usage can exceed a conservative fence. The exact
-                                // receipt remains durable, and spend projections charge the
-                                // greater of terminal settlement and observed receipt usage.
-                            }
-                        }
-                        EventType::ProviderOperationTransitionV1 => {
-                            let transition: review_core::ProviderOperationTransitionPayloadV1 =
-                                serde_json::from_value(event.payload.clone())?;
-                            if transition.round != active_payload.round
-                                || transition.round_epoch != active_payload.epoch
-                                || event.node_id.as_deref() != Some(transition.node_id.as_str())
-                                || event.attempt_id != transition.attempt_id
-                                || event.correlation_id.as_deref()
-                                    != Some(transition.operation_id.as_str())
-                            {
-                                return Err(StoreError::Conflict(
-                                    "ProviderOperationTransition@1 is not bound to its active Round, node, attempt, and operation".into(),
-                                ));
-                            }
-                            let previous = match batch_provider_operations
-                                .get(&transition.operation_id)
-                            {
-                                Some(previous) => Some(previous.clone()),
-                                None => tx
-                                    .query_row(
-                                        "SELECT payload FROM events WHERE run_id = ?1 AND type = 'ProviderOperationTransition@1' AND correlation_id = ?2 ORDER BY sequence DESC LIMIT 1",
-                                        params![run_id, transition.operation_id],
-                                        |row| row.get::<_, String>(0),
-                                    )
-                                    .optional()?
-                                    .map(|payload| serde_json::from_str(&payload))
-                                    .transpose()?,
-                            };
-                            transition
-                                .validate_after(previous.as_ref())
-                                .map_err(StoreError::Conflict)?;
-                            batch_provider_operations
-                                .insert(transition.operation_id.clone(), transition);
                         }
                         EventType::GateExecutionBoundV1 => {
                             let node = event.node_id.as_deref().ok_or_else(|| {
@@ -3168,388 +2493,6 @@ fn validate_campaign_transition(
                                 )));
                             }
                         }
-                        EventType::AttemptDispatchedV1 => {
-                            let node = event.node_id.as_deref().ok_or_else(|| {
-                                StoreError::Conflict("AttemptDispatched@1 has no node ID".into())
-                            })?;
-                            let attempt = event.attempt_id.as_deref().ok_or_else(|| {
-                                StoreError::Conflict("AttemptDispatched@1 has no attempt ID".into())
-                            })?;
-                            let dispatch: review_core::event::AttemptDispatchedPayloadV1 =
-                                serde_json::from_value(event.payload.clone())?;
-                            if plan.is_some_and(|plan| plan.budgeted) && dispatch.reserved.is_none()
-                            {
-                                return Err(StoreError::Conflict(
-                                    "budgeted AttemptDispatched@1 has no reservation".into(),
-                                ));
-                            }
-                            let provider: Option<String> = tx
-                                .query_row(
-                                    "SELECT payload FROM events
-                                     WHERE run_id = ?1 AND causation_id = ?2 AND node_id = ?3
-                                       AND type = 'ProviderOperationTransition@1'
-                                     ORDER BY sequence DESC LIMIT 1",
-                                    params![run_id, active_id, node],
-                                    |row| row.get(0),
-                                )
-                                .optional()?;
-                            if let Some(provider) = provider {
-                                let provider: review_core::ProviderOperationTransitionPayloadV1 =
-                                    serde_json::from_str(&provider)?;
-                                if provider.state != review_core::ProviderOperationStateV1::Done {
-                                    return Err(StoreError::Conflict(format!(
-                                        "attempt for node '{node}' dispatched without completed Provider Admission"
-                                    )));
-                                }
-                            }
-                            let existing: i64 = tx.query_row(
-                                "SELECT COUNT(*) FROM events
-                                 WHERE run_id = ?1 AND causation_id = ?2 AND attempt_id = ?3",
-                                params![run_id, active_id, attempt],
-                                |row| row.get(0),
-                            )?;
-                            if existing > 0
-                                || batch_dispatches
-                                    .insert(attempt.to_string(), node.to_string())
-                                    .is_some()
-                            {
-                                return Err(StoreError::Conflict(format!(
-                                    "attempt '{attempt}' was already dispatched"
-                                )));
-                            }
-                            batch_latest_dispatch.insert(node.to_string(), attempt.to_string());
-                        }
-                        EventType::AttemptAdmittedV1
-                        | EventType::AttemptFailedV1
-                        | EventType::AttemptFencedV1
-                        | EventType::AttemptReleasedV1 => {
-                            let node = event.node_id.as_deref().ok_or_else(|| {
-                                StoreError::Conflict(format!("{event_type} has no node ID"))
-                            })?;
-                            let attempt = event.attempt_id.as_deref().ok_or_else(|| {
-                                StoreError::Conflict(format!("{event_type} has no attempt ID"))
-                            })?;
-                            let dispatched: Option<String> = tx
-                                .query_row(
-                                    "SELECT node_id FROM events
-                                     WHERE run_id = ?1 AND causation_id = ?2
-                                       AND attempt_id = ?3 AND type = 'AttemptDispatched@1'
-                                     LIMIT 1",
-                                    params![run_id, active_id, attempt],
-                                    |row| row.get(0),
-                                )
-                                .optional()?;
-                            let dispatched =
-                                dispatched.or_else(|| batch_dispatches.get(attempt).cloned());
-                            if dispatched.as_deref() != Some(node) {
-                                return Err(StoreError::Conflict(format!(
-                                    "{event_type} has no matching dispatch"
-                                )));
-                            }
-                            let admitted = (event_type == EventType::AttemptAdmittedV1)
-                                .then(|| {
-                                    serde_json::from_value::<
-                                        review_core::event::AttemptAdmittedPayloadV1,
-                                    >(event.payload.clone())
-                                })
-                                .transpose()?;
-                            let quarantined = admitted
-                                .as_ref()
-                                .is_some_and(|payload| payload.selection == "quarantined");
-                            let admitted_cost =
-                                admitted.as_ref().map(|payload| payload.cost_tokens);
-                            let existing_terminal: Option<String> = tx
-                                .query_row(
-                                    "SELECT type FROM events
-                                 WHERE run_id = ?1 AND causation_id = ?2 AND attempt_id = ?3
-                                   AND type IN ('AttemptAdmitted@1', 'AttemptFailed@1',
-                                                'AttemptFenced@1', 'AttemptReleased@1')
-                                 ORDER BY sequence DESC LIMIT 1",
-                                    params![run_id, active_id, attempt],
-                                    |row| row.get(0),
-                                )
-                                .optional()?;
-                            let prior_terminal = batch_terminals
-                                .get(attempt)
-                                .map(|event_type| event_type.as_str())
-                                .or(existing_terminal.as_deref());
-                            if prior_terminal.is_some()
-                                && !(quarantined
-                                    && prior_terminal == Some(EventType::AttemptFencedV1.as_str()))
-                            {
-                                return Err(StoreError::Conflict(format!(
-                                    "attempt '{attempt}' already has a terminal event"
-                                )));
-                            }
-                            if !quarantined {
-                                batch_terminals.insert(attempt.to_string(), event_type);
-                                batch_terminal_nodes.insert(attempt.to_string(), node.to_string());
-                            }
-                            if plan.is_some_and(|plan| plan.budgeted) {
-                                let settled = match event_type {
-                                    EventType::AttemptFailedV1 => {
-                                        serde_json::from_value::<
-                                            review_core::event::AttemptFailedPayloadV1,
-                                        >(
-                                            event.payload.clone()
-                                        )?
-                                        .charged
-                                    }
-                                    EventType::AttemptFencedV1 => {
-                                        serde_json::from_value::<
-                                            review_core::event::AttemptFencedPayloadV1,
-                                        >(
-                                            event.payload.clone()
-                                        )?
-                                        .charged
-                                    }
-                                    EventType::AttemptReleasedV1 => {
-                                        serde_json::from_value::<
-                                            review_core::event::AttemptReleasedPayloadV1,
-                                        >(
-                                            event.payload.clone()
-                                        )?
-                                        .released
-                                    }
-                                    EventType::AttemptAdmittedV1 => Some(0),
-                                    _ => unreachable!(),
-                                };
-                                if settled.is_none() {
-                                    return Err(StoreError::Conflict(format!(
-                                        "budgeted {event_type} has no settled accounting"
-                                    )));
-                                }
-                            }
-                            if event_type == EventType::AttemptFencedV1 {
-                                pending_fences.remove(attempt);
-                            }
-                            if let Some(admitted) = admitted {
-                                if admitted.selection == "selected" {
-                                    let latest: Option<String> = tx
-                                        .query_row(
-                                            "SELECT attempt_id FROM events
-                                             WHERE run_id = ?1 AND causation_id = ?2
-                                               AND node_id = ?3 AND type = 'AttemptDispatched@1'
-                                             ORDER BY sequence DESC LIMIT 1",
-                                            params![run_id, active_id, node],
-                                            |row| row.get(0),
-                                        )
-                                        .optional()?;
-                                    let latest =
-                                        batch_latest_dispatch.get(node).cloned().or(latest);
-                                    if latest.as_deref() != Some(attempt) {
-                                        return Err(StoreError::Conflict(
-                                            "only the latest reviewer attempt may be selected"
-                                                .into(),
-                                        ));
-                                    }
-                                    let result = admitted.result_artifact.ok_or_else(|| {
-                                        StoreError::Conflict(
-                                            "selected AttemptAdmitted@1 has no result artifact"
-                                                .into(),
-                                        )
-                                    })?;
-                                    let provenance =
-                                        admitted.provenance_artifact.ok_or_else(|| {
-                                            StoreError::Conflict(
-                                                "selected AttemptAdmitted@1 has no provenance artifact"
-                                                    .into(),
-                                            )
-                                        })?;
-                                    if !event.artifact_refs.contains(&result)
-                                        || !event.artifact_refs.contains(&provenance)
-                                    {
-                                        return Err(StoreError::Conflict(
-                                            "selected AttemptAdmitted@1 does not publish its result and provenance"
-                                                .into(),
-                                        ));
-                                    }
-                                    batch_selected
-                                        .insert(attempt.to_string(), (node.to_string(), result));
-                                }
-                            }
-                            let expected_execution =
-                                plan.and_then(|plan| plan.reviewer_execution_for(node));
-                            let execution_binding = if expected_execution.is_some() {
-                                tx.query_row(
-                                    "SELECT payload FROM events
-                                     WHERE run_id = ?1 AND causation_id = ?2
-                                       AND type = 'ReviewerExecutionBound@1'
-                                       AND node_id = ?3 AND attempt_id = ?4
-                                     ORDER BY sequence DESC LIMIT 1",
-                                    params![run_id, active_id, node, attempt],
-                                    |row| row.get::<_, String>(0),
-                                )
-                                .optional()?
-                                .map(|payload| serde_json::from_str(&payload))
-                                .transpose()?
-                            } else {
-                                None
-                            };
-                            if event_type == EventType::AttemptAdmittedV1
-                                && expected_execution.is_some()
-                                && execution_binding.is_none()
-                            {
-                                return Err(StoreError::Conflict(
-                                    "v4 reviewer admission has no durable Execution Binding".into(),
-                                ));
-                            }
-                            if let Some(binding) = execution_binding.as_ref().filter(
-                                |binding: &&review_core::ReviewerExecutionBindingV1| {
-                                    binding.credential_mode
-                                        == review_core::BrokerCredentialModeV1::Brokered
-                                },
-                            ) {
-                                let mut statement = tx.prepare(
-                                    "SELECT payload FROM events
-                                     WHERE run_id = ?1 AND causation_id = ?2
-                                       AND type = 'BrokerOperationCompleted@1'
-                                       AND node_id = ?3 AND attempt_id = ?4",
-                                )?;
-                                let mut broker_charged = 0_u64;
-                                for payload in statement
-                                    .query_map(params![run_id, active_id, node, attempt], |row| {
-                                        row.get::<_, String>(0)
-                                    })?
-                                {
-                                    let receipt: review_core::BrokerOperationReceiptV1 =
-                                        serde_json::from_str(&payload?)?;
-                                    broker_charged = broker_charged
-                                        .checked_add(receipt.charged_usage)
-                                        .ok_or_else(|| {
-                                            StoreError::Conflict(
-                                                "Broker Attempt usage overflow".into(),
-                                            )
-                                        })?;
-                                }
-                                let authority_bound =
-                                    review_core::broker_authority_usage(&binding.operations)
-                                        .map_err(StoreError::Conflict)?;
-                                let dispatch_payload: String = tx.query_row(
-                                    "SELECT payload FROM events
-                                     WHERE run_id = ?1 AND causation_id = ?2
-                                       AND type = 'AttemptDispatched@1'
-                                       AND node_id = ?3 AND attempt_id = ?4
-                                     ORDER BY sequence DESC LIMIT 1",
-                                    params![run_id, active_id, node, attempt],
-                                    |row| row.get(0),
-                                )?;
-                                let dispatch: review_core::event::AttemptDispatchedPayloadV1 =
-                                    serde_json::from_str(&dispatch_payload)?;
-                                let settled = match event_type {
-                                    EventType::AttemptAdmittedV1 => {
-                                        admitted_cost.expect("parsed admitted payload")
-                                    }
-                                    EventType::AttemptFailedV1 => serde_json::from_value::<
-                                        review_core::event::AttemptFailedPayloadV1,
-                                    >(
-                                        event.payload.clone()
-                                    )?
-                                    .charged
-                                    .unwrap_or(0),
-                                    EventType::AttemptFencedV1 => serde_json::from_value::<
-                                        review_core::event::AttemptFencedPayloadV1,
-                                    >(
-                                        event.payload.clone()
-                                    )?
-                                    .charged
-                                    .unwrap_or(0),
-                                    EventType::AttemptReleasedV1 => 0,
-                                    _ => unreachable!(),
-                                };
-                                let required = if event_type == EventType::AttemptFencedV1 {
-                                    broker_charged
-                                        .max(authority_bound)
-                                        .max(dispatch.reserved.unwrap_or(0))
-                                } else {
-                                    broker_charged
-                                };
-                                let reconciled = if event_type == EventType::AttemptAdmittedV1 {
-                                    settled == required
-                                } else {
-                                    settled >= required
-                                };
-                                if !reconciled {
-                                    return Err(StoreError::Conflict(
-                                        "Attempt settlement under-reports durable Broker usage or fence authority"
-                                            .into()
-                                    ));
-                                }
-                            }
-                        }
-                        EventType::AttemptInputV1 => {
-                            let node = event.node_id.as_deref().ok_or_else(|| {
-                                StoreError::Conflict("AttemptInput@1 has no node ID".into())
-                            })?;
-                            let attempt = event.attempt_id.as_deref().ok_or_else(|| {
-                                StoreError::Conflict("AttemptInput@1 has no attempt ID".into())
-                            })?;
-                            let input: review_core::event::AttemptInputPayloadV1 =
-                                serde_json::from_value(event.payload.clone())?;
-                            if !event.artifact_refs.contains(&input.refusal_history_id) {
-                                return Err(StoreError::Conflict(
-                                    "AttemptInput@1 does not reference its refusal history".into(),
-                                ));
-                            }
-                            validate_prepared_refusal_history(
-                                prepared,
-                                &input.refusal_history_id,
-                                "AttemptInput@1",
-                            )?;
-                            let existing: i64 = tx.query_row(
-                                "SELECT COUNT(*) FROM events
-                                 WHERE run_id = ?1 AND causation_id = ?2
-                                   AND type = 'AttemptInput@1' AND node_id = ?3 AND attempt_id = ?4",
-                                params![run_id, active_id, node, attempt],
-                                |row| row.get(0),
-                            )?;
-                            if existing > 0
-                                || batch_attempt_inputs
-                                    .insert(attempt.to_string(), node.to_string())
-                                    .is_some()
-                            {
-                                return Err(StoreError::Conflict(
-                                    "attempt has duplicate durable input events".into(),
-                                ));
-                            }
-                        }
-                        EventType::AttemptFeedbackV1 => {
-                            let node = event.node_id.as_deref().ok_or_else(|| {
-                                StoreError::Conflict("AttemptFeedback@1 has no node ID".into())
-                            })?;
-                            let attempt = event.attempt_id.as_deref().ok_or_else(|| {
-                                StoreError::Conflict("AttemptFeedback@1 has no attempt ID".into())
-                            })?;
-                            let feedback: review_core::event::AttemptFeedbackPayloadV1 =
-                                serde_json::from_value(event.payload.clone())?;
-                            if !event.artifact_refs.contains(&feedback.refusal_history_id) {
-                                return Err(StoreError::Conflict(
-                                    "AttemptFeedback@1 does not reference its refusal history"
-                                        .into(),
-                                ));
-                            }
-                            validate_prepared_refusal_history(
-                                prepared,
-                                &feedback.refusal_history_id,
-                                "AttemptFeedback@1",
-                            )?;
-                            let existing: i64 = tx.query_row(
-                                "SELECT COUNT(*) FROM events
-                                 WHERE run_id = ?1 AND causation_id = ?2
-                                   AND type = 'AttemptFeedback@1' AND attempt_id = ?3",
-                                params![run_id, active_id, attempt],
-                                |row| row.get(0),
-                            )?;
-                            if existing > 0
-                                || batch_attempt_feedback
-                                    .insert(attempt.to_string(), node.to_string())
-                                    .is_some()
-                            {
-                                return Err(StoreError::Conflict(
-                                    "attempt has duplicate durable feedback events".into(),
-                                ));
-                            }
-                        }
                         EventType::NodeOutputReceiptV1 => {
                             let node = event.node_id.as_deref().ok_or_else(|| {
                                 StoreError::Conflict("NodeOutputReceipt@1 has no node ID".into())
@@ -3651,15 +2594,15 @@ fn validate_campaign_transition(
                             }
                         }
                         EventType::ProposalPreparedV1 | EventType::ProposalRefusedV1 => {
-                            task::execution::review::validate_proposal(
-                                tx, cas, run_id, active_id, event,
-                            )?;
                             let node = event.node_id.as_deref().ok_or_else(|| {
                                 StoreError::Conflict(format!("{event_type} has no node ID"))
                             })?;
                             let attempt = event.attempt_id.as_deref().ok_or_else(|| {
                                 StoreError::Conflict(format!("{event_type} has no Attempt ID"))
                             })?;
+                            task::execution::review::validate_proposal(
+                                tx, cas, run_id, active_id, event,
+                            )?;
                             let selected_result = selected_attempt_result(
                                 tx,
                                 run_id,
@@ -4683,26 +3626,6 @@ fn validate_campaign_transition(
                 .into(),
         ));
     }
-    for (attempt, node) in batch_attempt_inputs {
-        if batch_dispatches.get(&attempt) != Some(&node) {
-            return Err(StoreError::Conflict(
-                "AttemptInput@1 must append atomically with its matching dispatch".into(),
-            ));
-        }
-    }
-    for (attempt, node) in batch_attempt_feedback {
-        if batch_terminal_nodes.get(&attempt) != Some(&node)
-            || !matches!(
-                batch_terminals.get(&attempt),
-                Some(EventType::AttemptFailedV1 | EventType::AttemptFencedV1)
-            )
-        {
-            return Err(StoreError::Conflict(
-                "AttemptFeedback@1 must append atomically with its matching failed or fenced attempt"
-                    .into(),
-            ));
-        }
-    }
     Ok(())
 }
 
@@ -4982,34 +3905,23 @@ fn selected_attempt_result(
     }
     let rows = tx
         .prepare(
-            "SELECT type, payload FROM events
+            "SELECT payload FROM events
              WHERE run_id = ?1 AND causation_id = ?2 AND node_id = ?3 AND attempt_id = ?4
-               AND type IN ('AttemptAdmitted@1', 'TaskReviewResultSelected@1') ORDER BY sequence",
+               AND type = 'TaskReviewResultSelected@1' ORDER BY sequence",
         )?
         .query_map(params![run_id, round_event_id, node, attempt], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            row.get::<_, String>(0)
         })?
         .collect::<Result<Vec<_>, _>>()?;
-    let [(kind, raw)] = rows.as_slice() else {
+    let [raw] = rows.as_slice() else {
         return Err(StoreError::Conflict(
             "Proposal has no unique selected Attempt admission".into(),
         ));
     };
-    if kind == "TaskReviewResultSelected@1" {
-        let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
-            serde_json::from_str(raw)?;
-        selected.validate().map_err(StoreError::Conflict)?;
-        return Ok(selected.result_artifact_id);
-    }
-    let admitted: review_core::event::AttemptAdmittedPayloadV1 = serde_json::from_str(raw)?;
-    if admitted.selection != "selected" {
-        return Err(StoreError::Conflict(
-            "Proposal belongs to an unselected Attempt".into(),
-        ));
-    }
-    admitted.result_artifact.ok_or_else(|| {
-        StoreError::Conflict("Proposal's selected Attempt has no result artifact".into())
-    })
+    let selected: review_core::task::review_compat::TaskReviewResultSelectedV1 =
+        serde_json::from_str(raw)?;
+    selected.validate().map_err(StoreError::Conflict)?;
+    Ok(selected.result_artifact_id)
 }
 
 fn proposal_candidate(
@@ -5250,16 +4162,7 @@ fn round_runtime_event(event_type: EventType) -> bool {
     event_type.is_run_report()
         || matches!(
             event_type,
-            EventType::BrokerOperationCompletedV1
-                | EventType::TaskReviewResultSelectedV1
-                | EventType::ReviewerExecutionBoundV1
-                | EventType::AttemptAdmittedV1
-                | EventType::AttemptDispatchedV1
-                | EventType::AttemptFeedbackV1
-                | EventType::AttemptInputV1
-                | EventType::AttemptFailedV1
-                | EventType::AttemptFencedV1
-                | EventType::AttemptReleasedV1
+            EventType::TaskReviewResultSelectedV1
                 | EventType::CheckCompletedV1
                 | EventType::DemandRecordedV1
                 | EventType::FindingReportedV1
@@ -5269,7 +4172,6 @@ fn round_runtime_event(event_type: EventType) -> bool {
                 | EventType::GenerationAdvancedV1
                 | EventType::NodeInvocationV1
                 | EventType::NodeOutputReceiptV1
-                | EventType::ProviderOperationTransitionV1
                 | EventType::ProposalPreparedV1
                 | EventType::ProposalRefusedV1
                 | EventType::ProposalAcceptedV1
@@ -5290,17 +4192,10 @@ fn event_uses_authority_plan(event_type: EventType) -> bool {
     event_type.is_run_report()
         || matches!(
             event_type,
-            EventType::BrokerOperationCompletedV1
-                | EventType::TaskReviewResultSelectedV1
-                | EventType::ReviewerExecutionBoundV1
-                | EventType::AttemptAdmittedV1
-                | EventType::AttemptFailedV1
-                | EventType::AttemptFencedV1
-                | EventType::AttemptReleasedV1
+            EventType::TaskReviewResultSelectedV1
                 | EventType::NodeInvocationV1
                 | EventType::GateExecutionBoundV1
                 | EventType::CacheSnapshotMaterializedV1
-                | EventType::AttemptDispatchedV1
                 | EventType::NodeOutputReceiptV1
                 | EventType::ProposalPreparedV1
                 | EventType::ProposalRefusedV1
@@ -5313,28 +4208,6 @@ fn event_uses_authority_plan(event_type: EventType) -> bool {
                 | EventType::IntegrationChecksCompletedV1
                 | EventType::IntegrationCommittedV1
         )
-}
-
-fn broker_receipt_consumes_call(receipt: &review_core::BrokerOperationReceiptV1) -> bool {
-    matches!(
-        receipt.outcome,
-        review_core::BrokerOperationOutcomeV1::Succeeded
-            | review_core::BrokerOperationOutcomeV1::Failed
-    ) || (receipt.outcome == review_core::BrokerOperationOutcomeV1::Revoked
-        && (receipt.response_digest.is_some() || receipt.charged_usage > 0))
-}
-
-fn broker_receipt_terminates_handle(receipt: &review_core::BrokerOperationReceiptV1) -> bool {
-    matches!(
-        receipt.failure_reason,
-        Some(
-            review_core::BrokerFailureReasonV1::AuthorityRevoked
-                | review_core::BrokerFailureReasonV1::RequestTooLarge
-                | review_core::BrokerFailureReasonV1::QuotaExceeded
-                | review_core::BrokerFailureReasonV1::CredentialExposure
-                | review_core::BrokerFailureReasonV1::UsageOverrun
-        )
-    )
 }
 
 fn latest_round(
@@ -6243,212 +5116,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(b.sequence, 0);
-    }
-
-    #[test]
-    fn round_spend_uses_admitted_cost_first_terminal_and_every_epoch() {
-        let (_dir, store, _cas) = fixture();
-        for (sequence, event_id, epoch) in [(0, "round-old", 1), (1, "round-new", 2)] {
-            store
-                .conn
-                .execute(
-                    "INSERT INTO events
-                     (run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
-                      causation_id, correlation_id, artifact_refs, payload)
-                     VALUES ('run', ?1, ?2, 'RoundStarted@1', '2026-08-28T00:00:00Z', NULL,
-                             NULL, NULL, NULL, '[]', ?3)",
-                    params![
-                        sequence,
-                        event_id,
-                        json!({
-                            "round": 1,
-                            "epoch": epoch,
-                            "campaign_manifest_id": "manifest",
-                            "subject_id": format!("subject-{epoch}"),
-                            "prior_finding_set_id": "findings",
-                            "prior_demand_set_id": "demands"
-                        })
-                        .to_string()
-                    ],
-                )
-                .unwrap();
-        }
-        let mut sequence = 2_i64;
-        let insert = |store: &EventStore,
-                      sequence: &mut i64,
-                      event_type: &str,
-                      attempt_id: Option<&str>,
-                      correlation_id: Option<&str>,
-                      payload: serde_json::Value| {
-            let causation_id = if matches!(attempt_id, Some("selected" | "fenced")) {
-                "round-old"
-            } else {
-                "round-new"
-            };
-            store
-                .conn
-                .execute(
-                    "INSERT INTO events
-                     (run_id, sequence, event_id, type, occurred_at, node_id, attempt_id,
-                      causation_id, correlation_id, artifact_refs, payload)
-                     VALUES ('run', ?1, ?2, ?3, '2026-08-28T00:00:00Z', 'reviewer', ?4,
-                             ?5, ?6, '[]', ?7)",
-                    params![
-                        *sequence,
-                        format!("event-{sequence}"),
-                        event_type,
-                        attempt_id,
-                        causation_id,
-                        correlation_id,
-                        payload.to_string()
-                    ],
-                )
-                .unwrap();
-            *sequence += 1;
-        };
-
-        insert(
-            &store,
-            &mut sequence,
-            "AttemptDispatched@1",
-            Some("selected"),
-            None,
-            json!({"reserved": 100, "prior_findings": null}),
-        );
-        insert(
-            &store,
-            &mut sequence,
-            "AttemptAdmitted@1",
-            Some("selected"),
-            None,
-            json!({"selection": "selected", "cost_tokens": 31}),
-        );
-        insert(
-            &store,
-            &mut sequence,
-            "AttemptDispatched@1",
-            Some("fenced"),
-            None,
-            json!({"reserved": 50, "prior_findings": null}),
-        );
-        insert(
-            &store,
-            &mut sequence,
-            "AttemptFenced@1",
-            Some("fenced"),
-            None,
-            json!({"reason": "deadline", "charged": 11}),
-        );
-        insert(
-            &store,
-            &mut sequence,
-            "AttemptAdmitted@1",
-            Some("fenced"),
-            None,
-            json!({"selection": "quarantined", "cost_tokens": 11}),
-        );
-        insert(
-            &store,
-            &mut sequence,
-            "AttemptDispatched@1",
-            Some("released"),
-            None,
-            json!({"reserved": 20, "prior_findings": null}),
-        );
-        insert(
-            &store,
-            &mut sequence,
-            "AttemptReleased@1",
-            Some("released"),
-            None,
-            json!({"error": "not run", "released": 20}),
-        );
-        insert(
-            &store,
-            &mut sequence,
-            "AttemptDispatched@1",
-            Some("running"),
-            None,
-            json!({"reserved": 7, "prior_findings": null}),
-        );
-        insert(
-            &store,
-            &mut sequence,
-            "AttemptDispatched@1",
-            Some("broker-running"),
-            None,
-            json!({"reserved": null, "prior_findings": null}),
-        );
-        insert(
-            &store,
-            &mut sequence,
-            "ReviewerExecutionBound@1",
-            Some("broker-running"),
-            None,
-            json!({
-                "node": "reviewer",
-                "attempt_id": "broker-running",
-                "lease_epoch": 1,
-                "credential_mode": "brokered",
-                "auto_apply": false,
-                "broker_handle": "bbbbbbbbbbbbbbbbbbbbbbbbbb",
-                "operations": [{
-                    "name": "model_inference",
-                    "destination": "provider.test",
-                    "method": "responses.create",
-                    "max_request_bytes": 32,
-                    "max_response_bytes": 32,
-                    "max_calls": 1,
-                    "max_usage": 100
-                }],
-                "admitted": true
-            }),
-        );
-        insert(
-            &store,
-            &mut sequence,
-            "BrokerOperationCompleted@1",
-            Some("broker-running"),
-            None,
-            json!({
-                "handle_id": "bbbbbbbbbbbbbbbbbbbbbbbbbb",
-                "node": "reviewer",
-                "attempt_id": "broker-running",
-                "lease_epoch": 1,
-                "operation": "model_inference",
-                "destination": "provider.test",
-                "method": "responses.create",
-                "ordinal": 1,
-                "outcome": "succeeded",
-                "request_digest": format!("sha256:{}", "c".repeat(64)),
-                "response_digest": format!("sha256:{}", "d".repeat(64)),
-                "request_bytes": 7,
-                "response_bytes": 8,
-                "reserved_usage": 10,
-                "charged_usage": 7
-            }),
-        );
-        insert(
-            &store,
-            &mut sequence,
-            "ProviderOperationTransition@1",
-            None,
-            Some("failed-provider"),
-            json!({"state": "failed", "charged_tokens": 2, "reserved_tokens": 5}),
-        );
-        insert(
-            &store,
-            &mut sequence,
-            "ProviderOperationTransition@1",
-            None,
-            Some("running-provider"),
-            json!({"state": "running", "charged_tokens": 0, "reserved_tokens": 5}),
-        );
-
-        assert_eq!(
-            store.round_committed_tokens("run", "round-new").unwrap(),
-            156
-        );
     }
 
     #[test]
