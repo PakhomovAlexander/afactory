@@ -5,7 +5,7 @@ fn presentation_retains_original_review_ports_and_selected_transport_fields_with
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
-    let reply = serde_json::json!({"verdict":"request-changes","summary":null,"findings":[{"severity":"major","file":".af/pipelines/review.toml","line":1,"title":"Missing required behavior","body":"The required behavior is absent","fix":"Implement the missing behavior","confidence":0.9}],"benchmark_demands":[],"disputes":[]});
+    let reply = serde_json::json!({"verdict":"request-changes","summary":null,"findings":[{"severity":"major","file":".af/pipelines/review.toml","line":1,"title":"Missing required behavior","body":"The required behavior is absent","fix":"Implement the missing behavior","confidence":0.9}],"benchmark_demands":[],"dispositions":[]});
     let (compiler, lease) = admit(
         &cas,
         &mut store,

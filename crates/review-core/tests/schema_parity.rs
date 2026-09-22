@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 183] = [
+const SCHEMAS: [&str; 182] = [
     "session-snapshot-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -203,7 +203,6 @@ const SCHEMAS: [&str; 183] = [
     "policy-time-v1.json",
     "review-slice-v1.json",
     "reviewer-package-v1.json",
-    "reviewer-result-v1.json",
     "reviewer-result-v2.json",
     "resolution-challenge-v1.json",
     "round-input-superseded-v1.json",
@@ -627,7 +626,6 @@ fn validator(name: &str) -> &'static jsonschema::Validator {
                     .into_iter()
                     .chain([
                         "finding-report-v1.json",
-                        "reviewer-result-v1.json",
                         "task-contracts-v1.json",
                         "task-token-usage-v1.json",
                         "task-token-usage-v2.json",
@@ -771,11 +769,11 @@ fn reviewer_result_schema_names_the_live_flat_report_shape() {
             "summary": null,
             "reports": [report],
             "benchmark_demands": [],
-            "disputes": [],
+            "dispositions": [],
         })
     };
     assert_valid(
-        "reviewer-result-v1.json",
+        "reviewer-result-v2.json",
         &result(json!({
             "severity": "major",
             "file": "src/a.rs",
@@ -787,7 +785,7 @@ fn reviewer_result_schema_names_the_live_flat_report_shape() {
         })),
     );
     assert_invalid(
-        "reviewer-result-v1.json",
+        "reviewer-result-v2.json",
         &result(json!({
             "title": "typed",
             "severity": "major",
@@ -799,27 +797,27 @@ fn reviewer_result_schema_names_the_live_flat_report_shape() {
         "typed FindingReport artifacts are produced only after ingestion",
     );
     assert_invalid(
-        "reviewer-result-v1.json",
+        "reviewer-result-v2.json",
         &result(json!({"title": "no shape discriminator"})),
         "a report must use the live flat shape",
     );
     assert_invalid(
-        "reviewer-result-v1.json",
+        "reviewer-result-v2.json",
         &result(json!({"file": "src/a.rs", "locations": []})),
         "a report cannot mix wire and durable shapes",
     );
 }
 
 #[test]
-fn reviewer_result_legacy_conformance_corpus_matches_schema() {
-    let path = workspace_root().join("schemas/reviewer-result-v1-conformance.json");
+fn reviewer_result_conformance_corpus_matches_schema() {
+    let path = workspace_root().join("schemas/reviewer-result-v2-conformance.json");
     let corpus: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     for case in corpus["valid"].as_array().unwrap() {
-        assert_valid("reviewer-result-v1.json", &case["payload"]);
+        assert_valid("reviewer-result-v2.json", &case["payload"]);
     }
     for case in corpus["invalid"].as_array().unwrap() {
         assert_invalid(
-            "reviewer-result-v1.json",
+            "reviewer-result-v2.json",
             &case["payload"],
             case["name"].as_str().unwrap(),
         );
@@ -1966,7 +1964,7 @@ fn finding_set_roundtrips_as_an_exact_reducer_projection() {
         subject_id: digest.clone(),
         round: 1,
         prior_finding_set_id: digest.clone(),
-        reducer_version: review_core::FINDING_REDUCER_VERSION.into(),
+        reducer_version: review_core::FINDING_REDUCER_VERSION_V2.into(),
         identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
         selected_report_ids: vec![digest.clone()],
         relation_ids: Vec::new(),
@@ -2252,52 +2250,49 @@ fn source_refresh_event_requires_exactly_one_plan_or_unresolved_reason() {
 fn task_review_metadata_retains_typed_canonical_results_and_closed_proposal_dispositions() {
     use review_core::task::review_compat::*;
     let id = format!("sha256:{}", "a".repeat(64));
-    for contract in [
-        review_core::ReviewerResultContract::V1,
-        review_core::ReviewerResultContract::V2,
+    let contract = review_core::ReviewerResultContract::V2;
+    for proposal in [
+        TaskReviewProposalV1::None {},
+        TaskReviewProposalV1::Prepared {
+            candidate_artifact_id: id.clone(),
+        },
+        TaskReviewProposalV1::Refused {
+            reason: review_core::ProposalRefusalReasonV1::PatchMismatch,
+        },
     ] {
-        for proposal in [
-            TaskReviewProposalV1::None {},
-            TaskReviewProposalV1::Prepared {
-                candidate_artifact_id: id.clone(),
-            },
-            TaskReviewProposalV1::Refused {
-                reason: review_core::ProposalRefusalReasonV1::PatchMismatch,
-            },
+        let metadata = TaskReviewResultMetadataV1 {
+            result_contract: contract,
+            result_artifact_id: id.clone(),
+            provenance_artifact_id: id.clone(),
+            proposal,
+        };
+        metadata.validate().unwrap();
+        let value = serde_json::to_value(&metadata).unwrap();
+        assert_valid("task-review-result-metadata-v1.json", &value);
+        for (field, bad) in [
+            ("result_contract", json!("opaque")),
+            ("result_contract", json!("review.kernel/ReviewerResult@1")),
+            ("result_artifact_id", json!("stale")),
+            ("provenance_artifact_id", json!(null)),
+            ("proposal", json!({"kind":"selected"})),
         ] {
-            let metadata = TaskReviewResultMetadataV1 {
-                result_contract: contract,
-                result_artifact_id: id.clone(),
-                provenance_artifact_id: id.clone(),
-                proposal,
-            };
-            metadata.validate().unwrap();
-            let value = serde_json::to_value(&metadata).unwrap();
-            assert_valid("task-review-result-metadata-v1.json", &value);
-            for (field, bad) in [
-                ("result_contract", json!("opaque")),
-                ("result_artifact_id", json!("stale")),
-                ("provenance_artifact_id", json!(null)),
-                ("proposal", json!({"kind":"selected"})),
-            ] {
-                let mut wrong = value.clone();
-                wrong[field] = bad;
-                assert!(!validator("task-review-result-metadata-v1.json").is_valid(&wrong));
-                assert!(
-                    serde_json::from_value::<TaskReviewResultMetadataV1>(wrong)
-                        .map_or(true, |v| v.validate().is_err())
-                );
+            let mut wrong = value.clone();
+            wrong[field] = bad;
+            assert!(!validator("task-review-result-metadata-v1.json").is_valid(&wrong));
+            assert!(
+                serde_json::from_value::<TaskReviewResultMetadataV1>(wrong)
+                    .map_or(true, |v| v.validate().is_err())
+            );
+        }
+        for extra in ["root", "proposal"] {
+            let mut wrong = value.clone();
+            if extra == "root" {
+                wrong["undeclared"] = json!(true);
+            } else {
+                wrong["proposal"]["undeclared"] = json!(true);
             }
-            for extra in ["root", "proposal"] {
-                let mut wrong = value.clone();
-                if extra == "root" {
-                    wrong["undeclared"] = json!(true);
-                } else {
-                    wrong["proposal"]["undeclared"] = json!(true);
-                }
-                assert!(!validator("task-review-result-metadata-v1.json").is_valid(&wrong));
-                assert!(serde_json::from_value::<TaskReviewResultMetadataV1>(wrong).is_err());
-            }
+            assert!(!validator("task-review-result-metadata-v1.json").is_valid(&wrong));
+            assert!(serde_json::from_value::<TaskReviewResultMetadataV1>(wrong).is_err());
         }
     }
 }

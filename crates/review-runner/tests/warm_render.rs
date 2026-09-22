@@ -1,5 +1,5 @@
-//! Warm layers render as labelled data with their own manifest entries, and a cold input stays
-//! byte-identical to what it rendered before warm layers existed.
+//! Warm layers render as labelled data with their own manifest entries, and a cold input carries
+//! nothing beyond its result contract.
 
 use review_runner::{NotesRequest, ReviewerInputs, compose_command_input, compose_model_prompt};
 
@@ -44,7 +44,10 @@ fn a_cold_input_renders_exactly_as_before() {
     );
     assert_eq!(ReviewerInputs::default().render().unwrap(), "");
     let command = serde_json::to_value(ReviewerInputs::default()).unwrap();
-    assert_eq!(command, serde_json::json!({}));
+    assert_eq!(
+        command,
+        serde_json::json!({"result_contract": "review.kernel/ReviewerResult@2"})
+    );
 }
 
 #[test]

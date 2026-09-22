@@ -18,27 +18,44 @@ kind = "whole-tree"
 [[nodes]]
 id = "generation"
 kind = "generation"
-outputs = [
-  { name = "assigned", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-  { name = "history", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
-]
+outputs = [{ name = "history", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 runner = { program = "/bin/true" }
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
+inputs = [{ name = "reports", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[edges]]
+from = { node = "generation", port = "history" }
+to = { node = "reviewer", port = "prior_findings" }
 [[edges]]
 from = { node = "reviewer", port = "result" }
 to = { node = "ledger", port = "reports" }
 "#;
 
-fn command_pipeline_returning(result: &str) -> String {
-    let command = format!("cat >/dev/null; printf '%s' '{result}'");
+/// A reviewer that answers `result` and dispositions the one prior Finding it is assigned in a
+/// later Round `not_reproduced`, which changes no Ledger state, reading its ID from its input.
+fn command_pipeline_returning(result: &serde_json::Value) -> String {
+    let mut answered = result.clone();
+    answered["dispositions"] = serde_json::json!([{
+        "finding_id": "FINDING", "position": "not_reproduced", "reason": "re-reported as its own claim",
+    }]);
+    let quoted = |text: &str| text.replace('\'', "'\\''");
+    let answered = answered.to_string();
+    let (head, tail) = answered.split_once("FINDING").unwrap();
+    let command = format!(
+        "finding=$(sed -n 's/.*\"finding_id\":\"\\(sha256:[0-9a-f]*\\)\".*/\\1/p'); \
+         if test -n \"$finding\"; then printf '%s%s%s' '{}' \"$finding\" '{}'; \
+         else printf '%s' '{}'; fi",
+        quoted(head),
+        quoted(tail),
+        quoted(&result.to_string()),
+    );
     PIPELINE.replace(
         "runner = { program = \"/bin/true\" }",
         &format!(
@@ -173,9 +190,9 @@ fn admit_heavy(
             "fix":"Implement the missing behavior", "confidence":0.9,
             "rule_id":"fixture/required-behavior@1", "occurrence_key":"required-behavior"}],
         "benchmark_demands":[{"claim":"latency is bounded", "why":"measure the acceptance limit",
-            "suggested_method":"run the latency benchmark"}], "disputes":[]
+            "suggested_method":"run the latency benchmark"}], "dispositions":[]
     });
-    let definition = command_pipeline_returning(&returned.to_string());
+    let definition = command_pipeline_returning(&returned);
     let definition = if declared_demands {
         definition.replace(
         "outputs = [{ name = \"findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"same_subject\" }]",

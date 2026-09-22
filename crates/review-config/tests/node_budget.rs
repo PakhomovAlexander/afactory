@@ -16,10 +16,15 @@ kind = "gate"
 outputs = ["decision"]
 
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+
+[[nodes]]
 id = "r-alpha"
 kind = "reviewer"
-inputs = ["gate"]
-outputs = ["result"]
+inputs = ["gate", {{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+outputs = [{{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
 gated_by = "gate"
 runner = {{ program = "/bin/true" }}
 {alpha_budget}
@@ -27,15 +32,15 @@ runner = {{ program = "/bin/true" }}
 [[nodes]]
 id = "r-beta"
 kind = "reviewer"
-inputs = ["gate"]
-outputs = ["result"]
+inputs = ["gate", {{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+outputs = [{{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
 gated_by = "gate"
 runner = {{ program = "/bin/true" }}
 
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["r-alpha", "r-beta"]
+inputs = [{{ name = "r-alpha", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}, {{ name = "r-beta", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
 outputs = ["reports"]
 
 [[nodes]]
@@ -47,6 +52,14 @@ outputs = ["findings"]
 [[edges]]
 from = {{ node = "gate", port = "decision" }}
 to = {{ node = "r-alpha", port = "gate" }}
+
+[[edges]]
+from = {{ node = "generation", port = "findings" }}
+to = {{ node = "r-alpha", port = "prior_findings" }}
+
+[[edges]]
+from = {{ node = "generation", port = "findings" }}
+to = {{ node = "r-beta", port = "prior_findings" }}
 
 [[edges]]
 from = {{ node = "gate", port = "decision" }}

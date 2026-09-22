@@ -63,16 +63,20 @@ id = "gate"
 kind = "gate"
 outputs = ["decision"]
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+[[nodes]]
 id = "reviewer"
 kind = "reviewer"
-inputs = ["gate"]
-outputs = ["result"]
+inputs = ["gate", { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
-runner = { program = "/bin/sh", args = [{ value = "-c" }, { value = '''cat >/dev/null; printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}' ''' }] }
+runner = { program = "/bin/sh", args = [{ value = "-c" }, { value = '''cat >/dev/null; printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}' ''' }] }
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["reviewer"]
+inputs = [{ name = "reviewer", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = ["reports"]
 [[nodes]]
 id = "ledger"
@@ -85,6 +89,9 @@ outputs = [
 [[edges]]
 from = { node = "gate", port = "decision" }
 to = { node = "reviewer", port = "gate" }
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "reviewer", port = "prior_findings" }
 [[edges]]
 from = { node = "reviewer", port = "result" }
 to = { node = "gather", port = "reviewer" }

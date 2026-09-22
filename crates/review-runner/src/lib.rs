@@ -12,12 +12,11 @@ pub mod task;
 
 pub use model::{
     CommandAdapter, ContextEntry, ContextManifest, Grant, InputTransport, ModelRunner,
-    NotesRequest, RESULT_CONTRACT, RESULT_CONTRACT_V2, RawCapture, RenderedInput, ReviewerAdapter,
+    NotesRequest, RESULT_CONTRACT_V2, RawCapture, RenderedInput, ReviewerAdapter,
     ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs, ReviewerNoteHint,
     ReviewerNotesDeclaration, ReviewerProposalDeclaration, RunnerError, TokenUsage, append_focus,
     compose_command_input, compose_model_prompt, estimate_tokens, extract_result,
-    parse_notes_declaration, parse_proposal_declaration, parse_stage_output_for, result_contract,
-    unfence,
+    parse_notes_declaration, parse_proposal_declaration, parse_reviewer_result, unfence,
 };
 pub use review_broker::ExactBrokerClient;
 pub use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};

@@ -93,8 +93,8 @@ fn prior_findings_reach_the_prompt_as_labelled_data() {
     let inputs = review_runner::ReviewerInputs {
         prior_findings: Some(serde_json::json!({
             "round": 1,
-            "prior_findings": [{
-                "key": "ab12cd34ef56",
+            "findings": [{
+                "finding_id": "ab12cd34ef56",
                 "severity": "major",
                 "status": "fixed",
                 "file": "src/main.rs",
@@ -112,7 +112,10 @@ fn prior_findings_reach_the_prompt_as_labelled_data() {
         "{sent}"
     );
     assert!(sent.contains("ab12cd34ef56"), "{sent}");
-    assert!(sent.contains("position set to `refute`"), "{sent}");
+    assert!(
+        sent.contains("Return exactly one `dispositions` entry for each `finding_id`"),
+        "{sent}"
+    );
 }
 
 /// `render_input` is the prompt composition the Task host sends: the package instructions with

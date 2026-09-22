@@ -676,7 +676,6 @@ fn validate_generation_output_contracts(
         let mut prior_findings = 0_usize;
         for port in node.outputs.iter().map(PortContractSpec::build) {
             match port.artifact_type.as_str() {
-                review_core::contract::PRIOR_FINDINGS_V1 => prior_findings += 1,
                 review_core::contract::FINDING_SET_V1 => {
                     if port.cardinality != review_core::PortCardinality::One
                         || !port.optional
@@ -702,10 +701,9 @@ fn validate_generation_output_contracts(
                 }
                 artifact_type => {
                     return Err(ConfigError::Binding(format!(
-                        "generation node `{}` output `{}` has unsupported type `{artifact_type}`; pipeline version 2 requires Generation outputs to use a typed port declaration for `{}`, `{}`, or `{}`",
+                        "generation node `{}` output `{}` has unsupported type `{artifact_type}`; Generation outputs require a typed port declaration for `{}` or `{}`",
                         node.id,
                         port.name,
-                        review_core::contract::PRIOR_FINDINGS_V1,
                         review_core::contract::FINDING_SET_V1,
                         review_core::contract::CHANGE_SET_V1,
                     )));
@@ -714,9 +712,8 @@ fn validate_generation_output_contracts(
         }
         if prior_findings == 0 {
             return Err(ConfigError::Binding(format!(
-                "generation node `{}` must emit an explicit `{}` compatibility view or exact `{}` output",
+                "generation node `{}` must emit an exact `{}` output",
                 node.id,
-                review_core::contract::PRIOR_FINDINGS_V1,
                 review_core::contract::FINDING_SET_V1,
             )));
         }
@@ -730,6 +727,10 @@ fn validate_generation_output_contracts(
     Ok(())
 }
 
+/// Every reviewer answers `ReviewerResult@2`, which dispositions exactly the prior Findings it
+/// was assigned, so every reviewer and every Scatter (whose slices are reviewers) must receive
+/// generation's exact `FindingSet@1`. Refusing the wiring here fails the pipeline at plan time
+/// rather than mid-Round, after its Gate has already run.
 fn validate_disposition_wiring(nodes: &[NodeSpec], edges: &[EdgeSpec]) -> Result<(), ConfigError> {
     let finding_set_outputs: Vec<_> = nodes
         .iter()
@@ -744,15 +745,34 @@ fn validate_disposition_wiring(nodes: &[NodeSpec], edges: &[EdgeSpec]) -> Result
         .collect();
     for reviewer in nodes
         .iter()
-        .filter(|node| node.kind == NodeKindSpec::Reviewer)
+        .filter(|node| matches!(node.kind, NodeKindSpec::Reviewer | NodeKindSpec::Scatter))
     {
-        let uses_v2 = reviewer
-            .outputs
-            .iter()
-            .map(PortContractSpec::build)
-            .any(|port| port.artifact_type == review_core::contract::REVIEWER_RESULT_V2);
-        if !uses_v2 {
-            continue;
+        let role = if reviewer.kind == NodeKindSpec::Scatter {
+            "Scatter"
+        } else {
+            "reviewer"
+        };
+        if reviewer.kind == NodeKindSpec::Reviewer {
+            let outputs: Vec<_> = reviewer
+                .outputs
+                .iter()
+                .map(PortContractSpec::build)
+                .collect();
+            let [output] = outputs.as_slice() else {
+                return Err(ConfigError::Binding(format!(
+                    "reviewer `{}` must declare exactly one result output",
+                    reviewer.id
+                )));
+            };
+            if output.artifact_type != review_core::contract::REVIEWER_RESULT_V2 {
+                return Err(ConfigError::Binding(format!(
+                    "reviewer `{}` output `{}` has unsupported result type `{}`; reviewers answer a typed `{}` output",
+                    reviewer.id,
+                    output.name,
+                    output.artifact_type,
+                    review_core::contract::REVIEWER_RESULT_V2,
+                )));
+            }
         }
         let inputs: Vec<_> = reviewer
             .inputs
@@ -762,7 +782,7 @@ fn validate_disposition_wiring(nodes: &[NodeSpec], edges: &[EdgeSpec]) -> Result
             .collect();
         let [input] = inputs.as_slice() else {
             return Err(ConfigError::Binding(format!(
-                "ReviewerResult@2 reviewer `{}` must declare exactly one FindingSet@1 input",
+                "{role} `{}` must declare exactly one FindingSet@1 input",
                 reviewer.id
             )));
         };
@@ -771,7 +791,7 @@ fn validate_disposition_wiring(nodes: &[NodeSpec], edges: &[EdgeSpec]) -> Result
             || input.snapshot_affinity != review_core::SnapshotAffinity::Any
         {
             return Err(ConfigError::Binding(format!(
-                "ReviewerResult@2 reviewer `{}` FindingSet@1 input must be optional, singular, and snapshot-affinity `any`",
+                "{role} `{}` FindingSet@1 input must be optional, singular, and snapshot-affinity `any`",
                 reviewer.id
             )));
         }
@@ -784,7 +804,7 @@ fn validate_disposition_wiring(nodes: &[NodeSpec], edges: &[EdgeSpec]) -> Result
             })
         }) {
             return Err(ConfigError::Binding(format!(
-                "ReviewerResult@2 reviewer `{}` must receive generation's exact FindingSet@1",
+                "{role} `{}` must receive generation's exact FindingSet@1",
                 reviewer.id
             )));
         }
@@ -990,7 +1010,7 @@ fn validate_dynamic_wiring(
 }
 
 /// A port declaration. The string arm is shorthand for an explicit opaque/one/required/any
-/// contract. It is valid only for non-Generation nodes; built-in Generation outputs require the
+/// contract. It is never valid for a Generation output or a reviewer's result, which require the
 /// typed arm because execution dispatches by contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]

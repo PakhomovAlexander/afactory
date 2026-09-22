@@ -44,7 +44,7 @@ kind = "whole-tree"
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
-outputs = [{ name = "out", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+outputs = [{ name = "out", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 runner = { program = "/bin/true" }
 "#,
         )
@@ -143,9 +143,9 @@ runner = { program = "/bin/true" }
     }
 }
 
-/// Admit flat `ReviewerResult@1` answers, given as `(source, attempt_id, output)`, through the
+/// Admit flat `ReviewerResult@2` answers, given as `(source, attempt_id, output)`, through the
 /// canonical reduction a Campaign runs at its barrier. Each answer is first published as its
-/// Attempt's `ReviewerResult@1` envelope, so every Report carries that Attempt's provenance.
+/// Attempt's `ReviewerResult@2` envelope, so every Report carries that Attempt's provenance.
 pub fn add_flat_results(
     ingest: &mut Ingest<'_>,
     cas: &Cas,
@@ -157,7 +157,7 @@ pub fn add_flat_results(
         .iter()
         .map(|(source, attempt_id, output)| {
             cas.put_artifact(
-                review_core::contract::REVIEWER_RESULT_V1,
+                review_core::contract::REVIEWER_RESULT_V2,
                 Producer::Attempt {
                     run_id: run_id.into(),
                     node_id: (*source).into(),
@@ -183,7 +183,6 @@ pub fn add_flat_results(
             input_artifacts: &[],
             subject_snapshot_id: &round.head,
             subject_id: &round.subject,
-            result_contract: review_core::ReviewerResultContract::V1,
         })
         .collect();
     ingest.add_canonical_stage_outputs(&stages)

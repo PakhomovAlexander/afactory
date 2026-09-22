@@ -68,10 +68,6 @@ pub(super) struct ReviewDomainState<'a> {
     pub(super) dynamic_reviewer_bases: Mutex<BTreeMap<String, String>>,
     /// Gate decisions by gate node. Keyed, so two gates in one pipeline never share a verdict.
     pub(super) gates: Mutex<BTreeMap<String, GateDecision>>,
-    /// The campaign's prior findings, as a CAS artifact every reviewer attempt receives —
-    /// labelled data resolved by the kernel, which is what makes round N+1 a re-examination
-    /// of round N's claims instead of a fresh look that happens to share a repository.
-    pub(super) prior_findings: Option<String>,
     /// Reviewer result and gate events held until their node receipt can publish them as one
     /// batch. Each `(node, seq)` preserves emission order inside that node. Dispatch and terminal
     /// failure events are deliberately not buffered: dispatch must be durable before external
@@ -270,7 +266,6 @@ impl<'a> ReviewDomainState<'a> {
         }
         Ok(Self {
             report_published: Mutex::new(false),
-            prior_findings: Some(authority.prior_finding_set_id.clone()),
             cas,
             store,
             run_id,
@@ -308,12 +303,12 @@ impl<'a> ReviewDomainState<'a> {
             session_hosts: Mutex::new(BTreeMap::new()),
         })
     }
-    /// Emit the run's generation state — the campaign's prior findings — as the artifact a
-    /// reviewer receives on its `prior_findings` input edge. In the first round there is no
-    /// prior state, so an empty finding set is emitted; the edge is satisfied either way, and
-    /// nothing about delivery depends on ambient kernel state.
+    /// Emit the run's generation state — the Campaign's exact prior `FindingSet@1`, and a diff
+    /// Subject's Change Set — as the artifacts reviewers receive on their typed input edges. In
+    /// the first round there is no prior reduction, so the optional Finding Set port carries
+    /// nothing; nothing about delivery depends on ambient kernel state.
     pub(super) fn run_generation(&self, node: &Node) -> Result<ArtifactMap, String> {
-        generation_outputs(&self.authority, self.prior_findings.as_deref(), node)
+        generation_outputs(&self.authority, node)
     }
 
     /// `gate_attempt` is the common Task Attempt the Gate runs under, when the Task runtime
@@ -895,11 +890,11 @@ impl<'a> ReviewDomainState<'a> {
     /// record still says the Round has no cold confirmation.
     fn cold_closeout_results(
         &self,
-        results: &[(String, String, ReviewerResultContract, LegacyStageOutput)],
+        results: &[(String, String, LegacyStageOutput)],
     ) -> Result<Vec<FoldedColdCloseout>, String> {
         let delivered: BTreeSet<(&str, &str)> = results
             .iter()
-            .map(|(node, id, _, _)| (node.as_str(), id.as_str()))
+            .map(|(node, id, _)| (node.as_str(), id.as_str()))
             .collect();
         if delivered.is_empty() {
             return Ok(Vec::new());
@@ -959,14 +954,13 @@ impl<'a> ReviewDomainState<'a> {
     ) -> Result<ReviewLedgerOutputs, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
-        let mut results: Vec<(String, String, ReviewerResultContract, LegacyStageOutput)> =
-            Vec::new();
+        let mut results: Vec<(String, String, LegacyStageOutput)> = Vec::new();
         let mut dynamic_sets: Vec<(String, String, SliceSetV1, ShardSetV1)> = Vec::new();
         let mut direct_sources_used = BTreeSet::new();
         let mut load = |node: &str, id: &str, value: serde_json::Value| -> Result<(), String> {
-            let (contract, output) =
+            let output =
                 reviewer_stage_output(value).map_err(|error| format!("artifact {id}: {error}"))?;
-            results.push((node.to_string(), id.to_string(), contract, output));
+            results.push((node.to_string(), id.to_string(), output));
             Ok(())
         };
         for (input_port, artifacts) in inputs {
@@ -1104,7 +1098,7 @@ impl<'a> ReviewDomainState<'a> {
                 .lock()
                 .expect("reviewer selections");
             let mut result_indices: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-            for (index, (_, result_id, _, _)) in results.iter().enumerate() {
+            for (index, (_, result_id, _)) in results.iter().enumerate() {
                 result_indices
                     .entry(result_id.clone())
                     .or_default()
@@ -1162,18 +1156,13 @@ impl<'a> ReviewDomainState<'a> {
         // would otherwise be mistaken for it.
         let mut closeout_attempts: BTreeMap<String, (String, String)> = BTreeMap::new();
         for closeout in self.cold_closeout_results(&results)? {
-            let (contract, output) = reviewer_stage_output(closeout.result)
+            let output = reviewer_stage_output(closeout.result)
                 .map_err(|error| format!("artifact {}: {error}", closeout.result_artifact_id))?;
             closeout_attempts.insert(
                 closeout.source.clone(),
                 (closeout.cold_attempt_id, closeout.node),
             );
-            results.push((
-                closeout.source,
-                closeout.result_artifact_id,
-                contract,
-                output,
-            ));
+            results.push((closeout.source, closeout.result_artifact_id, output));
         }
         // Canonical gather order: reviewer node id — not completion order, input-port label, or
         // artifact digest order.
@@ -1190,7 +1179,7 @@ impl<'a> ReviewDomainState<'a> {
                 .expect("reviewer inputs");
             results
                 .iter()
-                .map(|(node, result_id, _, _)| {
+                .map(|(node, result_id, _)| {
                     // A Cold Closeout result belongs to its own Attempt under its own
                     // slot, run on the warm node's exact invocation inputs. It is not the
                     // node's selection, so it is bound from its own durable record instead.
@@ -1251,7 +1240,7 @@ impl<'a> ReviewDomainState<'a> {
                 .iter()
                 .zip(&attempt_bindings)
                 .map(
-                    |((node, result_id, result_contract, stage), (attempt_id, input_artifacts))| {
+                    |((node, result_id, stage), (attempt_id, input_artifacts))| {
                         // A confirmation answers for the reviewer it confirms, so its
                         // Demand requirement is that reviewer's, not its slot's.
                         let subject = closeout_attempts
@@ -1271,7 +1260,6 @@ impl<'a> ReviewDomainState<'a> {
                             input_artifacts,
                             subject_snapshot_id: &self.authority.head_snapshot_id,
                             subject_id: &self.authority.subject_id,
-                            result_contract: *result_contract,
                         }
                     },
                 )
@@ -1306,7 +1294,7 @@ impl<'a> ReviewDomainState<'a> {
         let semantic_resolution_ids = resolution_ids.clone();
         let semantic_demand_lifecycle_ids = demand_artifact_ids.clone();
         *self.ledger_cache.lock().expect("ledger cache") = Some(projection);
-        let reducer_version = reduction.reducer_version;
+        let reducer_version = review_core::FINDING_REDUCER_VERSION_V2;
         let payload = review_core::FindingSetV1 {
             subject_id: self.authority.subject_id.clone(),
             round,
@@ -1411,7 +1399,7 @@ impl<'a> ReviewDomainState<'a> {
         if !dynamic_sets.is_empty() {
             let delivered_results = results
                 .iter()
-                .map(|(source, artifact, _, _)| (source.clone(), artifact.clone()))
+                .map(|(source, artifact, _)| (source.clone(), artifact.clone()))
                 .collect::<BTreeSet<_>>();
             let round_events = self
                 .store
@@ -1457,8 +1445,8 @@ impl<'a> ReviewDomainState<'a> {
                         })?;
                         let ids = results
                             .iter()
-                            .filter(|(source, _, _, _)| source == closeout)
-                            .map(|(_, artifact, _, _)| artifact.clone())
+                            .filter(|(source, _, _)| source == closeout)
+                            .map(|(_, artifact, _)| artifact.clone())
                             .collect::<Vec<_>>();
                         let [artifact] = ids.as_slice() else {
                             return Err(format!(
@@ -1960,35 +1948,29 @@ impl<'a> ReviewDomainState<'a> {
 /// One raw Generation algorithm for both legacy execution and the typed Task codec adapter.
 pub(crate) fn generation_outputs(
     authority: &RoundAuthority,
-    prior_findings: Option<&str>,
     node: &Node,
 ) -> Result<ArtifactMap, String> {
     let mut outputs = ArtifactMap::new();
     for port in &node.outputs {
-        let artifacts =
-            if is_generation_prior_findings_output(port) {
-                vec![prior_findings.map(str::to_owned).ok_or(
-                    "campaign execution has no exact prior Finding Set from RoundStarted@1",
-                )?]
-            } else if is_generation_finding_set_output(port) {
-                if authority.prior_reduction_finding_set_id == authority.finding_genesis_id {
-                    Vec::new()
-                } else {
-                    vec![authority.prior_reduction_finding_set_id.clone()]
-                }
-            } else if is_change_set_port(port) {
-                vec![
-                    authority
-                        .change_set_id
-                        .clone()
-                        .ok_or("generation declares ChangeSet@1 for a whole-tree Subject")?,
-                ]
+        let artifacts = if is_generation_finding_set_output(port) {
+            if authority.prior_reduction_finding_set_id == authority.finding_genesis_id {
+                Vec::new()
             } else {
-                return Err(format!(
-                    "generation output `{}` has unsupported artifact type `{}`",
-                    port.name, port.artifact_type
-                ));
-            };
+                vec![authority.prior_reduction_finding_set_id.clone()]
+            }
+        } else if is_change_set_port(port) {
+            vec![
+                authority
+                    .change_set_id
+                    .clone()
+                    .ok_or("generation declares ChangeSet@1 for a whole-tree Subject")?,
+            ]
+        } else {
+            return Err(format!(
+                "generation output `{}` has unsupported artifact type `{}`",
+                port.name, port.artifact_type
+            ));
+        };
         outputs.insert(port.name.clone(), artifacts);
     }
     Ok(outputs)

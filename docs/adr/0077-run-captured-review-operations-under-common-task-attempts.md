@@ -1,7 +1,9 @@
 # ADR-0077: Run captured Review operations under common Task Attempts
 
 Date: 2026-09-12
-Status: Accepted
+Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
+meaning of historical name-only Reviewer outputs as `ReviewerResult@1`. A reviewer declares a typed
+`ReviewerResult@2` output, and an untyped one is refused at plan time.
 
 ## Context
 

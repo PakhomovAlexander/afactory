@@ -30,17 +30,22 @@ kind = "gate"
 outputs = ["decision"]
 
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+
+[[nodes]]
 id = "architecture"
 kind = "reviewer"
-inputs = ["gate"]
-outputs = ["result"]
+inputs = ["gate", { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 runner = { program = "/bin/sh", args = [{ value = "-c" }, { value = "echo hi" }] }
 
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
+inputs = [{ name = "reports", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = ["findings"]
 
 [[edges]]
@@ -48,9 +53,19 @@ from = { node = "gate", port = "decision" }
 to = { node = "architecture", port = "gate" }
 
 [[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "architecture", port = "prior_findings" }
+
+[[edges]]
 from = { node = "architecture", port = "result" }
 to = { node = "ledger", port = "reports" }
 "#;
+
+/// `MINIMAL`'s Generation outputs, for tests that extend them.
+const GENERATION_OUTPUTS: &str = r#"outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]"#;
+
+/// `MINIMAL`'s reviewer inputs, for tests that extend them.
+const REVIEWER_INPUTS: &str = r#"inputs = ["gate", { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]"#;
 
 const DYNAMIC_V5: &str = r#"
 version = 5
@@ -141,7 +156,10 @@ to = { node = "ledger", port = "closeout" }
 fn a_definition_loads_into_a_plan_with_bindings() {
     let loaded = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
 
-    assert_eq!(loaded.plan_order(), ["gate", "architecture", "ledger"]);
+    assert_eq!(
+        loaded.plan_order(),
+        ["gate", "generation", "architecture", "ledger"]
+    );
     assert_eq!(loaded.checks().len(), 1);
     assert!(
         loaded.checks()[0].required,
@@ -735,10 +753,8 @@ fn graph_validation_applies_to_definitions_too() {
         Err(ConfigError::Plan(PlanError::UnknownPort { .. }))
     ));
 
-    let unwired = MINIMAL.replace(
-        r#"inputs = ["gate"]"#,
-        r#"inputs = ["gate", "prior_findings"]"#,
-    );
+    let unwired = MINIMAL.replace(r#"inputs = ["gate", "#, r#"inputs = ["gate", "unwired", "#);
+    assert_ne!(unwired, MINIMAL);
     assert!(matches!(
         Definition::from_toml(&unwired).unwrap().load(),
         Err(ConfigError::Plan(PlanError::UnwiredInput(_)))
@@ -975,24 +991,18 @@ fn an_inline_reviewer_cannot_claim_diff_support() {
     let diff = MINIMAL
         .replace("kind = \"whole-tree\"", "kind = \"diff\"")
         .replace(
-            "[[nodes]]\nid = \"architecture\"",
-            r#"[[nodes]]
-id = "generation"
-kind = "generation"
-outputs = [
-  { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-]
-
-[[nodes]]
-id = "architecture""#,
+            GENERATION_OUTPUTS,
+            &GENERATION_OUTPUTS.replace(
+                "}]",
+                r#"}, { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#,
+            ),
         )
         .replace(
-            "inputs = [\"gate\"]",
-            r#"inputs = [
-  "gate",
-  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-]"#,
+            REVIEWER_INPUTS,
+            &REVIEWER_INPUTS.replace(
+                "}]",
+                r#"}, { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#,
+            ),
         )
         .replace(
             "[[edges]]\nfrom = { node = \"gate\", port = \"decision\" }",
@@ -1185,24 +1195,18 @@ fn a_package_that_rejects_the_pipeline_subject_is_refused() {
     let text = MINIMAL
         .replace("kind = \"whole-tree\"", "kind = \"diff\"")
         .replace(
-            "[[nodes]]\nid = \"architecture\"",
-            r#"[[nodes]]
-id = "generation"
-kind = "generation"
-outputs = [
-  { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-]
-
-[[nodes]]
-id = "architecture""#,
+            GENERATION_OUTPUTS,
+            &GENERATION_OUTPUTS.replace(
+                "}]",
+                r#"}, { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#,
+            ),
         )
         .replace(
-            "inputs = [\"gate\"]",
-            r#"inputs = [
-  "gate",
-  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-]"#,
+            REVIEWER_INPUTS,
+            &REVIEWER_INPUTS.replace(
+                "}]",
+                r#"}, { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#,
+            ),
         )
         .replace(
             "[[edges]]\nfrom = { node = \"gate\", port = \"decision\" }",
@@ -1272,71 +1276,69 @@ fn a_tampered_package_refuses_the_whole_pipeline() {
 fn a_generation_node_parses_and_wires_prior_findings() {
     // Generation and reviewer ports declare the built-in contract explicitly. The labels remain
     // project-owned; the artifact type selects the executor behavior.
-    let text = MINIMAL
-        .replace(
-            r#"[[nodes]]
-id = "gate""#,
-            r#"[[nodes]]
-id = "generation"
-kind = "generation"
-outputs = [{ name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
-
-[[nodes]]
-id = "gate""#,
-        )
-        .replace(
-            r#"inputs = ["gate"]
-outputs = ["result"]"#,
-            r#"inputs = ["gate", { name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
-outputs = ["result"]"#,
-        )
-        .replace(
-            r#"[[edges]]
-from = { node = "gate", port = "decision" }
-to = { node = "architecture", port = "gate" }"#,
-            r#"[[edges]]
-from = { node = "generation", port = "findings" }
-to = { node = "architecture", port = "prior_findings" }
-
-[[edges]]
-from = { node = "gate", port = "decision" }
-to = { node = "architecture", port = "gate" }"#,
-        );
-
-    let loaded = Definition::from_toml(&text).unwrap().load().unwrap();
+    let loaded = Definition::from_toml(MINIMAL).unwrap().load().unwrap();
+    let order = loaded.plan_order();
     assert!(
-        loaded.plan_order().contains(&"generation".to_string()),
-        "generation node is planned: {:?}",
-        loaded.plan_order()
+        order.iter().position(|n| n == "generation").unwrap()
+            < order.iter().position(|n| n == "architecture").unwrap(),
+        "generation runs before the reviewer that consumes it: {order:?}"
     );
     assert!(
         loaded
-            .plan_order()
+            .planned()
+            .dependencies_of("architecture")
             .iter()
-            .position(|n| n == "generation")
+            .any(|edge| edge.from.node == "generation" && edge.to.name == "prior_findings")
+    );
+}
+
+/// Every reviewer answers ReviewerResult@2 against the exact FindingSet@1 it was assigned, so
+/// a reviewer that is not wired to Generation's Finding Set is refused before anything runs.
+#[test]
+fn every_reviewer_answers_reviewer_result_v2_against_generations_finding_set() {
+    let refused = |text: &str, expected: &str| {
+        let error = Definition::from_toml(text)
             .unwrap()
-            < loaded
-                .plan_order()
-                .iter()
-                .position(|n| n == "architecture")
-                .unwrap(),
-        "generation runs before the reviewer that consumes it"
+            .load()
+            .map(|_| ())
+            .unwrap_err();
+        assert!(error.to_string().contains(expected), "{error}");
+    };
+    let unwired = MINIMAL.replace(
+        "[[edges]]\nfrom = { node = \"generation\", port = \"findings\" }\nto = { node = \"architecture\", port = \"prior_findings\" }\n",
+        "",
+    );
+    assert_ne!(unwired, MINIMAL);
+    refused(&unwired, "must receive generation's exact FindingSet@1");
+    let undeclared = unwired.replace(REVIEWER_INPUTS, r#"inputs = ["gate"]"#);
+    refused(&undeclared, "must declare exactly one FindingSet@1 input");
+    let required = MINIMAL.replace(
+        REVIEWER_INPUTS,
+        &REVIEWER_INPUTS.replace("optional = true", "optional = false"),
+    );
+    refused(&required, "must be optional, singular");
+    for output in [
+        r#"outputs = ["result"]"#,
+        r#"outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#,
+    ] {
+        let retired = MINIMAL.replace(r#"outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#, output);
+        assert_ne!(retired, MINIMAL);
+        refused(&retired, "has unsupported result type");
+    }
+    let retired_prior = MINIMAL.replace(
+        GENERATION_OUTPUTS,
+        r#"outputs = [{ name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]"#,
+    );
+    refused(
+        &retired_prior,
+        "unsupported type `review.kernel/PriorFindings@1`",
     );
 }
 
 #[test]
 fn an_untyped_generation_output_is_refused_before_execution() {
-    let text = MINIMAL.replace(
-        r#"[[nodes]]
-id = "gate""#,
-        r#"[[nodes]]
-id = "generation"
-kind = "generation"
-outputs = ["findings"]
-
-[[nodes]]
-id = "gate""#,
-    );
+    let text = MINIMAL.replace(GENERATION_OUTPUTS, r#"outputs = ["findings"]"#);
+    assert_ne!(text, MINIMAL);
 
     let error = Definition::from_toml(&text)
         .unwrap()
@@ -1344,26 +1346,23 @@ id = "gate""#,
         .map(|_| ())
         .unwrap_err();
     assert!(error.to_string().contains("unsupported type"), "{error}");
-    assert!(error.to_string().contains("pipeline version 2"), "{error}");
-    assert!(error.to_string().contains("PriorFindings@1"), "{error}");
+    assert!(
+        error.to_string().contains("typed port declaration"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("FindingSet@1"), "{error}");
 }
 
 #[test]
 fn a_whole_tree_generation_cannot_declare_a_change_set() {
     let text = MINIMAL.replace(
-        r#"[[nodes]]
-id = "gate""#,
-        r#"[[nodes]]
-id = "generation"
-kind = "generation"
-outputs = [
-  { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-  { name = "diff", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-]
-
-[[nodes]]
-id = "gate""#,
+        GENERATION_OUTPUTS,
+        &GENERATION_OUTPUTS.replace(
+            "}]",
+            r#"}, { name = "diff", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#,
+        ),
     );
+    assert_ne!(text, MINIMAL);
 
     let error = Definition::from_toml(&text)
         .unwrap()

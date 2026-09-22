@@ -107,9 +107,7 @@ pub use event::{
 };
 pub use exec::{Arg, ArgError, Command, Provenance};
 pub use finding::{FindingReport, Location, Relation, RelationKind, Severity};
-pub use finding_set::{
-    FINDING_REDUCER_VERSION, FINDING_REDUCER_VERSION_V2, FindingSetEntryV1, FindingSetV1,
-};
+pub use finding_set::{FINDING_REDUCER_VERSION_V2, FindingSetEntryV1, FindingSetV1};
 pub use grouping::{FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1};
 pub use integration::{
     IntegrationCandidateV1, IntegrationCheckV1, IntegrationChecksCompletedPayloadV1,
@@ -119,8 +117,7 @@ pub use integration::{
 pub use json::{NumericDomainError, admit};
 pub use legacy::{
     LegacyImportError, LegacyStageOutput, ReviewerResultContract, ReviewerResultRejection,
-    validate_reviewer_result, validate_reviewer_result_classified, validate_reviewer_result_v2,
-    validate_reviewer_result_v2_classified,
+    validate_reviewer_result_v2, validate_reviewer_result_v2_classified,
 };
 pub use patch::{
     ClaimRef, ClaimRefKind, PatchProposal, ProposalAcceptedPayloadV1, ProposalCandidateV1,
@@ -179,10 +176,8 @@ pub mod contract {
     pub const GATE_DECISION_V1: &str = "review.kernel/GateDecision@1";
     pub const OPAQUE_V1: &str = "review.kernel/Opaque@1";
     pub const PATCH_PROPOSAL_V1: &str = "review.kernel/PatchProposal@1";
-    pub const PRIOR_FINDINGS_V1: &str = "review.kernel/PriorFindings@1";
     pub const REPORT_SET_V1: &str = "review.kernel/ReportSet@1";
     pub const REVIEW_SLICE_V1: &str = "review.kernel/ReviewSlice@1";
-    pub const REVIEWER_RESULT_V1: &str = "review.kernel/ReviewerResult@1";
     pub const REVIEWER_RESULT_V2: &str = "review.kernel/ReviewerResult@2";
     pub const SOURCE_SNAPSHOT_V1: &str = "review.kernel/SourceSnapshot@1";
     pub const SLICE_SET_V1: &str = "review.kernel/SliceSet@1";

@@ -62,7 +62,7 @@ fn ingest_one(store: &mut EventStore, cas: &Cas, run_id: &str, output: &LegacySt
 }
 
 /// Build a Round against a store on disk and hand back its projection. Two reviewers report
-/// three claims and a Demand; a third reviewer then confirms one claim and refutes another.
+/// three claims and a Demand; a third reviewer then corroborates one claim and disputes another.
 fn build_run(dir: &Path) -> Snapshot {
     let mut store = EventStore::open(dir.join("events.sqlite")).unwrap();
     let cas = Cas::open(dir.join("cas")).unwrap();
@@ -102,8 +102,8 @@ fn build_run(dir: &Path) -> Snapshot {
     let positions = stage(&format!(
         r#"{{"verdict":"request-changes","summary":null,"findings":[],"benchmark_demands":[],
             "disputes":[
-              {{"claim_id":"{retry}","position":"confirm","reason":"reproduced"}},
-              {{"claim_id":"{queue}","position":"refute","reason":"the producer is bounded"}}]}}"#
+              {{"fp":"{retry}","position":"corroborate","reason":"reproduced"}},
+              {{"fp":"{queue}","position":"dispute","reason":"the producer is bounded"}}]}}"#
     ));
     add_flat_results(
         &mut ingest,
@@ -150,7 +150,7 @@ fn the_projection_survives_process_death() {
             ("Queue grows without bound", Status::Contested, 1),
             ("Misleading comment", Status::Open, 1),
         ],
-        "the confirmation attached a second Report and the refutation contested its claim"
+        "the corroboration attached a second Report and the dispute contested its claim"
     );
     assert_eq!(demands.len(), 1);
 }

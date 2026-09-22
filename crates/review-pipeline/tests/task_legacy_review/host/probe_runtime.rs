@@ -14,7 +14,7 @@ use std::sync::{
 };
 
 const REVIEW_REPLY: &[u8] =
-    br#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}"#;
+    br#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
 
 struct Model {
     calls: AtomicUsize,

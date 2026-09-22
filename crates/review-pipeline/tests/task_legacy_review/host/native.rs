@@ -47,7 +47,7 @@ impl WorkerModelAdapter for Model {
             } else {
                 assert_eq!(prompt.contains("invalid_output_contract"), self.retry);
                 (
-                    r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}"#,
+                    r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}"#,
                     11,
                 )
             }

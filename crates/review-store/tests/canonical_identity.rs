@@ -140,7 +140,6 @@ fn task_and_campaign_use_identical_pure_canonical_reduction_without_another_stor
         input_artifacts: std::slice::from_ref(&input),
         subject_snapshot_id: &authority.head,
         subject_id: &authority.subject,
-        result_contract: review_core::ReviewerResultContract::V2,
     }];
     let mut task_ledger =
         review_store::Ledger::for_task_subject(&cas, &authority.subject, 1).unwrap();
@@ -198,7 +197,6 @@ fn task_fix_projection_rejects_stale_views_and_reopens_on_a_changed_subject() {
         input_artifacts: &[],
         subject_snapshot_id: &authority.head,
         subject_id: &authority.subject,
-        result_contract: review_core::ReviewerResultContract::V2,
     }];
     let mut ledger = review_store::prepare_canonical_task_review(&cas, run_id, &ledger, &stages)
         .unwrap()
@@ -317,7 +315,6 @@ fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
                 input_artifacts: std::slice::from_ref(&input),
                 subject_snapshot_id: &authority.head,
                 subject_id: &authority.subject,
-                result_contract: review_core::ReviewerResultContract::V1,
             },
             CanonicalStage {
                 source: "correctness",
@@ -328,7 +325,6 @@ fn canonical_reports_are_enveloped_and_same_path_title_does_not_merge() {
                 input_artifacts: std::slice::from_ref(&input),
                 subject_snapshot_id: &authority.head,
                 subject_id: &authority.subject,
-                result_contract: review_core::ReviewerResultContract::V1,
             },
         ])
         .unwrap();
@@ -438,7 +434,6 @@ fn grouping_is_reversible_and_preserves_each_report_obligation() {
                 input_artifacts: std::slice::from_ref(&input),
                 subject_snapshot_id: &authority.head,
                 subject_id: &authority.subject,
-                result_contract: review_core::ReviewerResultContract::V1,
             },
             CanonicalStage {
                 source: "correctness",
@@ -449,7 +444,6 @@ fn grouping_is_reversible_and_preserves_each_report_obligation() {
                 input_artifacts: std::slice::from_ref(&input),
                 subject_snapshot_id: &authority.head,
                 subject_id: &authority.subject,
-                result_contract: review_core::ReviewerResultContract::V1,
             },
         ])
         .unwrap();
@@ -804,7 +798,6 @@ fn canonical_confirmation_becomes_current_corroborating_evidence() {
             input_artifacts: &[],
             subject_snapshot_id: &authority.head,
             subject_id: &authority.subject,
-            result_contract: review_core::ReviewerResultContract::V1,
         }])
         .unwrap();
     let key = ingest.ledger().findings()[0].key.clone();
@@ -814,29 +807,46 @@ fn canonical_confirmation_becomes_current_corroborating_evidence() {
         "findings": [],
         "benchmark_demands": [],
         "disputes": [{
-            "claim_id": key,
-            "position": "confirm",
+            "fp": key,
+            "position": "corroborate",
             "reason": "verified against the current snapshot"
-        }, {
-            "claim_id": "sha256:mistyped-prior-finding",
-            "position": "confirm",
-            "reason": "cannot be attached safely"
         }]
     }))
     .unwrap();
-
-    let reduction = ingest
-        .add_canonical_stage_outputs(&[CanonicalStage {
+    fn confirm<'a>(
+        stage: &'a LegacyStageOutput,
+        result: &'a str,
+        authority: &'a support::Authority,
+    ) -> CanonicalStage<'a> {
+        CanonicalStage {
             source: "correctness",
             demand_requirement: review_core::DemandRequirement::Required,
-            stage: &confirmation,
+            stage,
             attempt_id: "01jd8m4qz9k7v3n2p6r8t0w203",
-            result_artifact_id: &result_b,
+            result_artifact_id: result,
             input_artifacts: &[],
             subject_snapshot_id: &authority.head,
             subject_id: &authority.subject,
-            result_contract: review_core::ReviewerResultContract::V1,
-        }])
+        }
+    }
+
+    // A disposition must name a Finding it was assigned; a mistyped canonical ID carries no
+    // safe authority, so the whole reduction is refused rather than attached anywhere.
+    let mut mistyped = confirmation.clone();
+    mistyped.disputes[0].fp = "sha256:mistyped-prior-finding".into();
+    let refused = ingest
+        .add_canonical_stage_outputs(&[confirm(&mistyped, &result_b, &authority)])
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("outside its assigned prior Finding Set"),
+        "{refused}"
+    );
+    assert_eq!(ingest.ledger().get(&key).unwrap().reports.len(), 1);
+
+    let reduction = ingest
+        .add_canonical_stage_outputs(&[confirm(&confirmation, &result_b, &authority)])
         .unwrap();
 
     assert_eq!(reduction.selected_report_ids.len(), 1);
@@ -882,7 +892,6 @@ fn canonical_confirmation_replay_reuses_the_exact_corroborating_report() {
             input_artifacts: &[],
             subject_snapshot_id: &authority.head,
             subject_id: &authority.subject,
-            result_contract: review_core::ReviewerResultContract::V1,
         }])
         .unwrap();
     let key = ingest.ledger().findings()[0].key.clone();
@@ -892,8 +901,8 @@ fn canonical_confirmation_replay_reuses_the_exact_corroborating_report() {
         "findings": [],
         "benchmark_demands": [],
         "disputes": [{
-            "claim_id": key,
-            "position": "confirm",
+            "fp": key,
+            "position": "corroborate",
             "reason": "verified against the current snapshot"
         }]
     }))
@@ -907,7 +916,6 @@ fn canonical_confirmation_replay_reuses_the_exact_corroborating_report() {
         input_artifacts: &[],
         subject_snapshot_id: &authority.head,
         subject_id: &authority.subject,
-        result_contract: review_core::ReviewerResultContract::V1,
     }];
     let first = ingest.add_canonical_stage_outputs(&stages).unwrap();
     assert_eq!(ingest.ledger().get(&key).unwrap().reports.len(), 2);
@@ -1022,7 +1030,6 @@ fn explicit_dispositions_are_immutable_and_only_disputes_contest() {
             input_artifacts: &[],
             subject_snapshot_id: &authority.head,
             subject_id: &authority.subject,
-            result_contract: review_core::ReviewerResultContract::V1,
         }])
         .unwrap();
     let ids: Vec<_> = ingest
@@ -1055,9 +1062,9 @@ fn explicit_dispositions_are_immutable_and_only_disputes_contest() {
         "findings": [],
         "benchmark_demands": [],
         "disputes": [
-            {"claim_id": ids[0], "position": "corroborate", "reason": "reproduced"},
-            {"claim_id": ids[1], "position": "not_reproduced", "reason": "branch removed"},
-            {"claim_id": ids[2], "position": "dispute", "reason": "branch unreachable"}
+            {"fp": ids[0], "position": "corroborate", "reason": "reproduced"},
+            {"fp": ids[1], "position": "not_reproduced", "reason": "branch removed"},
+            {"fp": ids[2], "position": "dispute", "reason": "branch unreachable"}
         ]
     }))
     .unwrap();
@@ -1071,14 +1078,9 @@ fn explicit_dispositions_are_immutable_and_only_disputes_contest() {
             input_artifacts: &[],
             subject_snapshot_id: &authority.head,
             subject_id: &authority.subject,
-            result_contract: review_core::ReviewerResultContract::V2,
         }])
         .unwrap();
 
-    assert_eq!(
-        reduction.reducer_version,
-        review_core::FINDING_REDUCER_VERSION_V2
-    );
     assert_eq!(reduction.relation_ids.len(), 3);
     assert_eq!(reduction.selected_report_ids.len(), 1);
     assert_eq!(reduction.input_artifact_ids.len(), 4);
@@ -1144,7 +1146,6 @@ fn fixed_requires_current_attestation_and_verification_and_resolutions_can_expir
             input_artifacts: &[],
             subject_snapshot_id: &authority.head,
             subject_id: &authority.subject,
-            result_contract: review_core::ReviewerResultContract::V1,
         }])
         .unwrap();
     let mut ledger = ingest.into_projection().into_ledger();
@@ -1450,7 +1451,7 @@ fn fixed_requires_current_attestation_and_verification_and_resolutions_can_expir
     );
 }
 
-// Flat `ReviewerResult@1` answers reach the canonical reduction a Campaign runs at its barrier
+// Flat `ReviewerResult@2` answers reach the canonical reduction a Campaign runs at its barrier
 // only through the strict gate: every finding must satisfy FindingReport@1, and one violation
 // refuses every result at that barrier, so a blocking verdict cannot degrade into an empty pass.
 
@@ -1629,10 +1630,10 @@ fn reviewers_naming_one_rule_occurrence_share_a_finding_and_keep_every_report() 
     assert_ne!(shared.reports[0].report_id, shared.reports[1].report_id);
 }
 
-/// A reviewer's `refute` on a prior claim contests it, which blocks convergence and flags the
-/// claim for human adjudication.
+/// A reviewer's `dispute` disposition on a prior claim contests it, which blocks convergence and
+/// flags the claim for human adjudication.
 #[test]
-fn a_refute_dispute_contests_the_prior_claim() {
+fn a_dispute_disposition_contests_the_prior_claim() {
     let directory = tempfile::tempdir().unwrap();
     let cas = Cas::open(directory.path().join("cas")).unwrap();
     let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
@@ -1660,7 +1661,7 @@ fn a_refute_dispute_contests_the_prior_claim() {
 
     let refutation = flat_stage(
         serde_json::json!([]),
-        serde_json::json!([{"claim_id": key, "position": "refute", "reason": "not reproducible"}]),
+        serde_json::json!([{"fp": key, "position": "dispute", "reason": "not reproducible"}]),
     );
     support::add_flat_results(
         &mut ingest,
@@ -1823,7 +1824,6 @@ fn an_in_scope_higher_severity_re_report_challenges_a_typed_declined_resolution(
             input_artifacts: &[],
             subject_snapshot_id: &round.head,
             subject_id: &round.subject,
-            result_contract: review_core::ReviewerResultContract::V2,
         }],
     )
     .unwrap();

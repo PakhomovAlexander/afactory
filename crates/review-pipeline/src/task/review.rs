@@ -43,8 +43,6 @@ pub struct ReviewTaskPolicy {
 /// The one Task Review policy: Subject@2, one assignment per reviewer and ReviewerResult@2.
 pub const REVIEW_TASK_POLICY_SCHEMA: &str = "af.review-task-policy/2";
 const RESULT_TYPE: &str = review_core::contract::REVIEWER_RESULT_V2;
-const RESULT_CONTRACT: review_core::ReviewerResultContract =
-    review_core::ReviewerResultContract::V2;
 
 impl ReviewTaskPolicy {
     pub fn validate(&self) -> Result<(), String> {
@@ -675,10 +673,7 @@ impl ReviewTaskDomain {
                 continue;
             }
             let (id, stage): (_, serde_json::Value) = self.value(cas, input, name, RESULT_TYPE)?;
-            let (contract, stage) = crate::reviewer_stage_output(stage)?;
-            if contract != RESULT_CONTRACT {
-                return Err("Review result is not a ReviewerResult@2".into());
-            }
+            let stage = crate::reviewer_stage_output(stage)?;
             let artifact = envelope(cas, &id)?;
             let assignment = self.assignment(&ledger, &subject, name)?;
             self.validate_stage(&stage, &assignment)?;
@@ -769,7 +764,6 @@ impl ReviewTaskDomain {
                 input_artifacts: refs,
                 subject_snapshot_id: &subject.snapshot_id,
                 subject_id: &subject.subject_id,
-                result_contract: RESULT_CONTRACT,
             })
             .collect();
         let reduction = review_store::prepare_canonical_task_review(cas, &run_id, &ledger, &stages)
@@ -791,7 +785,7 @@ impl ReviewTaskDomain {
             subject_id: subject.subject_id.clone(),
             round: subject.round,
             prior_finding_set_id: prior_findings,
-            reducer_version: reduction.reduction.reducer_version.into(),
+            reducer_version: review_core::FINDING_REDUCER_VERSION_V2.into(),
             identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
             selected_report_ids: reduction.reduction.selected_report_ids,
             relation_ids: reduction.reduction.relation_ids,
@@ -1256,10 +1250,7 @@ impl TaskDomain for ReviewTaskDomain {
                         return Err("Reviewer output has a stale type or Snapshot".into());
                     }
                     let assignment = self.current_assignment(cas, input, &subject)?;
-                    let (contract, stage) = crate::reviewer_stage_output(artifact.payload)?;
-                    if contract != RESULT_CONTRACT {
-                        return Err("Reviewer output is not a ReviewerResult@2".into());
-                    }
+                    let stage = crate::reviewer_stage_output(artifact.payload)?;
                     self.validate_stage(&stage, &assignment)?;
                 }
             }

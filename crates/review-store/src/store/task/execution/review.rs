@@ -905,15 +905,7 @@ pub(super) fn selected_review_event(
             "Review side metadata contradicts the exact flat result",
         ));
     }
-    match metadata.result_contract {
-        review_core::ReviewerResultContract::V1 => {
-            review_core::validate_reviewer_result(&result.payload)
-        }
-        review_core::ReviewerResultContract::V2 => {
-            review_core::validate_reviewer_result_v2(&result.payload)
-        }
-    }
-    .map_err(conflict)?;
+    review_core::validate_reviewer_result_v2(&result.payload).map_err(conflict)?;
     let selection = TaskReviewResultSelectedV1 {
         task_id: state.task_id.as_str().into(),
         task_revision_id: state.revision_id.clone(),

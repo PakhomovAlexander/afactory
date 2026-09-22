@@ -15,20 +15,28 @@ version = 2
 [subject]
 kind = "whole-tree"
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "history", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+[[nodes]]
 id = "reviewer"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 runner = { program = "/bin/true" }
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
+inputs = [{ name = "reports", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = ["findings"]
+[[edges]]
+from = { node = "generation", port = "history" }
+to = { node = "reviewer", port = "prior_findings" }
 [[edges]]
 from = { node = "reviewer", port = "result" }
 to = { node = "ledger", port = "reports" }
 "#;
-    let _authority =
+    let authority =
         support::test_round_authority_for_pipeline(&cas, &mut store, "run", &manifest, definition);
     let round = store
         .replay("run")
@@ -42,7 +50,14 @@ to = { node = "ledger", port = "reports" }
             &cas,
             NewEvent::new(
                 EventType::NodeInvocationV1,
-                serde_json::json!({"node": "reviewer", "inputs": []}),
+                serde_json::json!({"node": "reviewer", "inputs": [{
+                    "port": "prior_findings",
+                    "type": "review.kernel/FindingSet@1",
+                    "cardinality": "one",
+                    "optional": true,
+                    "snapshot_affinity": "any",
+                    "artifact_ids": [],
+                }]}),
             )
             .node("reviewer")
             .caused_by(&round.event_id),
@@ -50,14 +65,11 @@ to = { node = "ledger", port = "reports" }
         .unwrap();
     let forged = cas
         .put_json(&serde_json::json!({
-            "node": "reviewer",
-            "output": {
-                "verdict": "approve",
-                "summary": null,
-                "findings": [],
-                "benchmark_demands": [],
-                "disputes": [],
-            },
+            "verdict": "approve",
+            "summary": null,
+            "reports": [],
+            "benchmark_demands": [],
+            "dispositions": [],
         }))
         .unwrap();
     let error = store
@@ -70,11 +82,12 @@ to = { node = "ledger", port = "reports" }
                     "node": "reviewer",
                     "outputs": [{
                         "port": "result",
-                        "type": "review.kernel/Opaque@1",
+                        "type": "review.kernel/ReviewerResult@2",
                         "cardinality": "one",
                         "optional": false,
-                        "snapshot_affinity": "any",
+                        "snapshot_affinity": "same_subject",
                         "artifact_ids": [forged],
+                        "subject_snapshot_id": authority.head_snapshot_id(),
                     }],
                 }),
             )

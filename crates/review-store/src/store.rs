@@ -963,20 +963,12 @@ fn dynamic_node_authority(
             optional: false,
             snapshot_affinity: "same_subject".into(),
         }));
-        let result_type = if inputs
-            .iter()
-            .any(|port| port.artifact_type() == review_core::contract::FINDING_SET_V1)
-        {
-            review_core::contract::REVIEWER_RESULT_V2
-        } else {
-            review_core::contract::REVIEWER_RESULT_V1
-        };
         resolved = Some(DynamicNodeAuthority {
             slice: slice.clone(),
             inputs,
             outputs: vec![AuthorityPort::Detailed(AuthorityPortDetails {
                 name: "out".into(),
-                artifact_type: result_type.into(),
+                artifact_type: review_core::contract::REVIEWER_RESULT_V2.into(),
                 cardinality: "one".into(),
                 optional: false,
                 snapshot_affinity: "same_subject".into(),
@@ -1475,24 +1467,6 @@ fn validate_artifact_payload(
                     "GateDecision@1 artifact violates its payload contract".into(),
                 ));
             }
-        }
-        review_core::contract::PRIOR_FINDINGS_V1 => {
-            exact_keys(
-                object,
-                &["subject_id", "round", "prior_findings"],
-                artifact_type,
-            )?;
-            if value["subject_id"].as_str().is_none()
-                || value["round"].as_u64().is_none()
-                || value["prior_findings"].as_array().is_none()
-            {
-                return Err(StoreError::Conflict(
-                    "PriorFindings@1 artifact violates its payload contract".into(),
-                ));
-            }
-        }
-        review_core::contract::REVIEWER_RESULT_V1 => {
-            review_core::validate_reviewer_result(value).map_err(StoreError::Conflict)?
         }
         review_core::contract::REVIEWER_RESULT_V2 => {
             review_core::validate_reviewer_result_v2(value).map_err(StoreError::Conflict)?
@@ -2171,16 +2145,7 @@ fn validate_campaign_transition(
                                 cas.get_json(&selected.result_envelope_id)
                                     .map_err(|e| StoreError::Artifact(e.to_string()))?,
                             )?;
-                            // Historical name-only Reviewer ports carry exactly the v1 flat
-                            // result. The Task frontend makes that existing contract explicit;
-                            // this does not authorize another result generation or shape.
-                            let result_type =
-                                outputs.first().map(|port| match port.artifact_type() {
-                                    review_core::contract::OPAQUE_V1 => {
-                                        review_core::contract::REVIEWER_RESULT_V1
-                                    }
-                                    ty => ty,
-                                });
+                            let result_type = outputs.first().map(AuthorityPort::artifact_type);
                             if outputs.len() != 1
                                 || result_type != Some(result.artifact_type.as_str())
                                 || outputs[0].cardinality() != "one"
@@ -4981,7 +4946,7 @@ mod tests {
                 "summary": null,
                 "reports": [report],
                 "benchmark_demands": [],
-                "disputes": [],
+                "dispositions": [],
             })
         };
         let legacy = json!({
@@ -5002,24 +4967,24 @@ mod tests {
             "confidence": 0.9,
         });
 
-        assert!(review_core::validate_reviewer_result(&result(legacy)).is_ok());
-        assert!(review_core::validate_reviewer_result(&result(typed)).is_err());
+        assert!(review_core::validate_reviewer_result_v2(&result(legacy)).is_ok());
+        assert!(review_core::validate_reviewer_result_v2(&result(typed)).is_err());
     }
 
     #[test]
-    fn reviewer_result_legacy_conformance_corpus_matches_durable_reader() {
-        let path = workspace_root().join("schemas/reviewer-result-v1-conformance.json");
+    fn reviewer_result_conformance_corpus_matches_durable_reader() {
+        let path = workspace_root().join("schemas/reviewer-result-v2-conformance.json");
         let corpus: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         for case in corpus["valid"].as_array().unwrap() {
             assert!(
-                review_core::validate_reviewer_result(&case["payload"]).is_ok(),
+                review_core::validate_reviewer_result_v2(&case["payload"]).is_ok(),
                 "{}",
                 case["name"]
             );
         }
         for case in corpus["invalid"].as_array().unwrap() {
             assert!(
-                review_core::validate_reviewer_result(&case["payload"]).is_err(),
+                review_core::validate_reviewer_result_v2(&case["payload"]).is_err(),
                 "{}",
                 case["name"]
             );

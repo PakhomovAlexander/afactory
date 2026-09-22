@@ -806,13 +806,26 @@ fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
     let object = value
         .as_object_mut()
         .ok_or("Invalid public payload schema")?;
+    // The flat report shape is inlined, so the Worker schema carries no `$defs` of its own.
+    // `$defs` is the last key, so removing it first leaves the remaining key order unchanged.
+    let legacy_report = object
+        .get("$defs")
+        .and_then(|defs| defs.get("legacyReport"))
+        .cloned();
+    if legacy_report.is_some() {
+        object.remove("$defs");
+    }
     object.remove("$id");
     object.remove("$schema");
     let contracts: Value = serde_json::from_slice(include_bytes!(
         "../../../../../../schemas/task-contracts-v1.json"
     ))
     .map_err(|e| e.to_string())?;
-    fn localize(value: &mut Value, digest: &Value) -> Result<(), String> {
+    fn localize(
+        value: &mut Value,
+        digest: &Value,
+        legacy_report: Option<&Value>,
+    ) -> Result<(), String> {
         match value {
             Value::Object(object) => {
                 if let Some(reference) = object.get("$ref").and_then(Value::as_str) {
@@ -820,13 +833,10 @@ fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
                         *value = digest.clone();
                         return Ok(());
                     }
-                    if reference == "urn:review-kernel:schema:reviewer-result:1#/$defs/legacyReport"
+                    if reference == "#/$defs/legacyReport"
+                        && let Some(report) = legacy_report
                     {
-                        let original: Value = serde_json::from_slice(include_bytes!(
-                            "../../../../../../schemas/reviewer-result-v1.json"
-                        ))
-                        .map_err(|e| e.to_string())?;
-                        *value = original["$defs"]["legacyReport"].clone();
+                        *value = report.clone();
                         return Ok(());
                     }
                     if !reference.starts_with('#') {
@@ -834,19 +844,23 @@ fn payload_schema(bytes: &[u8]) -> Result<Value, String> {
                     }
                 }
                 for value in object.values_mut() {
-                    localize(value, digest)?;
+                    localize(value, digest, legacy_report)?;
                 }
             }
             Value::Array(values) => {
                 for value in values {
-                    localize(value, digest)?;
+                    localize(value, digest, legacy_report)?;
                 }
             }
             _ => (),
         }
         Ok(())
     }
-    localize(&mut value, &contracts["$defs"]["digest"])?;
+    localize(
+        &mut value,
+        &contracts["$defs"]["digest"],
+        legacy_report.as_ref(),
+    )?;
     Ok(value)
 }
 

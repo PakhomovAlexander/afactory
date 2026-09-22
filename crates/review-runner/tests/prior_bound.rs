@@ -23,8 +23,8 @@ fn oversized_prior_findings_fail_closed_without_silent_truncation() {
     let prior = serde_json::json!({
         "subject_id": format!("sha256:{}", "a".repeat(64)),
         "round": 2,
-        "prior_findings": [{
-            "key": "large",
+        "findings": [{
+            "finding_id": "large",
             "severity": "blocker",
             "body": "x".repeat(256 * 1024),
         }],

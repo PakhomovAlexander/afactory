@@ -8,8 +8,7 @@ use review_graph::{NodeOutcome, RunReport};
 use review_sandbox::{CacheError, CacheErrorKind, CacheKind, CacheLimits, CacheSource};
 use review_store::store::task::TaskLease;
 
-pub(super) const APPROVE: &str =
-    r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}"#;
+pub(super) const APPROVE: &str = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
 
 /// The ordinary source every Round of these tests reviews.
 pub(super) fn source() -> BTreeMap<String, Vec<u8>> {
@@ -27,11 +26,22 @@ pub(super) fn runner(script: &str) -> String {
     )
 }
 
-/// A reviewer that runs `checks` against the tree it was given, then answers `result`.
+/// A reviewer that runs `checks` against the tree it was given, then answers `result`. Every
+/// prior Finding its input assigns it is answered `not_reproduced`, the disposition that
+/// changes no Ledger state, so a later Round's answer covers its assignment exactly.
 pub(super) fn answering(checks: &str, result: &serde_json::Value) -> String {
+    let result = result.to_string();
+    let (head, tail) = result
+        .split_once("\"dispositions\":[]")
+        .expect("an answer that leaves its dispositions to the fixture");
+    let quoted = |text: &str| text.replace('\'', "'\\''");
     format!(
-        "{checks} && cat >/dev/null && printf '%s' '{}'",
-        result.to_string().replace('\'', "'\\''")
+        "{checks} && ids=$(grep -o '\"finding_id\":\"sha256:[0-9a-f]*\"' | cut -d'\"' -f4 | sort -u) \
+         && d= && for id in $ids; do \
+         d=\"$d${{d:+,}}{{\\\"finding_id\\\":\\\"$id\\\",\\\"position\\\":\\\"not_reproduced\\\",\\\"reason\\\":\\\"not re-examined by the fixture\\\"}}\"; \
+         done && printf '%s\"dispositions\":[%s]%s' '{}' \"$d\" '{}'",
+        quoted(head),
+        quoted(tail),
     )
 }
 
@@ -50,7 +60,7 @@ pub(super) fn finding(severity: &str, title: &str, occurrence: Option<&str>) -> 
 pub(super) fn requesting(findings: Vec<serde_json::Value>) -> serde_json::Value {
     serde_json::json!({
         "verdict": "request-changes", "summary": null, "findings": findings,
-        "benchmark_demands": [], "disputes": [],
+        "benchmark_demands": [], "dispositions": [],
     })
 }
 
@@ -175,21 +185,27 @@ id = "gate"
 kind = "gate"
 outputs = ["decision"]
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "history", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+[[nodes]]
 id = "architecture"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 ARCHITECTURE
 [[nodes]]
 id = "performance"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 PERFORMANCE
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["architecture", "performance"]
+inputs = [{ name = "architecture", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }, { name = "performance", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = ["reports"]
 [[nodes]]
 id = "ledger"
@@ -199,6 +215,12 @@ outputs = [
   { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
   { name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
 ]
+[[edges]]
+from = { node = "generation", port = "history" }
+to = { node = "architecture", port = "prior_findings" }
+[[edges]]
+from = { node = "generation", port = "history" }
+to = { node = "performance", port = "prior_findings" }
 [[edges]]
 from = { node = "architecture", port = "result" }
 to = { node = "gather", port = "architecture" }
@@ -375,7 +397,14 @@ fn gathered_reviewers_reduce_into_one_canonical_ledger_in_source_order() {
         receipted.sort_unstable();
         assert_eq!(
             receipted,
-            ["architecture", "gate", "gather", "ledger", "performance"],
+            [
+                "architecture",
+                "gate",
+                "gather",
+                "generation",
+                "ledger",
+                "performance"
+            ],
             "one receipt per completed node"
         );
         for receipt in receipts {
@@ -1287,15 +1316,21 @@ id = "gate"
 kind = "gate"
 outputs = ["decision"]
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "history", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+[[nodes]]
 id = "gather"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 AWKWARD
 [[nodes]]
 id = "sidecar"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 SIDECAR
 [[nodes]]
@@ -1306,7 +1341,7 @@ outputs = ["reports"]
 [[nodes]]
 id = "collect"
 kind = "gather"
-inputs = ["reports"]
+inputs = [{ name = "reports", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = ["reports"]
 [[nodes]]
 id = "ledger"
@@ -1319,6 +1354,12 @@ outputs = [
 [[edges]]
 from = { node = "gate", port = "decision" }
 to = { node = "evidence", port = "decision" }
+[[edges]]
+from = { node = "generation", port = "history" }
+to = { node = "gather", port = "prior_findings" }
+[[edges]]
+from = { node = "generation", port = "history" }
+to = { node = "sidecar", port = "prior_findings" }
 [[edges]]
 from = { node = "gather", port = "result" }
 to = { node = "collect", port = "reports" }
@@ -1407,14 +1448,19 @@ version = 2
 [subject]
 kind = "whole-tree"
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "history", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+[[nodes]]
 id = "correctness"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 CORRECTNESS
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["correctness"]
+inputs = [{ name = "correctness", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = ["reports"]
 [[nodes]]
 id = "ledger"
@@ -1424,6 +1470,9 @@ outputs = [
   { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
   { name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
 ]
+[[edges]]
+from = { node = "generation", port = "history" }
+to = { node = "correctness", port = "prior_findings" }
 [[edges]]
 from = { node = "correctness", port = "result" }
 to = { node = "gather", port = "correctness" }
@@ -1586,7 +1635,7 @@ fn an_unadmissible_answer_is_refused_before_selection_and_only_that_reviewer_ret
     .to_string();
     // A Benchmark Demand with an empty claim is refused before selection like a bad Finding.
     let bad_metadata = serde_json::json!({
-        "verdict": "approve", "summary": null, "findings": [], "disputes": [],
+        "verdict": "approve", "summary": null, "findings": [], "dispositions": [],
         "benchmark_demands": [{
             "claim": "", "why": "reason", "suggested_method": "measure the fixture loop",
         }],

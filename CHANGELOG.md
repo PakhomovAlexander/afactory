@@ -252,8 +252,27 @@ or needs a documented hand edit.
 - Review pipeline format 1 is gone. A pipeline that declares `version = 1`, the format without
   `[subject]` whose untyped `findings`, `prior_findings` and `change_set` ports were typed by their
   names, is refused as an unsupported version; formats 2 through 5 are unchanged. Declare
-  `version = 2` with `[subject]` and typed `PriorFindings@1` or `ChangeSet@1` ports instead. A
+  `version = 2` with `[subject]` and typed `FindingSet@1` or `ChangeSet@1` ports instead. A
   Campaign whose manifest pinned a format 1 pipeline can no longer be resumed or continued.
+- Campaign review has one reviewer contract, `review.kernel/ReviewerResult@2`. A pipeline is
+  refused when it loads if a reviewer declares `review.kernel/ReviewerResult@1` or an untyped
+  result output such as `outputs = ["result"]`, or if its Generation emits
+  `review.kernel/PriorFindings@1`. Every reviewer and every Scatter must declare one optional,
+  singular `review.kernel/FindingSet@1` input with snapshot affinity `any`, wired from
+  Generation's `FindingSet@1` output. A reviewer without it used to run as `ReviewerResult@1`,
+  and a Scatter without it fell back to `@1` silently; both are now refused at plan time.
+  Reviewers answer `dispositions`, one per assigned prior Finding (`corroborate`,
+  `not_reproduced` or `dispute`, keyed by `finding_id`), instead of `disputes` keyed by
+  `claim_id` with `confirm` or `refute`. `af onboard` and the software starter already write this
+  wiring; update a hand-written pipeline and its pin in `.af/af.lock`. The
+  `reviewer-result-v1.json` schema and its conformance corpus are gone, and
+  `reviewer-result-v2.json` now defines the flat report shape itself. `finding-set-v1.json` accepts
+  only `review.kernel/finding-reducer@2` and `task-review-result-metadata-v1.json` only
+  `ReviewerResult@2`, so a stored `ReviewerResult@1` result or a Finding Set reduced by
+  `finding-reducer@1` no longer loads; a Ledger that reduces no reviewer result now records
+  `finding-reducer@2` as well, so that Finding Set's ID differs from an earlier release's. A
+  command reviewer's stdin document now always carries
+  `"result_contract": "review.kernel/ReviewerResult@2"`.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

@@ -1,13 +1,13 @@
 //! Exact declared Review inputs, resolved without execution or accounting authority.
 
-use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES, ReviewerResultContract};
+use review_core::{MAX_CHANGE_SET_BYTES, MAX_PRIOR_FINDINGS_BYTES};
 use review_graph::{ArtifactMap, Node};
 use review_runner::{ReviewerAttemptContext, ReviewerInputArtifact, ReviewerInputs};
 use review_store::Cas;
 
 use super::{
-    RoundAuthority, is_change_set_port, is_reviewer_finding_set_input, is_reviewer_prior_set_input,
-    retain_round_assignment, reviewer_result_contract,
+    RoundAuthority, is_change_set_port, is_reviewer_finding_set_input, retain_round_assignment,
+    reviewer_result_contract,
 };
 
 /// Bind the execution owner's actual identity after resolving the exact declared inputs.
@@ -48,23 +48,21 @@ pub(super) fn prepare(
     let node_id = node.id.as_str();
     let result_contract = reviewer_result_contract(node)?;
 
-    // Prior findings arrive through the wired `prior_findings` input port — a data artifact
-    // the pipeline routed from the generation node — not from ambient kernel state. A
-    // reviewer that declares no such input receives none; the plan is the delivery.
-    let prior_findings_contract = node
+    // Prior findings arrive through the wired exact `FindingSet@1` input port — a data
+    // artifact the pipeline routed from the generation node — not from ambient kernel state.
+    // The plan is the delivery, and every reviewer declares that port.
+    let prior_findings_port = node
         .inputs
         .iter()
-        .find(|port| is_reviewer_prior_set_input(port));
-    let exact_finding_set = prior_findings_contract.is_some_and(is_reviewer_finding_set_input);
-    if (result_contract == ReviewerResultContract::V2) != exact_finding_set {
-        let error = format!(
-            "reviewer `{node_id}` must pair ReviewerResult@2 with an exact FindingSet@1 input"
-        );
-        return Err(error);
-    }
-    let prior_findings_port = prior_findings_contract.map(|port| port.name.as_str());
-    let prior_findings_artifact = prior_findings_port
-        .and_then(|port| node_inputs.get(port))
+        .find(|port| is_reviewer_finding_set_input(port))
+        .map(|port| port.name.as_str())
+        .ok_or_else(|| {
+            format!(
+                "reviewer `{node_id}` must pair ReviewerResult@2 with an exact FindingSet@1 input"
+            )
+        })?;
+    let prior_findings_artifact = node_inputs
+        .get(prior_findings_port)
         .and_then(|artifacts| artifacts.first())
         .cloned();
     let mut inputs = ReviewerInputs {
@@ -78,7 +76,7 @@ pub(super) fn prepare(
                 .iter()
                 .find(|contract| contract.name == *port)
                 .ok_or_else(|| format!("reviewer input port '{port}' has no declared contract"))?;
-            if is_reviewer_prior_set_input(contract) {
+            if is_reviewer_finding_set_input(contract) {
                 continue;
             }
             let is_change_set = is_change_set_port(contract);
@@ -136,54 +134,39 @@ pub(super) fn prepare(
                 return Err(error.to_string());
             }
         };
-        let value = if exact_finding_set {
-            let envelope: review_core::ArtifactEnvelope = match serde_json::from_value(value) {
-                Ok(envelope) => envelope,
-                Err(error) => {
-                    let error = format!(
-                        "exact prior FindingSet@1 `{artifact}` is not an envelope: {error}"
-                    );
-                    return Err(error);
-                }
-            };
-            review_store::validate_envelope(&envelope)?;
-            if envelope.artifact_type != review_core::contract::FINDING_SET_V1 {
-                let error = format!("exact prior artifact `{artifact}` is not FindingSet@1");
+        let envelope: review_core::ArtifactEnvelope = match serde_json::from_value(value) {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                let error =
+                    format!("exact prior FindingSet@1 `{artifact}` is not an envelope: {error}");
                 return Err(error);
             }
-            let mut set: review_core::FindingSetV1 = match serde_json::from_value(envelope.payload)
-            {
-                Ok(set) => set,
-                Err(error) => {
-                    let error = format!("exact prior FindingSet@1 is invalid: {error}");
-                    return Err(error);
-                }
-            };
-            set.validate()?;
-            let round_assignment = match cas.get_json(&authority.prior_finding_set_id) {
-                Ok(assignment) => assignment,
-                Err(error) => {
-                    let error = format!("exact Round finding assignment is unreadable: {error}");
-                    return Err(error);
-                }
-            };
-            retain_round_assignment(&mut set, &round_assignment)?;
-            serde_json::to_value(set).expect("validated FindingSet@1 serializes")
-        } else {
-            value
         };
+        review_store::validate_envelope(&envelope)?;
+        if envelope.artifact_type != review_core::contract::FINDING_SET_V1 {
+            let error = format!("exact prior artifact `{artifact}` is not FindingSet@1");
+            return Err(error);
+        }
+        let mut set: review_core::FindingSetV1 = match serde_json::from_value(envelope.payload) {
+            Ok(set) => set,
+            Err(error) => {
+                let error = format!("exact prior FindingSet@1 is invalid: {error}");
+                return Err(error);
+            }
+        };
+        set.validate()?;
+        let round_assignment = match cas.get_json(&authority.prior_finding_set_id) {
+            Ok(assignment) => assignment,
+            Err(error) => {
+                let error = format!("exact Round finding assignment is unreadable: {error}");
+                return Err(error);
+            }
+        };
+        retain_round_assignment(&mut set, &round_assignment)?;
         // An empty assignment needs no prompt section and requires an empty disposition list.
-        let findings_field = if exact_finding_set {
-            "findings"
-        } else {
-            "prior_findings"
-        };
-        let has_findings = value
-            .get(findings_field)
-            .and_then(|findings| findings.as_array())
-            .is_some_and(|findings| !findings.is_empty());
-        if has_findings {
-            inputs.prior_findings = Some(value);
+        if !set.findings.is_empty() {
+            inputs.prior_findings =
+                Some(serde_json::to_value(set).expect("validated FindingSet@1 serializes"));
         }
     }
     inputs.prior_findings_artifact_id = prior_findings_artifact.clone();

@@ -28,7 +28,7 @@ mod probe_runtime;
 mod warm;
 
 fn command_pipeline() -> String {
-    let result = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}"#;
+    let result = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
     command_pipeline_returning(result)
 }
 
@@ -187,39 +187,15 @@ fn captured_command_review_uses_common_attempt_selection_and_replays_canonical_o
         }
     }
     let outputs = expected_outputs.unwrap();
-    // Generation forwards the Round's exact prior Findings; genesis history stays absent
-    // rather than becoming an invented empty Finding Set.
+    // Genesis history stays absent rather than becoming an invented empty Finding Set.
     let generation = &mapping.compilation.nodes["generation"];
     let produced = &outputs[&generation.task_node].1.outputs;
-    for (port, output) in &generation.outputs {
-        assert_eq!(
-            produced.contains_key(port),
-            output.review_port == "assigned",
-            "{port} ({})",
-            output.review_port
-        );
-    }
-    let (port, assigned) = generation
-        .outputs
-        .iter()
-        .find(|(_, output)| output.review_port == "assigned")
-        .unwrap();
-    let round: RoundStartedPayloadV1 = serde_json::from_value(
-        shared
-            .lock()
-            .unwrap()
-            .latest_round_started("review")
-            .unwrap()
-            .unwrap()
-            .payload,
-    )
-    .unwrap();
-    assert_eq!(
-        assigned
-            .codec
-            .restore(&cas, &produced[port].artifact_ids[0])
-            .unwrap(),
-        round.prior_finding_set_id
+    assert!(
+        generation
+            .outputs
+            .keys()
+            .all(|port| !produced.contains_key(port)),
+        "{produced:?}"
     );
     let ledger = &outputs[&mapping.compilation.nodes["ledger"].task_node]
         .1
@@ -469,7 +445,7 @@ fn completed_review_retains_blocking_findings_and_required_demands() {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let mut store = EventStore::open(directory.path().join("events.sqlite")).unwrap();
-        let mut returned = serde_json::json!({"verdict":"request-changes","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]});
+        let mut returned = serde_json::json!({"verdict":"request-changes","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]});
         if demand {
             returned["benchmark_demands"] = serde_json::json!([{"claim":"latency is bounded", "why":"measure against the acceptance limit", "suggested_method":"run the latency benchmark"}]);
         } else {
@@ -1100,16 +1076,16 @@ fn a_task_hosted_worker_retains_its_build_cache_clone_with_its_own_attempt() {
                  && printf compiled > \"$CARGO_TARGET_DIR/debug/deps/libfixture.rlib\"";
     let reviewer = "test \"$(cat \"$CARGO_TARGET_DIR/debug/deps/libfixture.rlib\")\" = compiled \
                     && cat >/dev/null \
-                    && printf '%s' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}'";
+                    && printf '%s' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[]}'";
     let definition = PIPELINE
         .replace(
             "version = 2",
             "version = 3\n[gate]\nprovider=\"trusted_local\"\nrequired_isolation=\"none\"\nmode=\"ephemeral-write\"\nbuild_caches=[\"cargo_target\"]",
         )
         .replace(
-            "id = \"reviewer\"\nkind = \"reviewer\"\noutputs = [\"result\"]\nrunner = { program = \"/bin/true\" }",
+            &format!("{REVIEWER_OUTPUTS}\nrunner = {{ program = \"/bin/true\" }}"),
             &format!(
-                "id = \"reviewer\"\nkind = \"reviewer\"\noutputs = [\"result\"]\ngated_by = \"gate\"\nwarm = {{ notes = false, build_cache = [\"cargo_target\"] }}\nrunner = {{ program = \"/bin/sh\", args = [{{value=\"-c\"}}, {{value={}}}] }}",
+                "{REVIEWER_OUTPUTS}\ngated_by = \"gate\"\nwarm = {{ notes = false, build_cache = [\"cargo_target\"] }}\nrunner = {{ program = \"/bin/sh\", args = [{{value=\"-c\"}}, {{value={}}}] }}",
                 serde_json::to_string(reviewer).unwrap()
             ),
         )

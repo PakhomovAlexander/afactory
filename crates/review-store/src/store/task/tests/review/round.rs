@@ -12,7 +12,7 @@ pub(in crate::store::task::tests) fn round_fixture_with_source(
         &mut f,
         &format!("sha256:{}", "a".repeat(64)),
         &"a".repeat(26),
-        review_core::contract::REVIEWER_RESULT_V1,
+        review_core::contract::REVIEWER_RESULT_V2,
         real_source,
     );
     let subject: review_core::SubjectV1 =

@@ -96,14 +96,19 @@ fn recorded_round_loads_pinned_authority_without_capture_or_advancing_light_camp
 [subject]
 kind = "whole-tree"
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{name="findings",type="review.kernel/FindingSet@1",cardinality="one",optional=true,snapshot_affinity="any"}]
+[[nodes]]
 id = "reviewer"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{name="prior_findings",type="review.kernel/FindingSet@1",cardinality="one",optional=true,snapshot_affinity="any"}]
+outputs = [{name="result",type="review.kernel/ReviewerResult@2",cardinality="one",optional=false,snapshot_affinity="same_subject"}]
 runner = {program="/bin/true"}
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["reviewer"]
+inputs = [{name="reviewer",type="review.kernel/ReviewerResult@2",cardinality="one",optional=false,snapshot_affinity="same_subject"}]
 outputs = ["reports"]
 [[nodes]]
 id = "ledger"
@@ -113,6 +118,9 @@ outputs = [
   {name="findings",type="review.kernel/FindingSet@1",cardinality="one",optional=false,snapshot_affinity="same_subject"},
   {name="demands",type="review.kernel/DemandSet@1",cardinality="one",optional=false,snapshot_affinity="same_subject"}
 ]
+[[edges]]
+from={node="generation",port="findings"}
+to={node="reviewer",port="prior_findings"}
 [[edges]]
 from={node="reviewer",port="result"}
 to={node="gather",port="reviewer"}

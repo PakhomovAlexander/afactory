@@ -186,7 +186,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let cas = Cas::open(temp.path()).unwrap();
         let codec = ReviewArtifactCodec::Flat {
-            artifact_type: contract::PRIOR_FINDINGS_V1.into(),
+            artifact_type: contract::CHANGE_SET_V1.into(),
         };
         let payload = json!({"prior_findings": []});
         let raw = cas.put_json(&payload).unwrap();

@@ -10,7 +10,7 @@ fn expired_recording_inspection_keeps_one_task_and_exact_old_and_new_history() {
     let (directory, task_id) = recovery::run_expired_waiting(|cas, store, limits| {
         let definition = captured_review::PIPELINE.replace(
             "runner = { program = \"/bin/true\" }",
-            r#"runner = { program = "/bin/sh", args = [{value="-c"},{value="cat >/dev/null; printf '%s' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}'"}] }"#,
+            r#"runner = { program = "/bin/sh", args = [{value="-c"},{value="cat >/dev/null; printf '%s' '{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[]}'"}] }"#,
         );
         captured_review::admit_heavy_definition_with_limits(cas, store, &definition, limits)
     });

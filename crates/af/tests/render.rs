@@ -188,10 +188,15 @@ kind = "gate"
 outputs = ["decision"]
 
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+
+[[nodes]]
 id = "lint"
 kind = "reviewer"
-inputs = ["gate"]
-outputs = ["result"]
+inputs = ["gate", { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 [nodes.runner]
 program = "/bin/sh"
@@ -200,7 +205,7 @@ args = [{ value = "-c" }, { value = "cat >/dev/null; printf '%s' '{}'" }]
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["lint"]
+inputs = [{ name = "lint", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = ["reports"]
 
 [[nodes]]
@@ -215,6 +220,10 @@ outputs = [
 [[edges]]
 from = { node = "gate", port = "decision" }
 to = { node = "lint", port = "gate" }
+
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "lint", port = "prior_findings" }
 
 [[edges]]
 from = { node = "lint", port = "result" }

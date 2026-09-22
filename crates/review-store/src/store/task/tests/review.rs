@@ -6,7 +6,7 @@ use review_core::{PortArtifactsV1, PortCardinality, ReviewerResultContract, Snap
 
 fn fixture() -> Fixture {
     let mut f = Fixture::new(true);
-    let result_type = review_core::contract::REVIEWER_RESULT_V1;
+    let result_type = review_core::contract::REVIEWER_RESULT_V2;
     f.revision
         .required_outputs
         .get_mut("document")
@@ -76,7 +76,7 @@ pub(super) fn canonical_context(
         f,
         invocation,
         attempt,
-        review_core::contract::REVIEWER_RESULT_V1,
+        review_core::contract::REVIEWER_RESULT_V2,
     )
 }
 
@@ -101,13 +101,13 @@ kind = "whole-tree"
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
-outputs = [{ name = "out", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+outputs = [{ name = "out", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 runner = { program = "/bin/true" }
 "#;
     let definition = if contract == review_core::contract::OPAQUE_V1 {
-        definition.replace("[{ name = \"out\", type = \"review.kernel/ReviewerResult@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }]", "[\"out\"]")
+        definition.replace("[{ name = \"out\", type = \"review.kernel/ReviewerResult@2\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }]", "[\"out\"]")
     } else {
-        definition.replace(review_core::contract::REVIEWER_RESULT_V1, contract)
+        definition.replace(review_core::contract::REVIEWER_RESULT_V2, contract)
     };
     let pipeline = f.cas.put(definition.as_bytes()).unwrap();
     let (authority, head) = if real_source {
@@ -285,12 +285,12 @@ fn review_output_with_provenance(
             .node,
         attempt_id: attempt.into(),
     };
-    let result = json!({"verdict":"approve","summary":"checked","reports":[],"benchmark_demands":[],"disputes":[]});
+    let result = json!({"verdict":"approve","summary":"checked","reports":[],"benchmark_demands":[],"dispositions":[]});
     let result_id = f.cas.put_json(&result).unwrap();
     let result_envelope = f
         .cas
         .put_artifact(
-            review_core::contract::REVIEWER_RESULT_V1,
+            review_core::contract::REVIEWER_RESULT_V2,
             author.clone(),
             vec![],
             None,
@@ -409,7 +409,7 @@ fn review_output_with_provenance(
         provenance
     };
     let metadata = TaskReviewResultMetadataV1 {
-        result_contract: ReviewerResultContract::V1,
+        result_contract: ReviewerResultContract::V2,
         result_artifact_id: if wrong_metadata {
             provenance.clone()
         } else {
@@ -450,7 +450,7 @@ fn review_output_with_provenance(
                 outputs: BTreeMap::from([
                     (
                         "output".into(),
-                        port(result_envelope, review_core::contract::REVIEWER_RESULT_V1),
+                        port(result_envelope, review_core::contract::REVIEWER_RESULT_V2),
                     ),
                     (
                         "metadata".into(),
@@ -587,7 +587,7 @@ fn typed_review_provenance_binds_exact_attempt_usage_and_unknown_reservation() {
 }
 
 #[test]
-fn legacy_opaque_review_selection_is_only_the_frozen_v1_contract() {
+fn review_selection_accepts_only_the_pinned_reviewer_result_v2_contract() {
     for contract in [
         review_core::contract::OPAQUE_V1,
         review_core::contract::REVIEWER_RESULT_V2,
@@ -640,7 +640,7 @@ fn legacy_opaque_review_selection_is_only_the_frozen_v1_contract() {
             .publish_task_review_result(&f.cas, &lease, &output, &f.authority);
         assert_eq!(
             selected.is_ok(),
-            contract == review_core::contract::OPAQUE_V1,
+            contract == review_core::contract::REVIEWER_RESULT_V2,
             "{contract}: {selected:?}"
         );
     }
@@ -805,7 +805,7 @@ fn review_selection_requires_common_publication_and_replays_without_legacy_attem
                     node: "reviewer".into(),
                     outputs: vec![PortArtifactsV1 {
                         port: "out".into(),
-                        artifact_type: review_core::contract::REVIEWER_RESULT_V1.into(),
+                        artifact_type: review_core::contract::REVIEWER_RESULT_V2.into(),
                         cardinality: PortCardinality::One,
                         optional: false,
                         snapshot_affinity: SnapshotAffinity::Any,
@@ -822,7 +822,7 @@ fn review_selection_requires_common_publication_and_replays_without_legacy_attem
         };
         let wrong = f
         .cas
-        .put_json(&json!({"verdict":"approve","summary":"different valid result","reports":[],"benchmark_demands":[],"disputes":[]}))
+        .put_json(&json!({"verdict":"approve","summary":"different valid result","reports":[],"benchmark_demands":[],"dispositions":[]}))
         .unwrap();
         assert!(
             f.store

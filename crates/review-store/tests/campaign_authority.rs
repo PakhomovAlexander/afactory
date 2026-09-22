@@ -26,7 +26,7 @@ kind = "whole-tree"
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
-outputs = [{ name = "out", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+outputs = [{ name = "out", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "any" }]
 runner = { program = "/bin/true" }
 "#,
     )
@@ -393,7 +393,7 @@ fn a_receipt_rejects_a_noncanonical_report_path_in_its_pinned_type() {
                 "confidence": 0.9
             }],
             "benchmark_demands": [],
-            "disputes": []
+            "dispositions": []
         }))
         .unwrap();
 
@@ -408,7 +408,7 @@ fn a_receipt_rejects_a_noncanonical_report_path_in_its_pinned_type() {
                     node: "reviewer".into(),
                     outputs: vec![PortArtifactsV1 {
                         port: "out".into(),
-                        artifact_type: "review.kernel/ReviewerResult@1".into(),
+                        artifact_type: "review.kernel/ReviewerResult@2".into(),
                         cardinality: PortCardinality::One,
                         optional: false,
                         snapshot_affinity: SnapshotAffinity::Any,
@@ -487,7 +487,7 @@ fn a_reviewer_receipt_requires_its_task_review_selection() {
                 "confidence": 0.9
             }],
             "benchmark_demands": [],
-            "disputes": []
+            "dispositions": []
         }))
         .unwrap();
 
@@ -501,7 +501,7 @@ fn a_reviewer_receipt_requires_its_task_review_selection() {
                     node: "reviewer".into(),
                     outputs: vec![PortArtifactsV1 {
                         port: "out".into(),
-                        artifact_type: "review.kernel/ReviewerResult@1".into(),
+                        artifact_type: "review.kernel/ReviewerResult@2".into(),
                         cardinality: PortCardinality::One,
                         optional: false,
                         snapshot_affinity: SnapshotAffinity::Any,

@@ -50,13 +50,12 @@ pub struct LegacyBenchmarkDemand {
 }
 
 /// A reviewer's position on a prior Finding it was given, named by its canonical Finding ID: a
-/// `ReviewerResult@1` dispute's `claim_id`, or a `ReviewerResult@2` disposition's `finding_id`.
+/// `ReviewerResult@2` disposition's `finding_id`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct LegacyDispute {
-    /// The claim the disposition is about. The v1 contract spells it `claim_id`; result decoding
-    /// moves a `ReviewerResult@2` disposition's `finding_id` into `fp`. Both reach the same slot.
-    #[serde(alias = "claim_id")]
+    /// The Finding the disposition is about. Result decoding moves a `ReviewerResult@2`
+    /// disposition's `finding_id` into this slot.
     pub fp: String,
     pub position: String,
     pub reason: String,
@@ -72,35 +71,28 @@ pub struct LegacyStageOutput {
     pub disputes: Vec<LegacyDispute>,
 }
 
-/// The selected result wire contract for one reviewer node. The runner keeps one tolerant
-/// internal stage shape, while the durable wire types remain explicitly versioned.
+/// The result wire contract a reviewer node declares. The runner keeps one tolerant internal
+/// stage shape, while the durable wire type stays explicitly versioned.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReviewerResultContract {
-    #[serde(rename = "review.kernel/ReviewerResult@1")]
-    #[default]
-    V1,
     #[serde(rename = "review.kernel/ReviewerResult@2")]
+    #[default]
     V2,
 }
 
 impl ReviewerResultContract {
     pub const fn artifact_type(self) -> &'static str {
         match self {
-            Self::V1 => crate::contract::REVIEWER_RESULT_V1,
             Self::V2 => crate::contract::REVIEWER_RESULT_V2,
         }
     }
 
     pub fn parse_artifact_type(value: &str) -> Option<Self> {
-        match value {
-            crate::contract::REVIEWER_RESULT_V1 => Some(Self::V1),
-            crate::contract::REVIEWER_RESULT_V2 => Some(Self::V2),
-            _ => None,
-        }
+        (value == crate::contract::REVIEWER_RESULT_V2).then_some(Self::V2)
     }
 }
 
-/// Closed, kernel-owned reasons a `ReviewerResult@1` can be refused at admission.
+/// Closed, kernel-owned reasons a `ReviewerResult@2` can be refused at admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewerResultRejection {
     NotObject,
@@ -117,8 +109,6 @@ pub enum ReviewerResultRejection {
     EmptyOccurrenceKey,
     MalformedBenchmarkDemand,
     EmptyBenchmarkDemand,
-    MalformedDispute,
-    InvalidDispute,
     MalformedDisposition,
     InvalidDisposition,
     MissingDispositionCoverage,
@@ -144,8 +134,6 @@ impl ReviewerResultRejection {
             Self::EmptyOccurrenceKey => "empty_occurrence_key",
             Self::MalformedBenchmarkDemand => "malformed_benchmark_demand",
             Self::EmptyBenchmarkDemand => "empty_benchmark_demand",
-            Self::MalformedDispute => "malformed_dispute",
-            Self::InvalidDispute => "invalid_dispute",
             Self::MalformedDisposition => "malformed_disposition",
             Self::InvalidDisposition => "invalid_disposition",
             Self::MissingDispositionCoverage => "missing_disposition_coverage",
@@ -163,110 +151,16 @@ impl std::fmt::Display for ReviewerResultRejection {
 
 impl std::error::Error for ReviewerResultRejection {}
 
-/// Validate the produced flat `ReviewerResult@1` wire value in the crate that owns its Rust
-/// report types. Persistence and pipeline admission both call this one rule.
-pub fn validate_reviewer_result(value: &serde_json::Value) -> Result<(), String> {
-    validate_reviewer_result_classified(value).map_err(|error| error.to_string())
-}
-
-/// Validate a result while retaining a stable, reviewer-byte-free rejection classification.
-pub fn validate_reviewer_result_classified(
-    value: &serde_json::Value,
-) -> Result<(), ReviewerResultRejection> {
-    let object = value
-        .as_object()
-        .ok_or(ReviewerResultRejection::NotObject)?;
-    exact_reviewer_keys(
-        object,
-        &[
-            "verdict",
-            "summary",
-            "reports",
-            "benchmark_demands",
-            "disputes",
-        ],
-        ReviewerResultRejection::UnexpectedFields,
-    )?;
-    if !matches!(
-        value["verdict"].as_str(),
-        Some("approve" | "request-changes" | "block")
-    ) || value["reports"]
-        .as_array()
-        .is_none_or(|reports| reports.iter().any(|report| !report.is_object()))
-        || (!value["summary"].is_null() && value["summary"].as_str().is_none())
-        || value["benchmark_demands"].as_array().is_none()
-        || value["disputes"].as_array().is_none()
-    {
-        return Err(ReviewerResultRejection::TopLevelPayload);
-    }
-    for (index, report) in value["reports"]
-        .as_array()
-        .expect("top-level contract checked reports")
-        .iter()
-        .enumerate()
-    {
-        let legacy: LegacyFinding = serde::Deserialize::deserialize(report)
-            .map_err(|_| ReviewerResultRejection::ReportPayload)?;
-        legacy.validate(index).map_err(|error| match error.reason {
-            ImportReason::MissingFix => ReviewerResultRejection::MissingFix,
-            ImportReason::EmptyTitle => ReviewerResultRejection::EmptyTitle,
-            ImportReason::EmptyBody => ReviewerResultRejection::EmptyBody,
-            ImportReason::InvalidPath => ReviewerResultRejection::NoncanonicalReportPath,
-            ImportReason::InvalidLine => ReviewerResultRejection::InvalidLine,
-            ImportReason::ConfidenceOutOfRange => ReviewerResultRejection::ConfidenceOutOfRange,
-            ImportReason::InvalidRuleId => ReviewerResultRejection::InvalidRuleId,
-            ImportReason::EmptyOccurrenceKey => ReviewerResultRejection::EmptyOccurrenceKey,
-            ImportReason::ReportContract => ReviewerResultRejection::ReportPayload,
-        })?;
-    }
-    for demand in value["benchmark_demands"]
-        .as_array()
-        .expect("top-level contract checked demands")
-    {
-        let demand = demand
-            .as_object()
-            .ok_or(ReviewerResultRejection::MalformedBenchmarkDemand)?;
-        exact_reviewer_keys(
-            demand,
-            &["claim", "why", "suggested_method"],
-            ReviewerResultRejection::UnexpectedFields,
-        )?;
-        if demand
-            .values()
-            .any(|field| field.as_str().is_none_or(str::is_empty))
-        {
-            return Err(ReviewerResultRejection::EmptyBenchmarkDemand);
-        }
-    }
-    for dispute in value["disputes"]
-        .as_array()
-        .expect("top-level contract checked disputes")
-    {
-        let dispute = dispute
-            .as_object()
-            .ok_or(ReviewerResultRejection::MalformedDispute)?;
-        exact_reviewer_keys(
-            dispute,
-            &["claim_id", "position", "reason"],
-            ReviewerResultRejection::UnexpectedFields,
-        )?;
-        if dispute["claim_id"].as_str().is_none_or(str::is_empty)
-            || !matches!(dispute["position"].as_str(), Some("confirm" | "refute"))
-            || dispute["reason"].as_str().is_none_or(str::is_empty)
-        {
-            return Err(ReviewerResultRejection::InvalidDispute);
-        }
-    }
-    Ok(())
-}
-
-/// Validate the additive `ReviewerResult@2` wire value. Coverage of the exact assigned prior
-/// Finding Set is deliberately enforced by the pipeline, which owns that input authority.
+/// Validate the produced flat `ReviewerResult@2` wire value in the crate that owns its Rust
+/// report types. Persistence and pipeline admission both call this one rule. Coverage of the
+/// exact assigned prior Finding Set is deliberately enforced by the pipeline, which owns that
+/// input authority.
 pub fn validate_reviewer_result_v2(value: &serde_json::Value) -> Result<(), String> {
     validate_reviewer_result_v2_classified(value)
         .map_err(|error| format!("ReviewerResult@2 admission refused: {}", error.code()))
 }
 
+/// Validate a result while retaining a stable, reviewer-byte-free rejection classification.
 pub fn validate_reviewer_result_v2_classified(
     value: &serde_json::Value,
 ) -> Result<(), ReviewerResultRejection> {
@@ -595,19 +489,22 @@ mod tests {
                     "occurrence_key": occurrence_key
                 }],
                 "benchmark_demands": [],
-                "disputes": []
+                "dispositions": []
             })
         };
 
         assert_eq!(
-            validate_reviewer_result_classified(&result("test.rules/loop_safety@1", "main-loop")),
+            validate_reviewer_result_v2_classified(&result(
+                "test.rules/loop_safety@1",
+                "main-loop"
+            )),
             Err(ReviewerResultRejection::InvalidRuleId)
         );
         assert_eq!(
-            validate_reviewer_result_classified(&result("test.rules/loop-safety@1", "")),
+            validate_reviewer_result_v2_classified(&result("test.rules/loop-safety@1", "")),
             Err(ReviewerResultRejection::EmptyOccurrenceKey)
         );
-        validate_reviewer_result_classified(&result("test.rules/loop-safety@1", "main-loop"))
+        validate_reviewer_result_v2_classified(&result("test.rules/loop-safety@1", "main-loop"))
             .unwrap();
 
         let mut malformed = finding();

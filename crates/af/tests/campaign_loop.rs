@@ -119,14 +119,21 @@ fn repin(repo: &Path) {
 }
 
 fn write_review_config(repo: &Path) {
-    let finding = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"major\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins\",\"fix\":\"bound it\",\"confidence\":0.9,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"disputes\":[]}"#;
-    let blocker = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"blocker\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins and prevents shutdown\",\"fix\":\"bound it\",\"confidence\":0.99,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"disputes\":[]}"#;
-    let demand = r#"{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[{\"claim\":\"the loop terminates\",\"why\":\"termination is not demonstrated\",\"suggested_method\":\"run a bounded integration test\"}],\"disputes\":[]}"#;
-    let clean = r#"{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"disputes\":[]}"#;
+    let finding = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"major\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins\",\"fix\":\"bound it\",\"confidence\":0.9,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"dispositions\":[$d]}"#;
+    let blocker = r#"{\"verdict\":\"request-changes\",\"summary\":null,\"findings\":[{\"severity\":\"blocker\",\"file\":\"src/main.rs\",\"line\":1,\"title\":\"Unbounded loop\",\"body\":\"spins and prevents shutdown\",\"fix\":\"bound it\",\"confidence\":0.99,\"rule_id\":\"test.rules/loop-safety@1\",\"occurrence_key\":\"main-loop\"}],\"benchmark_demands\":[],\"dispositions\":[$d]}"#;
+    let demand = r#"{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[{\"claim\":\"the loop terminates\",\"why\":\"termination is not demonstrated\",\"suggested_method\":\"run a bounded integration test\"}],\"dispositions\":[$d]}"#;
+    let clean = r#"{\"verdict\":\"approve\",\"summary\":null,\"findings\":[],\"benchmark_demands\":[],\"dispositions\":[$d]}"#;
     // A committed `FAIL` marker makes the reviewer exit non-zero, so a test can produce an
     // incomplete run on demand. Absent in every other test, so it changes nothing there.
+    // Every prior Finding the input assigns is answered `not_reproduced`, the disposition that
+    // changes no Ledger state, so each answer covers its assignment exactly.
     let script = format!(
-        "if [ -f FAIL ]; then exit 7; fi; \
+        "input=$(cat); \
+         ids=$(printf '%s' \"$input\" | grep -o '\"finding_id\":\"sha256:[0-9a-f]*\"' | cut -d'\"' -f4 | sort -u); \
+         d=; for id in $ids; do \
+         d=\"$d${{d:+,}}{{\\\"finding_id\\\":\\\"$id\\\",\\\"position\\\":\\\"not_reproduced\\\",\\\"reason\\\":\\\"not re-examined by the fixture\\\"}}\"; \
+         done; \
+         if [ -f FAIL ]; then exit 7; fi; \
          if [ -f DEMAND ]; then printf '%s' \"{demand}\"; \
          elif [ -f BLOCKER ]; then printf '%s' \"{blocker}\"; \
          elif grep -q 'loop {{}}' src/main.rs; then printf '%s' \"{finding}\"; \
@@ -149,10 +156,15 @@ kind = "gate"
 outputs = ["decision"]
 
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+
+[[nodes]]
 id = "architecture"
 kind = "reviewer"
-inputs = ["gate"]
-outputs = ["result"]
+inputs = ["gate", {{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }}]
+outputs = [{{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
 gated_by = "gate"
 [nodes.runner]
 program = "/bin/sh"
@@ -161,7 +173,7 @@ args = [{{ value = "-c" }}, {{ value = '''{script}''' }}]
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["architecture"]
+inputs = [{{ name = "architecture", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }}]
 outputs = ["reports"]
 
 [[nodes]]
@@ -176,6 +188,10 @@ outputs = [
 [[edges]]
 from = {{ node = "gate", port = "decision" }}
 to = {{ node = "architecture", port = "gate" }}
+
+[[edges]]
+from = {{ node = "generation", port = "findings" }}
+to = {{ node = "architecture", port = "prior_findings" }}
 
 [[edges]]
 from = {{ node = "architecture", port = "result" }}
@@ -1616,7 +1632,7 @@ input=$(cat)
 if [ -n "$out" ] && [ "$input" = 'Reply with exactly: OK' ]; then
   printf '%s' 'OK' >"$out"
 elif [ -n "$out" ]; then
-  printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}' >"$out"
+  printf '%s' '{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}' >"$out"
 fi
 printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"OK"}}'
 printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"output_tokens":1}}'
@@ -1677,19 +1693,22 @@ kind = "diff"
 id = "generation"
 kind = "generation"
 outputs = [
-  { name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+  { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
   { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
 ]
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
 package = "tester"
-inputs = [{ name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
-outputs = [{ name = "result", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+inputs = [
+  { name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
+  { name = "change_set", type = "review.kernel/ChangeSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
+]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = [{ name = "reviewer", type = "review.kernel/ReviewerResult@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+inputs = [{ name = "reviewer", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = [{ name = "reports", type = "review.kernel/ReportSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 [[nodes]]
 id = "ledger"
@@ -1699,6 +1718,9 @@ outputs = [
   { name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
   { name = "demands", type = "review.kernel/DemandSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
 ]
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "reviewer", port = "prior_findings" }
 [[edges]]
 from = { node = "generation", port = "change_set" }
 to = { node = "reviewer", port = "change_set" }

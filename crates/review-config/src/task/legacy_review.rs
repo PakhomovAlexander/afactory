@@ -142,21 +142,13 @@ fn output_codec(kind: NodeKind, output: &PortContract) -> Result<ReviewArtifactC
     match kind {
         NodeKind::Generation => match ty {
             contract::FINDING_SET_V1 => Ok(enveloped()),
-            contract::PRIOR_FINDINGS_V1 | contract::CHANGE_SET_V1 => Ok(flat(ty)),
+            contract::CHANGE_SET_V1 => Ok(flat(ty)),
             _ => Err("Review Generation requires a supported explicit output contract".into()),
         },
         NodeKind::Gate if opaque || ty == contract::GATE_DECISION_V1 => {
             Ok(flat(contract::GATE_DECISION_V1))
         }
-        NodeKind::Reviewer if opaque => Ok(flat(contract::REVIEWER_RESULT_V1)),
-        NodeKind::Reviewer
-            if matches!(
-                ty,
-                contract::REVIEWER_RESULT_V1 | contract::REVIEWER_RESULT_V2
-            ) =>
-        {
-            Ok(flat(ty))
-        }
+        NodeKind::Reviewer if ty == contract::REVIEWER_RESULT_V2 => Ok(flat(ty)),
         NodeKind::Gather if opaque || ty == contract::REPORT_SET_V1 => {
             Ok(flat(contract::REPORT_SET_V1))
         }
@@ -323,14 +315,8 @@ pub fn compile_legacy_review(
                 // not grant a second scheduler or an independent allowance to the host.
                 let output_type = if node.kind == NodeKind::Reviewer {
                     outputs["o0"].artifact_type.clone()
-                } else if node
-                    .inputs
-                    .iter()
-                    .any(|port| port.artifact_type == contract::FINDING_SET_V1)
-                {
-                    contract::REVIEWER_RESULT_V2.into()
                 } else {
-                    contract::REVIEWER_RESULT_V1.into()
+                    contract::REVIEWER_RESULT_V2.into()
                 };
                 let spec = WorkerSlotV1 {
                     worker: worker.package.clone(),

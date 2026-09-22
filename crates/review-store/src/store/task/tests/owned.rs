@@ -944,7 +944,7 @@ fn owned_canonical_receipt_is_fenced_by_parent_seal_but_recorded_selection_repla
             payload(&f.cas, &f.plan.compiled_graph_id, "af/CompiledTask@1").unwrap();
         let contract = &mut graph.owned_children.get_mut(PARENT).unwrap().contract;
         contract.outputs.get_mut("output").unwrap().artifact_type =
-            review_core::contract::REVIEWER_RESULT_V1.into();
+            review_core::contract::REVIEWER_RESULT_V2.into();
         let mut metadata = contract.outputs["output"].clone();
         metadata.artifact_type = TASK_REVIEW_RESULT_METADATA_V1.into();
         contract.outputs.insert("metadata".into(), metadata);
@@ -1175,7 +1175,7 @@ fn owned_canonical_receipt_is_fenced_by_parent_seal_but_recorded_selection_repla
                 node: "reviewer".into(),
                 outputs: vec![review_core::PortArtifactsV1 {
                     port: "out".into(),
-                    artifact_type: review_core::contract::REVIEWER_RESULT_V1.into(),
+                    artifact_type: review_core::contract::REVIEWER_RESULT_V2.into(),
                     cardinality: review_core::PortCardinality::One,
                     optional: false,
                     snapshot_affinity: review_core::SnapshotAffinity::Any,

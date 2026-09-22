@@ -392,7 +392,7 @@ impl LegacyReviewTaskHost<'_, '_> {
             let message = returned.message?;
             feedback_code = TaskFeedbackCodeV1::InvalidOutputContract;
             let text = std::str::from_utf8(&message).map_err(|e| e.to_string())?;
-            let parsed = review_runner::parse_stage_output_for(inputs.result_contract, text)?;
+            let parsed = review_runner::parse_reviewer_result(text)?;
             let assigned: Vec<String> = inputs
                 .prior_findings
                 .as_ref()
@@ -403,7 +403,7 @@ impl LegacyReviewTaskHost<'_, '_> {
                 .filter_map(|v| v.get("finding_id").and_then(serde_json::Value::as_str))
                 .map(str::to_owned)
                 .collect();
-            let value = crate::reviewer_result_value(&parsed, inputs.result_contract, &assigned)
+            let value = crate::reviewer_result_value(&parsed, &assigned)
                 .map_err(|e| format!("Review result rejected: {e:?}"))?;
             feedback_code = TaskFeedbackCodeV1::OutputAdmissionRejected;
             let raw = if let Some(id) = result.raw_artifact_ids.first() {

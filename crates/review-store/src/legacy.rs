@@ -12,7 +12,7 @@ use review_core::legacy::LegacyBenchmarkDemand;
 use review_core::{
     CANONICAL_FINDING_IDENTITY_POLICY, EventType, FindingDispositionPosition, FindingDispositionV1,
     FindingGroupingAction, FindingGroupingEventPayloadV1, FindingGroupingV1, FindingReport,
-    LegacyStageOutput, Producer, ReviewerResultContract, RunEvent, Severity,
+    LegacyStageOutput, Producer, RunEvent, Severity,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -46,7 +46,6 @@ pub struct CanonicalStage<'a> {
     pub input_artifacts: &'a [String],
     pub subject_snapshot_id: &'a str,
     pub subject_id: &'a str,
-    pub result_contract: ReviewerResultContract,
 }
 
 /// The exact immutable inputs emitted by one canonical ledger reduction.
@@ -64,8 +63,6 @@ pub struct CanonicalReduction {
     pub input_artifact_ids: Vec<String>,
     /// CAS records for selected Demand envelopes.
     pub demand_input_artifact_ids: Vec<String>,
-    /// The reducer contract selected by the admitted evidence kind.
-    pub reducer_version: &'static str,
 }
 
 #[derive(Clone)]
@@ -83,7 +80,6 @@ struct PreparedStage {
     demands: Vec<LegacyBenchmarkDemand>,
     disputes: Vec<review_core::legacy::LegacyDispute>,
     provenance: ReportProvenance,
-    result_contract: ReviewerResultContract,
 }
 
 impl<'a> Ingest<'a> {

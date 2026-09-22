@@ -8,8 +8,8 @@ mod support;
 
 use std::collections::BTreeMap;
 
+use review_core::ArtifactEnvelope;
 use review_core::task::{TaskLimitsV1, VerificationReserveV1};
-use review_core::{ArtifactEnvelope, RoundStartedPayloadV1};
 use review_graph::task::Address;
 use review_pipeline::task::legacy_review::CapturedLegacyReviewRound;
 use review_source_git::Manifest;
@@ -22,24 +22,29 @@ kind = "whole-tree"
 [[nodes]]
 id = "generation"
 kind = "generation"
-outputs = [
-  { name = "assigned", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" },
-  { name = "history", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" },
-]
+outputs = [{ name = "history", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 runner = { program = "/bin/true" }
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
+inputs = [{ name = "reports", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[edges]]
+from = { node = "generation", port = "history" }
+to = { node = "reviewer", port = "prior_findings" }
 [[edges]]
 from = { node = "reviewer", port = "result" }
 to = { node = "ledger", port = "reports" }
 "#;
+
+/// The reviewer's typed output line in [`PIPELINE`], for tests that rebind the reviewer node.
+#[allow(dead_code)]
+const REVIEWER_OUTPUTS: &str = r#"outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]"#;
 
 #[test]
 fn actual_round_capture_reopens_without_a_second_execution_log() {

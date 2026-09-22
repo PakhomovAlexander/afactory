@@ -193,7 +193,7 @@ impl ReviewTaskDomain {
             .iter()
             .map(|f| f.finding_id.clone())
             .collect::<Vec<_>>();
-        crate::reviewer_result_value(stage, review_core::ReviewerResultContract::V2, &ids)
+        crate::reviewer_result_value(stage, &ids)
             .map(|_| ())
             .map_err(|e| format!("Reviewer disposition coverage: {e:?}"))
     }

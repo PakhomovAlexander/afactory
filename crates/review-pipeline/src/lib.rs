@@ -66,10 +66,6 @@ use review_store::{
 
 type CacheSourceResolver = dyn Fn(CacheKind) -> Result<CacheSource, CacheError> + Send + Sync;
 
-fn is_generation_prior_findings_output(port: &PortContract) -> bool {
-    port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1
-}
-
 fn is_generation_finding_set_output(port: &PortContract) -> bool {
     port.artifact_type == review_core::contract::FINDING_SET_V1
 }
@@ -78,16 +74,8 @@ fn is_demand_set_port(port: &PortContract) -> bool {
     port.artifact_type == review_core::contract::DEMAND_SET_V1
 }
 
-fn is_reviewer_prior_findings_input(port: &PortContract) -> bool {
-    port.artifact_type == review_core::contract::PRIOR_FINDINGS_V1
-}
-
 fn is_reviewer_finding_set_input(port: &PortContract) -> bool {
     port.artifact_type == review_core::contract::FINDING_SET_V1
-}
-
-fn is_reviewer_prior_set_input(port: &PortContract) -> bool {
-    is_reviewer_prior_findings_input(port) || is_reviewer_finding_set_input(port)
 }
 
 fn reviewer_result_contract(node: &Node) -> Result<ReviewerResultContract, String> {
@@ -97,17 +85,12 @@ fn reviewer_result_contract(node: &Node) -> Result<ReviewerResultContract, Strin
             node.id
         ));
     };
-    ReviewerResultContract::parse_artifact_type(&port.artifact_type)
-        .or_else(|| {
-            (port.artifact_type == review_core::contract::OPAQUE_V1)
-                .then_some(ReviewerResultContract::V1)
-        })
-        .ok_or_else(|| {
-            format!(
-                "reviewer `{}` output `{}` has unsupported result type `{}`",
-                node.id, port.name, port.artifact_type
-            )
-        })
+    ReviewerResultContract::parse_artifact_type(&port.artifact_type).ok_or_else(|| {
+        format!(
+            "reviewer `{}` output `{}` has unsupported result type `{}`",
+            node.id, port.name, port.artifact_type
+        )
+    })
 }
 
 fn is_change_set_port(port: &PortContract) -> bool {
@@ -670,7 +653,6 @@ fn persisted_verdict(
 
 fn reviewer_result_value(
     stage: &LegacyStageOutput,
-    contract: ReviewerResultContract,
     assigned_finding_ids: &[String],
 ) -> Result<serde_json::Value, ReviewerResultRejection> {
     let mut object =
@@ -682,93 +664,54 @@ fn reviewer_result_value(
         .remove("findings")
         .ok_or(ReviewerResultRejection::UnexpectedFields)?;
     object.insert("reports".into(), reports);
-    let entries = object
-        .get_mut("disputes")
-        .and_then(serde_json::Value::as_array_mut)
-        .ok_or(ReviewerResultRejection::MalformedDispute)?;
-    for entry in entries.iter_mut() {
-        let entry = entry.as_object_mut().ok_or(match contract {
-            ReviewerResultContract::V1 => ReviewerResultRejection::MalformedDispute,
-            ReviewerResultContract::V2 => ReviewerResultRejection::MalformedDisposition,
-        })?;
-        let finding_id = entry.remove("fp").ok_or(match contract {
-            ReviewerResultContract::V1 => ReviewerResultRejection::InvalidDispute,
-            ReviewerResultContract::V2 => ReviewerResultRejection::InvalidDisposition,
-        })?;
-        let key = match contract {
-            ReviewerResultContract::V1 => "claim_id",
-            ReviewerResultContract::V2 => "finding_id",
-        };
-        entry.insert(key.into(), finding_id);
-        let valid = match contract {
-            ReviewerResultContract::V1 => matches!(
-                entry.get("position").and_then(serde_json::Value::as_str),
-                Some("confirm" | "refute")
-            ),
-            ReviewerResultContract::V2 => matches!(
-                entry.get("position").and_then(serde_json::Value::as_str),
-                Some("corroborate" | "not_reproduced" | "dispute")
-            ),
-        };
-        if !valid {
-            return Err(match contract {
-                ReviewerResultContract::V1 => ReviewerResultRejection::InvalidDispute,
-                ReviewerResultContract::V2 => ReviewerResultRejection::InvalidDisposition,
-            });
-        }
-    }
-    if contract == ReviewerResultContract::V2 {
-        let dispositions = object
-            .remove("disputes")
+    let mut dispositions = object
+        .remove("disputes")
+        .ok_or(ReviewerResultRejection::MalformedDisposition)?;
+    for entry in dispositions
+        .as_array_mut()
+        .ok_or(ReviewerResultRejection::MalformedDisposition)?
+    {
+        let entry = entry
+            .as_object_mut()
             .ok_or(ReviewerResultRejection::MalformedDisposition)?;
-        object.insert("dispositions".into(), dispositions);
+        let finding_id = entry
+            .remove("fp")
+            .ok_or(ReviewerResultRejection::InvalidDisposition)?;
+        entry.insert("finding_id".into(), finding_id);
+        if !matches!(
+            entry.get("position").and_then(serde_json::Value::as_str),
+            Some("corroborate" | "not_reproduced" | "dispute")
+        ) {
+            return Err(ReviewerResultRejection::InvalidDisposition);
+        }
     }
+    object.insert("dispositions".into(), dispositions);
     let value = serde_json::Value::Object(object);
-    match contract {
-        ReviewerResultContract::V1 => {
-            review_core::validate_reviewer_result_classified(&value)?;
+    review_core::validate_reviewer_result_v2_classified(&value)?;
+    let expected: BTreeSet<_> = assigned_finding_ids.iter().map(String::as_str).collect();
+    let dispositions = value["dispositions"]
+        .as_array()
+        .expect("ReviewerResult@2 validator checked dispositions");
+    let mut actual = BTreeSet::new();
+    for disposition in dispositions {
+        let finding_id = disposition["finding_id"]
+            .as_str()
+            .expect("ReviewerResult@2 validator checked finding_id");
+        if !actual.insert(finding_id) {
+            return Err(ReviewerResultRejection::DuplicateDisposition);
         }
-        ReviewerResultContract::V2 => {
-            review_core::validate_reviewer_result_v2_classified(&value)?;
-            let expected: BTreeSet<_> = assigned_finding_ids.iter().map(String::as_str).collect();
-            let dispositions = value["dispositions"]
-                .as_array()
-                .expect("ReviewerResult@2 validator checked dispositions");
-            let mut actual = BTreeSet::new();
-            for disposition in dispositions {
-                let finding_id = disposition["finding_id"]
-                    .as_str()
-                    .expect("ReviewerResult@2 validator checked finding_id");
-                if !actual.insert(finding_id) {
-                    return Err(ReviewerResultRejection::DuplicateDisposition);
-                }
-                if !expected.contains(finding_id) {
-                    return Err(ReviewerResultRejection::UnassignedDisposition);
-                }
-            }
-            if actual != expected {
-                return Err(ReviewerResultRejection::MissingDispositionCoverage);
-            }
+        if !expected.contains(finding_id) {
+            return Err(ReviewerResultRejection::UnassignedDisposition);
         }
+    }
+    if actual != expected {
+        return Err(ReviewerResultRejection::MissingDispositionCoverage);
     }
     Ok(value)
 }
 
-fn reviewer_stage_output(
-    value: serde_json::Value,
-) -> Result<(ReviewerResultContract, LegacyStageOutput), String> {
-    let contract = match (
-        value.get("disputes").is_some(),
-        value.get("dispositions").is_some(),
-    ) {
-        (true, false) => ReviewerResultContract::V1,
-        (false, true) => ReviewerResultContract::V2,
-        _ => return Err("reviewer result has ambiguous versioned disposition fields".into()),
-    };
-    match contract {
-        ReviewerResultContract::V1 => review_core::validate_reviewer_result(&value)?,
-        ReviewerResultContract::V2 => review_core::validate_reviewer_result_v2(&value)?,
-    }
+fn reviewer_stage_output(value: serde_json::Value) -> Result<LegacyStageOutput, String> {
+    review_core::validate_reviewer_result_v2(&value)?;
     let mut object = match value {
         serde_json::Value::Object(object) => object,
         _ => return Err("ReviewerResult is not an object".into()),
@@ -777,27 +720,23 @@ fn reviewer_stage_output(
         .remove("reports")
         .ok_or("ReviewerResult has no reports array")?;
     object.insert("findings".into(), reports);
-    if contract == ReviewerResultContract::V2 {
-        let mut dispositions = object
-            .remove("dispositions")
-            .ok_or("ReviewerResult@2 has no dispositions array")?;
-        for disposition in dispositions
-            .as_array_mut()
-            .ok_or("ReviewerResult@2 dispositions is not an array")?
-        {
-            let disposition = disposition
-                .as_object_mut()
-                .ok_or("ReviewerResult@2 disposition is not an object")?;
-            let finding_id = disposition
-                .remove("finding_id")
-                .ok_or("ReviewerResult@2 disposition has no finding_id")?;
-            disposition.insert("fp".into(), finding_id);
-        }
-        object.insert("disputes".into(), dispositions);
+    let mut dispositions = object
+        .remove("dispositions")
+        .ok_or("ReviewerResult@2 has no dispositions array")?;
+    for disposition in dispositions
+        .as_array_mut()
+        .ok_or("ReviewerResult@2 dispositions is not an array")?
+    {
+        let disposition = disposition
+            .as_object_mut()
+            .ok_or("ReviewerResult@2 disposition is not an object")?;
+        let finding_id = disposition
+            .remove("finding_id")
+            .ok_or("ReviewerResult@2 disposition has no finding_id")?;
+        disposition.insert("fp".into(), finding_id);
     }
-    serde_json::from_value(serde_json::Value::Object(object))
-        .map(|stage| (contract, stage))
-        .map_err(|error| error.to_string())
+    object.insert("disputes".into(), dispositions);
+    serde_json::from_value(serde_json::Value::Object(object)).map_err(|error| error.to_string())
 }
 
 fn canonical_reduction_round(ledger_round: u32, authority_round: u32) -> Result<u32, String> {
@@ -929,9 +868,7 @@ fn validate_generation_outputs(
         return Ok(());
     }
     for port in &node.outputs {
-        let expected = if is_generation_prior_findings_output(port) {
-            vec![authority.prior_finding_set_id.clone()]
-        } else if is_generation_finding_set_output(port) {
+        let expected = if is_generation_finding_set_output(port) {
             if authority.prior_reduction_finding_set_id == authority.finding_genesis_id {
                 Vec::new()
             } else {
@@ -1158,7 +1095,7 @@ outputs = [{ name = "set", type = "review.kernel/FindingSet@1", cardinality = "o
             subject_id: subject.clone(),
             round: 1,
             prior_finding_set_id: genesis.clone(),
-            reducer_version: review_core::FINDING_REDUCER_VERSION.into(),
+            reducer_version: review_core::FINDING_REDUCER_VERSION_V2.into(),
             identity_policy: review_core::CANONICAL_FINDING_IDENTITY_POLICY.into(),
             selected_report_ids: Vec::new(),
             relation_ids: Vec::new(),
@@ -1501,7 +1438,7 @@ outputs = ["findings"]
 
     #[test]
     fn flat_reviewer_reports_reach_the_legacy_reducer() {
-        let (contract, output) = reviewer_stage_output(serde_json::json!({
+        let output = reviewer_stage_output(serde_json::json!({
             "verdict": "request-changes",
             "summary": null,
             "reports": [{
@@ -1514,17 +1451,25 @@ outputs = ["findings"]
                 "confidence": 0.9
             }],
             "benchmark_demands": [],
-            "disputes": [{
-                "claim_id": "prior",
-                "position": "refute",
+            "dispositions": [{
+                "finding_id": "prior",
+                "position": "dispute",
                 "reason": "not reproduced"
             }]
         }))
         .unwrap();
-        assert_eq!(contract, ReviewerResultContract::V1);
         assert_eq!(output.findings.len(), 1);
         assert_eq!(output.findings[0].file, "src/a.rs");
         assert_eq!(output.disputes[0].fp, "prior");
+        assert_eq!(output.disputes[0].position, "dispute");
+        let retired = reviewer_stage_output(serde_json::json!({
+            "verdict": "approve",
+            "summary": null,
+            "reports": [],
+            "benchmark_demands": [],
+            "disputes": []
+        }));
+        assert!(retired.is_err(), "a ReviewerResult@1 answer is refused");
     }
 
     #[test]
@@ -1546,39 +1491,20 @@ outputs = ["findings"]
         let assigned = vec!["finding:a".to_string(), "finding:b".to_string()];
 
         assert_eq!(
-            reviewer_result_value(
-                &stage(&["finding:a"]),
-                ReviewerResultContract::V2,
-                &assigned,
-            )
-            .unwrap_err(),
+            reviewer_result_value(&stage(&["finding:a"]), &assigned,).unwrap_err(),
             ReviewerResultRejection::MissingDispositionCoverage
         );
         assert_eq!(
-            reviewer_result_value(
-                &stage(&["finding:a", "finding:a"]),
-                ReviewerResultContract::V2,
-                &assigned,
-            )
-            .unwrap_err(),
+            reviewer_result_value(&stage(&["finding:a", "finding:a"]), &assigned,).unwrap_err(),
             ReviewerResultRejection::DuplicateDisposition
         );
         assert_eq!(
-            reviewer_result_value(
-                &stage(&["finding:a", "finding:outside"]),
-                ReviewerResultContract::V2,
-                &assigned,
-            )
-            .unwrap_err(),
+            reviewer_result_value(&stage(&["finding:a", "finding:outside"]), &assigned,)
+                .unwrap_err(),
             ReviewerResultRejection::UnassignedDisposition
         );
 
-        let value = reviewer_result_value(
-            &stage(&["finding:b", "finding:a"]),
-            ReviewerResultContract::V2,
-            &assigned,
-        )
-        .unwrap();
+        let value = reviewer_result_value(&stage(&["finding:b", "finding:a"]), &assigned).unwrap();
         assert!(value.get("disputes").is_none());
         assert_eq!(value["dispositions"].as_array().unwrap().len(), 2);
     }

@@ -717,7 +717,7 @@ mod tests {
                         name: "worker_input".into(),
                         required_by: "typed ReviewerInputs document".into(),
                         artifact_id: Some(raw.clone()),
-                        artifact_type: Some("review.kernel/ReviewerResult@1".into()),
+                        artifact_type: Some("review.kernel/ReviewerResult@2".into()),
                         rendered_bytes: u64::MAX,
                         estimated_tokens: u64::MAX,
                     }],

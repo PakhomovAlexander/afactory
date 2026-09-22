@@ -25,8 +25,7 @@ pub fn prepare_canonical_task_review(
                 .map_err(|e| StoreError::Artifact(e.to_string()))?,
         )?;
         crate::validate_envelope(&artifact).map_err(|e| StoreError::Conflict(e.to_string()))?;
-        if stage.result_contract != ReviewerResultContract::V2
-            || artifact.artifact_id != stage.result_artifact_id
+        if artifact.artifact_id != stage.result_artifact_id
             || artifact.artifact_type != review_core::contract::REVIEWER_RESULT_V2
             || artifact.subject_snapshot_id.as_deref() != Some(stage.subject_snapshot_id)
             || artifact.input_artifacts != stage.input_artifacts
@@ -142,7 +141,6 @@ pub(super) fn prepare_canonical_inputs(
                 subject_snapshot_id: stage.subject_snapshot_id.to_string(),
                 subject_id: stage.subject_id.to_string(),
             },
-            result_contract: stage.result_contract,
         });
     }
     Ok(prepared)
@@ -225,18 +223,13 @@ pub(super) fn prepare_review_outputs(
         }
         let mut reports = stage.reports.clone();
         for dispute in &stage.disputes {
-            let corroborates = match stage.result_contract {
-                ReviewerResultContract::V1 => dispute.position.trim() == "confirm",
-                ReviewerResultContract::V2 => dispute.position.trim() == "corroborate",
-            };
-            if !corroborates {
+            if dispute.position.trim() != "corroborate" {
                 continue;
             }
             let key = dispute.fp.trim();
             let Some(finding) = ledger.get(key) else {
-                // A model may mistype a long canonical ID. Like an unresolvable refute,
-                // it carries no safe authority and must not discard the other selected
-                // reviewers' evidence.
+                // Every disposition names an assigned Finding; the disposition pass below
+                // refuses one that does not.
                 continue;
             };
             let mut replayed = false;
@@ -444,98 +437,63 @@ pub(super) fn prepare_review_outputs(
             }
         }
 
-        if stage.result_contract == ReviewerResultContract::V2 {
-            for disposition in &stage.disputes {
-                let finding_id = disposition.fp.trim();
-                if ledger.get(finding_id).is_none() {
+        for disposition in &stage.disputes {
+            let finding_id = disposition.fp.trim();
+            if ledger.get(finding_id).is_none() {
+                return Err(StoreError::Conflict(format!(
+                    "{source} disposition names Finding `{finding_id}` outside its assigned prior Finding Set"
+                )));
+            }
+            let position = match disposition.position.trim() {
+                "corroborate" => FindingDispositionPosition::Corroborate,
+                "not_reproduced" => FindingDispositionPosition::NotReproduced,
+                "dispute" => FindingDispositionPosition::Dispute,
+                _ => {
                     return Err(StoreError::Conflict(format!(
-                        "{source} disposition names Finding `{finding_id}` outside its assigned prior Finding Set"
+                        "{source} disposition has an invalid position"
                     )));
                 }
-                let position = match disposition.position.trim() {
-                    "corroborate" => FindingDispositionPosition::Corroborate,
-                    "not_reproduced" => FindingDispositionPosition::NotReproduced,
-                    "dispute" => FindingDispositionPosition::Dispute,
-                    _ => {
-                        return Err(StoreError::Conflict(format!(
-                            "{source} disposition has an invalid position"
-                        )));
-                    }
-                };
-                let payload = FindingDispositionV1 {
-                    finding_id: finding_id.to_string(),
-                    source: source.to_string(),
-                    position,
-                    reason: disposition.reason.clone(),
-                    round,
-                    subject_id: provenance.subject_id.clone(),
-                };
-                payload.validate().map_err(StoreError::Conflict)?;
-                let (record_id, envelope) = cas
-                    .put_artifact(
-                        review_core::contract::FINDING_DISPOSITION_V1,
-                        provenance.producer.clone(),
-                        provenance.input_artifacts.clone(),
-                        Some(provenance.subject_snapshot_id.clone()),
-                        serde_json::to_value(payload)?,
-                    )
-                    .map_err(|error| StoreError::Conflict(error.to_string()))?;
-                relation_ids.push(envelope.artifact_id);
-                input_artifact_ids.push(record_id.clone());
+            };
+            let payload = FindingDispositionV1 {
+                finding_id: finding_id.to_string(),
+                source: source.to_string(),
+                position,
+                reason: disposition.reason.clone(),
+                round,
+                subject_id: provenance.subject_id.clone(),
+            };
+            payload.validate().map_err(StoreError::Conflict)?;
+            let (record_id, envelope) = cas
+                .put_artifact(
+                    review_core::contract::FINDING_DISPOSITION_V1,
+                    provenance.producer.clone(),
+                    provenance.input_artifacts.clone(),
+                    Some(provenance.subject_snapshot_id.clone()),
+                    serde_json::to_value(payload)?,
+                )
+                .map_err(|error| StoreError::Conflict(error.to_string()))?;
+            relation_ids.push(envelope.artifact_id);
+            input_artifact_ids.push(record_id.clone());
 
-                if position != FindingDispositionPosition::Dispute {
-                    continue;
-                }
-                let contestable = matches!(
-                    projected.get(finding_id).map(|finding| finding.status),
-                    Some(Status::Open | Status::Fixed)
-                );
-                if !contestable {
-                    continue;
-                }
-                let payload = json!({
-                    "key": finding_id,
-                    "status": Status::Contested.as_str(),
-                    "note": format!("contested by {source}: {}", disposition.reason),
-                    "round": round,
-                });
-                let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload)
-                    .correlating(finding_id.to_string())
-                    .referencing(vec![record_id]);
-                apply_candidate(&mut projected, &event, cas)?;
-                events.push(event);
-            }
-        }
-
-        // Reviewer disputes are part of the legacy contract the model is asked to answer. A
-        // `confirm` above becomes a current, provenance-carrying Report with an explicit
-        // corroborates relation. A `refute` on a prior claim's `claim_id` says "I think this
-        // is wrong". Fold it:
-        // an active claim a reviewer refutes becomes `contested`, which blocks convergence
-        // and flags the claim for human adjudication rather than leaving the dispute inert in
-        // raw CAS output.
-        for dispute in &stage.disputes {
-            if stage.result_contract != ReviewerResultContract::V1 {
+            if position != FindingDispositionPosition::Dispute {
                 continue;
             }
-            if dispute.position.trim() != "refute" {
-                continue;
-            }
-            let key = dispute.fp.trim();
             let contestable = matches!(
-                projected.get(key).map(|f| f.status),
+                projected.get(finding_id).map(|finding| finding.status),
                 Some(Status::Open | Status::Fixed)
             );
             if !contestable {
                 continue;
             }
             let payload = json!({
-                "key": key,
+                "key": finding_id,
                 "status": Status::Contested.as_str(),
-                "note": format!("contested by {source}: {}", dispute.reason),
+                "note": format!("contested by {source}: {}", disposition.reason),
                 "round": round,
             });
-            let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload).correlating(key.to_string());
+            let event = NewEvent::new(EVENT_FINDING_RESOLVED, payload)
+                .correlating(finding_id.to_string())
+                .referencing(vec![record_id]);
             apply_candidate(&mut projected, &event, cas)?;
             events.push(event);
         }
@@ -548,14 +506,6 @@ pub(super) fn prepare_review_outputs(
         selected_demand_artifact_ids,
         input_artifact_ids,
         demand_input_artifact_ids,
-        reducer_version: if stages
-            .iter()
-            .any(|stage| stage.result_contract == ReviewerResultContract::V2)
-        {
-            review_core::FINDING_REDUCER_VERSION_V2
-        } else {
-            review_core::FINDING_REDUCER_VERSION
-        },
     };
     Ok(PreparedReviewReduction {
         reduction,

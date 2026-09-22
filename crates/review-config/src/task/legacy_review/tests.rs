@@ -14,25 +14,25 @@ outputs = ["decision"]
 [[nodes]]
 id = "generation"
 kind = "generation"
-outputs = [{ name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
+outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
 [[nodes]]
 id = "first/reviewer"
 kind = "reviewer"
-inputs = [{ name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "any" }]
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 runner = { program = "/bin/true" }
 [[nodes]]
 id = "second"
 kind = "reviewer"
-inputs = []
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 runner = { program = "/bin/true" }
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = [{ name = "reports", type = "review.kernel/Opaque@1", cardinality = "many", optional = false, snapshot_affinity = "any" }]
+inputs = [{ name = "reports", type = "review.kernel/ReviewerResult@2", cardinality = "many", optional = false, snapshot_affinity = "any" }]
 outputs = ["reports"]
 [[nodes]]
 id = "ledger"
@@ -42,6 +42,9 @@ outputs = ["findings"]
 [[edges]]
 from = { node = "generation", port = "findings" }
 to = { node = "first/reviewer", port = "prior_findings" }
+[[edges]]
+from = { node = "generation", port = "findings" }
+to = { node = "second", port = "prior_findings" }
 [[edges]]
 from = { node = "first/reviewer", port = "result" }
 to = { node = "gather", port = "reports" }
@@ -149,7 +152,7 @@ fn static_review_has_public_contract_typed_lanes_transitive_gates_and_one_budget
         assert_eq!(node.contract.outputs.len(), 2);
         assert_eq!(
             node.contract.outputs["o0"].artifact_type,
-            contract::REVIEWER_RESULT_V1
+            contract::REVIEWER_RESULT_V2
         );
         assert_eq!(
             node.contract.outputs["metadata"].artifact_type,
@@ -171,7 +174,7 @@ fn static_review_has_public_contract_typed_lanes_transitive_gates_and_one_budget
     );
     assert_eq!(
         task_gather.contract.inputs["i1"].artifact_type,
-        contract::REVIEWER_RESULT_V1
+        contract::REVIEWER_RESULT_V2
     );
     assert_eq!(graph.scheduler_plan().unwrap().order, graph.order);
     let wire = serde_json::to_value(&compilation).unwrap();
@@ -252,20 +255,15 @@ fn codecs_follow_the_declared_contract_and_generation_stays_strict() {
     );
     assert_eq!(
         compilation.nodes["generation"].outputs["o0"].codec,
-        ReviewArtifactCodec::Flat {
-            artifact_type: contract::PRIOR_FINDINGS_V1.into()
+        ReviewArtifactCodec::Envelope {
+            artifact_type: contract::FINDING_SET_V1.into()
         }
     );
     // A Generation output is never retyped by its name.
-    let opaque_generation = PIPELINE
-        .replace(
-            "outputs = [{ name = \"findings\", type = \"review.kernel/PriorFindings@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }]",
-            "outputs = [\"findings\"]",
-        )
-        .replace(
-            "inputs = [{ name = \"prior_findings\", type = \"review.kernel/PriorFindings@1\", cardinality = \"one\", optional = false, snapshot_affinity = \"any\" }]",
-            "inputs = [\"prior_findings\"]",
-        );
+    let opaque_generation = PIPELINE.replace(
+        "outputs = [{ name = \"findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = true, snapshot_affinity = \"any\" }]",
+        "outputs = [\"findings\"]",
+    );
     assert_ne!(opaque_generation, PIPELINE);
     let error = crate::Definition::from_toml(&opaque_generation)
         .unwrap()
@@ -793,32 +791,42 @@ fn review_shards_share_fanout_without_acquiring_the_static_parent_node_cap() {
 }
 
 #[test]
-fn scatter_result_contract_tracks_inherited_history_contract() {
+fn scatter_results_are_reviewer_result_v2_and_require_the_history_input() {
     let fixture = include_str!("../../../tests/fixtures/dynamic-v5.toml");
+    let loaded = crate::Definition::from_toml(fixture)
+        .unwrap()
+        .load()
+        .unwrap();
+    let compilation = compile_legacy_review(&loaded, context(&loaded)).unwrap();
+    let node = &compilation.graph.nodes[&compilation.nodes["scatter"].task_node];
+    let CompiledOperator::ReviewDomain {
+        operation: ReviewOperation::Scatter { slot },
+        ..
+    } = &node.operator
+    else {
+        panic!("expected Scatter")
+    };
+    assert_eq!(
+        compilation.graph.slots[slot].output_type,
+        contract::REVIEWER_RESULT_V2
+    );
+    // A Scatter's slices answer ReviewerResult@2, so an unwired Scatter is refused at plan
+    // time rather than mid-Round after its Gate has run.
     let history = "  { name = \"prior_findings\", type = \"review.kernel/FindingSet@1\", cardinality = \"one\", optional = true, snapshot_affinity = \"any\" },\n";
     let edge = "[[edges]]\nfrom = { node = \"generation\", port = \"findings\" }\nto = { node = \"scatter\", port = \"prior_findings\" }\n";
-    for (definition, expected) in [
-        (fixture.to_owned(), contract::REVIEWER_RESULT_V2),
-        (
-            fixture.replacen(history, "", 1).replace(edge, ""),
-            contract::REVIEWER_RESULT_V1,
-        ),
-    ] {
-        let loaded = crate::Definition::from_toml(&definition)
-            .unwrap()
-            .load()
-            .unwrap();
-        let compilation = compile_legacy_review(&loaded, context(&loaded)).unwrap();
-        let node = &compilation.graph.nodes[&compilation.nodes["scatter"].task_node];
-        let CompiledOperator::ReviewDomain {
-            operation: ReviewOperation::Scatter { slot },
-            ..
-        } = &node.operator
-        else {
-            panic!("expected Scatter")
-        };
-        assert_eq!(compilation.graph.slots[slot].output_type, expected);
-    }
+    let unwired = fixture.replacen(history, "", 1).replace(edge, "");
+    assert_ne!(unwired, fixture);
+    let error = crate::Definition::from_toml(&unwired)
+        .unwrap()
+        .load()
+        .map(|_| ())
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("Scatter `scatter` must declare exactly one FindingSet@1 input"),
+        "{error}"
+    );
 }
 
 #[test]

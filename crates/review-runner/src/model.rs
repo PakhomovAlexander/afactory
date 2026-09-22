@@ -78,27 +78,8 @@ impl std::fmt::Display for RunnerError {
 
 impl std::error::Error for RunnerError {}
 
-/// Appended to every package prompt by a model adapter: the exact result contract, kept in
-/// one place, versioned with the parser it feeds.
-pub const RESULT_CONTRACT: &str = "\n\n## Output contract\n\n\
-Your FINAL message must be exactly one JSON object and nothing else - no prose before or \
-after, no markdown fence. Shape:\n\
-{\"verdict\":\"approve\"|\"request-changes\"|\"block\",\"summary\":string|null,\
-\"findings\":[{\"severity\":\"blocker\"|\"major\"|\"minor\",\"file\":string,\"line\":positive-integer|null,\
-\"title\":string,\"body\":string,\"fix\":string,\"confidence\":number}],\
-\"benchmark_demands\":[{\"claim\":string,\"why\":string,\"suggested_method\":string}],\
-\"disputes\":[{\"claim_id\":string,\"position\":\"confirm\"|\"refute\",\"reason\":string}],\
-\"proposal\":{\"patch\":string,\"report_indexes\":[non-negative-integer],\"finding_ids\":[string],\
-\"evidence_ids\":[string],\"paths\":[string],\"description\":string,\"auto_apply_nominated\":boolean}|absent}\n\
-An empty findings list is a valid answer. Every finding needs a concrete fix. Use exactly \
-these fields and no others - an extra field is discarded, a missing required result field fails \
-the answer. A proposal is optional, but when present it is one atomic patch and must equal the \
-complete final sandbox diff; name at least one same-result report index or assigned Finding ID. \
-Every non-empty `file` must be a canonical repository-relative path: use its exact spelling \
-from the Change Set, without an absolute prefix, leading `./`, `.` or `..` component, or empty \
-path component. An empty `file` means the claim is change-wide.";
-
-/// Additive result contract for reviewers assigned an exact `FindingSet@1`.
+/// Appended to every package prompt by a model adapter: the exact `ReviewerResult@2` contract,
+/// kept in one place, versioned with the parser it feeds.
 pub const RESULT_CONTRACT_V2: &str = "\n\n## Output contract\n\n\
 Your FINAL message must be exactly one JSON object and nothing else - no prose before or \
 after, no markdown fence. Shape:\n\
@@ -117,13 +98,6 @@ one atomic patch and must equal the complete final sandbox diff; name at least o
 report index or assigned Finding ID. Every non-empty `file` must be a canonical repository-relative \
 path: use its exact spelling from the Change Set, without an absolute prefix, leading `./`, `.` or \
 `..` component, or empty path component. An empty `file` means the claim is change-wide.";
-
-pub const fn result_contract(contract: ReviewerResultContract) -> &'static str {
-    match contract {
-        ReviewerResultContract::V1 => RESULT_CONTRACT,
-        ReviewerResultContract::V2 => RESULT_CONTRACT_V2,
-    }
-}
 
 /// Models fence JSON despite instructions often enough that refusing to look inside the fence
 /// would manufacture failures. Anything beyond a fence is still malformed.
@@ -189,31 +163,26 @@ pub fn extract_result(text: &str) -> &str {
 /// schema-strict parse refused a six-dollar answer over it. Unknown fields are dropped;
 /// missing or malformed *required* fields still fail, because inventing content is where
 /// tolerance would become fabrication.
-pub fn parse_stage_output_for(
-    contract: ReviewerResultContract,
-    text: &str,
-) -> Result<LegacyStageOutput, String> {
+pub fn parse_reviewer_result(text: &str) -> Result<LegacyStageOutput, String> {
     let mut value: serde_json::Value =
         serde_json::from_str(extract_result(text)).map_err(|e| e.to_string())?;
-    normalize(&mut value, contract);
-    if contract == ReviewerResultContract::V2 {
-        let object = value
-            .as_object_mut()
-            .ok_or_else(|| "ReviewerResult@2 is not an object".to_string())?;
-        let mut dispositions = object
-            .remove("dispositions")
-            .ok_or_else(|| "ReviewerResult@2 has no dispositions array".to_string())?;
-        if let Some(dispositions) = dispositions.as_array_mut() {
-            for disposition in dispositions {
-                if let Some(disposition) = disposition.as_object_mut()
-                    && let Some(finding_id) = disposition.remove("finding_id")
-                {
-                    disposition.insert("fp".into(), finding_id);
-                }
+    normalize(&mut value);
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| "ReviewerResult@2 is not an object".to_string())?;
+    let mut dispositions = object
+        .remove("dispositions")
+        .ok_or_else(|| "ReviewerResult@2 has no dispositions array".to_string())?;
+    if let Some(dispositions) = dispositions.as_array_mut() {
+        for disposition in dispositions {
+            if let Some(disposition) = disposition.as_object_mut()
+                && let Some(finding_id) = disposition.remove("finding_id")
+            {
+                disposition.insert("fp".into(), finding_id);
             }
         }
-        object.insert("disputes".into(), dispositions);
     }
+    object.insert("disputes".into(), dispositions);
     serde_json::from_value(value).map_err(|e| e.to_string())
 }
 
@@ -293,7 +262,7 @@ pub fn parse_notes_declaration(text: &str) -> Result<Option<ReviewerNotesDeclara
         .map_err(|error| format!("notes declaration is malformed: {error}"))
 }
 
-fn normalize(value: &mut serde_json::Value, contract: ReviewerResultContract) {
+fn normalize(value: &mut serde_json::Value) {
     fn keep(value: &mut serde_json::Value, fields: &[&str]) {
         if let Some(object) = value.as_object_mut() {
             object.retain(|key, _| fields.contains(&key.as_str()));
@@ -306,10 +275,6 @@ fn normalize(value: &mut serde_json::Value, contract: ReviewerResultContract) {
             }
         }
     }
-    let final_field = match contract {
-        ReviewerResultContract::V1 => "disputes",
-        ReviewerResultContract::V2 => "dispositions",
-    };
     keep(
         value,
         &[
@@ -317,7 +282,7 @@ fn normalize(value: &mut serde_json::Value, contract: ReviewerResultContract) {
             "summary",
             "findings",
             "benchmark_demands",
-            final_field,
+            "dispositions",
         ],
     );
     keep_each(
@@ -340,24 +305,12 @@ fn normalize(value: &mut serde_json::Value, contract: ReviewerResultContract) {
         "benchmark_demands",
         &["claim", "why", "suggested_method"],
     );
-    match contract {
-        ReviewerResultContract::V1 => {
-            keep_each(value, "disputes", &["claim_id", "position", "reason"])
-        }
-        ReviewerResultContract::V2 => {
-            keep_each(value, "dispositions", &["finding_id", "position", "reason"])
-        }
-    }
+    keep_each(value, "dispositions", &["finding_id", "position", "reason"]);
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_proposal_declaration, parse_stage_output_for};
-    use review_core::ReviewerResultContract;
-
-    fn parse_v1(text: &str) -> Result<review_core::LegacyStageOutput, String> {
-        parse_stage_output_for(ReviewerResultContract::V1, text)
-    }
+    use super::{parse_proposal_declaration, parse_reviewer_result};
 
     #[test]
     fn extra_fields_are_dropped_and_the_findings_survive() {
@@ -367,9 +320,9 @@ mod tests {
 {"verdict":"block","summary":null,"findings":[
   {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F",
    "confidence":0.8,"failure_scenario":"a story the contract never asked for"}
-],"benchmark_demands":[],"disputes":[],"reviewer_notes":"extra"}
+],"benchmark_demands":[],"dispositions":[],"reviewer_notes":"extra"}
 ```"#;
-        let output = parse_v1(answer).unwrap();
+        let output = parse_reviewer_result(answer).unwrap();
         assert_eq!(output.findings.len(), 1);
         assert_eq!(output.findings[0].title, "T");
     }
@@ -390,28 +343,28 @@ mod tests {
                 r#"{prefix}{{"verdict":"block","summary":null,"findings":[
   {{"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F",
    "confidence":0.8}}
-],"benchmark_demands":[],"disputes":[]}}"#
+],"benchmark_demands":[],"dispositions":[]}}"#
             );
-            let output = parse_v1(&answer).unwrap();
+            let output = parse_reviewer_result(&answer).unwrap();
             assert_eq!(output.findings.len(), 1);
         }
     }
 
     #[test]
     fn prose_with_no_json_anywhere_is_still_malformed() {
-        assert!(parse_v1("I looked at the code and it seems fine to me.").is_err());
+        assert!(parse_reviewer_result("I looked at the code and it seems fine to me.").is_err());
     }
 
     #[test]
     fn a_fenced_block_still_wins_over_a_bare_object() {
         // The fence is the model's explicit marker; a stray bare object earlier in the
         // prose must not preempt it.
-        let answer = r#"Draft: {"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}
+        let answer = r#"Draft: {"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}
 
 ```json
-{"verdict":"block","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}
+{"verdict":"block","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}
 ```"#;
-        let output = parse_v1(answer).unwrap();
+        let output = parse_reviewer_result(answer).unwrap();
         assert_eq!(
             format!("{:?}", output.verdict),
             "Block",
@@ -425,9 +378,9 @@ mod tests {
         // time and ledger ingest is what enforces it, as `ImportReason::MissingFix`.)
         let answer = r#"{"verdict":"block","summary":null,"findings":[
   {"file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
-],"benchmark_demands":[],"disputes":[]}"#;
+],"benchmark_demands":[],"dispositions":[]}"#;
         assert!(
-            parse_v1(answer).is_err(),
+            parse_reviewer_result(answer).is_err(),
             "a finding without a severity must not be normalized into one"
         );
     }
@@ -436,8 +389,8 @@ mod tests {
     fn proposal_transport_is_extracted_but_not_part_of_the_result() {
         let answer = r#"{"verdict":"block","summary":null,"findings":[
   {"severity":"major","file":"src/lib.rs","line":3,"title":"T","body":"B","fix":"F","confidence":0.8}
-],"benchmark_demands":[],"disputes":[],"proposal":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\n","report_indexes":[0],"finding_ids":[],"evidence_ids":[],"paths":["src/lib.rs"],"description":"fix T","auto_apply_nominated":false}}"#;
-        let output = parse_v1(answer).unwrap();
+],"benchmark_demands":[],"dispositions":[],"proposal":{"patch":"diff --git a/src/lib.rs b/src/lib.rs\n","report_indexes":[0],"finding_ids":[],"evidence_ids":[],"paths":["src/lib.rs"],"description":"fix T","auto_apply_nominated":false}}"#;
+        let output = parse_reviewer_result(answer).unwrap();
         assert_eq!(output.findings.len(), 1);
         let proposal = parse_proposal_declaration(answer).unwrap().unwrap();
         assert_eq!(proposal.report_indexes, vec![0]);
@@ -446,22 +399,22 @@ mod tests {
 
     #[test]
     fn more_than_one_proposal_cannot_fit_the_transport_shape() {
-        let answer = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[],"proposal":[]}"#;
+        let answer = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[],"proposal":[]}"#;
         assert!(parse_proposal_declaration(answer).is_err());
     }
 
     #[test]
     fn notes_transport_is_extracted_beside_the_flat_result() {
         use super::parse_notes_declaration;
-        let answer = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[],"notes":{"inspected":["src/lib.rs"],"model_of_change":"one cap","open_questions":[],"hints":[{"path":"src/lib.rs","note":"cap read once"}]}}"#;
-        let output = parse_v1(answer).unwrap();
+        let answer = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[],"notes":{"inspected":["src/lib.rs"],"model_of_change":"one cap","open_questions":[],"hints":[{"path":"src/lib.rs","note":"cap read once"}]}}"#;
+        let output = parse_reviewer_result(answer).unwrap();
         assert!(output.findings.is_empty());
         let notes = parse_notes_declaration(answer).unwrap().unwrap();
         assert_eq!(notes.inspected, vec!["src/lib.rs"]);
         assert_eq!(notes.hints[0].note, "cap read once");
-        let silent = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[]}"#;
+        let silent = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[]}"#;
         assert_eq!(parse_notes_declaration(silent).unwrap(), None);
-        let malformed = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"disputes":[],"notes":{"verdict":"block"}}"#;
+        let malformed = r#"{"verdict":"approve","summary":null,"findings":[],"benchmark_demands":[],"dispositions":[],"notes":{"verdict":"block"}}"#;
         assert!(parse_notes_declaration(malformed).is_err());
     }
 }
@@ -687,7 +640,7 @@ pub fn compose_model_prompt(
     } else {
         instructions.to_string()
     };
-    prompt.push_str(result_contract(inputs.result_contract));
+    prompt.push_str(RESULT_CONTRACT_V2);
     let instruction_bytes = prompt.len();
     if resuming {
         inputs.render_delta_into(&mut prompt)?;
@@ -782,9 +735,8 @@ pub struct ReviewerAttemptContext {
 pub struct ReviewerInputs {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub attempt_context: Option<ReviewerAttemptContext>,
-    /// The node's declared durable result contract. V1 is omitted to preserve legacy command
-    /// input bytes; V2 is explicit so every adapter renders and parses the same contract.
-    #[serde(skip_serializing_if = "reviewer_result_v1")]
+    /// The node's declared durable result contract, explicit so every adapter renders and
+    /// parses the same contract.
     pub result_contract: ReviewerResultContract,
     /// The campaign's findings from earlier rounds, as one JSON document.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -843,10 +795,6 @@ pub struct ReviewerInputs {
 #[serde(deny_unknown_fields)]
 pub struct NotesRequest {
     pub max_bytes: u64,
-}
-
-fn reviewer_result_v1(contract: &ReviewerResultContract) -> bool {
-    *contract == ReviewerResultContract::V1
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1152,44 +1100,18 @@ impl ReviewerInputs {
     /// The prior-findings section, or nothing when this Attempt is assigned no prior claim.
     fn rendered_prior_findings_section(&self) -> Result<Option<String>, String> {
         if let Some(prior) = &self.prior_findings {
-            let persistence_guidance = match self.result_contract {
-                ReviewerResultContract::V2 => {
-                    "Every Finding in this exact Set is assigned to you. Return exactly one \
-                     `dispositions` entry for each `finding_id`: `corroborate` when the defect \
-                     persists, `not_reproduced` when the current Subject no longer exhibits it, \
-                     or `dispute` when the claim is wrong. Every disposition needs a concrete \
-                     reason. Do not use omission as a disposition, and do not emit a second flat \
-                     report for a Finding you have dispositioned."
-                }
-                ReviewerResultContract::V1 => {
-                    "A prior claim that still exists: confirm it in `disputes` with `claim_id` \
-                     set to the finding's key; do not emit a second flat report for the same claim."
-                }
-            };
+            let persistence_guidance = "Every Finding in this exact Set is assigned to you. \
+                 Return exactly one `dispositions` entry for each `finding_id`: `corroborate` \
+                 when the defect persists, `not_reproduced` when the current Subject no longer \
+                 exhibits it, or `dispute` when the claim is wrong. Every disposition needs a \
+                 concrete reason. Do not use omission as a disposition, and do not emit a second \
+                 flat report for a Finding you have dispositioned.";
             let rendered =
                 serde_json::to_string_pretty(prior).map_err(|error| error.to_string())?;
-            let absence_guidance = match self.result_contract {
-                ReviewerResultContract::V1 => {
-                    "A claim you believe is wrong: dispute it with `claim_id` set to the \
-                     finding's key, position set to `refute`, and a concrete reason. A finding \
-                     the current code no longer exhibits: do not re-report it."
-                }
-                ReviewerResultContract::V2 => {
-                    "A finding the current code no longer exhibits still requires a \
-                     `not_reproduced` disposition."
-                }
-            };
-            let location_guidance = match self.result_contract {
-                ReviewerResultContract::V1 => {
-                    "re-locate a surviving claim with a canonical current repository-relative \
-                     `file`, or use an empty `file` only when it is truly change-wide, instead \
-                     of confirming it only in `disputes`"
-                }
-                ReviewerResultContract::V2 => {
-                    "use its `corroborate` disposition and explain any current location in the \
-                     reason; do not emit a duplicate flat report for that Finding"
-                }
-            };
+            let absence_guidance = "A finding the current code no longer exhibits still \
+                 requires a `not_reproduced` disposition.";
+            let location_guidance = "use its `corroborate` disposition and explain any current \
+                 location in the reason; do not emit a duplicate flat report for that Finding";
             if rendered.len() > MAX_PRIOR_FINDINGS_BYTES {
                 return Err(format!(
                     "exact prior Finding Set is {} bytes; maximum is {} bytes and partitioning is required",

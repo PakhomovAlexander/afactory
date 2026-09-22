@@ -103,7 +103,7 @@ fn continue_on_head(
             &serde_json::to_value(review_core::SubjectV1::whole_tree(&head_snapshot_id)).unwrap(),
         )
         .unwrap();
-    // The CLI's raw PriorFindings view of the open Findings; the canonical set stays separate.
+    // The CLI's flat Round assignment of the open Findings; the canonical set stays separate.
     let findings: review_core::FindingSetV1 =
         serde_json::from_value(cas.get_artifact(&finding_set_id).unwrap().payload).unwrap();
     let prior_rows: Vec<_> = findings
@@ -290,21 +290,21 @@ kind = "whole-tree"
 [[nodes]]
 id = "generation"
 kind = "generation"
-outputs = [{ name = "findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+outputs = [{ name = "history", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
 [[nodes]]
 id = "reviewer"
 kind = "reviewer"
-inputs = [{ name = "prior_findings", type = "review.kernel/PriorFindings@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 warm = { notes = true, notes_max_bytes = 4096, session = "always" }
 REVIEWER
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
+inputs = [{ name = "reports", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 [[edges]]
-from = { node = "generation", port = "findings" }
+from = { node = "generation", port = "history" }
 to = { node = "reviewer", port = "prior_findings" }
 [[edges]]
 from = { node = "reviewer", port = "result" }
@@ -344,8 +344,14 @@ fn notes_head_delta_and_prior_findings_carry_from_the_selected_attempt_to_the_ne
         "body": "nothing calls it", "fix": "call it", "confidence": 0.9,
     })]);
     first["notes"] = notes.clone();
+    // Round two answers the one assigned prior Finding, whose ID it reads from its input.
     let mut second: serde_json::Value = serde_json::from_str(super::domain::APPROVE).unwrap();
     second["notes"] = notes;
+    second["dispositions"] = serde_json::json!([{
+        "finding_id": "FINDING", "position": "corroborate", "reason": "the helper is still unreachable",
+    }]);
+    let second = second.to_string();
+    let (second_head, second_tail) = second.split_once("FINDING").unwrap();
     // A Finding path outside FindingReport admission: refused before selection, Notes and all.
     let mut refused = requesting(vec![serde_json::json!({
         "severity": "major", "file": "./a.rs", "line": 1, "title": "refused path",
@@ -358,11 +364,14 @@ fn notes_head_delta_and_prior_findings_carry_from_the_selected_attempt_to_the_ne
     // Every Attempt records the input it received; the first Attempt of each Round is refused.
     let script = format!(
         "n=$(ls '{dir}' | wc -l | tr -d ' '); n=$((n + 1)); cat > '{dir}/'$n.json; \
-         case $n in 1|3) printf '%s' '{refused}' ;; 2) printf '%s' '{first}' ;; *) printf '%s' '{second}' ;; esac",
+         finding=$(sed -n 's/.*\"finding_id\":\"\\(sha256:[0-9a-f]*\\)\".*/\\1/p' '{dir}/'$n.json); \
+         case $n in 1|3) printf '%s' '{refused}' ;; 2) printf '%s' '{first}' ;; \
+         *) printf '%s%s%s' '{second_head}' \"$finding\" '{second_tail}' ;; esac",
         dir = inputs.display(),
         refused = refused.to_string().replace('\'', "'\\''"),
         first = first.to_string().replace('\'', "'\\''"),
-        second = second.to_string().replace('\'', "'\\''"),
+        second_head = second_head.replace('\'', "'\\''"),
+        second_tail = second_tail.replace('\'', "'\\''"),
     );
     let definition = WARM_REVIEW.replace("REVIEWER", &runner(&script));
     let head_one = BTreeMap::from([
@@ -478,7 +487,7 @@ fn notes_head_delta_and_prior_findings_carry_from_the_selected_attempt_to_the_ne
     );
     assert_eq!(carried["attempt_id"], selected_one.as_str());
     assert_eq!(
-        seen[3]["prior_findings"]["prior_findings"][0]["title"], "helper is unreachable",
+        seen[3]["prior_findings"]["findings"][0]["title"], "helper is unreachable",
         "open prior Findings arrive through the wired port"
     );
     let selections: Vec<_> = events_of(&shared, EventType::WarmSetSelectedV1)
@@ -691,15 +700,23 @@ version = 2
 [subject]
 kind = "whole-tree"
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "history", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+[[nodes]]
 id = "reviewer"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 REVIEWER
 [[nodes]]
 id = "ledger"
 kind = "ledger"
-inputs = ["reports"]
+inputs = [{ name = "reports", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[edges]]
+from = { node = "generation", port = "history" }
+to = { node = "reviewer", port = "prior_findings" }
 [[edges]]
 from = { node = "reviewer", port = "result" }
 to = { node = "ledger", port = "reports" }
@@ -778,26 +795,38 @@ version = 2
 [subject]
 kind = "whole-tree"
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "history", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+[[nodes]]
 id = "reviewer"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 warm = { notes = false, workspace = "rebase" }
 REVIEWER
 [[nodes]]
 id = "reader"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 READER
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["reviewer", "reader"]
+inputs = [{ name = "reviewer", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }, { name = "reader", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = ["reports"]
 [[nodes]]
 id = "ledger"
 kind = "ledger"
 inputs = ["reports"]
 outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[edges]]
+from = { node = "generation", port = "history" }
+to = { node = "reviewer", port = "prior_findings" }
+[[edges]]
+from = { node = "generation", port = "history" }
+to = { node = "reader", port = "prior_findings" }
 [[edges]]
 from = { node = "reviewer", port = "result" }
 to = { node = "gather", port = "reviewer" }
@@ -1252,28 +1281,40 @@ id = "gate"
 kind = "gate"
 outputs = ["decision"]
 [[nodes]]
+id = "generation"
+kind = "generation"
+outputs = [{ name = "history", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+[[nodes]]
 id = "tdd"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 warm = { notes = false, build_cache = ["cargo_target"] }
 TDD
 [[nodes]]
 id = "reader"
 kind = "reviewer"
-outputs = ["result"]
+inputs = [{ name = "prior_findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = true, snapshot_affinity = "any" }]
+outputs = [{ name = "result", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 gated_by = "gate"
 READER
 [[nodes]]
 id = "gather"
 kind = "gather"
-inputs = ["tdd", "reader"]
+inputs = [{ name = "tdd", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }, { name = "reader", type = "review.kernel/ReviewerResult@2", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
 outputs = ["reports"]
 [[nodes]]
 id = "ledger"
 kind = "ledger"
 inputs = ["reports"]
 outputs = [{ name = "findings", type = "review.kernel/FindingSet@1", cardinality = "one", optional = false, snapshot_affinity = "same_subject" }]
+[[edges]]
+from = { node = "generation", port = "history" }
+to = { node = "tdd", port = "prior_findings" }
+[[edges]]
+from = { node = "generation", port = "history" }
+to = { node = "reader", port = "prior_findings" }
 [[edges]]
 from = { node = "tdd", port = "result" }
 to = { node = "gather", port = "tdd" }

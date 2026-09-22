@@ -11,7 +11,7 @@
     "summary": { "type": ["string", "null"] },
     "reports": {
       "type": "array",
-      "items": { "$ref": "urn:review-kernel:schema:reviewer-result:1#/$defs/legacyReport" }
+      "items": { "$ref": "#/$defs/legacyReport" }
     },
     "benchmark_demands": {
       "type": "array",
@@ -37,6 +37,52 @@
           "position": { "enum": ["corroborate", "not_reproduced", "dispute"] },
           "reason": { "type": "string", "minLength": 1, "pattern": "\\S" }
         }
+      }
+    }
+  },
+  "$defs": {
+    "legacyReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["severity", "file", "title", "body", "fix"],
+      "allOf": [
+        {
+          "if": { "properties": { "file": { "enum": ["", "(change-wide)"] } } },
+          "then": { "properties": { "line": { "type": "null" } } }
+        }
+      ],
+      "properties": {
+        "severity": { "enum": ["blocker", "major", "minor"] },
+        "file": {
+          "type": "string",
+          "anyOf": [
+            { "enum": ["", "(change-wide)"] },
+            {
+              "allOf": [
+                { "pattern": "^(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*)(?:/(?:[^/.\\u0000][^/\\u0000]*|\\.[^./\\u0000][^/\\u0000]*|\\.\\.[^/\\u0000][^/\\u0000]*))*$" },
+                { "pattern": "^\\S(?:[\\s\\S]*\\S)?$" }
+              ]
+            }
+          ]
+        },
+        "line": {
+          "type": ["integer", "null"],
+          "minimum": 1,
+          "maximum": 4294967295
+        },
+        "title": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "body": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "fix": { "type": "string", "minLength": 1, "pattern": "\\S" },
+        "confidence": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "rule_id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9.]*/[^/@]+@[^/@]+$"
+        },
+        "occurrence_key": { "type": "string", "minLength": 1 }
       }
     }
   }

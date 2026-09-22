@@ -59,7 +59,7 @@ fixtures/
 | `patch-proposal-v1.json` | an atomic change set naming the exact claims it covers |
 | `run-event-v1.json` | the append-only stream envelope; `sequence` orders, never `occurred_at` |
 | `check-result-v1.json` | one execution of one check, per attempt — `not_run` is its own status |
-| `reviewer-result-v1.json` | what one reviewer attempt returned: reports, demands, disputes |
+| `reviewer-result-v2.json` | what one reviewer attempt returned: reports, demands, and one disposition per assigned prior Finding |
 
 The schemas are the contract; the Rust types are one view of them. `crates/review-core/tests/schema_parity.rs`
 checks both directions — a populated value must validate, and a value the design forbids must be
@@ -73,7 +73,7 @@ zero claims.
 the event store, when each event's payload is defined; enumerating it from prose now would make
 the schema claim a completeness it does not have.
 
-A `ReviewerResult@1` reviewer answers with flat findings; each one is converted to
+A `ReviewerResult@2` reviewer answers with flat findings; each one is converted to
 `FindingReport@1` on its own and must satisfy it before any ingest admits it. `fix` is required,
 because a claim with no proposed remedy is one a triager cannot act on. An empty `file`, or the
 literal `(change-wide)` sentinel, is a change-wide claim and becomes an empty location list,
@@ -308,7 +308,10 @@ That last one is the interesting rejection. A reviewer declaring a `prior_findin
 wired to nothing would run happily and review an empty input with full confidence. The shell
 harness had exactly this shape: prior claims reached a reviewer by being rendered into a prompt,
 so what it actually received existed only inside a subagent's context and could not be
-reconstructed from any artifact afterwards. Here an unwired input is a planning error.
+reconstructed from any artifact afterwards. Here an unwired input is a planning error. Every
+reviewer and Scatter also declares one typed `FindingSet@1` input wired from Generation's exact
+Finding Set: its `ReviewerResult@2` must disposition every prior Finding it was assigned, so a
+reviewer without that wiring is refused when the pipeline loads, not mid-Round after its Gate.
 
 **Gating is planned, then compiled.** A `gated_by` gate reaches through the graph: planning
 resolves every gate a node depends on, directly or through an ancestor, so a pipeline declares it

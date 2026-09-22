@@ -268,7 +268,7 @@ tools = ["shell", "lint"]
 env = "default"
 requires = "host"                    # minimum isolation; admit() enforces it
 subjects = ["diff", "whole-tree"]    # reviewer kind only
-outputs = ["af/ReviewerResult@1"]
+outputs = ["af/ReviewerResult@2"]
 
 [budget]
 tokens = 300_000
@@ -458,7 +458,7 @@ arrivals, charge what was spent.
 
 **What.** What an attempt produced, sealed by the kernel: the derived diff (rescanned, never
 reported), typed result artifacts, and the usage receipt. Per Worker kind: reviewer →
-`ReviewerResult@1`; implementer → `PatchProposal@1` (admitted only if equal to the sealed
+`ReviewerResult@2`; implementer → `PatchProposal@1` (admitted only if equal to the sealed
 diff); evaluator → `Verdict@1`; planner → `SliceSet@1`. Raw output is stored before it is
 parsed, so "malformed" stays a falsifiable claim.
 

@@ -44,7 +44,10 @@ GA reads only what GA writes. Compatibility obligations start at the GA release.
    Task Review has one generation: a catalog's `review.generation` may be omitted or `2`, and
    either way captures `af.review-task-policy/2`. A reviewer package that lacks the
    `af/TaskReviewAssignment@1` input or declares `af/TaskReviewSubject@1` or
-   `review.kernel/ReviewerResult@1` ports is refused at planning.
+   `review.kernel/ReviewerResult@1` ports is refused at planning. Campaign review likewise has one
+   reviewer contract: every reviewer answers a typed `ReviewerResult@2` output, and every reviewer
+   and Scatter receives Generation's exact `FindingSet@1`; `PriorFindings@1`, `ReviewerResult@1`
+   and untyped reviewer outputs are refused when the pipeline loads.
 3. **One contract per name, at its highest pre-GA version.** Each pre-GA version ladder of a
    persisted or emitted contract (event and artifact types, execution and usage records, CLI JSON
    outputs and their JSON Schemas, and catalog and review-policy generations) collapses at GA to a
@@ -93,9 +96,10 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0019](0019-report-authority-failures-explicitly.md): the permanent `RunReport@1` and `@2`
   readers, and `RunReport@3` itself; its `authority_unavailable` reason is part of `RunReport@6`.
 - [ADR-0021](0021-keep-reviewer-result-wire-shape-flat.md): the permanence of `ReviewerResult@1`,
-  and the new-version rule for pre-GA reviewer-result shapes.
+  and the new-version rule for pre-GA reviewer-result shapes. Its flat report shape and single
+  validator carry over to `ReviewerResult@2`.
 - [ADR-0025](0025-require-typed-generation-outputs-in-version-2.md): the untyped port shorthand
-  kept readable for older pipeline files.
+  kept readable for older pipeline files, and `PriorFindings@1` as a Generation output.
 - [ADR-0034](0034-surface-partial-results-without-ledger-authority.md): recorded, not gathered
   results in `af review report`. `af review run` still lists them, from the Round's selected Task
   Attempts.
@@ -106,6 +110,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   `RunReport@6` records as its `cached` execution, and the permanence of pipeline format 1.
 - [ADR-0037](0037-default-campaigns-to-one-round-light-review.md): the explicit `--light` flag;
   light review stays the default.
+- [ADR-0038](0038-transport-proposals-beside-reviewer-results.md): `ReviewerResult@1` beside
+  `ReviewerResult@2`.
 - [ADR-0039](0039-own-dynamic-shards-inside-a-typed-scatter-node.md): pipeline format 1 among the
   static formats that keep their frozen semantics.
 - [ADR-0041](0041-make-review-selectors-explicit-and-refuse-empty-diffs.md): the compatibility
@@ -152,6 +158,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0075](0075-retain-exact-task-usage-with-versioned-decimal-counters.md): readers for
   unversioned and numeric-only usage, migration on write, and the execution-record and usage
   version ladders.
+- [ADR-0077](0077-run-captured-review-operations-under-common-task-attempts.md): historical
+  name-only Reviewer outputs meaning `ReviewerResult@1`.
 - [ADR-0078](0078-bind-review-conclusions-to-exact-task-accounting.md): readers for historical
   `RunReport` versions and raw provenance.
 - [ADR-0079](0079-retain-exact-cumulative-charge-within-one-task-attempt.md): readers for frozen

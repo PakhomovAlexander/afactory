@@ -454,20 +454,15 @@ pub(super) fn first_attempt_input(
     let result_contract = match spec.outputs.as_slice() {
         [review_config::PortContractSpec::Typed(port)] => {
             review_core::ReviewerResultContract::parse_artifact_type(&port.artifact_type)
-                .ok_or_else(|| {
-                    format!(
-                        "node `{node}` output `{}` has unsupported result type `{}`",
-                        port.name, port.artifact_type
-                    )
-                })?
         }
-        [review_config::PortContractSpec::Name(_)] => review_core::ReviewerResultContract::V1,
-        _ => {
-            return Err(format!(
-                "reviewer `{node}` must declare exactly one result output"
-            ));
-        }
-    };
+        _ => None,
+    }
+    .ok_or_else(|| {
+        format!(
+            "reviewer `{node}` must declare exactly one typed {} output",
+            review_core::contract::REVIEWER_RESULT_V2
+        )
+    })?;
     let mut inputs = review_runner::ReviewerInputs {
         result_contract,
         ..Default::default()
@@ -509,10 +504,7 @@ pub(super) fn first_attempt_input(
                 }
             };
             inputs.artifacts.insert(name.to_string(), vec![artifact]);
-        } else if name == "prior_findings"
-            || artifact_type == review_core::contract::FINDING_SET_V1
-            || artifact_type.contains("PriorFindings")
-        {
+        } else if artifact_type == review_core::contract::FINDING_SET_V1 {
             not_rendered.push(format!(
                 "{name}: prior Findings exist only inside a Campaign; a first Attempt receives none"
             ));
