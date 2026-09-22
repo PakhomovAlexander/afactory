@@ -23,7 +23,8 @@ subprocesses compete with the rest of the repository suite. Three tests —
 failed intermittently on a correct refusal: the kernel was protecting a reserve it could no
 longer honor, because the test had spent the Task's wall budget on scheduling latency. The same
 loaded full gate later exposed the identical assumption in `task_catalog` after its real catalog
-sync, Git mutation and offline-resume sequence.
+sync, Git mutation and offline-resume sequence, and in `task_file`'s native-model account-change
+cases after they planned, proved a pre-dispatch refusal, restored the account and resumed.
 
 The defect is in the fixture's resource envelope, not in the enforcement. A Task whose deadline
 is consumed by the wall clock must refuse new work, and a reserve that cannot be honored must
@@ -55,7 +56,9 @@ machine the gate runs on, not the fastest. `crates/af/tests/task_planning.rs` st
 it creates — including the second developer's consuming Task — with a documented ten-minute wall
 (`PLANNING_WALL_MS`), replacing the fixture tickets' 60s. The long catalog sync and offline-resume
 test applies the same test-local total (`CATALOG_TASK_WALL_MS`) after copying its shared fixture;
-the committed reusable fixture remains unchanged for tests that need its original limits.
+the committed reusable fixture remains unchanged for tests that need its original limits. The
+native-model helper similarly uses `NATIVE_MODEL_TASK_WALL_MS` for the Task total while retaining
+its 60s verification reserve and every dispatch bound.
 
 The margin is added to the total budget and taken from nothing. Per-Attempt walls (5s in every
 fixture Worker manifest and in the fixture code policy), Attempt counts, token budgets and the
@@ -81,5 +84,7 @@ does not read ten minutes as a slow test and collapse it back toward a sequence'
   and the reserve, token and Attempt limits must still be the fixture's own.
 - `crates/af/tests/task_catalog.rs` pins that its local override changes only the total Task wall;
   the shared fixture's tokens, Attempt count and complete verification reserve remain exact.
+- `crates/af/tests/task_file.rs` pins the native-model fixture's token and Attempt limits and its
+  complete verification reserve next to the widened total.
 - Other CLI Task suites keep their fixture budgets. If the same symptom appears there, the same
   remedy applies — raise that suite's wall budget with the same documentation, never its reserve.

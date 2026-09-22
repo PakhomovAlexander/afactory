@@ -40,12 +40,12 @@ flag to use, so an existing habit fails loudly rather than silently.
   four-thread full test gate those subprocesses consumed the fixtures' 60s budget, so valid
   generated-plan and imported-catalog resumes were correctly but unhelpfully refused with `Task
   deadline protects still-required verification`. The long-lived Tasks in
-  `crates/af/tests/task_planning.rs` and `crates/af/tests/task_catalog.rs` now use a documented
-  ten-minute wall budget, added to the total and taken from nothing: per-Attempt walls, Attempt
-  counts, token budgets and the verification reserve keep their fixture values, and no production
-  code changed. New tests pin both halves — only the total fixture wall moves, and
-  `TaskBudget::prepare` keeps its exact deadline boundary and refusal wording at both a small and
-  a large budget (ADR-0113).
+  `crates/af/tests/task_planning.rs`, `task_catalog.rs` and the native-model cases in `task_file.rs`
+  now use a documented ten-minute wall budget, added to the total and taken from nothing:
+  per-Attempt walls, Attempt counts, token budgets and the verification reserve keep their fixture
+  values, and no production code changed. New tests pin both halves — only the total fixture wall
+  moves, and `TaskBudget::prepare` keeps its exact deadline boundary and refusal wording at both a
+  small and a large budget (ADR-0113).
 
 ## [0.9.0-rc.6] - 2026-09-21
 
