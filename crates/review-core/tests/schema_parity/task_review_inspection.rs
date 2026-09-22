@@ -55,7 +55,7 @@ fn review_handoff_inspection_preserves_transition_generations_and_typed_evidence
         "kind":"superseded_input", "superseded_event_id":"b".repeat(26)
     });
     assert_valid("task-inspection-v6.json", &epoch);
-    for version in [3, 4, 5] {
+    for version in [3, 5] {
         let mut old = value.clone();
         old["schema"] = json!(format!("af/task-inspection@{version}"));
         assert_invalid(
@@ -135,7 +135,7 @@ fn integration_inspection_preserves_phase_reports_and_integrated_handoff_generat
         &incorrect_generation,
         "integrated evidence retains generation two",
     );
-    for version in [3, 4, 5, 6] {
+    for version in [3, 5, 6] {
         let mut old = value.clone();
         old["schema"] = json!(format!("af/task-inspection@{version}"));
         assert_invalid(

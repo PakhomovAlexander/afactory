@@ -193,7 +193,7 @@ struct CurrentTaskProviderAdapter {
     inner: Box<dyn WorkerModelAdapter>,
 }
 impl WorkerModelAdapter for CurrentTaskProviderAdapter {
-    fn credential_mode(&self) -> review_core::BrokerCredentialModeV1 {
+    fn credential_mode(&self) -> review_core::CredentialModeV1 {
         self.inner.credential_mode()
     }
     fn provider_kind(&self) -> &'static str {

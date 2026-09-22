@@ -1,7 +1,7 @@
 # ADR-0113: GA reads only what GA writes
 
 **Status:** accepted (2026-09-21). Supersedes in part the ADRs listed under *Superseded clauses*
-and ADR-0016, ADR-0022, ADR-0023, ADR-0024, ADR-0043 and ADR-0051 in full.
+and ADR-0015, ADR-0016, ADR-0022, ADR-0023, ADR-0024, ADR-0043, ADR-0051 and ADR-0080 in full.
 
 Before GA, Afactory treated everything it had ever written as a permanent obligation.
 [ADR-0002](0002-event-payload-changes-bump-the-type-version.md) made every superseded event reader
@@ -90,10 +90,6 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   fingerprint kept for replaying existing Campaigns.
 - [ADR-0011](0011-silence-is-not-a-drop.md): the `RunReport@2` it names; GA writes only
   `RunReport@6`.
-- [ADR-0015](0015-safe-attempts-receive-handles-not-secrets.md): the pre-Task reviewer's
-  `ReviewerExecutionBound@1` binding and `BrokerOperationCompleted@1` receipts in the Campaign log,
-  and pipeline format 1 among the formats that keep their captured credential behavior; a Task
-  Attempt records its Broker binding and receipts in the Task log.
 - [ADR-0019](0019-report-authority-failures-explicitly.md): the permanent `RunReport@1` and `@2`
   readers, and `RunReport@3` itself; its `authority_unavailable` reason is part of `RunReport@6`.
 - [ADR-0021](0021-keep-reviewer-result-wire-shape-flat.md): the permanence of `ReviewerResult@1`,
@@ -167,9 +163,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0079](0079-retain-exact-cumulative-charge-within-one-task-attempt.md): readers for frozen
   execution `@1` and `@2`, usage `@1`, and `af/review-report@1` and `@2`, and the historical
   `AttemptLedger` entry points with replacement semantics; every Attempt charge is an exact
-  cumulative floor.
-- [ADR-0080](0080-bind-broker-evidence-to-the-original-task-attempt.md): the
-  `LegacyReviewTaskPolicy@1` and `@2` capture generations and the preserved bytes of V1 capture.
+  cumulative floor. Its Broker operations, with `BrokerOperationReceipt@2`, are gone with the
+  Broker; the exact u128 cumulative charge they motivated stays.
 - [ADR-0081](0081-register-owned-review-children-in-the-common-task-runtime.md): earlier execution
   and inspection generations, and the Review Task policy generations before
   `LegacyReviewTaskPolicy@4` that compiled without owned children.
@@ -183,6 +178,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   separate `AttemptEvidence`; the exact Task Attempt evidence now carries that name.
 - [ADR-0086](0086-record-expired-review-publication-without-restarting-work.md): earlier transition
   and inspection generations.
+- [ADR-0089](0089-interrupt-task-work-when-its-writer-heartbeat-fails.md): the Broker
+  accounting, calls and late receipts that the runtime kept outside Worker invocation.
 - [ADR-0091](0091-capture-explicit-task-provider-admission-costs.md): the V1 catalog and
   run-authority generation beside V2.
 - [ADR-0094](0094-bind-task-review-assignments-and-readable-inputs.md): Review catalog and policy
@@ -218,6 +215,21 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   then Task-hosted Attempts record `host_unsupported` and no confirmation is dispatched. The
   `AttemptDispatched@1`, `AttemptAdmitted@1` and `AttemptFailed@1` records a confirmation wrote
   are no longer event types; on the Task host a confirmation is a Task Attempt.
+
+ADR-0015 and ADR-0080 are superseded in full. No release shipped a Broker connector and af never
+installed one, so no Attempt ever received a Broker Handle: every model adapter reports
+`trusted_unsafe`, and a `brokered` reviewer could only be refused. GA ships without a Broker, so
+both records are deleted together with it: the handle lease, operation policies and receipts, the
+Task log's `TaskBrokerTransition@1` with the `af/TaskBrokerBinding@1` and
+`af/TaskBrokerOperation@1` records it named, and `af/task-inspection@4`, the inspection output
+that showed them. Two of ADR-0015's decisions stay in force here:
+
+- Pipeline formats 4 and 5 require every reviewer to declare `credential_free` or
+  `trusted_unsafe`; formats 2 and 3 make no credential claim. A reviewer whose captured credential
+  mode differs from the one its adapter reports is refused before dispatch.
+- A runner that can read reusable credentials is `trusted_unsafe` and cannot authorize
+  `auto_apply`. The Codex and Claude CLI adapters are `trusted_unsafe`, and redacting their output
+  does not upgrade them.
 
 ADR-0016 is superseded in full. Its Provider Operation admitted a Provider before the pre-Task
 Review executor dispatched a reviewer: a Round-bound, epoch-fenced structural probe and inference

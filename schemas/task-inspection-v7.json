@@ -126,7 +126,7 @@
             ],
             "properties": {
               "sequence": {
-                "$ref": "urn:af:schema:task-inspection:6#/properties/history/items/oneOf/2/properties/sequence"
+                "$ref": "urn:af:schema:task-inspection:6#/properties/history/items/oneOf/1/properties/sequence"
               },
               "transition": {
                 "$ref": "urn:af:schema:task-transition:3"
@@ -192,9 +192,6 @@
     },
     "plan": {
       "$ref": "urn:af:schema:task-inspection:6#/properties/plan"
-    },
-    "broker_records": {
-      "$ref": "urn:af:schema:task-inspection:6#/properties/broker_records"
     },
     "owned_child_sets": {
       "$ref": "urn:af:schema:task-inspection:6#/properties/owned_child_sets"

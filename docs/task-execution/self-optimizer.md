@@ -195,11 +195,12 @@ For a deliverable candidate, use the controlled configuration Pipeline below.
 
 ### Historical native receipts
 
-The `af` adapter reads the public `af/task-inspection@3` through `@11` receipts. Generation `@9`
-adds measured Attempt walls and `af/TaskRuntimeEvidence@1` sidecars emitted by the common Task
-runtime; generation `@10` additionally retains prepared, decided and registered experimental
-closures. Generation `@11` projects later immutable Task evidence beside an adoption observation
-without treating it as causal proof. Experimental child Attempts remain ordinary execution records, so cumulative
+The `af` adapter reads the public `af/task-inspection@3` and `@5` through `@11` receipts, the
+generations `af task show --json` prints. Generation `@9` adds measured Attempt walls and
+`af/TaskRuntimeEvidence@1` sidecars emitted by the common Task runtime; generation `@10`
+additionally retains prepared, decided and registered experimental closures. Generation `@11`
+projects later immutable Task evidence beside an adoption observation without treating it as
+causal proof. Experimental child Attempts remain ordinary execution records, so cumulative
 usage-observed and settled charges are reconciled by Attempt identity and each baseline,
 candidate, failed arm, retry and admission is counted once. Shared Code Task and captured Review
 checks retain host-observed check spans. Captured

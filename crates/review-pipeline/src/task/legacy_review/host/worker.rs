@@ -46,9 +46,7 @@ impl LegacyReviewTaskHost<'_, '_> {
         let mut expected = std::collections::BTreeSet::new();
         for node in self.captured.loaded.reviewers().keys() {
             let actual_mode = match self.execution(node)? {
-                WorkerExecutionV1::Command {} => {
-                    review_core::BrokerCredentialModeV1::CredentialFree
-                }
+                WorkerExecutionV1::Command {} => review_core::CredentialModeV1::CredentialFree,
                 WorkerExecutionV1::Model { .. } => self.model(node)?.adapter.credential_mode(),
             };
             if self

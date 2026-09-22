@@ -304,9 +304,17 @@ or needs a documented hand edit.
   The captured `af/LegacyReviewTaskPolicy@4` drops `settings.provider_probes`, which was always
   empty, and holds the review settings directly under `settings`, so a new Review Task's policy
   digest differs from an earlier release's. The `task-provider-admission-v2.json`,
-  `task-provider-context-v2.json` and `task-provider-probe-policy-v1.json` schemas are deleted,
-  `compiled-task-v1.json` loses the `provider_admission_brokered` operator, and
-  `task-broker-binding-v1.json` loses its `provider_admission` target.
+  `task-provider-context-v2.json` and `task-provider-probe-policy-v1.json` schemas are deleted, and
+  `compiled-task-v1.json` loses the `provider_admission_brokered` operator.
+- The Broker's Task records went with the Broker; no release wrote them, because none ever
+  installed a Broker. `TaskBrokerTransition@1` is no longer an event type, so a Task log holding
+  one fails to replay. `af task show --json` and `af task explain --json` no longer emit
+  `af/task-inspection@4`, a `broker_records` section or a `broker_transition` history entry, and an
+  `af self optimize` history source with the `af` adapter refuses an `af/task-inspection@4`
+  receipt. The `task-broker-binding-v1.json`, `task-broker-operation-v1.json`,
+  `task-broker-transition-v1.json`, `broker-operation-receipt-v2.json` and
+  `task-inspection-v4.json` schemas are deleted, and `run-event-v1.json` and
+  `task-inspection-v5.json` to `task-inspection-v11.json` drop their Broker entries.
 
 ## [0.9.0-rc.6] - 2026-09-21
 

@@ -112,8 +112,8 @@ struct Recording {
     reached: std::sync::Mutex<Option<Vec<(String, String)>>>,
 }
 impl WorkerModelAdapter for Recording {
-    fn credential_mode(&self) -> review_core::BrokerCredentialModeV1 {
-        review_core::BrokerCredentialModeV1::TrustedUnsafe
+    fn credential_mode(&self) -> review_core::CredentialModeV1 {
+        review_core::CredentialModeV1::TrustedUnsafe
     }
     fn provider_kind(&self) -> &'static str {
         "claude"

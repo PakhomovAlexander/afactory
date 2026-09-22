@@ -18,7 +18,7 @@ fn task_adapter(program: &str) -> ClaudeTaskAdapter {
 fn native_task_adapter_declares_trusted_unsafe_credentials() {
     assert_eq!(
         task_adapter("claude").credential_mode(),
-        review_core::BrokerCredentialModeV1::TrustedUnsafe
+        review_core::CredentialModeV1::TrustedUnsafe
     );
 }
 

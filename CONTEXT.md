@@ -279,8 +279,8 @@ node's cap, or a reviewer fan-out's) and the Task as a whole.
 _Avoid_: **Report Scope**; Budget Scope governs spend, never whether a claim blocks.
 
 **Execution Binding**:
-The trusted, content-pinned sandbox, tool, network, environment, broker, and quota policy under
-which one executable node runs.
+The trusted, content-pinned sandbox, tool, network, environment, credential, and quota policy
+under which one executable node runs.
 _Avoid_: an ambient/default environment; an unresolved or insufficient Binding fails planning.
 
 **Provider**:
@@ -298,11 +298,6 @@ under its own Attempt and reservation, charged to the Task budget. Its selected 
 Task's Workers dispatch on the binding. Admission is local execution state, not pinned pipeline
 authority, and `af provider doctor` runs only a Review Task's admissions.
 _Avoid_: treating an ambient login or a Provider ID as proof of usable authentication.
-
-**Broker Handle**:
-A non-secret, Attempt/epoch-bound capability authorizing only named external operations through a
-trusted broker that can revoke it after fencing.
-_Avoid_: passing reusable provider credentials into a reviewer sandbox.
 
 **Cache Snapshot**:
 A bounded, credential-free copy or copy-on-write clone of an administrator-approved dependency
@@ -405,8 +400,8 @@ could honor — the Round is only known to be closing after its results are redu
 - A `rejected` or `wontfix-tracked` **Resolution** remains terminal only inside its recorded
   evidence, Subject scope, severity ceiling, and expiry; a material challenge moves it to
   `contested` through an explicit event.
-- Every executable node resolves one **Execution Binding** before dispatch; safe Bindings expose
-  revocable **Broker Handles**, never reusable credential bytes.
+- Every executable node resolves one **Execution Binding** before dispatch. A reviewer that can
+  read reusable credentials is `trusted_unsafe` and cannot authorize `auto_apply`.
 - A configured **Provider** dispatches a Worker only after its Task's **Provider Admission**
   succeeded, and the native account is rechecked before every private send
   ([ADR-0090](docs/adr/0090-recheck-native-task-provider-identity-before-private-invocation.md),

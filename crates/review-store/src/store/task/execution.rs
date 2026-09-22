@@ -1,7 +1,6 @@
 //! Durable invocation/admission/settlement shared by every new Task kind. The scheduler and
 //! domain adapters call this boundary; no Worker output can bypass plan or lease admission.
 
-pub mod broker;
 mod encoding;
 pub mod experiment;
 #[cfg(test)]
@@ -27,7 +26,6 @@ pub struct TaskExecutionProjection {
     pub outputs: BTreeMap<String, (String, TaskOutputV1)>,
     ledger: AttemptLedger,
     attempts: BTreeMap<String, RecordedAttempt>,
-    brokers: BTreeMap<String, broker::RecordedBroker>,
     pub(super) owned: BTreeMap<String, owned::RecordedChildren>,
     pub(super) experiments: BTreeMap<String, experiment::RecordedExperiment>,
     pub(super) review_integrations:
@@ -469,7 +467,6 @@ impl TaskExecutionProjection {
                 BTreeMap::new(),
             ),
             attempts: BTreeMap::new(),
-            brokers: BTreeMap::new(),
             owned: BTreeMap::new(),
             experiments: BTreeMap::new(),
             review_integrations: BTreeMap::new(),
@@ -1573,8 +1570,8 @@ impl EventStore {
         Ok(())
     }
 
-    /// Recheck a domain-owned effect during the one common started Attempt. Broker adapters
-    /// can use this boundary without maintaining another Attempt ledger or accepting an ID alone.
+    /// Recheck a domain-owned effect during the one common started Attempt. Domain hosts use
+    /// this boundary without maintaining another Attempt ledger or accepting an ID alone.
     pub fn check_task_attempt_current(
         &self,
         cas: &Cas,

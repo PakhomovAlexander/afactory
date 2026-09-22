@@ -243,7 +243,6 @@ fn parse_af_inspection(
     if !matches!(
         schema,
         "af/task-inspection@3"
-            | "af/task-inspection@4"
             | "af/task-inspection@5"
             | "af/task-inspection@6"
             | "af/task-inspection@7"

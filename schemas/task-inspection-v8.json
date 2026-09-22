@@ -91,7 +91,7 @@
   ],
   "$id": "urn:af:schema:task-inspection:8",
   "title": "Task inspection af/task-inspection@8",
-  "$comment": "Exact historical recording-recovery transition alongside frozen earlier histories. Optional Broker, owned-child, handoff and Integration histories keep their original shape; no Integration is implied by recording recovery.",
+  "$comment": "Exact historical recording-recovery transition alongside frozen earlier histories. Optional owned-child, handoff and Integration histories keep their original shape; no Integration is implied by recording recovery.",
   "properties": {
     "schema": {
       "const": "af/task-inspection@8"
@@ -139,7 +139,7 @@
             ],
             "properties": {
               "sequence": {
-                "$ref": "urn:af:schema:task-inspection:6#/properties/history/items/oneOf/2/properties/sequence"
+                "$ref": "urn:af:schema:task-inspection:6#/properties/history/items/oneOf/1/properties/sequence"
               },
               "transition": {
                 "$ref": "urn:af:schema:task-transition:4"
@@ -157,7 +157,7 @@
         ],
         "properties": {
           "sequence": {
-            "$ref": "urn:af:schema:task-inspection:6#/properties/history/items/oneOf/2/properties/sequence"
+            "$ref": "urn:af:schema:task-inspection:6#/properties/history/items/oneOf/1/properties/sequence"
           },
           "transition": {
             "$ref": "urn:af:schema:task-transition:4"
@@ -191,9 +191,6 @@
     },
     "plan": {
       "$ref": "urn:af:schema:task-inspection:7#/properties/plan"
-    },
-    "broker_records": {
-      "$ref": "urn:af:schema:task-inspection:7#/properties/broker_records"
     },
     "owned_child_sets": {
       "$ref": "urn:af:schema:task-inspection:7#/properties/owned_child_sets"

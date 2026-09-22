@@ -118,7 +118,7 @@ Sources: OpenHands SDK ([overview](https://docs.openhands.dev/sdk/arch/overview)
 - **18.** *Secrets never enter the sandbox.* Claude masks credentials with a sentinel the proxy
     swaps; Docker Sandboxes' proxy injects so "credential values never enter the VM"; Codex
     cloud strips secrets before the agent phase; Symphony forbids inheriting tracker credentials.
-    → rule 9, the broker ([ADR-0015](../adr/0015-safe-attempts-receive-handles-not-secrets.md) made concrete).
+    → rule 9, the broker (ADR-0015 made concrete; GA ships without a broker, [ADR-0113](../adr/0113-ga-reads-only-what-ga-writes.md)).
     ([Claude sandboxing](https://code.claude.com/docs/en/sandboxing), [Docker Sandboxes](https://docs.docker.com/ai/sandboxes/security/), [Codex cloud](https://learn.chatgpt.com/docs/environments/cloud-environment.md))
 - **19.** *A connected Docker socket proves nothing.* Desktop's proxy accepts while the backend hangs
     for 24+ minutes; `bollard` defaults to a 120 s per-request timeout with no connect timeout.

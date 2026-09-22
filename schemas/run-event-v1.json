@@ -36,7 +36,6 @@
         "TaskTransition@3",
         "TaskTransition@4",
         "TaskTransition@5",
-        "TaskBrokerTransition@1",
         "TaskReviewResultSelected@1",
         "CheckCompleted@1",
         "CampaignOpened@1",
@@ -118,25 +117,6 @@
     }
   },
   "allOf": [
-    {
-      "if": {
-        "properties": {
-          "type": {
-            "const": "TaskBrokerTransition@1"
-          }
-        },
-        "required": [
-          "type"
-        ]
-      },
-      "then": {
-        "properties": {
-          "payload": {
-            "$ref": "urn:af:schema:task-broker-transition:1"
-          }
-        }
-      }
-    },
     {
       "if": {
         "properties": {

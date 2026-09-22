@@ -1840,25 +1840,12 @@ fn present_with_format(
         .any(|event| event.event_type == review_core::EventType::TaskTransitionV4);
     let mut history = Vec::new();
     let mut execution = Vec::new();
-    let mut broker_records = Vec::new();
     let mut owned_child_sets = Vec::new();
     let mut experiments = Vec::new();
     let mut runtime_observations = Vec::new();
     let mut runtime_attempt_ids = BTreeSet::new();
     let mut decisions = Vec::new();
     for event in events {
-        if event.event_type == review_core::EventType::TaskBrokerTransitionV1 {
-            let transition: review_core::task::broker::TaskBrokerTransitionV1 =
-                serde_json::from_value(event.payload).map_err(|e| e.to_string())?;
-            let record = review_store::store::task::execution::broker::read_task_broker_record(
-                cas,
-                &transition.record_id,
-            )
-            .map_err(|e| e.to_string())?;
-            broker_records.push(json!({"artifact_id":record.artifact_id,"artifact_type":record.artifact_type,"record":record.payload}));
-            history.push(json!({"sequence":event.sequence,"broker_transition":transition}));
-            continue;
-        }
         let transition =
             review_store::store::task::read_task_transition(&event).map_err(|e| e.to_string())?;
         if let review_core::task::event::TaskChangeV1::ExecutionRecorded { record_id } =
@@ -1973,10 +1960,6 @@ fn present_with_format(
             .collect::<Vec<_>>();
         value["attempt_walls"] = serde_json::to_value(walls).map_err(|e| e.to_string())?;
         value["runtime_observations"] = json!(runtime_observations);
-    }
-    if !broker_records.is_empty() {
-        value["schema"] = json!("af/task-inspection@4");
-        value["broker_records"] = json!(broker_records);
     }
     if !owned_child_sets.is_empty() {
         value["schema"] = json!("af/task-inspection@5");

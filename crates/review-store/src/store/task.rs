@@ -183,17 +183,6 @@ pub trait TaskAuthority: Sync {
     ) -> Result<(), String> {
         Err("Owned Task completion is not configured".into())
     }
-    /// Re-derive named Broker operations from the exact captured Worker policy. Serialized
-    /// handle/binding data alone cannot authorize connector access.
-    fn validate_broker_binding(
-        &self,
-        _cas: &Cas,
-        _task: &TaskRevisionV1,
-        _plan: &ExecutionPlanV1,
-        _binding: &review_core::task::broker::TaskBrokerBindingV1,
-    ) -> Result<(), String> {
-        Err("Task Broker authority admission is not configured".into())
-    }
     /// Validate the compiled graph, bindings and exact dependency closure, returning the
     /// generated origins derived from trusted package provenance, including nested Pipelines.
     fn validate_plan(
@@ -1297,7 +1286,6 @@ impl EventStore {
         // Cached prefix is only a parse memo. Revalidate current revision/plan bytes on every
         // access; a removed or corrupted active artifact must never inherit cached authority.
         if let Some(state) = &state {
-            execution::broker::validate_cached(cas, state)?;
             execution::owned::validate_cached(cas, state)?;
             if state.planning.is_some() {
                 state.planning_proof(cas)?;
@@ -1383,14 +1371,6 @@ impl EventStore {
         let mut replays = ReviewReplays::default();
         let first = state.as_ref().map_or(0, |state| state.next_sequence);
         for event in self.replay_from(&task_run_id(task_id)?, first)? {
-            if event.event_type == EventType::TaskBrokerTransitionV1 {
-                let state = state
-                    .as_mut()
-                    .ok_or_else(|| conflict("Task Broker evidence precedes genesis"))?;
-                execution::broker::apply_event(cas, state, &event)?;
-                verified.extend(event.artifact_refs.iter().cloned());
-                continue;
-            }
             if !matches!(
                 event.event_type,
                 EventType::TaskTransitionV1

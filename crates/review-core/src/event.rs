@@ -22,8 +22,6 @@ pub enum EventType {
     TaskTransitionV4,
     #[serde(rename = "TaskTransition@5")]
     TaskTransitionV5,
-    #[serde(rename = "TaskBrokerTransition@1")]
-    TaskBrokerTransitionV1,
     #[serde(rename = "TaskReviewResultSelected@1")]
     TaskReviewResultSelectedV1,
     #[serde(rename = "CheckCompleted@1")]
@@ -115,13 +113,12 @@ pub enum EventType {
 }
 
 impl EventType {
-    pub const ALL: [Self; 50] = [
+    pub const ALL: [Self; 49] = [
         Self::TaskTransitionV1,
         Self::TaskTransitionV2,
         Self::TaskTransitionV3,
         Self::TaskTransitionV4,
         Self::TaskTransitionV5,
-        Self::TaskBrokerTransitionV1,
         Self::TaskReviewResultSelectedV1,
         Self::CheckCompletedV1,
         Self::CampaignOpenedV1,
@@ -175,7 +172,6 @@ impl EventType {
             Self::TaskTransitionV3 => "TaskTransition@3",
             Self::TaskTransitionV4 => "TaskTransition@4",
             Self::TaskTransitionV5 => "TaskTransition@5",
-            Self::TaskBrokerTransitionV1 => "TaskBrokerTransition@1",
             Self::TaskReviewResultSelectedV1 => "TaskReviewResultSelected@1",
             Self::CheckCompletedV1 => "CheckCompleted@1",
             Self::CampaignOpenedV1 => "CampaignOpened@1",
@@ -235,7 +231,6 @@ impl EventType {
             Self::TaskTransitionV3 => ("TaskTransition", 3),
             Self::TaskTransitionV4 => ("TaskTransition", 4),
             Self::TaskTransitionV5 => ("TaskTransition", 5),
-            Self::TaskBrokerTransitionV1 => ("TaskBrokerTransition", 1),
             Self::TaskReviewResultSelectedV1 => ("TaskReviewResultSelected", 1),
             Self::CheckCompletedV1 => ("CheckCompleted", 1),
             Self::CampaignOpenedV1 => ("CampaignOpened", 1),
@@ -328,7 +323,6 @@ impl std::str::FromStr for EventType {
             "TaskTransition@3" => Ok(Self::TaskTransitionV3),
             "TaskTransition@4" => Ok(Self::TaskTransitionV4),
             "TaskTransition@5" => Ok(Self::TaskTransitionV5),
-            "TaskBrokerTransition@1" => Ok(Self::TaskBrokerTransitionV1),
             "TaskReviewResultSelected@1" => Ok(Self::TaskReviewResultSelectedV1),
             "CheckCompleted@1" => Ok(Self::CheckCompletedV1),
             "CampaignOpened@1" => Ok(Self::CampaignOpenedV1),
@@ -698,11 +692,6 @@ pub fn validate_event_payload(
         EventType::TaskTransitionV1 => {
             serde_json::from_value::<crate::task::event::TaskTransitionV1>(payload.clone())
                 .map_err(|e| e.to_string())?
-                .validate()
-        }
-        EventType::TaskBrokerTransitionV1 => {
-            serde_json::from_value::<crate::TaskBrokerTransitionV1>(payload.clone())
-                .map_err(|error| error.to_string())?
                 .validate()
         }
         EventType::CheckCompletedV1 => {

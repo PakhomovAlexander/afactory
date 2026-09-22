@@ -361,7 +361,6 @@ impl EventStore {
                     | EventType::TaskTransitionV3
                     | EventType::TaskTransitionV4
                     | EventType::TaskTransitionV5
-                    | EventType::TaskBrokerTransitionV1
             )
         }) && task_permit.is_none()
         {
@@ -787,7 +786,7 @@ enum AuthorityCloseoutMode {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AuthorityReviewerExecution {
-    credential_mode: review_core::BrokerCredentialModeV1,
+    credential_mode: review_core::CredentialModeV1,
     #[serde(default)]
     auto_apply: bool,
 }
@@ -1024,8 +1023,7 @@ fn load_authority_plan_id(
         match (definition.version, node.kind.as_str(), &node.execution) {
             (4, "reviewer", Some(execution)) | (5, "reviewer" | "scatter", Some(execution)) => {
                 if execution.auto_apply
-                    && execution.credential_mode
-                        == review_core::BrokerCredentialModeV1::TrustedUnsafe
+                    && execution.credential_mode == review_core::CredentialModeV1::TrustedUnsafe
                 {
                     return Err(StoreError::Conflict(
                         "pinned reviewer Execution Binding contradicts its credential mode".into(),

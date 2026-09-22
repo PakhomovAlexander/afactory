@@ -74,14 +74,12 @@ fn owned_inspection_keeps_frozen_execution_generations_and_exact_registry_types(
         &bad,
         "registry data cannot invent authority",
     );
-    for version in [3, 4] {
-        value["schema"] = json!(format!("af/task-inspection@{version}"));
-        assert_invalid(
-            &format!("task-inspection-v{version}.json"),
-            &value,
-            "old inspection remains frozen",
-        );
-    }
+    value["schema"] = json!("af/task-inspection@3");
+    assert_invalid(
+        "task-inspection-v3.json",
+        &value,
+        "old inspection remains frozen",
+    );
 }
 
 #[test]

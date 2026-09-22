@@ -345,8 +345,8 @@ Experiment Specification fixes the baseline/candidate closures, selected cases,
 environment and cache state, oracle, required outcomes, sample/repetition limits,
 resource caps and success rule before candidate trial results are available.
 Actual runs are new executions of captured inputs, not deterministic replay of
-old model behavior. Tool/network effects are fixture-backed or explicitly
-brokered; production writes, publication and credential acquisition are absent.
+old model behavior. Tool/network effects are fixture-backed; production writes,
+publication and credential acquisition are absent.
 
 For measured configuration trials, the case's captured product source Snapshot
 and Requirements stay byte-identical in both arms. Resolve execution packages and

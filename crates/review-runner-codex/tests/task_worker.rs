@@ -19,7 +19,7 @@ fn native_task_adapter_declares_trusted_unsafe_credentials() {
     let adapter = CodexTaskAdapter::new(&Command::new("codex", vec![])).unwrap();
     assert_eq!(
         adapter.credential_mode(),
-        review_core::BrokerCredentialModeV1::TrustedUnsafe
+        review_core::CredentialModeV1::TrustedUnsafe
     );
 }
 

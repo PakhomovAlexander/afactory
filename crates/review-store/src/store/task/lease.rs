@@ -9,8 +9,8 @@ impl EventStore {
     pub fn task_lease_state(&self, lease: &TaskLease) -> Result<u64, StoreError> {
         let run_id = task_run_id(lease.task_id())?;
         // Lease changes are frozen TaskTransition@1 records. Include the latest transition
-        // of any generation and the stream tail (which may be a late Broker receipt), so a
-        // changed writer or future policy clock cannot hide behind an earlier lease row.
+        // of any generation and the stream tail, so a changed writer, future policy clock or
+        // foreign event cannot hide behind an earlier lease row.
         let mut query = self.conn.prepare(
             "WITH lease AS (
                 SELECT sequence FROM events WHERE run_id=?1 AND type='TaskTransition@1'
@@ -56,61 +56,54 @@ impl EventStore {
                 .parse::<EventType>()
                 .map_err(|e| conflict(e.to_string()))?;
             let payload = serde_json::from_str(&raw)?;
-            let time = if event_type == EventType::TaskBrokerTransitionV1 {
-                let value: task::broker::TaskBrokerTransitionV1 = serde_json::from_value(payload)?;
-                value.validate().map_err(conflict)?;
-                value.now_unix_ms
-            } else {
-                let event = RunEvent {
-                    event_id: String::new(),
-                    run_id: run_id.clone(),
-                    sequence,
-                    event_type,
-                    occurred_at: String::new(),
-                    node_id: None,
-                    attempt_id: None,
-                    causation_id: None,
-                    correlation_id: None,
-                    artifact_refs: vec![],
-                    payload,
-                };
-                let value = read_task_transition(&event)?;
-                if sequence == 0 {
-                    if !matches!(value.change, TaskChangeV1::Opened { .. }) || value.epoch != 1 {
-                        return Err(conflict("Invalid Task lease genesis"));
-                    }
-                    genesis = true;
-                }
-                let owner = (value.writer, value.epoch);
-                match value.change {
-                    TaskChangeV1::Opened {
-                        lease_until_unix_ms,
-                        ..
-                    }
-                    | TaskChangeV1::LeaseTaken {
-                        lease_until_unix_ms,
-                    }
-                    | TaskChangeV1::LeaseRenewed {
-                        lease_until_unix_ms,
-                    } => {
-                        expiry = Some(lease_until_unix_ms);
-                        writer = Some(owner);
-                    }
-                    TaskChangeV1::LeaseReleased {} => {
-                        expiry = Some(value.now_unix_ms);
-                        writer = Some(owner);
-                    }
-                    _ if writer.as_ref() != Some(&owner) => {
-                        return Err(conflict("Task writer lease is expired or fenced"));
-                    }
-                    _ => {}
-                }
-                value.now_unix_ms
+            let event = RunEvent {
+                event_id: String::new(),
+                run_id: run_id.clone(),
+                sequence,
+                event_type,
+                occurred_at: String::new(),
+                node_id: None,
+                attempt_id: None,
+                causation_id: None,
+                correlation_id: None,
+                artifact_refs: vec![],
+                payload,
             };
-            if time < clock {
+            let value = read_task_transition(&event)?;
+            if sequence == 0 {
+                if !matches!(value.change, TaskChangeV1::Opened { .. }) || value.epoch != 1 {
+                    return Err(conflict("Invalid Task lease genesis"));
+                }
+                genesis = true;
+            }
+            let owner = (value.writer, value.epoch);
+            match value.change {
+                TaskChangeV1::Opened {
+                    lease_until_unix_ms,
+                    ..
+                }
+                | TaskChangeV1::LeaseTaken {
+                    lease_until_unix_ms,
+                }
+                | TaskChangeV1::LeaseRenewed {
+                    lease_until_unix_ms,
+                } => {
+                    expiry = Some(lease_until_unix_ms);
+                    writer = Some(owner);
+                }
+                TaskChangeV1::LeaseReleased {} => {
+                    expiry = Some(value.now_unix_ms);
+                    writer = Some(owner);
+                }
+                _ if writer.as_ref() != Some(&owner) => {
+                    return Err(conflict("Task writer lease is expired or fenced"));
+                }
+                _ => {}
+            }
+            if value.now_unix_ms < clock {
                 return Err(conflict("Task lease observation clock moved backwards"));
             }
-            clock = time;
+            clock = value.now_unix_ms;
         }
         let until = expiry
             .filter(|_| genesis)

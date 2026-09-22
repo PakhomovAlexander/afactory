@@ -24,8 +24,8 @@ impl CodexTaskAdapter {
 }
 
 impl WorkerModelAdapter for CodexTaskAdapter {
-    fn credential_mode(&self) -> review_core::BrokerCredentialModeV1 {
-        review_core::BrokerCredentialModeV1::TrustedUnsafe
+    fn credential_mode(&self) -> review_core::CredentialModeV1 {
+        review_core::CredentialModeV1::TrustedUnsafe
     }
 
     fn provider_kind(&self) -> &'static str {

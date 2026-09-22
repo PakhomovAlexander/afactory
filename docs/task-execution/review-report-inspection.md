@@ -11,7 +11,7 @@ does not create events, receipts or missing artifacts.
 
 Each Task entry reports current cumulative `chargeable_tokens`, outstanding `reserved_tokens`,
 and started Attempt counts. Token totals and per-Attempt cumulative charges are canonical
-u128 decimal strings, including totals of several Broker operations. Attempt counts and original
+u128 decimal strings. Attempt counts and original
 reservation caps remain canonical u64 decimal strings. Native usage components retain u64 bounds
 in generation 3; generation 4 also permits exact u128 components accumulated across native turns.
 Sequence numbers and wall-clock fields are JSON numbers.

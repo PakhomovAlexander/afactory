@@ -539,16 +539,14 @@ impl SlicingSpec {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewerExecutionSpec {
-    pub credential_mode: review_core::BrokerCredentialModeV1,
+    pub credential_mode: review_core::CredentialModeV1,
     #[serde(default)]
     pub auto_apply: bool,
 }
 
 impl ReviewerExecutionSpec {
     fn validate(&self, node: &str) -> Result<(), ConfigError> {
-        if self.auto_apply
-            && self.credential_mode == review_core::BrokerCredentialModeV1::TrustedUnsafe
-        {
+        if self.auto_apply && self.credential_mode == review_core::CredentialModeV1::TrustedUnsafe {
             return Err(ConfigError::Binding(format!(
                 "trusted_unsafe reviewer `{node}` cannot authorize auto_apply"
             )));

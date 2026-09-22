@@ -78,7 +78,7 @@
   ],
   "$id": "urn:af:schema:task-inspection:5",
   "title": "Task inspection af/task-inspection@5",
-  "$comment": "Owned-child Task inspection. Registration, child publication and parent completion remain in the common Task history. Historical V1/V3/V4 execution records retain their exact types and payloads; optional Broker records retain their frozen V4 contract. These read-only facts grant no dispatch authority.",
+  "$comment": "Owned-child Task inspection. Registration, child publication and parent completion remain in the common Task history. Historical V1/V3/V4 execution records retain their exact types and payloads. These read-only facts grant no dispatch authority.",
   "properties": {
     "schema": {
       "const": "af/task-inspection@5"
@@ -111,30 +111,7 @@
       "$ref": "urn:af:schema:task-inspection:3#/properties/plan_decisions"
     },
     "history": {
-      "type": "array",
-      "items": {
-        "oneOf": [
-          {
-            "$ref": "urn:af:schema:task-inspection:3#/properties/history/items"
-          },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "sequence",
-              "broker_transition"
-            ],
-            "properties": {
-              "sequence": {
-                "$ref": "urn:af:schema:task-inspection:3#/properties/history/items/properties/sequence"
-              },
-              "broker_transition": {
-                "$ref": "urn:af:schema:task-broker-transition:1"
-              }
-            }
-          }
-        ]
-      }
+      "$ref": "urn:af:schema:task-inspection:3#/properties/history"
     },
     "execution_records": {
       "type": "array",
@@ -189,54 +166,6 @@
     },
     "plan": {
       "$ref": "urn:af:schema:task-inspection:3#/properties/plan"
-    },
-    "broker_records": {
-      "type": "array",
-      "minItems": 1,
-      "items": {
-        "oneOf": [
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "artifact_id",
-              "artifact_type",
-              "record"
-            ],
-            "properties": {
-              "artifact_id": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
-              },
-              "artifact_type": {
-                "const": "af/TaskBrokerBinding@1"
-              },
-              "record": {
-                "$ref": "urn:af:schema:task-broker-binding:1"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "artifact_id",
-              "artifact_type",
-              "record"
-            ],
-            "properties": {
-              "artifact_id": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
-              },
-              "artifact_type": {
-                "const": "af/TaskBrokerOperation@1"
-              },
-              "record": {
-                "$ref": "urn:af:schema:task-broker-operation:1"
-              }
-            }
-          }
-        ]
-      }
     },
     "owned_child_sets": {
       "type": "array",

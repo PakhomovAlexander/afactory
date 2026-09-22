@@ -1,7 +1,8 @@
 # ADR-0089: Interrupt Task work when its writer heartbeat fails
 
 Date: 2026-09-13
-Status: Proposed
+Status: Proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
+Broker accounting, calls and late receipts. GA has no Broker.
 
 ## Context
 

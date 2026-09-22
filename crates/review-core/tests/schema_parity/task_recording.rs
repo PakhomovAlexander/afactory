@@ -183,7 +183,7 @@ fn recording_inspection_retains_optional_histories_and_exact_resource_bounds() {
         &bad,
         "generation eight requires its recorded transition",
     );
-    for version in 3..=7 {
+    for version in [3, 5, 6, 7] {
         let mut old = value.clone();
         old["schema"] = json!(format!("af/task-inspection@{version}"));
         assert_invalid(

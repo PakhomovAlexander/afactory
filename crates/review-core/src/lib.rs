@@ -14,11 +14,11 @@
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
 compile_error!("af supports Linux and macOS only");
 
-pub mod broker;
 pub mod build_cache;
 pub mod cache;
 pub mod campaign;
 pub mod change_set;
+pub mod credential;
 pub mod demand;
 pub mod disposition;
 pub mod envelope;
@@ -69,16 +69,6 @@ pub use build_cache::{
     MAX_BUILD_CACHE_BYTES_V1, MAX_BUILD_CACHE_ENTRIES_V1, validate_build_cache_path_v1,
 };
 
-pub use task::broker::{
-    TASK_BROKER_BINDING_V1, TASK_BROKER_OPERATION_V1, TaskBrokerBindingV1, TaskBrokerOperationV1,
-    TaskBrokerTargetV1, TaskBrokerTransitionV1,
-};
-
-pub use broker::{
-    BrokerCredentialModeV1, BrokerFailureReasonV1, BrokerLeaseV1, BrokerOperationOutcomeV1,
-    BrokerOperationPolicyV1, BrokerOperationReceiptV1, BrokerOperationReceiptV2,
-    broker_authority_usage,
-};
 pub use cache::{
     CacheManifestEntryV1, CacheManifestV1, CachePathEncodingV1, MAX_CACHE_BYTES_V1,
     MAX_CACHE_COPY_BYTES_V1, MAX_CACHE_ENTRIES_V1, validate_cache_path_v1,
@@ -89,6 +79,7 @@ pub use campaign::{
     RoundInputSupersededPayloadV1, RoundStartedPayloadV1,
 };
 pub use change_set::{ChangeSetV1, PathRenameV1};
+pub use credential::CredentialModeV1;
 pub use demand::{
     DEMAND_REDUCER_VERSION, DemandRequirement, DemandSetEntryV1, DemandSetV1, DemandStatus,
     DemandV1, DemandWaiverV1, EvidenceReuseAdmissionV1, EvidenceSatisfactionV1, EvidenceV1,

@@ -11,8 +11,6 @@ use review_core::task::execution::{
 use review_graph::task::CompiledTask;
 use serde_json::{Value, json};
 
-#[path = "task_public_schemas/broker.rs"]
-mod broker;
 #[path = "../../review-pipeline/tests/support/captured_review_continuation.rs"]
 mod captured_continuation;
 #[path = "../../review-pipeline/tests/support/captured_review.rs"]

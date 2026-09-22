@@ -807,7 +807,7 @@ fn version_four_requires_an_explicit_reviewer_execution_binding() {
         .unwrap();
     assert_eq!(
         loaded.reviewer_execution()["architecture"].credential_mode,
-        review_core::BrokerCredentialModeV1::CredentialFree
+        review_core::CredentialModeV1::CredentialFree
     );
 
     let retroactive = MINIMAL.replace(

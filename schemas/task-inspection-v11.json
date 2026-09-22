@@ -124,9 +124,6 @@
     "plan": {
       "$ref": "urn:af:schema:task-inspection:8#/properties/plan"
     },
-    "broker_records": {
-      "$ref": "urn:af:schema:task-inspection:8#/properties/broker_records"
-    },
     "owned_child_sets": {
       "$ref": "urn:af:schema:task-inspection:8#/properties/owned_child_sets"
     },

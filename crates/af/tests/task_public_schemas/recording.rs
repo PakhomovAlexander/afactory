@@ -51,7 +51,7 @@ fn expired_recording_inspection_keeps_one_task_and_exact_old_and_new_history() {
                 .unwrap()
                 .payload
         );
-        for version in 3..=7 {
+        for version in [3, 5, 6, 7] {
             let mut old = value.clone();
             old["schema"] = json!(format!("af/task-inspection@{version}"));
             assert!(!validator(&format!("task-inspection-v{version}.json")).is_valid(&old));

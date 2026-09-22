@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
-use review_core::BrokerCredentialModeV1;
+use review_core::CredentialModeV1;
 use review_core::task::execution::TaskInvocationV1;
 use review_core::task::feedback::TaskFeedbackCodeV1;
 use review_core::task::usage::TaskTokenUsageV3;
@@ -122,10 +122,7 @@ fn native_transport_forwards_exact_invocation_and_retains_success_or_failed_evid
     let fixture = Fixture::new();
     for failed in [false, true] {
         let model = NativeModel::new(&fixture, VALID_REPLY, failed, u64::MAX.into());
-        assert_eq!(
-            model.credential_mode(),
-            BrokerCredentialModeV1::TrustedUnsafe
-        );
+        assert_eq!(model.credential_mode(), CredentialModeV1::TrustedUnsafe);
         for controlled in [false, true] {
             let result = if controlled {
                 invoke_model_controlled(

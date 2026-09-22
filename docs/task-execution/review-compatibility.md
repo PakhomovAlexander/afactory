@@ -37,10 +37,9 @@ Trusted usage observations now commit cumulative spend during an Attempt as well
 settlement. The remaining reservation stays held, an overrun blocks further effects, and lower
 terminal reports or writer-loss recovery cannot refund known usage. Duplicate observations do
 not double-charge. The original settlement bytes and exact replay comparison are preserved
-([ADR-0068](../adr/0068-retain-inflight-task-usage-in-the-common-budget.md)). The actual broker
-receipt adapter feeds these observations through the common Store under the original Attempt.
-Provider readiness and business calls retain separate captured policies and reservations in
-that same Task budget ([ADR-0080](../adr/0080-bind-broker-evidence-to-the-original-task-attempt.md)).
+([ADR-0068](../adr/0068-retain-inflight-task-usage-in-the-common-budget.md)). Provider
+readiness and business calls retain separate captured policies and reservations in that same
+Task budget ([ADR-0091](../adr/0091-capture-explicit-task-provider-admission-costs.md)).
 
 ## Installed cutover
 
@@ -98,10 +97,9 @@ ledger nor a new public verdict policy.
 
 The trusted context adapter now uses actual common Attempts and canonical replay. Task-backed
 inspection reads canonical reports and exact common accounting. Installed Review CLI and
-Provider doctor use this path, and Broker receipts remain bound to the original common Attempt.
-Native invocations recheck their captured Provider identity before private send; exact writer
-loss interrupts supervised work and retains observed usage. See the
-[model and cancellation boundary](model-bindings.md).
+Provider doctor use this path. Native invocations recheck their captured Provider identity
+before private send; exact writer loss interrupts supervised work and retains observed usage.
+See the [model and cancellation boundary](model-bindings.md).
 
 The captured definition loader is now shared with the CLI, retaining package/policy validation,
 Snapshot reachability and recorded light/heavy mode. Common compiled graphs support named
@@ -136,8 +134,8 @@ and Scatter evidence supplement the selected public outputs, including nodes not
 the original Ledger. The operation host additionally retains mandatory Finding Set/Demand Set
 companions, actual common Worker execution, canonical publication recovery and domain acceptance.
 Canonical `RunReport@6` and the Task-backed Review inspection view retain exact cumulative
-accounting. Broker and owned Scatter execution, heavy-Round handoff and post-Round Integration
-now use that same runtime.
+accounting. Owned Scatter execution, heavy-Round handoff and post-Round Integration now use
+that same runtime.
 
 Recorded-plan recompilation reads existing root wrappers and refuses their absence, different
 producer, changed Round or changed head; it does not recreate missing CAS objects. Historical

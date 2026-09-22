@@ -67,7 +67,6 @@ fn heartbeat_refuses_expiry_future_clocks_and_changed_latest_writer() {
         "future",
         "writer",
         "epoch",
-        "broker_clock",
         "foreign",
         "malformed",
     ] {
@@ -91,10 +90,6 @@ fn heartbeat_refuses_expiry_future_clocks_and_changed_latest_writer() {
                     ("$.epoch", json!(2))
                 };
                 connection.execute("UPDATE events SET payload=json_set(payload,?2,json(?3)) WHERE run_id=?1 AND sequence=1", rusqlite::params![run, field, value.to_string()]).unwrap();
-            }
-            "broker_clock" => {
-                let value = json!({"now_unix_ms":now().unwrap()+10_000,"record_id":f.plan_id});
-                connection.execute("UPDATE events SET type='TaskBrokerTransition@1',payload=?2 WHERE run_id=?1 AND sequence=1", rusqlite::params![run, value.to_string()]).unwrap();
             }
             "foreign" => {
                 connection

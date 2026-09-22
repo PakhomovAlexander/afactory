@@ -23,9 +23,6 @@ pub(super) fn explain_plan(
         .map_err(|e| e.to_string())?;
     let mut recorded_event_ids = Vec::new();
     for event in &events {
-        if event.event_type == review_core::EventType::TaskBrokerTransitionV1 {
-            continue;
-        }
         let transition = read_task_transition(event).map_err(|e| e.to_string())?;
         let recorded = match &transition.change {
             TaskChangeV1::PlanProposed { plan_id: recorded }

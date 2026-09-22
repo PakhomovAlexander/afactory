@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use review_core::task::execution::TaskInvocationV1;
 use review_core::task::feedback::TaskFeedbackCodeV1;
-use review_core::{ArtifactEnvelope, BrokerCredentialModeV1, Command, Producer};
+use review_core::{ArtifactEnvelope, Command, CredentialModeV1, Producer};
 use review_store::{Cas, validate_envelope};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -402,8 +402,8 @@ pub struct ModelWorkerReturn {
 pub trait WorkerModelAdapter: Send + Sync {
     /// Credential boundary this adapter actually provides. Model transports run trusted and
     /// may hold ambient Provider credentials.
-    fn credential_mode(&self) -> BrokerCredentialModeV1 {
-        BrokerCredentialModeV1::TrustedUnsafe
+    fn credential_mode(&self) -> CredentialModeV1 {
+        CredentialModeV1::TrustedUnsafe
     }
 
     fn provider_kind(&self) -> &'static str;

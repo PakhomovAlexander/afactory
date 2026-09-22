@@ -27,7 +27,6 @@
     "review_rounds": {"$ref": "urn:af:schema:task-inspection:8#/properties/review_rounds"},
     "graph": {"$ref": "urn:af:schema:task-inspection:8#/properties/graph"},
     "plan": {"$ref": "urn:af:schema:task-inspection:8#/properties/plan"},
-    "broker_records": {"$ref": "urn:af:schema:task-inspection:8#/properties/broker_records"},
     "owned_child_sets": {"$ref": "urn:af:schema:task-inspection:8#/properties/owned_child_sets"},
     "review_handoffs": {"$ref": "urn:af:schema:task-inspection:8#/properties/review_handoffs"},
     "review_integrations": {"$ref": "urn:af:schema:task-inspection:8#/properties/review_integrations"},

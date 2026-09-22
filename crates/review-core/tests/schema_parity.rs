@@ -30,7 +30,7 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 179] = [
+const SCHEMAS: [&str; 174] = [
     "session-snapshot-v1.json",
     "build-cache-v1.json",
     "worker-notes-v1.json",
@@ -80,15 +80,11 @@ const SCHEMAS: [&str; 179] = [
     "task-plan-inspection-v1.json",
     "task-inspection-v6.json",
     "task-inspection-v5.json",
-    "task-broker-binding-v1.json",
-    "task-broker-operation-v1.json",
-    "task-broker-transition-v1.json",
     "task-file-v1.json",
     "task-catalog-v1.json",
     "task-catalog-v2.json",
     "compiled-task-v1.json",
     "task-inspection-v3.json",
-    "task-inspection-v4.json",
     "task-list-entry-v2.json",
     "task-execution-record-v3.json",
     "task-execution-record-v4.json",
@@ -96,7 +92,6 @@ const SCHEMAS: [&str; 179] = [
     "task-token-usage-v2.json",
     "task-token-usage-v3.json",
     "task-usage-observation-v1.json",
-    "broker-operation-receipt-v2.json",
     "task-review-attempt-provenance-v1.json",
     "task-review-attempt-provenance-v2.json",
     "task-review-accounting-v1.json",
@@ -3561,9 +3556,6 @@ fn task_review_conclusions_preserve_exact_cumulative_charge_and_execution_contra
     );
     assert!(!read(value));
 }
-
-#[path = "schema_parity/task_broker.rs"]
-mod task_broker;
 
 #[path = "schema_parity/task_owned.rs"]
 mod task_owned;

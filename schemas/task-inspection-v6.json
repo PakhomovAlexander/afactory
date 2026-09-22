@@ -78,7 +78,7 @@
   ],
   "$id": "urn:af:schema:task-inspection:6",
   "title": "Task inspection af/task-inspection@6",
-  "$comment": "Review continuation inspection retains exact TaskTransition@2 payloads and typed handoff receipts. Earlier transition, execution, owned-child and Broker payloads remain unchanged. These historical records grant no dispatch authority.",
+  "$comment": "Review continuation inspection retains exact TaskTransition@2 payloads and typed handoff receipts. Earlier transition, execution and owned-child payloads remain unchanged. These historical records grant no dispatch authority.",
   "properties": {
     "schema": {
       "const": "af/task-inspection@6"
@@ -116,22 +116,6 @@
         "oneOf": [
           {
             "$ref": "urn:af:schema:task-inspection:3#/properties/history/items"
-          },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "sequence",
-              "broker_transition"
-            ],
-            "properties": {
-              "sequence": {
-                "$ref": "urn:af:schema:task-inspection:3#/properties/history/items/properties/sequence"
-              },
-              "broker_transition": {
-                "$ref": "urn:af:schema:task-broker-transition:1"
-              }
-            }
           },
           {
             "type": "object",
@@ -205,54 +189,6 @@
     },
     "plan": {
       "$ref": "urn:af:schema:task-inspection:3#/properties/plan"
-    },
-    "broker_records": {
-      "type": "array",
-      "minItems": 1,
-      "items": {
-        "oneOf": [
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "artifact_id",
-              "artifact_type",
-              "record"
-            ],
-            "properties": {
-              "artifact_id": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
-              },
-              "artifact_type": {
-                "const": "af/TaskBrokerBinding@1"
-              },
-              "record": {
-                "$ref": "urn:af:schema:task-broker-binding:1"
-              }
-            }
-          },
-          {
-            "type": "object",
-            "additionalProperties": false,
-            "required": [
-              "artifact_id",
-              "artifact_type",
-              "record"
-            ],
-            "properties": {
-              "artifact_id": {
-                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
-              },
-              "artifact_type": {
-                "const": "af/TaskBrokerOperation@1"
-              },
-              "record": {
-                "$ref": "urn:af:schema:task-broker-operation:1"
-              }
-            }
-          }
-        ]
-      }
     },
     "owned_child_sets": {
       "type": "array",

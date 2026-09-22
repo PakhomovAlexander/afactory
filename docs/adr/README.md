@@ -46,8 +46,6 @@ Record the options you rejected and why — that is the part future readers need
   claim](0013-scope-is-evaluated-per-active-claim.md)
 - [0014 — Non-fixed resolutions are scoped and
   challengeable](0014-non-fixed-resolutions-are-challengeable.md)
-- [0015 — Safe attempts receive handles, not reusable
-  secrets](0015-safe-attempts-receive-handles-not-secrets.md)
 - [0017 — Record rename truncation and continue the diff
   Subject](0017-record-rename-truncation-and-continue.md)
 - [0018 — Share one bounded infrastructure
@@ -145,7 +143,6 @@ Record the options you rejected and why — that is the part future readers need
   Attempts](0077-run-captured-review-operations-under-common-task-attempts.md)
 - [0078 — Bind Review conclusions to exact Task accounting](0078-bind-review-conclusions-to-exact-task-accounting.md)
 - [0079 — Retain exact cumulative charge within one Task Attempt](0079-retain-exact-cumulative-charge-within-one-task-attempt.md)
-- [0080 — Bind Broker evidence to the original Task Attempt](0080-bind-broker-evidence-to-the-original-task-attempt.md)
 - [0081 — Register owned Review children in the common Task runtime](0081-register-owned-review-children-in-the-common-task-runtime.md)
 - [0082 — Continue captured Review Rounds within the original Task](0082-continue-captured-review-rounds-within-the-original-task.md)
 - [0083 — Run post-Round Integration within the original Task](0083-run-post-round-integration-within-the-original-task.md)
