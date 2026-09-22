@@ -86,7 +86,7 @@ fn git(repo: &Path, home: &Path, args: &[&str]) -> Vec<u8> {
 }
 
 #[test]
-fn recorded_closed_round_loads_pinned_authority_without_capture_or_advancing_light_campaign() {
+fn recorded_round_loads_pinned_authority_without_capture_or_advancing_light_campaign() {
     let directory = tempfile::tempdir().unwrap();
     let repo_path = directory.path().join("repo");
     let home = directory.path().join("home");
@@ -171,35 +171,6 @@ to={node="ledger",port="reports"}
     let repo = Repo::open(&repo_path, &home);
     let first = prepare(&options, &cas, &mut store, &repo).unwrap();
     let started = store.latest_round_started(&first.run_id).unwrap().unwrap();
-    // This historical loader case closes through the existing exhausted-before-work report
-    // contract. No Worker or Provider runs, and no synthetic successful result is published.
-    store
-        .append(
-            &first.run_id,
-            &cas,
-            NewEvent::new(
-                EventType::RunReportV3,
-                serde_json::to_value(review_core::RunReportPayloadV3 {
-                    outcomes: ["reviewer", "gather", "ledger"]
-                        .into_iter()
-                        .map(|node| review_core::RunNodeReportV2 {
-                            node: node.into(),
-                            outcome: review_core::RunNodeOutcomeV2::Failed {
-                                error: "resource limit reached before dispatch".into(),
-                            },
-                        })
-                        .collect(),
-                    blocked_gates: vec![],
-                    verdict: review_core::RunVerdictV3::Fail {
-                        reason: review_core::RunFailureReasonV3::Exhausted,
-                    },
-                    spent_tokens: Some(0),
-                })
-                .unwrap(),
-            )
-            .caused_by(&started.event_id),
-        )
-        .unwrap();
     let before = store.replay(&first.run_id).unwrap();
     std::fs::write(
         repo_path.join(".af/pipelines/review.toml"),

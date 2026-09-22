@@ -188,7 +188,10 @@ or needs a documented hand edit.
   Providers are admitted by the Review Task's own probe Attempts, and doctor prints
   `af/provider-doctor@2`. `af review run` no longer requires `HOME` up front. `af review report`,
   `ledger` and `campaigns` count only Task Attempts toward a Campaign's wall-clock, so a pre-Task
-  Campaign's report no longer shows one. ADR-0016 is superseded.
+  Campaign's report no longer shows one. ADR-0016 is superseded. A `--restart-round` before
+  the Task exists now keeps Round 1's original prior Finding Set even when the candidate
+  changed, so the Task captured on the new epoch resumes; each later run used to fail with
+  "restarted Review changed its original prior sets or adjacent epoch".
 
 ## [0.9.0-rc.6] - 2026-09-21
 

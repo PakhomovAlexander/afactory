@@ -368,6 +368,8 @@ fn written_only_by_the_pre_task_executor(event_type: review_core::EventType) -> 
             | EventType::RunReportV3
             | EventType::RunReportV4
             | EventType::RunReportV5
+            // Refusable only while the Task-host port of ADR-0110 writes these after Task
+            // capture (the guard returns early once a Task exists); the port must re-check them.
             | EventType::ColdCloseoutDispatchedV1
             | EventType::SessionSnapshotPreparedV1
             | EventType::SessionSnapshotCleanedV1
@@ -590,4 +592,63 @@ fn execute_current(
             })
         },
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use review_core::EventType;
+
+    /// The denylist is exactly the pre-Task executor's own records. Events the shared Review
+    /// domain writes on the Task path, and operator events appended before a Task exists, never
+    /// refuse a Campaign.
+    #[test]
+    fn only_pre_task_executor_events_refuse_a_campaign() {
+        let refused: Vec<EventType> = EventType::ALL
+            .into_iter()
+            .filter(|event| super::written_only_by_the_pre_task_executor(*event))
+            .collect();
+        assert_eq!(
+            refused,
+            [
+                EventType::BrokerOperationCompletedV1,
+                EventType::AttemptAdmittedV1,
+                EventType::AttemptDispatchedV1,
+                EventType::AttemptFailedV1,
+                EventType::AttemptFencedV1,
+                EventType::AttemptFeedbackV1,
+                EventType::AttemptInputV1,
+                EventType::AttemptReleasedV1,
+                EventType::ProviderOperationTransitionV1,
+                EventType::ReviewerExecutionBoundV1,
+                EventType::RunReportV3,
+                EventType::RunReportV4,
+                EventType::RunReportV5,
+                EventType::SessionSnapshotPreparedV1,
+                EventType::SessionSnapshotCleanedV1,
+                EventType::ColdCloseoutDispatchedV1,
+            ]
+        );
+        for live in [
+            EventType::NodeInvocationV1,
+            EventType::NodeOutputReceiptV1,
+            EventType::GateDecisionV1,
+            EventType::CheckCompletedV1,
+            EventType::RoundInputSupersededV1,
+            EventType::PolicyTimeAdvancedV1,
+            EventType::EvidenceAddedV1,
+            EventType::EvidenceReuseAdmittedV1,
+            EventType::EvidenceSatisfiedV1,
+            EventType::DemandWaivedV1,
+            EventType::CampaignOpenedV1,
+            EventType::RoundStartedV1,
+            EventType::SourceCapturedV1,
+            EventType::GenerationAdvancedV1,
+        ] {
+            assert!(
+                !super::written_only_by_the_pre_task_executor(live),
+                "{} must never refuse a Campaign",
+                live.as_str()
+            );
+        }
+    }
 }

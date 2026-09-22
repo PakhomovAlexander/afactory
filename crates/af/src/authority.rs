@@ -760,7 +760,6 @@ struct RoundInput {
     payload: RoundStartedPayloadV1,
     event_id: String,
     prior_count: usize,
-    ledger_projection: LedgerProjection,
 }
 
 pub(super) fn prepare(
@@ -1198,7 +1197,7 @@ fn prepare_round(
     )
     .map_err(|error| error.to_string())?;
     let repository_id = authority_snapshot.repository_id.clone();
-    let ledger_projection =
+    let mut ledger_projection =
         LedgerProjection::from_events(run_id, events, cas).map_err(|error| error.to_string())?;
     // Before its Task exists a Campaign has only Round 1; later Rounds start in task_round.rs.
     let mut starts: Vec<(&review_core::RunEvent, RoundStartedPayloadV1)> = events
@@ -1218,16 +1217,10 @@ fn prepare_round(
         payload,
         event_id,
         prior_count,
-        ledger_projection,
     } = match (existing, options.restart_round) {
-        (Some((event, payload)), false) => load_round(
-            options,
-            cas,
-            event.event_id.clone(),
-            payload,
-            &repository_id,
-            ledger_projection,
-        )?,
+        (Some((event, payload)), false) => {
+            load_round(options, cas, events, event, payload, &repository_id)?
+        }
         (None, true) => {
             return Err("--restart-round requires an incomplete Round to supersede".into());
         }
@@ -1240,7 +1233,8 @@ fn prepare_round(
             campaign,
             RoundCaptureRequest {
                 superseded: existing.as_ref().map(|(event, payload)| (*event, payload)),
-                ledger_projection,
+                history: events,
+                ledger_projection: &mut ledger_projection,
             },
         )?,
     };
@@ -1266,7 +1260,8 @@ fn prepare_round(
 
 struct RoundCaptureRequest<'a> {
     superseded: Option<(&'a review_core::RunEvent, &'a RoundStartedPayloadV1)>,
-    ledger_projection: LedgerProjection,
+    history: &'a [review_core::RunEvent],
+    ledger_projection: &'a mut LedgerProjection,
 }
 
 fn capture_round(
@@ -1280,7 +1275,8 @@ fn capture_round(
 ) -> Result<RoundInput, String> {
     let RoundCaptureRequest {
         superseded,
-        mut ledger_projection,
+        history,
+        ledger_projection,
     } = request;
     let round = 1;
     let task_round::CapturedRoundSource {
@@ -1333,24 +1329,39 @@ fn capture_round(
         .put_json(&serde_json::to_value(&subject).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())?;
 
-    let prior_findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
-    let prior_count = prior_findings.as_array().map_or(0, Vec::len);
-    let prior_finding_set = serde_json::json!({
-        "subject_id": subject_id,
-        "round": round,
-        "prior_findings": prior_findings,
-    });
-    let prior_bytes = serde_json::to_string_pretty(&prior_finding_set)
-        .map_err(|error| error.to_string())?
-        .len();
-    if prior_bytes > MAX_PRIOR_FINDINGS_BYTES {
-        return Err(format!(
-            "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes and partitioning is required"
-        ));
-    }
-    let prior_finding_set_id = cas
-        .put_json(&prior_finding_set)
-        .map_err(|error| error.to_string())?;
+    // Supersession keeps the Round's original prior sets, whose raw Finding header names the
+    // first epoch's Subject, exactly as a restart on the Task path does.
+    let (prior_finding_set_id, prior_count) = if let Some((old_event, old)) = superseded {
+        let prior_subject_id = task_round::original_prior_subject(history, old_event, old)?;
+        let prior_count = validate_round_set(
+            cas,
+            &old.prior_finding_set_id,
+            &prior_subject_id,
+            round,
+            "prior_findings",
+        )?;
+        (old.prior_finding_set_id.clone(), prior_count)
+    } else {
+        let prior_findings = serde_json::Value::Array(prior_rows(ledger_projection.ledger()));
+        let prior_count = prior_findings.as_array().map_or(0, Vec::len);
+        let prior_finding_set = serde_json::json!({
+            "subject_id": subject_id,
+            "round": round,
+            "prior_findings": prior_findings,
+        });
+        let prior_bytes = serde_json::to_string_pretty(&prior_finding_set)
+            .map_err(|error| error.to_string())?
+            .len();
+        if prior_bytes > MAX_PRIOR_FINDINGS_BYTES {
+            return Err(format!(
+                "exact prior Finding Set is {prior_bytes} bytes; maximum is {MAX_PRIOR_FINDINGS_BYTES} bytes and partitioning is required"
+            ));
+        }
+        let prior_finding_set_id = cas
+            .put_json(&prior_finding_set)
+            .map_err(|error| error.to_string())?;
+        (prior_finding_set_id, prior_count)
+    };
     let prior_demand_set_id = superseded.map_or_else(
         || campaign.manifest.demand_genesis_id.clone(),
         |(_, old)| old.prior_demand_set_id.clone(),
@@ -1461,7 +1472,6 @@ fn capture_round(
         payload,
         event_id: started.event_id,
         prior_count,
-        ledger_projection,
     })
 }
 
@@ -1473,35 +1483,18 @@ fn raw_patch_exceeds_change_set_bound(raw_bytes: usize) -> bool {
     raw_bytes > maximum_raw_patch_bytes()
 }
 
+/// Validate one recorded Round without capturing Source. Its prior sets are checked against
+/// the first epoch's Subject, which every exact supersession retains.
 fn load_round(
     options: &Options,
     cas: &Cas,
-    event_id: String,
+    history: &[review_core::RunEvent],
+    event: &review_core::RunEvent,
     payload: RoundStartedPayloadV1,
     repository_id: &str,
-    ledger_projection: LedgerProjection,
 ) -> Result<RoundInput, String> {
-    let prior_subject_id = payload.subject_id.clone();
-    load_round_with_prior_subject(
-        options,
-        cas,
-        event_id,
-        payload,
-        (repository_id, &prior_subject_id),
-        ledger_projection,
-    )
-}
-
-fn load_round_with_prior_subject(
-    options: &Options,
-    cas: &Cas,
-    event_id: String,
-    payload: RoundStartedPayloadV1,
-    source_authority: (&str, &str),
-    ledger_projection: LedgerProjection,
-) -> Result<RoundInput, String> {
-    let (repository_id, prior_subject_id) = source_authority;
     payload.validate()?;
+    let prior_subject_id = task_round::original_prior_subject(history, event, &payload)?;
     let subject: SubjectV1 = serde_json::from_value(
         cas.get_json(&payload.subject_id)
             .map_err(|error| error.to_string())?,
@@ -1548,14 +1541,14 @@ fn load_round_with_prior_subject(
     let prior_count = validate_round_set(
         cas,
         &payload.prior_finding_set_id,
-        prior_subject_id,
+        &prior_subject_id,
         payload.round,
         "prior_findings",
     )?;
     validate_round_set(
         cas,
         &payload.prior_demand_set_id,
-        prior_subject_id,
+        &prior_subject_id,
         payload.round,
         "demands",
     )?;
@@ -1565,9 +1558,8 @@ fn load_round_with_prior_subject(
     );
     Ok(RoundInput {
         payload,
-        event_id,
+        event_id: event.event_id.clone(),
         prior_count,
-        ledger_projection,
     })
 }
 

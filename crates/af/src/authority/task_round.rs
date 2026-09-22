@@ -273,16 +273,13 @@ pub(crate) fn prepare_recorded_round(
             .map_err(|error| error.to_string())?,
     )
     .map_err(|error| error.to_string())?;
-    let projection =
-        LedgerProjection::from_events(&run_id, &events, cas).map_err(|error| error.to_string())?;
-    let prior_subject_id = original_prior_subject(&events, event, &payload)?;
-    let round = load_round_with_prior_subject(
+    let round = load_round(
         options,
         cas,
-        event.event_id.clone(),
+        &events,
+        event,
         payload,
-        (&snapshot.repository_id, &prior_subject_id),
-        projection,
+        &snapshot.repository_id,
     )?;
     let authority = RoundAuthority::load_recorded(store, cas, &run_id, &round.event_id)?;
     let check_timeout = Duration::from_secs(campaign.manifest.check_timeout_seconds);
@@ -302,7 +299,7 @@ pub(crate) fn prepare_recorded_round(
 
 /// The same numerical Round retains its original prior sets through each exact supersession.
 /// Their legacy raw headers therefore continue to name the first epoch's Subject.
-fn original_prior_subject(
+pub(super) fn original_prior_subject(
     events: &[review_core::RunEvent],
     event: &review_core::RunEvent,
     payload: &RoundStartedPayloadV1,

@@ -933,7 +933,7 @@ fn validate_budget_arithmetic(definition: &Definition) -> Result<Vec<String>, St
         .ok_or("static Worker Provider budget arithmetic overflow")?;
     if required > budget.run {
         return Err(format!(
-            "run budget {} cannot admit the first Attempt of each of {static_workers} static Workers (requires {required}: {reservation} reserved together plus {model_workers} Provider smoke floors)",
+            "run budget {} cannot admit the first Attempt of each of {static_workers} static Workers (requires {required}: {reservation} reserved together plus {model_workers} Provider admission floors)",
             budget.run
         ));
     }

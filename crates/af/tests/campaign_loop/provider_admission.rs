@@ -342,6 +342,51 @@ fn a_restarted_campaign_without_a_task_stays_on_the_common_runtime() {
     assert!(store.task_ids(&cas).unwrap().is_empty());
 }
 
+/// A supersession before the Task exists keeps Round 1's original prior sets even when the
+/// candidate changed, so the Task captured on the replacement epoch resumes its recorded Round.
+#[test]
+fn a_task_captured_after_a_pre_task_restart_of_a_changed_candidate_resumes() {
+    let f = Fixture::new(2, Some(52767));
+    let refused = f.cli(&["review", "run"], NEW);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(
+        String::from_utf8_lossy(&refused.stderr).contains("mandatory"),
+        "{}",
+        String::from_utf8_lossy(&refused.stderr)
+    );
+    std::fs::write(f.repo.join("src/changed.rs"), "pub fn changed() {}\n").unwrap();
+    git(&f.repo, &f.home, &["add", "-A"]);
+    git(&f.repo, &f.home, &["commit", "-qm", "change the candidate"]);
+    value(
+        f.cli(&["review", "run"], &[OLD, &["--restart-round"]].concat()),
+        0,
+    );
+    let store = EventStore::open_read_only(Path::new(&f.state).join("events.sqlite")).unwrap();
+    let starts: Vec<review_core::RoundStartedPayloadV1> = store
+        .replay("campaign-admission-cost")
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.event_type == review_core::EventType::RoundStartedV1)
+        .map(|event| serde_json::from_value(event.payload).unwrap())
+        .collect();
+    drop(store);
+    let [first, replacement] = starts.as_slice() else {
+        panic!("expected one supersession of Round 1: {starts:?}");
+    };
+    assert_eq!((first.epoch, replacement.epoch), (1, 2));
+    assert_ne!(first.subject_id, replacement.subject_id);
+    assert_eq!(first.prior_finding_set_id, replacement.prior_finding_set_id);
+    assert_eq!(first.prior_demand_set_id, replacement.prior_demand_set_id);
+    // Resuming hydrates the recorded epoch-2 Round and reaches the finished Light Campaign.
+    let resumed = f.cli(&["review", "run"], &[]);
+    let stderr = String::from_utf8_lossy(&resumed.stderr);
+    assert_eq!(resumed.status.code(), Some(1), "{stderr}");
+    assert!(
+        stderr.contains("already completed its single review Round"),
+        "{stderr}"
+    );
+}
+
 /// A Round closed by a pre-Task report (`RunReport@3`) is history no GA command writes: the
 /// Campaign is refused by name before preparation, capture or any Provider call.
 #[test]
