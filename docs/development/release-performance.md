@@ -83,18 +83,7 @@ Cache records distinguish exact reuse, compatible fallback and misses. Validatio
 uploads these records even after failures; nextest runs additionally produce JUnit output. Builds upload
 their timings separately; only `af-*` binary archives enter release publication.
 
-For workflow-level wall time, job intervals, failed steps and unweighted runner time:
-
-```sh
-gh run view RUN_ID --repo PakhomovAlexander/afactory \
-  --json databaseId,headSha,attempt,createdAt,startedAt,jobs > run.json
-python3 scripts/ci-report.py run.json > economics.json
-```
-
-Retain each failed/superseded run and retry attempt separately. Wall time starts at
-that attempt, including job queues/coordination; since-created time may include older
-attempts and waiting between reruns. Summed runner time includes concurrent jobs. Neither is a GitHub
-invoice. Unknown token usage and billed runner minutes remain null. These artifacts
+Retain each failed/superseded run and retry attempt separately. These records
 provide measurement inputs for subsequent self-optimizer work; they do not constitute
 an authenticated optimization experiment or automatic adoption approval.
 
@@ -123,9 +112,9 @@ PATH="${RUNNER_TEMP:-${TMPDIR:-/tmp}}/af-ci-tools:$PATH" make check TEST_RUNNER=
 ## Local verification record (2026-09-17)
 
 The final default `make check` passed with Rust 1.88.0, debug level 1, incremental
-compilation disabled and four test threads: formatting, Clippy, all tests/doctests,
-and byte-identical synthetic fixtures. The test command took 912.390 seconds;
-its separate build step took 14.012 seconds using the existing local cache.
+compilation disabled and four test threads: formatting, Clippy and all tests/doctests.
+The test command took 912.390 seconds; its separate build step took 14.012 seconds
+using the existing local cache.
 
 The nextest experiment ran 1,279 tests in 484.403 seconds (553.063 seconds including
 command startup/enumeration): 1,276 passed, three native-provider probes timed out,
@@ -151,6 +140,6 @@ the restarted gate passed before the reviewer ran.
 
 Two measurement demands remain future work: record cache outcomes, archive sizes and
 main-cache eviction over 20 subsequent PR/main runs; compare the first two tagged
-releases (cold/warm) against RC3 using the run report and runner types. One cold PR run
+releases (cold/warm) against RC3 using `gh run view` timings and runner types. One cold PR run
 cannot establish either cache retention or release speedup. If eviction dominates,
 revise cache retention using those measurements. These demands are not marked satisfied.
