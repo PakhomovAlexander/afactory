@@ -1,7 +1,9 @@
 # ADR-0110: Capture Claude sessions in two phases and confirm a clean warm Round cold
 
 Date: 2026-09-18
-Status: Accepted
+Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
+Kernel reviewer path that ran the session protocol and dispatched Cold Closeout. Until the Task
+host runs them, no executor captures a session or dispatches a confirmation.
 
 Implements package P4 of [`docs/design/worker-warm-layers.md`](../design/worker-warm-layers.md) on
 top of [ADR-0107](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md) (the Warm Set

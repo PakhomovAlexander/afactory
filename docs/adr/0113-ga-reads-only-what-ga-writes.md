@@ -133,6 +133,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   `Prepared` record and its Store API.
 - [ADR-0068](0068-retain-inflight-task-usage-in-the-common-budget.md): usage observations and
   settlements encoded as `TaskExecutionRecord@1` with numeric charges.
+- [ADR-0070](0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md): the
+  legacy Kernel that composed `ReviewDomainState` with its own execution and replay owner.
 - [ADR-0071](0071-share-captured-review-authority-and-task-token-scopes.md): readability of
   historical `.review/` captures.
 - [ADR-0075](0075-retain-exact-task-usage-with-versioned-decimal-counters.md): readers for
@@ -153,6 +155,8 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   generations.
 - [ADR-0084](0084-route-new-review-commands-through-the-common-task.md): the original executor for
   historical paid Campaigns, and historical readers and output generations.
+- [ADR-0085](0085-retain-exact-native-task-usage-across-multiple-turns.md): the frozen Kernel's
+  separate `AttemptEvidence`; the exact Task Attempt evidence now carries that name.
 - [ADR-0086](0086-record-expired-review-publication-without-restarting-work.md): earlier transition
   and inspection generations.
 - [ADR-0091](0091-capture-explicit-task-provider-admission-costs.md): the V1 catalog and
@@ -179,6 +183,12 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   legacy goal entry point; `task start` takes only a Task file.
 - [ADR-0106](0106-authorize-experimental-children-separately.md): earlier inspection and execution
   generations.
+- [ADR-0108](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md): the legacy
+  Kernel's in-memory record of a Worker's clone measurement.
+- [ADR-0110](0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md): the Kernel
+  reviewer path that ran the session protocol and dispatched Cold Closeout. The protocol, the
+  selection gates and the Ledger fold stay as the base for running them on the Task host; until
+  then Task-hosted Attempts record `host_unsupported` and no confirmation is dispatched.
 
 ADR-0016 is superseded in full. Its Provider Operation admitted a Provider before the pre-Task
 Review executor dispatched a reviewer: a Round-bound, epoch-fenced structural probe and inference

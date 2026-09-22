@@ -1,21 +1,19 @@
 //! Reviewer business output checks. These helpers prepare immutable artifacts and domain
 //! facts; the execution owner must select the real Attempt before publishing those facts.
 
-use review_core::task::review_compat::{TaskReviewProposalV1, TaskReviewResultMetadataV1};
-use review_core::{
-    EventType, MAX_CHANGE_SET_BYTES, ProposalCandidateV1, ProposalPreparedPayloadV1,
-    ProposalRefusalReasonV1, ProposalRefusedPayloadV1,
-};
+use review_core::task::review_compat::*;
+use review_core::task::usage::TaskTokenUsageV3;
+use review_core::{MAX_CHANGE_SET_BYTES, ProposalCandidateV1, ProposalRefusalReasonV1};
 use review_runner::{ReviewerNotesDeclaration, ReviewerProposalDeclaration};
 use review_source_git::{Manifest, manifest_diff};
-use review_store::{Cas, NewEvent};
+use review_store::Cas;
 
-use super::{PreparedProposal, RoundAuthority};
+use super::RoundAuthority;
 use crate::warm::{NotesCapture, PreparedNotes};
 
 /// One already validated adapter reply. Capturing it seals the actual sandbox and creates
 /// immutable result/provenance artifacts; it cannot select an Attempt or publish domain facts.
-pub(super) struct ReviewerResultCapture<'a, U = review_runner::TokenUsage, C = u64> {
+pub(super) struct ReviewerResultCapture<'a> {
     pub node_id: &'a str,
     pub attempt_id: &'a str,
     pub result: &'a serde_json::Value,
@@ -30,52 +28,27 @@ pub(super) struct ReviewerResultCapture<'a, U = review_runner::TokenUsage, C = u
     pub head_manifest: &'a Manifest,
     pub assigned_finding_ids: &'a [String],
     pub report_count: usize,
-    pub cost_tokens: C,
-    pub usage: &'a U,
-    pub context_manifest: &'a review_runner::ContextManifest,
+    pub cost_tokens: u128,
+    pub usage: &'a TaskTokenUsageV3,
     pub raw_artifact: &'a str,
 }
 
 pub(super) struct CapturedReviewerResult {
     pub metadata: TaskReviewResultMetadataV1,
-    pub proposal: PreparedProposal,
     /// Present only for warm nodes; the owner publishes its event beside the admission.
     pub notes: Option<PreparedNotes>,
 }
 
-pub(super) fn capture_result(
-    cas: &Cas,
-    authority: &RoundAuthority,
-    sandbox: review_sandbox::Sandbox,
-    reply: ReviewerResultCapture<'_>,
-) -> Result<CapturedReviewerResult, String> {
-    capture_result_inner(cas, authority, sandbox, reply, None)
-}
-
+/// Capture one Task-hosted Review Attempt's reply against its exact Task Review context.
+/// `usage_known` is false when the provider reported no usage and the charge is the
+/// reservation.
 pub(super) fn capture_task_result(
     cas: &Cas,
     authority: &RoundAuthority,
     sandbox: review_sandbox::Sandbox,
-    reply: ReviewerResultCapture<'_, review_core::task::usage::TaskTokenUsageV3, u128>,
+    reply: ReviewerResultCapture<'_>,
     context_id: &str,
     usage_known: bool,
-) -> Result<CapturedReviewerResult, String> {
-    let usage = reply.usage;
-    capture_result_inner(
-        cas,
-        authority,
-        sandbox,
-        reply,
-        Some((context_id, usage_known, usage)),
-    )
-}
-
-fn capture_result_inner<U: serde::Serialize, C: Copy + Into<u128> + serde::Serialize>(
-    cas: &Cas,
-    authority: &RoundAuthority,
-    sandbox: review_sandbox::Sandbox,
-    reply: ReviewerResultCapture<'_, U, C>,
-    task_context: Option<(&str, bool, &review_core::task::usage::TaskTokenUsageV3)>,
 ) -> Result<CapturedReviewerResult, String> {
     let sealed = sandbox.seal().map_err(|error| error.to_string())?;
     let result_artifact = cas
@@ -84,8 +57,6 @@ fn capture_result_inner<U: serde::Serialize, C: Copy + Into<u128> + serde::Seria
     let proposal = prepare_proposal(
         cas,
         authority,
-        reply.node_id,
-        reply.attempt_id,
         &result_artifact,
         reply.proposal,
         reply.assigned_finding_ids,
@@ -121,8 +92,8 @@ fn capture_result_inner<U: serde::Serialize, C: Copy + Into<u128> + serde::Seria
             "deleted":sealed.mutations.deleted,
         }))
         .map_err(|error| error.to_string())?;
-    let provenance_artifact = if let Some((context_id, usage_known, usage)) = task_context {
-        use review_core::task::review_compat::*;
+    let usage = reply.usage;
+    let provenance_artifact = {
         let envelope = cas.get_artifact(context_id).map_err(|e| e.to_string())?;
         if envelope.artifact_type != TASK_REVIEW_CONTEXT_V1 {
             return Err("Task Review provenance has another context type".into());
@@ -161,7 +132,7 @@ fn capture_result_inner<U: serde::Serialize, C: Copy + Into<u128> + serde::Seria
             result_artifact_id: result_artifact.clone(),
             mutations_artifact_id: mutations_artifact,
             raw_artifact_id: reply.raw_artifact.into(),
-            charged_tokens: reply.cost_tokens.into().into(),
+            charged_tokens: reply.cost_tokens.into(),
             usage_id,
         };
         provenance.validate()?;
@@ -189,71 +160,32 @@ fn capture_result_inner<U: serde::Serialize, C: Copy + Into<u128> + serde::Seria
         )
         .map_err(|e| e.to_string())?
         .0
-    } else {
-        cas.put_json(&serde_json::json!({
-        "node":reply.node_id, "attempt":reply.attempt_id, "result_artifact":result_artifact,
-        "cost_tokens":reply.cost_tokens, "usage":reply.usage, "context_manifest":reply.context_manifest,
-        "raw":reply.raw_artifact,
-        "sandbox_mutations":super::mutation_summary(&sealed.mutations, &mutations_artifact),
-    })).map_err(|error| error.to_string())?
-    };
-    let disposition = match &proposal {
-        PreparedProposal::None => TaskReviewProposalV1::None {},
-        PreparedProposal::Prepared {
-            candidate_artifact, ..
-        } => TaskReviewProposalV1::Prepared {
-            candidate_artifact_id: candidate_artifact.clone(),
-        },
-        PreparedProposal::Refused(event) => TaskReviewProposalV1::Refused {
-            reason: serde_json::from_value::<ProposalRefusedPayloadV1>(event.payload.clone())
-                .map_err(|e| e.to_string())?
-                .reason,
-        },
     };
     let metadata = TaskReviewResultMetadataV1 {
         result_contract: reply.result_contract,
         result_artifact_id: result_artifact,
         provenance_artifact_id: provenance_artifact,
-        proposal: disposition,
+        proposal,
     };
     metadata.validate()?;
-    Ok(CapturedReviewerResult {
-        metadata,
-        proposal,
-        notes,
-    })
+    Ok(CapturedReviewerResult { metadata, notes })
 }
 
-#[allow(clippy::too_many_arguments)] // one exact Attempt boundary; grouping would obscure authority inputs
-pub(super) fn prepare_proposal(
+/// Verify one Proposal declaration against the complete sealed sandbox diff. A prepared
+/// candidate is written to the CAS; the execution owner publishes the matching event.
+fn prepare_proposal(
     cas: &Cas,
     authority: &RoundAuthority,
-    node_id: &str,
-    attempt: &str,
     result_artifact: &str,
     declaration: Result<Option<ReviewerProposalDeclaration>, String>,
     assigned_finding_ids: &[String],
     report_count: usize,
     sealed: &review_sandbox::SealedSandbox,
-) -> Result<PreparedProposal, String> {
-    let refused = |reason| {
-        PreparedProposal::Refused(
-            NewEvent::new(
-                EventType::ProposalRefusedV1,
-                serde_json::to_value(ProposalRefusedPayloadV1 {
-                    reason,
-                    result_artifact_id: result_artifact.to_string(),
-                })
-                .expect("typed Proposal refusal serializes"),
-            )
-            .node(node_id)
-            .attempt(attempt.to_string())
-            .referencing(vec![result_artifact.to_string()]),
-        )
-    };
+) -> Result<TaskReviewProposalV1, String> {
+    let refused = |reason| TaskReviewProposalV1::Refused { reason };
     let declaration = match declaration {
         Ok(Some(declaration)) => declaration,
-        Ok(None) => return Ok(PreparedProposal::None),
+        Ok(None) => return Ok(TaskReviewProposalV1::None {}),
         Err(_) => return Ok(refused(ProposalRefusalReasonV1::MalformedDeclaration)),
     };
     if authority.finding_identity_policy != review_core::CANONICAL_FINDING_IDENTITY_POLICY {
@@ -318,39 +250,21 @@ pub(super) fn prepare_proposal(
         .map_err(|error| error.to_string())?;
     let candidate = ProposalCandidateV1 {
         base_snapshot_id: authority.head_snapshot_id.clone(),
-        patch_artifact_id: patch_artifact_id.clone(),
-        derived_manifest_artifact_id: derived_manifest_artifact_id.clone(),
+        patch_artifact_id,
+        derived_manifest_artifact_id,
         result_artifact_id: result_artifact.to_string(),
         report_indexes,
         finding_ids,
-        evidence_ids: evidence_ids.clone(),
+        evidence_ids,
         paths,
         description: declaration.description,
         auto_apply_nominated: declaration.auto_apply_nominated,
     };
     candidate.validate().map_err(str::to_string)?;
-    let candidate_artifact = cas
+    let candidate_artifact_id = cas
         .put_json(&serde_json::to_value(candidate).map_err(|error| error.to_string())?)
         .map_err(|error| error.to_string())?;
-    let mut artifacts = vec![
-        candidate_artifact.clone(),
-        result_artifact.to_string(),
-        patch_artifact_id,
-        derived_manifest_artifact_id,
-    ];
-    artifacts.extend(evidence_ids);
-    Ok(PreparedProposal::Prepared {
-        candidate_artifact: candidate_artifact.clone(),
-        event: NewEvent::new(
-            EventType::ProposalPreparedV1,
-            serde_json::to_value(ProposalPreparedPayloadV1 {
-                candidate_artifact_id: candidate_artifact,
-                result_artifact_id: result_artifact.to_string(),
-            })
-            .map_err(|error| error.to_string())?,
-        )
-        .node(node_id)
-        .attempt(attempt.to_string())
-        .referencing(artifacts),
+    Ok(TaskReviewProposalV1::Prepared {
+        candidate_artifact_id,
     })
 }

@@ -471,7 +471,7 @@ fn open_captured(
 struct RoundExecution {
     report: review_graph::RunReport,
     ledger: review_store::Ledger,
-    attempts: Vec<review_pipeline::TaskAttemptEvidence>,
+    attempts: Vec<review_pipeline::AttemptEvidence>,
     verdict: review_pipeline::RunVerdict,
     continuation_required: bool,
     result: Option<review_core::task::TaskResultV1>,

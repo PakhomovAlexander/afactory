@@ -23,8 +23,8 @@ use std::collections::BTreeMap;
 use review_check::CheckDefinition;
 use review_core::{Arg, Command, Provenance};
 use review_graph::{
-    Dispatch, Node, NodeKind, Pipeline, PlanError, Planned, Port, PortCardinality, PortContract,
-    RunReport, Scheduler, SnapshotAffinity,
+    Node, NodeKind, Pipeline, PlanError, Planned, Port, PortCardinality, PortContract,
+    SnapshotAffinity,
 };
 use review_store::ConvergencePolicy;
 use serde::{Deserialize, Serialize};
@@ -1294,19 +1294,6 @@ pub struct Loaded {
     cold_closeout_nodes: Vec<String>,
 }
 
-/// A dispatcher that declares the Subject semantics it actually executes.
-pub trait SubjectDispatch: Dispatch + Sync {
-    fn subject_kind(&self) -> review_core::SubjectKind;
-
-    fn reviewer_credential_mode(&self, _node: &str) -> Option<review_core::BrokerCredentialModeV1> {
-        None
-    }
-
-    fn broker_provider_available(&self, _node: &str) -> bool {
-        false
-    }
-}
-
 impl Loaded {
     pub fn version(&self) -> u32 {
         self.version
@@ -1433,38 +1420,6 @@ impl Loaded {
             }
         }
         bindings
-    }
-
-    /// Schedule only through a dispatcher whose execution semantics match this definition.
-    pub fn run(&self, dispatcher: &impl SubjectDispatch) -> Result<RunReport, ConfigError> {
-        if dispatcher.subject_kind() != self.subject.kind {
-            return Err(ConfigError::Binding(format!(
-                "pipeline declares `{}` but its dispatcher executes `{}`",
-                self.subject.kind,
-                dispatcher.subject_kind()
-            )));
-        }
-        for (node, expected) in &self.reviewer_execution {
-            let actual = dispatcher.reviewer_credential_mode(node).ok_or_else(|| {
-                ConfigError::Binding(format!(
-                    "reviewer `{node}` has no runtime adapter for its v4 Execution Binding"
-                ))
-            })?;
-            if actual != expected.credential_mode {
-                return Err(ConfigError::Binding(format!(
-                    "reviewer `{node}` requires {:?} credentials but its runtime adapter is {:?}",
-                    expected.credential_mode, actual
-                )));
-            }
-            if expected.credential_mode == review_core::BrokerCredentialModeV1::Brokered
-                && !dispatcher.broker_provider_available(node)
-            {
-                return Err(ConfigError::Binding(format!(
-                    "brokered reviewer `{node}` has no machine-local Broker provider"
-                )));
-            }
-        }
-        Ok(Scheduler::new(&self.plan).run(dispatcher))
     }
 }
 

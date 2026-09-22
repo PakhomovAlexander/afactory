@@ -81,7 +81,7 @@ fn presentation_retains_original_review_ports_and_selected_transport_fields_with
         node: "reviewer".into(),
         attempt_id: selected.attempt_id.clone().unwrap(),
         cost_tokens: 0,
-        usage: review_runner::task::usage::read_task_usage(
+        usage: review_runner::task::usage::read_task_usage_exact(
             &cas,
             provenance.usage_id.as_ref().unwrap(),
         )
@@ -93,7 +93,7 @@ fn presentation_retains_original_review_ports_and_selected_transport_fields_with
         raw_artifact: provenance.raw_artifact_id,
         result_artifact: selection.result_artifact_id,
     };
-    assert_eq!(evidence, [expected.into()]);
+    assert_eq!(evidence, [expected]);
     assert_eq!(host.ledger().findings().len(), 1);
     // Fresh presentation shares the same durable facts, with no legacy Kernel construction.
     let reopened =

@@ -278,7 +278,7 @@ satisfy `required_isolation = "container"` only after a successful runtime probe
 requirement. Gate checks then execute through that admitted provider in an independent
 `ephemeral-write` COW clone. Their writes are discarded and reviewer clones still start from the
 pristine template. Each resolution attempt is durable before its Gate receipt; same-Round retry
-uses the latest observation while the append-only log retains failed admissions. `RunReport@4`
+uses the latest observation while the append-only log retains failed admissions. `RunReport@6`
 records that latest provider, pinned image when applicable, required and provided isolation,
 mode, and admission result for every Gate node. Formats v1/v2 permanently retain their captured
 local, read-only behavior. `GateDecision@1` also references a bounded mutation summary plus the
@@ -462,7 +462,7 @@ materialized file and applies fixed safe modes. It snapshots the admitted bytes 
 `.af-cache/cargo`, sets `CARGO_HOME` plus `CARGO_NET_OFFLINE=true`, and removes the private cache
 tree before sealing.
 
-`RunReport@5` records either one machine-path-free success receipt or an explicit failure for
+`RunReport@6` records either one machine-path-free success receipt or an explicit failure for
 every requested Gate/cache pair. Its receipt references a versioned `CacheManifest@1` containing
 the sorted percent-encoded paths, content digests, and exact file sizes. Report publication
 reverifies every referenced manifest and cross-checks it against the durable receipt, including

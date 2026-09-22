@@ -1,4 +1,5 @@
 use super::*;
+use review_check::Command;
 use review_core::exec::Arg;
 use std::time::Instant;
 

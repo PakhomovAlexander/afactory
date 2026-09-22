@@ -316,7 +316,7 @@ Findings that reduce to six defects, all fixed before verification:
   load), and selection reads only that Gate's record published before its passing decision.
 - **Clone measurement never settled.** The Worker's clone was recorded beside the node, where
   only a Gate settlement collects it. A Task-hosted Worker now settles the clone as its own
-  `TaskRuntimeEvidence@1` after its raw reply; the legacy Kernel keeps it in memory as before.
+  `TaskRuntimeEvidence@1` after its raw reply.
 - **Wrapper stripped the environment.** The production provider wrapper implemented
   `invoke_controlled` only, so the trait default refused the sandbox environment and every
   model reviewer would have run cold. The wrapper now has one invocation path that rechecks
@@ -448,8 +448,8 @@ rather than hashed or random and a crashed kernel can still name the file it owe
 `review-core` carries `SessionSnapshot@1`, `SessionSnapshotPrepared@1`, `SessionSnapshotCleaned@1`
 and `ColdCloseoutDispatched@1`; `review-runner` carries the `SessionLayer` adapter surface and the
 resume render mode; `review-runner-claude` implements the pinned store layout, the bounded capture
-and the no-follow deletion; `review-pipeline` owns the protocol, the gates, the recovery sweep and
-the compiled Cold Closeout; `review-config` owns `warm.session`, `warm.session_max_age_secs` and
+and the no-follow deletion; `review-pipeline` owns the protocol, the gates, the recovery sweep,
+the Cold Closeout rules and the Ledger fold of a recorded confirmation; `review-config` owns `warm.session`, `warm.session_max_age_secs` and
 `convergence.cold_closeout` with their load-time refusals. Exit evidence lived in
 `review-pipeline/tests/session_snapshot.rs` (capture and forked resume across two Rounds, recovery
 of a capture interrupted between its phases with no orphan and no ambient transcript, cache-read
@@ -464,9 +464,10 @@ deletion, a symlinked project directory that is never followed),
 `review-config/tests/definition.rs` (policy defaults and the feasibility refusal) and
 `review-core/tests/schema_parity.rs`.
 
-Two limits are carried deliberately. The session layer runs on the Kernel's own reviewer path; a
-Task-hosted Review Attempt records the drop reason `host_unsupported` and runs on Notes, which is
-recorded rather than silent. And no cold-versus-warm dogfood comparison exists: the package was
+Two limits are carried deliberately. The session protocol and the Cold Closeout dispatch ran on
+the pre-Task Kernel's own reviewer path, which was removed for GA; the Task host installs no
+session capability and dispatches no confirmation yet, so a Task-hosted Review Attempt records
+the drop reason `host_unsupported` and runs on Notes, which is recorded rather than silent. And no cold-versus-warm dogfood comparison exists: the package was
 implemented without a live Campaign, so the design review's forked-resume Demand — net token and
 wall-time savings over cold and Notes-only Attempts at several ages — stays open until the first
 Campaign runs with `session = "if_recent"`. Both policy defaults are off, which is what the design

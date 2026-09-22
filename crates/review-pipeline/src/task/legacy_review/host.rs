@@ -186,7 +186,8 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
         self
     }
 
-    /// Where Warm Workspaces live on this machine; see `Kernel::with_workspace_cache_root`.
+    /// Where Warm Workspaces live on this machine. The CLI resolves the XDG cache directory;
+    /// tests supply a temporary root. The path never enters a durable record.
     pub fn with_workspace_cache_root(mut self, root: impl Into<std::path::PathBuf>) -> Self {
         self.domain.workspace_cache_root = Some(root.into());
         self
@@ -499,7 +500,7 @@ impl<'store, 'host> LegacyReviewTaskHost<'store, 'host> {
                 self.domain.run_gather(&node, &raw)?,
             )]),
             ReviewOperation::Ledger => {
-                let reduced = self.domain.reduce_ledger(&node, &raw, true)?;
+                let reduced = self.domain.reduce_ledger(&node, &raw)?;
                 companions = reduced.canonical;
                 reduced.original
             }

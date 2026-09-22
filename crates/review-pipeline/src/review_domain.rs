@@ -1,6 +1,6 @@
-//! Canonical Review operations and durable domain facts shared by execution frontends.
-//! This state does not construct an Attempt ledger, reserve a budget, invoke a Worker,
-//! schedule Scatter children or fence historical Attempts. Execution owners supply selections.
+//! Canonical Review operations and durable domain facts behind the Task-hosted Review.
+//! This state does not construct an Attempt ledger, reserve a budget, invoke a Worker or
+//! schedule Scatter children. The Task host supplies selections.
 
 use super::*;
 
@@ -37,7 +37,6 @@ pub(super) struct ReviewDomainState<'a> {
     /// The immutable subject. Every node is materialized from this, so they all inspect the
     /// same content by construction rather than by discipline.
     pub(super) snapshot: Manifest,
-    pub(super) subject: review_core::SubjectKind,
     pub(super) pipeline_version: u32,
     pub(super) authority: RoundAuthority,
     pub(super) checks: Vec<CheckDefinition>,
@@ -278,7 +277,6 @@ impl<'a> ReviewDomainState<'a> {
             store,
             run_id,
             snapshot,
-            subject,
             pipeline_version,
             authority,
             checks: Vec::new(),
@@ -324,20 +322,6 @@ impl<'a> ReviewDomainState<'a> {
             self.prior_findings.as_deref(),
             node,
         )
-    }
-
-    pub(super) fn run_gate(&self, node_id: &str) -> Result<Vec<String>, String> {
-        self.run_gate_before(node_id, None)
-    }
-
-    /// The common Attempt supplies one absolute deadline. Each check consumes its remaining
-    /// time instead of receiving a fresh full timeout after earlier checks and setup.
-    pub(super) fn run_gate_before(
-        &self,
-        node_id: &str,
-        deadline: Option<std::time::Instant>,
-    ) -> Result<Vec<String>, String> {
-        self.run_gate_controlled(node_id, deadline, None, None)
     }
 
     /// `gate_attempt` is the common Task Attempt the Gate runs under, when the Task runtime
@@ -919,17 +903,6 @@ impl<'a> ReviewDomainState<'a> {
         Ok(vec![artifact])
     }
 
-    pub(super) fn run_ledger(
-        &self,
-        node: &Node,
-        inputs: &ArtifactMap,
-    ) -> Result<ArtifactMap, String> {
-        let outputs = self.reduce_ledger(node, inputs, false)?;
-        // Frozen projection retains only the original declared ports.
-        drop(outputs.canonical);
-        Ok(outputs.original)
-    }
-
     /// One Cold Closeout result, ready to fold beside the warm result it confirms.
     ///
     /// The Cold Closeout results this Round recorded for the warm results `results` already
@@ -999,7 +972,6 @@ impl<'a> ReviewDomainState<'a> {
         &self,
         node: &Node,
         inputs: &ArtifactMap,
-        retain_companions: bool,
     ) -> Result<ReviewLedgerOutputs, String> {
         // The ledger reduces what its edges delivered — never a global map of whatever happened
         // to run. Each input is one reviewer's result, or a gather manifest of result ids.
@@ -1515,27 +1487,8 @@ impl<'a> ReviewDomainState<'a> {
                 )
                 .map_err(|error| error.to_string())?;
             canonical_outputs.insert("demand_set".into(), record_id.clone());
-            match node.outputs.iter().find(|port| is_demand_set_port(port)) {
-                Some(port) => {
-                    outputs.insert(port.name.clone(), vec![record_id]);
-                }
-                None if !retain_companions
-                    && !outputs.is_empty()
-                    && self
-                        .ledger_cache
-                        .lock()
-                        .expect("ledger cache")
-                        .as_ref()
-                        .is_some_and(|projection| {
-                            !projection.ledger().demand_views().is_empty()
-                        }) =>
-                {
-                    return Err(
-                        "ledger selected Demands but declares no review.kernel/DemandSet@1 output"
-                            .into(),
-                    );
-                }
-                None => {}
+            if let Some(port) = node.outputs.iter().find(|port| is_demand_set_port(port)) {
+                outputs.insert(port.name.clone(), vec![record_id]);
             }
         }
         if !dynamic_sets.is_empty() {
@@ -1951,37 +1904,6 @@ impl<'a> ReviewDomainState<'a> {
             .get(node_id)
             .cloned()
             .unwrap_or_else(|| node_id.to_string())
-    }
-
-    /// Seed the generation-local projection with the Ledger rebuilt while its Round input was
-    /// prepared. Any intervening durable suffix is folded before installation, and subsequent
-    /// appends advance the watermarked cache in sequence.
-    pub(super) fn seed_ledger_projection(
-        &self,
-        mut projection: LedgerProjection,
-    ) -> Result<(), String> {
-        if !projection.belongs_to(&self.run_id) {
-            return Err("Ledger projection belongs to a different Campaign run".into());
-        }
-        {
-            let store = self.store.lock().expect("event store");
-            projection
-                .fast_forward(*store, self.cas)
-                .map_err(|error| error.to_string())?;
-        }
-        *self.ledger_cache.lock().expect("ledger cache") = Some(projection);
-        Ok(())
-    }
-
-    /// The decision a gate node reached, if it ran.
-    pub(super) fn gate_decision(&self, node_id: &str) -> Option<GateDecision> {
-        self.gates.lock().expect("gates").get(node_id).cloned()
-    }
-
-    /// The ledger as it stands, derived from the log and cached only through a run-bound
-    /// projection capability.
-    pub(super) fn ledger(&self) -> Ledger {
-        self.with_ledger(Ledger::clone)
     }
 
     pub(super) fn rebuild_ledger_projection(&self) -> LedgerProjection {

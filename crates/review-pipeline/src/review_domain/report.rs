@@ -1,5 +1,5 @@
-//! Canonical Review conclusion publication. The execution owner supplies its already-recorded
-//! spend; this operation owns no Attempt or budget and cannot run automatic Integration.
+//! Canonical Review conclusion publication. The Task supplies its already-recorded spend; this
+//! operation owns no Attempt or budget and cannot run automatic Integration.
 use super::*;
 
 struct TaskPublication<'a> {
@@ -12,15 +12,6 @@ struct TaskPublication<'a> {
 }
 
 impl ReviewDomainState<'_> {
-    pub(crate) fn publish_report(
-        &self,
-        report: &RunReport,
-        policy: ConvergencePolicy,
-        spent_tokens: Option<u64>,
-    ) -> Result<RunVerdict, String> {
-        self.publish_report_inner(report, policy, spent_tokens, None)
-    }
-
     /// The common scheduler report binds this canonical conclusion to one durable run.
     /// Repeating the same publication after a crash reads its original verdict without work.
     pub(crate) fn publish_task_report(
@@ -96,15 +87,14 @@ impl ReviewDomainState<'_> {
         self.publish_report_inner(
             report,
             policy,
-            None,
-            Some(TaskPublication {
+            TaskPublication {
                 accounting,
                 spent_tokens,
                 resources_exhausted,
                 report_id: task_report_id,
                 lease,
                 authority,
-            }),
+            },
         )
         .map(|verdict| (verdict, resources_exhausted))
     }
@@ -113,8 +103,7 @@ impl ReviewDomainState<'_> {
         &self,
         report: &RunReport,
         policy: ConvergencePolicy,
-        spent_tokens: Option<u64>,
-        task_publication: Option<TaskPublication<'_>>,
+        task: TaskPublication<'_>,
     ) -> Result<RunVerdict, String> {
         let mut published = self.report_published.lock().expect("report published");
         if *published {
@@ -149,9 +138,8 @@ impl ReviewDomainState<'_> {
         // ends with a report, so flushing here records the paid work no matter the graph.
         self.flush_reviewer_events()?;
         let convergence = self.convergence(policy);
-        // New Task acceptance requires all mandatory evidence even after budget exhaustion.
-        // Frozen legacy conclusions retain their existing precedence.
-        let verdict = if task_publication.is_some() && !report.complete() {
+        // Task acceptance requires all mandatory evidence even after budget exhaustion.
+        let verdict = if !report.complete() {
             RunVerdict::Incomplete {
                 missing: report
                     .outcomes
@@ -165,39 +153,10 @@ impl ReviewDomainState<'_> {
                     })
                     .collect(),
             }
-        } else if task_publication
-            .as_ref()
-            .is_some_and(|task| task.resources_exhausted)
-        {
+        } else if task.resources_exhausted {
             RunVerdict::Fail(Verdict::Exhausted)
         } else {
             run_verdict(report, &convergence)
-        };
-        let append_report = |mut event: NewEvent| {
-            if let Some(task) = &task_publication {
-                event.artifact_refs.extend(
-                    task.accounting
-                        .artifact_refs()
-                        .into_iter()
-                        .map(String::from),
-                );
-                let event = self.bind_authority(event);
-                let appended = self
-                    .store
-                    .lock()
-                    .expect("Task Store")
-                    .publish_task_review_report(
-                        self.cas,
-                        task.lease,
-                        task.report_id,
-                        event,
-                        task.authority,
-                    )
-                    .map_err(|e| e.to_string())?;
-                self.fold_appended_into_ledger_cache(&appended);
-                return Ok(());
-            }
-            self.append(event)
         };
         let outcomes: Vec<RunNodeReportV2> = report
             .outcomes
@@ -235,135 +194,74 @@ impl ReviewDomainState<'_> {
         let persisted_verdict =
             persisted_verdict(&verdict, &convergence, !report.blocked_gates.is_empty())?;
         let blocked_gates = report.blocked_gates.iter().cloned().collect();
-        if let Some(task) = &task_publication {
-            let bindings = self
-                .execution_bindings
-                .lock()
-                .expect("execution bindings")
-                .values()
-                .cloned()
-                .collect();
-            let execution = match &self.gate_execution {
-                None => review_core::RunReportExecutionV6::Unbound {},
-                Some(binding) if binding.caches.is_empty() => {
-                    review_core::RunReportExecutionV6::Bound {
-                        execution_bindings: bindings,
-                    }
-                }
-                Some(_) => review_core::RunReportExecutionV6::Cached {
+        let bindings = self
+            .execution_bindings
+            .lock()
+            .expect("execution bindings")
+            .values()
+            .cloned()
+            .collect();
+        let execution = match &self.gate_execution {
+            None => review_core::RunReportExecutionV6::Unbound {},
+            Some(binding) if binding.caches.is_empty() => {
+                review_core::RunReportExecutionV6::Bound {
                     execution_bindings: bindings,
-                    cache_snapshots: self
-                        .cache_snapshots
-                        .lock()
-                        .expect("cache snapshots")
-                        .values()
-                        .cloned()
-                        .collect(),
-                    cache_failures: self
-                        .cache_failures
-                        .lock()
-                        .expect("cache failures")
-                        .values()
-                        .cloned()
-                        .collect(),
-                },
-            };
-            let refs = match &execution {
-                review_core::RunReportExecutionV6::Cached {
-                    cache_snapshots, ..
-                } => cache_snapshots
-                    .iter()
-                    .map(|snapshot| snapshot.source_digest.clone())
-                    .collect(),
-                _ => Vec::new(),
-            };
-            let payload = review_core::RunReportPayloadV6 {
-                outcomes,
-                blocked_gates,
-                verdict: persisted_verdict,
-                spent_tokens: task.spent_tokens,
-                task_accounting: task.accounting.clone(),
-                execution,
-            };
-            append_report(
-                NewEvent::new(
-                    EventType::RunReportV6,
-                    serde_json::to_value(payload).map_err(|e| e.to_string())?,
-                )
-                .referencing(refs),
-            )?;
-        } else if self.gate_execution.is_some() {
-            let execution_bindings: Vec<_> = self
-                .execution_bindings
-                .lock()
-                .expect("execution bindings")
-                .values()
-                .cloned()
-                .collect();
-            let cache_snapshots: Vec<_> = self
-                .cache_snapshots
-                .lock()
-                .expect("cache snapshots")
-                .values()
-                .cloned()
-                .collect();
-            let cache_failures: Vec<_> = self
-                .cache_failures
-                .lock()
-                .expect("cache failures")
-                .values()
-                .cloned()
-                .collect();
-            let cache_requested = self
-                .gate_execution
-                .as_ref()
-                .is_some_and(|binding| !binding.caches.is_empty());
-            if !cache_requested {
-                let payload = RunReportPayloadV4 {
-                    outcomes,
-                    blocked_gates,
-                    verdict: persisted_verdict,
-                    spent_tokens,
-                    execution_bindings,
-                };
-                append_report(NewEvent::new(
-                    EventType::RunReportV4,
-                    serde_json::to_value(payload).map_err(|e| e.to_string())?,
-                ))?;
-            } else {
-                let manifest_refs = cache_snapshots
-                    .iter()
-                    .map(|snapshot| snapshot.source_digest.clone())
-                    .collect();
-                let payload = RunReportPayloadV5 {
-                    outcomes,
-                    blocked_gates,
-                    verdict: persisted_verdict,
-                    spent_tokens,
-                    execution_bindings,
-                    cache_snapshots,
-                    cache_failures,
-                };
-                append_report(
-                    NewEvent::new(
-                        EventType::RunReportV5,
-                        serde_json::to_value(payload).map_err(|e| e.to_string())?,
-                    )
-                    .referencing(manifest_refs),
-                )?;
+                }
             }
-        } else {
-            let payload = RunReportPayloadV3 {
-                outcomes,
-                blocked_gates,
-                verdict: persisted_verdict,
-                spent_tokens,
-            };
-            append_report(NewEvent::new(
-                EventType::RunReportV3,
-                serde_json::to_value(payload).map_err(|e| e.to_string())?,
-            ))?;
-        }
+            Some(_) => review_core::RunReportExecutionV6::Cached {
+                execution_bindings: bindings,
+                cache_snapshots: self
+                    .cache_snapshots
+                    .lock()
+                    .expect("cache snapshots")
+                    .values()
+                    .cloned()
+                    .collect(),
+                cache_failures: self
+                    .cache_failures
+                    .lock()
+                    .expect("cache failures")
+                    .values()
+                    .cloned()
+                    .collect(),
+            },
+        };
+        let refs = match &execution {
+            review_core::RunReportExecutionV6::Cached {
+                cache_snapshots, ..
+            } => cache_snapshots
+                .iter()
+                .map(|snapshot| snapshot.source_digest.clone())
+                .collect(),
+            _ => Vec::new(),
+        };
+        let payload = review_core::RunReportPayloadV6 {
+            outcomes,
+            blocked_gates,
+            verdict: persisted_verdict,
+            spent_tokens: task.spent_tokens,
+            task_accounting: task.accounting.clone(),
+            execution,
+        };
+        let mut event = NewEvent::new(
+            EventType::RunReportV6,
+            serde_json::to_value(payload).map_err(|e| e.to_string())?,
+        )
+        .referencing(refs);
+        event.artifact_refs.extend(
+            task.accounting
+                .artifact_refs()
+                .into_iter()
+                .map(String::from),
+        );
+        let event = self.bind_authority(event);
+        let appended = self
+            .store
+            .lock()
+            .expect("Task Store")
+            .publish_task_review_report(self.cas, task.lease, task.report_id, event, task.authority)
+            .map_err(|e| e.to_string())?;
+        self.fold_appended_into_ledger_cache(&appended);
         *published = true;
         Ok(verdict)
     }

@@ -1,7 +1,8 @@
 # ADR-0108: Carry Gate build caches as explicitly unsafe warm layers
 
 Date: 2026-09-17
-Status: Accepted
+Status: Accepted; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
+legacy Kernel's in-memory record of a Worker's clone measurement.
 
 Implements package P2 of [`docs/design/worker-warm-layers.md`](../design/worker-warm-layers.md)
 on top of [ADR-0107](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md) (the

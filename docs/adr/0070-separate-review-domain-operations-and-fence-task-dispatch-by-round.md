@@ -1,6 +1,8 @@
 # ADR-0070 — Separate Review domain operations and fence Task dispatch by Round
 
-**Status:** accepted, 2026-09-12; unreleased compatibility execution checkpoint.
+**Status:** accepted, 2026-09-12; unreleased compatibility execution checkpoint. Superseded in part
+by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the legacy Kernel that composed this state
+and kept its own execution and replay owner.
 
 ## Context
 

@@ -308,7 +308,9 @@ impl LegacyReviewTaskHost<'_, '_> {
             let bytes = cas
                 .get(&context.rendered_input_id)
                 .map_err(|e| e.to_string())?;
-            let manifest: ContextManifest = serde_json::from_value(
+            // The exact context manifest must be readable before the Worker runs; the
+            // selected Attempt's evidence reads it back from this identity.
+            serde_json::from_value::<ContextManifest>(
                 cas.get_json(&context.context_manifest_id)
                     .map_err(|e| e.to_string())?,
             )
@@ -432,7 +434,6 @@ impl LegacyReviewTaskHost<'_, '_> {
                     report_count: parsed.findings.len(),
                     cost_tokens: usage.chargeable_tokens.get(),
                     usage,
-                    context_manifest: &manifest,
                     raw_artifact: &raw,
                 },
                 attempt.context_id(),

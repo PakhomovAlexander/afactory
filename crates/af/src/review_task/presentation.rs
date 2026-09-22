@@ -6,7 +6,7 @@ use review_core::task::{
     TaskAcceptanceV1, TaskExecutionV1, TaskLimitsV1, TaskPhaseV1, TaskResultV1,
 };
 use review_graph::{NodeOutcome, RunReport, SuppressionReason};
-use review_pipeline::{RunVerdict, TaskAttemptEvidence};
+use review_pipeline::{AttemptEvidence, RunVerdict};
 use review_store::{Cas, EventStore, Ledger, Verdict};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -44,7 +44,7 @@ struct Presentation<'a> {
     task: TaskView,
     report: &'a RunReport,
     ledger: &'a Ledger,
-    attempts: &'a [TaskAttemptEvidence],
+    attempts: &'a [AttemptEvidence],
     round_verdict: &'a RunVerdict,
     continuation_required: bool,
     ledger_production: &'static str,
@@ -253,8 +253,8 @@ fn add(sum: u128, value: u128) -> Result<u128, String> {
 }
 
 fn sum(
-    attempts: &[TaskAttemptEvidence],
-    select: impl Fn(&TaskAttemptEvidence) -> u128,
+    attempts: &[AttemptEvidence],
+    select: impl Fn(&AttemptEvidence) -> u128,
 ) -> Result<DecimalU128, String> {
     attempts
         .iter()
@@ -262,7 +262,7 @@ fn sum(
         .map(Into::into)
 }
 
-fn selected_totals(attempts: &[TaskAttemptEvidence]) -> Result<Value, String> {
+fn selected_totals(attempts: &[AttemptEvidence]) -> Result<Value, String> {
     let mut usage = BTreeMap::<&str, DecimalU128>::new();
     for (name, select) in [
         (
@@ -314,7 +314,7 @@ fn manifest_value(manifest: &review_runner::ContextManifest) -> Value {
     json!({"entries":entries,"rendered_bytes":manifest.rendered_bytes.to_string(),"estimated_tokens":manifest.estimated_tokens.to_string()})
 }
 
-fn available_results(cas: &Cas, attempts: &[TaskAttemptEvidence]) -> Result<Vec<Value>, String> {
+fn available_results(cas: &Cas, attempts: &[AttemptEvidence]) -> Result<Vec<Value>, String> {
     attempts.iter().map(|attempt| {
         let result = cas.get_json(&attempt.result_artifact).map_err(|e| e.to_string())?;
         let reports = result.get("reports").or_else(|| result.get("findings"))
@@ -702,7 +702,7 @@ mod tests {
         }]})).unwrap();
         let raw = cas.put_json(&json!({"captured":"transport"})).unwrap();
         let attempts: Vec<_> = (1..=2)
-            .map(|n| TaskAttemptEvidence {
+            .map(|n| AttemptEvidence {
                 node: format!("scatter#{n}"),
                 attempt_id: format!("{n:026}"),
                 cost_tokens: u128::from(u64::MAX),

@@ -14,14 +14,14 @@ context, starts work, settles usage and publishes typed ports. It records schedu
 and retries idempotent domain publication after a lost acknowledgement. A domain can read the
 same serialized Store connection without holding its lock across a Worker invocation.
 
-The compatibility adapter extraction separates the following operations from legacy accounting:
+The compatibility adapter extraction separates the following operations from Attempt
+accounting:
 
 - Resolve only exact declared reviewer inputs, then bind the actual Attempt and captured Round,
   Subject, package and policy authority before rendering.
-- Invoke one Reviewer adapter, retaining its success, failure, panic and measured duration.
-  This operation has no scheduler, retry loop, budget or Attempt ledger.
-- Seal its sandbox and capture the canonical flat Reviewer Result, bounded provenance summary
-  and prepared or refused Proposal. Selection remains the execution owner's responsibility.
+- Seal the Attempt's sandbox and capture the canonical flat Reviewer Result, its typed
+  `TaskReviewAttemptProvenance` and a prepared or refused Proposal. Selection remains the common
+  Task's responsibility.
 
 `af/TaskReviewResultMetadata@1` carries the result contract, canonical result and provenance IDs,
 and a closed Proposal disposition: absent, prepared candidate, or explicit refusal reason. Its
@@ -81,7 +81,7 @@ also require the selected side metadata's exact disposition. Reopening reuses on
 one Task charge ([ADR-0067](../adr/0067-project-common-task-selections-into-canonical-review.md)).
 
 The canonical operations now live in a shared `ReviewDomainState` without a second Attempt
-ledger, retry loop, Worker transport or budget. The legacy Kernel composes that state. The
+ledger, retry loop, Worker transport or budget; the Task host composes that state. The
 common runtime publishes domain invocation identity before reserving an Attempt and rendering
 its context; lost acknowledgement is recoverable with the same durable invocation. New Task
 dispatch and publication compare the captured Round under the same SQLite writer lock.
@@ -90,11 +90,11 @@ remain recordable ([ADR-0070](../adr/0070-separate-review-domain-operations-and-
 Captured post-Round Integration and factual publication recovery use their separate, narrowly
 fenced transitions; they do not reopen ordinary Round dispatch.
 
-Canonical RunReport publication is also shared with the domain operations. Its execution owner
-supplies the recorded spend, retaining the historical optional value for uncapped runs. The
-legacy wrapper invokes automatic Integration after publication. Existing report versions,
-verdict ordering, cache evidence and the one-conclusion guard retain their original behavior;
-this extraction adds neither an execution ledger nor a new public verdict policy.
+Canonical RunReport publication is also a domain operation. The Task supplies its exact
+cumulative spend and accounting prefix, the conclusion is always `RunReport@6`, and automatic
+Integration runs afterwards as the Task's own post-Round operation. Verdict ordering, cache
+evidence and the one-conclusion guard are the domain's; publication adds neither an execution
+ledger nor a new public verdict policy.
 
 The trusted context adapter now uses actual common Attempts and canonical replay. Task-backed
 inspection reads canonical reports and exact common accounting. Installed Review CLI and

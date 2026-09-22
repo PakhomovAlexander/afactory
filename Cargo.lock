@@ -1544,7 +1544,6 @@ dependencies = [
  "review-config",
  "review-core",
  "review-graph",
- "review-parallel",
  "review-runner",
  "review-sandbox",
  "review-source-git",

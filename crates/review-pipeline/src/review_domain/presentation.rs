@@ -6,123 +6,33 @@ use review_core::RunEvent;
 use review_core::task::review_compat::*;
 
 impl ReviewDomainState<'_> {
-    pub(crate) fn selected_attempt_evidence(&self) -> Result<Vec<AttemptEvidence>, String> {
-        self.selected_task_attempt_evidence()?
-            .into_iter()
-            .map(TryInto::try_into)
-            .collect()
-    }
-    pub(crate) fn selected_task_attempt_evidence(
-        &self,
-    ) -> Result<Vec<crate::TaskAttemptEvidence>, String> {
+    pub(crate) fn selected_attempt_evidence(&self) -> Result<Vec<crate::AttemptEvidence>, String> {
         let events = self
             .store
             .lock()
             .expect("event store")
             .replay(&self.run_id)
             .map_err(|e| e.to_string())?;
-        selected_task_attempt_evidence(self.cas, &events, &self.authority.round_event_id)
+        selected_attempt_evidence(self.cas, &events, &self.authority.round_event_id)
     }
 }
 
-#[cfg(test)]
+/// Events are the verified durable Campaign prefix; exact Round causation excludes prior
+/// epochs. Selections are ordered by node, then Attempt.
 fn selected_attempt_evidence(
     cas: &Cas,
     events: &[RunEvent],
     round_event_id: &str,
-) -> Result<Vec<AttemptEvidence>, String> {
-    selected_task_attempt_evidence(cas, events, round_event_id)?
-        .into_iter()
-        .map(TryInto::try_into)
-        .collect()
-}
-
-/// Events are the verified durable Campaign prefix; exact Round causation excludes prior
-/// epochs. Historical and common selections retain one ordering and one public field shape.
-fn selected_task_attempt_evidence(
-    cas: &Cas,
-    events: &[RunEvent],
-    round_event_id: &str,
-) -> Result<Vec<crate::TaskAttemptEvidence>, String> {
+) -> Result<Vec<crate::AttemptEvidence>, String> {
     let mut evidence = Vec::new();
     for event in events.iter().filter(|event| {
-        matches!(
-            event.event_type,
-            EventType::AttemptAdmittedV1 | EventType::TaskReviewResultSelectedV1
-        ) && event.causation_id.as_deref() == Some(round_event_id)
+        event.event_type == EventType::TaskReviewResultSelectedV1
+            && event.causation_id.as_deref() == Some(round_event_id)
     }) {
-        let (provenance_id, result_artifact, legacy_cost, selection) = if event.event_type
-            == EventType::AttemptAdmittedV1
-        {
-            let payload: AttemptAdmittedPayloadV1 =
-                serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
-            if payload.selection != "selected" {
-                continue;
-            }
-            (
-                payload
-                    .provenance_artifact
-                    .ok_or("selected Attempt has no provenance artifact")?,
-                payload
-                    .result_artifact
-                    .ok_or("selected Attempt has no result artifact")?,
-                Some(payload.cost_tokens),
-                None,
-            )
-        } else {
-            let payload: TaskReviewResultSelectedV1 =
-                serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
-            payload.validate()?;
-            (
-                payload.provenance_artifact_id.clone(),
-                payload.result_artifact_id.clone(),
-                None,
-                Some(payload),
-            )
-        };
-        let node = event
-            .node_id
-            .as_ref()
-            .ok_or("selected Attempt has no node ID")?;
-        let attempt_id = event
-            .attempt_id
-            .as_ref()
-            .ok_or("selected Attempt has no Attempt ID")?;
-        let provenance = cas
-            .get_json(&provenance_id)
-            .map_err(|error| error.to_string())?;
-        let item = if let Some(selection) = selection
-            .as_ref()
-            .filter(|_| provenance.get("type").is_some())
-        {
-            task_evidence(cas, event, selection, &provenance_id)?
-        } else {
-            let cost_tokens = legacy_cost
-                .or_else(|| provenance["cost_tokens"].as_u64())
-                .ok_or("selected Attempt provenance has no cost")?;
-            if provenance["node"].as_str() != Some(node.as_str())
-                || provenance["attempt"].as_str() != Some(attempt_id.as_str())
-                || provenance["cost_tokens"].as_u64() != Some(cost_tokens)
-            {
-                return Err("selected Attempt provenance contradicts its admission event".into());
-            }
-            AttemptEvidence {
-                node: node.clone(),
-                attempt_id: attempt_id.clone(),
-                cost_tokens,
-                usage: serde_json::from_value(provenance["usage"].clone())
-                    .map_err(|error| error.to_string())?,
-                context_manifest: serde_json::from_value(provenance["context_manifest"].clone())
-                    .map_err(|error| error.to_string())?,
-                raw_artifact: provenance["raw"]
-                    .as_str()
-                    .ok_or("selected Attempt provenance has no raw artifact")?
-                    .to_string(),
-                result_artifact,
-            }
-            .into()
-        };
-        evidence.push(item);
+        let selection: TaskReviewResultSelectedV1 =
+            serde_json::from_value(event.payload.clone()).map_err(|error| error.to_string())?;
+        selection.validate()?;
+        evidence.push(task_evidence(cas, event, &selection)?);
     }
     evidence.sort_by(|left, right| {
         (&left.node, &left.attempt_id).cmp(&(&right.node, &right.attempt_id))
@@ -134,10 +44,9 @@ fn task_evidence(
     cas: &Cas,
     event: &RunEvent,
     selected: &TaskReviewResultSelectedV1,
-    provenance_id: &str,
-) -> Result<crate::TaskAttemptEvidence, String> {
+) -> Result<crate::AttemptEvidence, String> {
     let frame = cas
-        .get_artifact(provenance_id)
+        .get_artifact(&selected.provenance_artifact_id)
         .map_err(|error| error.to_string())?;
     let provenance: TaskReviewAttemptProvenanceV2 = match frame.artifact_type.as_str() {
         TASK_REVIEW_ATTEMPT_PROVENANCE_V1 => {
@@ -183,7 +92,7 @@ fn task_evidence(
     if usage.chargeable_tokens.get() != cost_tokens {
         return Err("selected Task Attempt provenance contradicts its usage".into());
     }
-    Ok(crate::TaskAttemptEvidence {
+    Ok(crate::AttemptEvidence {
         node: provenance.review_node,
         attempt_id: provenance.attempt_id,
         cost_tokens,
@@ -202,62 +111,138 @@ fn task_evidence(
 mod tests {
     use super::*;
 
+    const ROUND: &str = "rrrrrrrrrrrrrrrrrrrrrrrrr1";
+    const PRIOR_ROUND: &str = "rrrrrrrrrrrrrrrrrrrrrrrrr0";
+
+    fn manifest() -> ContextManifest {
+        let mut manifest = ContextManifest::default();
+        manifest.record("prompt", "fixture", None, None, 17);
+        manifest.finish(17);
+        manifest
+    }
+
+    /// One Task selection of `node` in `round`, with its typed provenance and exact context.
+    fn selection(cas: &Cas, node: &str, attempt_id: &str, round: &str, charged: u128) -> RunEvent {
+        let blob = |label: &str| cas.put(format!("{node}:{label}").as_bytes()).unwrap();
+        let producer = Producer::Attempt {
+            run_id: "review".into(),
+            node_id: node.into(),
+            attempt_id: attempt_id.into(),
+        };
+        let context = TaskReviewContextV1 {
+            campaign_id: "review".into(),
+            round_event_id: round.into(),
+            invocation_event_id: "i".repeat(26),
+            review_node: node.into(),
+            subject_id: blob("subject"),
+            campaign_manifest_id: blob("manifest"),
+            task_invocation_id: blob("invocation"),
+            attempt_id: attempt_id.into(),
+            reviewer_inputs_id: blob("inputs"),
+            rendered_input_id: blob("rendered"),
+            context_manifest_id: cas
+                .put_json(&serde_json::to_value(manifest()).unwrap())
+                .unwrap(),
+        };
+        let (context_id, _) = cas
+            .put_artifact(
+                TASK_REVIEW_CONTEXT_V1,
+                producer.clone(),
+                context
+                    .artifact_refs()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                None,
+                serde_json::to_value(&context).unwrap(),
+            )
+            .unwrap();
+        let provenance = TaskReviewAttemptProvenanceV2 {
+            context_id: context_id.clone(),
+            task_invocation_id: context.task_invocation_id.clone(),
+            attempt_id: attempt_id.into(),
+            review_node: node.into(),
+            result_artifact_id: blob("result"),
+            mutations_artifact_id: blob("mutations"),
+            raw_artifact_id: blob("raw"),
+            charged_tokens: charged.into(),
+            usage_id: None,
+        };
+        let (provenance_id, _) = cas
+            .put_artifact(
+                TASK_REVIEW_ATTEMPT_PROVENANCE_V2,
+                producer,
+                provenance
+                    .artifact_refs()
+                    .into_iter()
+                    .map(str::to_owned)
+                    .collect(),
+                None,
+                serde_json::to_value(&provenance).unwrap(),
+            )
+            .unwrap();
+        let selected = TaskReviewResultSelectedV1 {
+            task_id: "review".into(),
+            task_revision_id: blob("revision"),
+            plan_id: blob("plan"),
+            task_node: node.into(),
+            invocation_id: context.task_invocation_id,
+            output_id: blob("output"),
+            context_id,
+            result_envelope_id: blob("result-envelope"),
+            metadata_envelope_id: blob("metadata-envelope"),
+            result_artifact_id: provenance.result_artifact_id,
+            provenance_artifact_id: provenance_id,
+        };
+        RunEvent {
+            event_id: "event".into(),
+            run_id: "review".into(),
+            sequence: 1,
+            event_type: EventType::TaskReviewResultSelectedV1,
+            occurred_at: "time".into(),
+            node_id: Some(node.into()),
+            attempt_id: Some(attempt_id.into()),
+            causation_id: Some(round.into()),
+            correlation_id: None,
+            artifact_refs: Vec::new(),
+            payload: serde_json::to_value(selected).unwrap(),
+        }
+    }
+
     #[test]
-    fn historical_selection_fields_round_filter_and_sort_order_are_unchanged() {
+    fn selections_are_filtered_to_the_round_and_sorted_by_node_then_attempt() {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path()).unwrap();
-        let mut context_manifest = ContextManifest::default();
-        context_manifest.record("prompt", "fixture", None, None, 17);
-        context_manifest.finish(17);
-        let usage = TokenUsage {
-            input_tokens: Some(12),
-            output_tokens: Some(5),
-            cache_read_tokens: Some(3),
-            cache_write_tokens: Some(2),
-            reasoning_tokens: Some(1),
-            chargeable_tokens: 17,
-        };
-        let expected: Vec<_> = ["alpha", "zeta"]
-            .into_iter()
-            .map(|node| AttemptEvidence {
-                node: node.into(),
-                attempt_id: format!("attempt-{node}"),
-                cost_tokens: 17,
-                usage: usage.clone(),
-                context_manifest: context_manifest.clone(),
-                raw_artifact: cas.put(node.as_bytes()).unwrap(),
-                result_artifact: cas.put(b"result").unwrap(),
-            })
-            .collect();
-        let mut events: Vec<_> = expected.iter().rev().map(|item| {
-            let provenance = cas.put_json(&serde_json::json!({
-                "node":item.node,"attempt":item.attempt_id,"cost_tokens":item.cost_tokens,
-                "usage":item.usage,"context_manifest":item.context_manifest,"raw":item.raw_artifact,
-            })).unwrap();
-            RunEvent {
-                event_id:"event".into(),run_id:"review".into(),sequence:1,
-                event_type:EventType::AttemptAdmittedV1,occurred_at:"time".into(),
-                node_id:Some(item.node.clone()),attempt_id:Some(item.attempt_id.clone()),
-                causation_id:Some("round".into()),correlation_id:None,artifact_refs:vec![provenance.clone()],
-                payload:serde_json::json!({"selection":"selected","cost_tokens":item.cost_tokens,"result_artifact":item.result_artifact,"provenance_artifact":provenance}),
-            }
-        }).collect();
-        let mut prior = events[0].clone();
-        prior.causation_id = Some("prior-round".into());
-        prior.payload = serde_json::Value::Null;
-        events.push(prior);
-        let mut quarantined = events[0].clone();
-        quarantined.payload["selection"] = serde_json::json!("quarantined");
-        events.push(quarantined);
+        let zeta = "z".repeat(26);
+        let alpha = "a".repeat(26);
+        let events = vec![
+            selection(&cas, "zeta", &zeta, ROUND, 17),
+            selection(&cas, "alpha", &alpha, ROUND, 5),
+            selection(&cas, "alpha", &"p".repeat(26), PRIOR_ROUND, 9),
+        ];
+
+        let evidence = selected_attempt_evidence(&cas, &events, ROUND).unwrap();
         assert_eq!(
-            selected_attempt_evidence(&cas, &events, "round").unwrap(),
-            expected
+            evidence
+                .iter()
+                .map(|item| (
+                    item.node.as_str(),
+                    item.attempt_id.as_str(),
+                    item.cost_tokens
+                ))
+                .collect::<Vec<_>>(),
+            [("alpha", alpha.as_str(), 5), ("zeta", zeta.as_str(), 17)],
+            "a prior Round's selection never counts, and order is node then Attempt"
         );
-        events[0].payload["cost_tokens"] = serde_json::json!(18);
+        assert_eq!(evidence[0].usage.chargeable_tokens.get(), 5);
+        assert_eq!(evidence[0].context_manifest, manifest());
+
+        let mut contradicted = events;
+        contradicted[0].attempt_id = Some("x".repeat(26));
         assert!(
-            selected_attempt_evidence(&cas, &events, "round")
+            selected_attempt_evidence(&cas, &contradicted, ROUND)
                 .unwrap_err()
-                .contains("contradicts its admission")
+                .contains("contradicts its selection or context")
         );
     }
 }

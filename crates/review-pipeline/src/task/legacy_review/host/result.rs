@@ -30,8 +30,8 @@ impl LegacyReviewTaskHost<'_, '_> {
 
     /// Selected transport observations for this exact Round, with exact native counters.
     /// Cumulative and late usage charges remain authoritative in the common Task budget.
-    pub fn selected_attempt_evidence(&self) -> Result<Vec<crate::TaskAttemptEvidence>, String> {
-        self.domain.selected_task_attempt_evidence()
+    pub fn selected_attempt_evidence(&self) -> Result<Vec<crate::AttemptEvidence>, String> {
+        self.domain.selected_attempt_evidence()
     }
 
     /// Compatibility entry point for callers that are finishing this Task. Heavy callers

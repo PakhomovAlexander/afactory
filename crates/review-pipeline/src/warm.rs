@@ -14,7 +14,6 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use review_core::event::AttemptAdmittedPayloadV1;
 use review_core::{
     ArtifactEnvelope, BuildCacheKindV1, EventType, HeadDeltaInputs, HeadDeltaV1, InspectedPathV1,
     PathHintV1, PathRenameV1, Producer, RoundStartedPayloadV1, RunEvent, SourceSnapshot, TreeView,
@@ -461,8 +460,8 @@ fn previous_closed_round(
     Ok(None)
 }
 
-/// The one admitted Attempt of `node_id` in a Round, whichever execution frontend selected
-/// it. Quarantined, fenced, failed and released Attempts are not admitted.
+/// The one selected Attempt of `node_id` in a Round. Quarantined, fenced, failed and
+/// released Attempts are not selected.
 fn admitted_attempt(
     events: &[RunEvent],
     round_event_id: &str,
@@ -470,20 +469,10 @@ fn admitted_attempt(
 ) -> Result<Option<String>, String> {
     let mut selected: Option<String> = None;
     for event in events.iter().filter(|event| {
-        event.causation_id.as_deref() == Some(round_event_id)
+        event.event_type == EventType::TaskReviewResultSelectedV1
+            && event.causation_id.as_deref() == Some(round_event_id)
             && event.node_id.as_deref() == Some(node_id)
     }) {
-        let admitted = match event.event_type {
-            EventType::AttemptAdmittedV1 => {
-                let payload: AttemptAdmittedPayloadV1 = decode(event.payload.clone())?;
-                payload.selection == "selected"
-            }
-            EventType::TaskReviewResultSelectedV1 => true,
-            _ => false,
-        };
-        if !admitted {
-            continue;
-        }
         let attempt = event
             .attempt_id
             .clone()

@@ -1,7 +1,8 @@
 # ADR-0085: Retain exact native Task usage across multiple turns
 
 Date: 2026-09-12
-Status: Proposed
+Status: Proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
+frozen Kernel's separate `AttemptEvidence`. The exact Task Attempt evidence now carries that name.
 
 ## Context
 
