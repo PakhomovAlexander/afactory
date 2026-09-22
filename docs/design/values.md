@@ -68,12 +68,10 @@ on every read; attempts run concurrently and are admitted deterministically.
 Time-to-value for a developer: install `af`, connect a provider, connect it to Claude or
 Codex, and see a task or PR get better — in minutes, with defaults that are right for most
 repos. A single static binary, a pinned release, `af init` and `af doctor` that say exactly
-what is missing. Afactory itself becomes usable for its own development immediately after minimal
-local-review v1 and sequential-implementation v2
-([ADR-0030](../adr/0030-complete-minimal-v1-and-v2-before-dogfood.md)).
+what is missing. Afactory itself is usable for its own development.
 
 - First useful result within three commands of installation.
-- The kernel repo can use v2 to implement a real change before optional v3 surface is built.
+- The kernel repo implements its own real changes with `af`.
 - Every failure names its next action; nothing fails with a bare exit code.
 - Nothing requires a service, an account, or a config file that the default path does not
   create.

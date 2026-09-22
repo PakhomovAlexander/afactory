@@ -1,7 +1,7 @@
 # ADR-0093: Derive CodeTask acceptance from execution and evidence
 
 Date: 2026-09-13
-Status: Proposed
+Status: Accepted (2026-09-23); acceptance recorded in [ADR-0113](0113-ga-reads-only-what-ga-writes.md)
 
 ## Context
 

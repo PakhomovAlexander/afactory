@@ -1,7 +1,7 @@
 # Proposals are exported by ID and remain bound to their base Snapshot
 
-**Status:** accepted (2026-08-20); supersedes
-[ADR-0004](0004-reviewers-author-verified-patch-proposals.md)
+**Status:** accepted (2026-08-20); supersedes ADR-0004, the first reviewer-authored Proposal
+record, which is deleted as fully superseded
 
 Each selected attempt may emit at most one atomic Proposal whose patch equals its complete sealed
 sandbox diff and references one or more Report/Finding claims. Proposals are exported by Proposal

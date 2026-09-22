@@ -1,7 +1,7 @@
 # Safe caches are sandbox-local snapshots
 
-**Status:** accepted (2026-08-20); supersedes
-[ADR-0003](0003-gate-caches-pass-through-to-the-host.md)
+**Status:** accepted (2026-08-20); supersedes ADR-0003, the root-allowlisted host-cache
+passthrough, which is deleted as fully superseded
 
 A safe Gate may use a dependency cache, but it may not directly map an operator's host cache.
 Administrator policy maps symbolic cache kinds to explicit credential-free subtrees; the kernel

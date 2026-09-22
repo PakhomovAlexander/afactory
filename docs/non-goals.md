@@ -54,8 +54,7 @@ closure to static graphs would be new work; bypassing closure is not on the tabl
 ### Host cache passthrough for safe pipelines
 
 A safe pipeline never receives direct host-cache access; caches are sandbox-local snapshots
-([ADR-0008](adr/0008-safe-caches-are-sandbox-local-snapshots.md), superseding
-[ADR-0003](adr/0003-gate-caches-pass-through-to-the-host.md)).
+([ADR-0008](adr/0008-safe-caches-are-sandbox-local-snapshots.md)).
 
 ### Reviewing code the operator does not trust
 

@@ -25,12 +25,12 @@ review corpora belong in consuming repositories, not here.
 
 ## Invariants
 
-- The next increment makes Task the common execution abstraction. Every Pipeline has a public
-  input/output contract, including embedded and generated Pipelines; newly generated plans
-  require developer review and exact-plan approval before execution. The implementation status
-  and compatibility checkpoints are recorded in [docs/task-execution.md](docs/task-execution.md).
-  Captured Review operations use common Task Attempts, preserve canonical domain receipts and
-  require the Review verdict for acceptance
+- Task is the common execution abstraction. Every Pipeline has a public input/output contract,
+  including embedded and generated Pipelines; newly generated plans require developer review and
+  exact-plan approval before execution. The runtime's decisions, contracts and walkthroughs are
+  indexed in [docs/task-execution.md](docs/task-execution.md). Captured Review operations use
+  common Task Attempts, preserve canonical domain receipts and require the Review verdict for
+  acceptance
   ([ADR-0077](docs/adr/0077-run-captured-review-operations-under-common-task-attempts.md)).
 - Task-backed Review conclusions carry exact cumulative accounting and a checked Task log
   prefix; report snapshots are never summed as independent spend
@@ -66,10 +66,6 @@ review corpora belong in consuming repositories, not here.
   explicitly requests convergence review; the selected effective convergence authority is pinned
   and cannot change on resume
   ([ADR-0037](docs/adr/0037-default-campaigns-to-one-round-light-review.md)).
-- Complete minimal v1 and v2 before candidate dogfood. v1 is final local review; v2 is sequential
-  implementation ending at a verified internal Snapshot with no working-tree, branch, or PR
-  delivery. Scale and optional integrations are v3; `make check` remains independent
-  ([ADR-0030](docs/adr/0030-complete-minimal-v1-and-v2-before-dogfood.md)).
 - V3.1 delivery accepts only a verified Task whose target is clean and exactly matches its source
   Snapshot. It creates only a new local branch/worktree after explicit Task-ID confirmation,
   persists recovery state, and never commits, pushes, opens a PR, invokes a remote, or overwrites
@@ -92,12 +88,8 @@ review corpora belong in consuming repositories, not here.
   label, and resolution must remain beneath the configured root. Enumeration also lists an
   explicit `--state` directory named by its label; one Campaign under both names and symlinked
   enumeration fail closed ([ADR-0035](docs/adr/0035-address-campaign-state-by-opaque-id.md)).
-- Every milestone receives external `af review`, but the standard dogfood policy uses one
-  high-effort correctness reviewer, one required clean round, and at most two rounds; architecture
-  or performance audits are explicit exceptions
-  ([ADR-0027](docs/adr/0027-use-one-correctness-reviewer-per-milestone.md)). Review records state
-  the Campaign's wall-clock, per-Attempt provider usage, and Finding dispositions exactly as
-  `af review report` prints them.
+- Review records state the Campaign's wall-clock, per-Attempt provider usage, and Finding
+  dispositions exactly as `af review report` prints them.
 - Proposal declarations travel beside, never inside, the persisted flat Reviewer Result. The
   kernel verifies one declaration against the complete sealed sandbox diff, durably prepares it
   with the selected Attempt, and publishes `PatchProposal@1` only after canonical Report IDs exist

@@ -13,6 +13,12 @@ fully superseded ADR is deleted with its index entry, and git history keeps it. 
 ADR are rewritten to point at the superseding ADR, or to plain text; this is the only edit allowed
 in another accepted ADR's body ([ADR-0113](0113-ga-reads-only-what-ga-writes.md)).
 
+A number is never reissued: a deleted record leaves its number empty, and the index simply skips
+it. Two records were accepted on the same day under the number 0107 — the warm-layer ADR and the
+release-validation ADR listed beside it. Both keep the number they were accepted under, because
+renumbering either one would rewrite links inside other accepted ADRs, and 0107 is not issued
+again.
+
 To propose one, take the next free number, write it in that shape, add it to the index below, and
 open a pull request; it becomes binding when the pull request merges with the status `accepted`.
 Record the options you rejected and why — that is the part future readers need.
@@ -23,10 +29,6 @@ Record the options you rejected and why — that is the part future readers need
   method](0001-tree-diff-behind-a-typed-method.md)
 - [0002 — A payload shape change bumps the event type
   version](0002-event-payload-changes-bump-the-type-version.md)
-- [0003 — Gate checks may reach host caches through a root-allowlisted
-  passthrough](0003-gate-caches-pass-through-to-the-host.md)
-- [0004 — Reviewers author patch proposals; the kernel verifies, git
-  applies](0004-reviewers-author-verified-patch-proposals.md)
 - [0005 — Report artifacts are authoritative for finding
   projections](0005-report-artifacts-are-projection-authority.md)
 - [0006 — Finding identity is independent of path and
@@ -64,10 +66,6 @@ Record the options you rejected and why — that is the part future readers need
   milestone](0027-use-one-correctness-reviewer-per-milestone.md)
 - [0028 — Prioritize wise token use and minimum Worker
   context](0028-prioritize-wise-token-use-and-minimum-worker-context.md)
-- [0029 — Dogfood the candidate `af` before v1 is
-  complete](0029-dogfood-the-candidate-af-before-v1-is-complete.md)
-- [0030 — Complete minimal v1 and v2 before candidate
-  dogfood](0030-complete-minimal-v1-and-v2-before-dogfood.md)
 - [0031 — Deliver verified Tasks only to new local
   worktrees](0031-deliver-verified-tasks-to-new-local-worktrees.md)
 - [0032 — Generate review authority with
@@ -110,7 +108,6 @@ Record the options you rejected and why — that is the part future readers need
   acceptance](0052-capture-local-bindings-and-compose-review-acceptance.md)
 - [0053 — Resolve shared catalogs only during explicit
   sync](0053-resolve-shared-catalogs-only-during-explicit-sync.md)
-
 - [0054 — Keep targeted repair distinct from complete Review](0054-keep-targeted-repair-distinct-from-complete-review.md)
 - [0055 — Select captured Pipelines before generation](0055-select-captured-pipelines-before-generation.md)
 - [0056 — Share planning accounting and authenticate generated plan decisions](0056-share-planning-accounting-and-authenticate-generated-plan-decisions.md)
@@ -156,14 +153,14 @@ Record the options you rejected and why — that is the part future readers need
 - [0091 — Capture explicit Task Provider admission costs](0091-capture-explicit-task-provider-admission-costs.md)
 - [0092 — Capture common Review admission reservations](0092-capture-common-review-admission-reservations.md)
 - [0093 — Derive CodeTask acceptance from execution and evidence](0093-derive-code-task-acceptance-from-execution-and-evidence.md)
+- [0094 — Bind Task Review assignments and readable
+  inputs](0094-bind-task-review-assignments-and-readable-inputs.md)
 - [0095 — Bind legacy Task context and retry output admission](0095-bind-legacy-task-context-and-retry-output-admission.md)
 - [0096 — Revalidate Task execution evidence on cached
   replay](0096-revalidate-task-execution-evidence-on-cached-replay.md)
 - [0097 — Share validated source reads within one
   operation](0097-share-validated-source-reads-within-one-operation.md)
 - [0098 — Scope Review memos to one domain operation](0098-scope-review-memos-to-one-domain-operation.md)
-- [0094 — Bind Task Review assignments and readable
-  inputs](0094-bind-task-review-assignments-and-readable-inputs.md)
 - [0099 — Select Task Review generation independently of Provider
   costs](0099-select-task-review-generation-independently-of-provider-costs.md)
 - [0100 — Preserve issue hierarchy and selected-field refresh semantics](0100-preserve-issue-hierarchy-and-selected-field-refresh.md)
@@ -181,13 +178,13 @@ Record the options you rejected and why — that is the part future readers need
   Task](0106-authorize-experimental-children-separately.md)
 - [0107 — Carry Worker Notes and Head Deltas as declared warm
   layers](0107-carry-worker-notes-and-head-deltas-as-declared-warm-layers.md)
+- [0107 — Share release validation and overlap builds](0107-share-release-validation-and-overlap-builds.md)
 - [0108 — Carry Gate build caches as explicitly unsafe warm
   layers](0108-carry-gate-build-caches-as-explicitly-unsafe-warm-layers.md)
 - [0109 — Re-base Warm Workspaces at stable roots with digest
   verification](0109-rebase-warm-workspaces-at-stable-roots-with-digest-verification.md)
 - [0110 — Capture Claude sessions in two phases and confirm a clean warm Round
   cold](0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md)
-- [0107 — Share release validation and overlap builds](0107-share-release-validation-and-overlap-builds.md)
 - [0111 — Keep Provider bootstrap machine-local and cross-release
   safe](0111-keep-provider-bootstrap-machine-local-and-cross-release-safe.md)
 - [0113 — GA reads only what GA writes](0113-ga-reads-only-what-ga-writes.md)

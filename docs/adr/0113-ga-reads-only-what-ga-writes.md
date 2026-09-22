@@ -1,7 +1,8 @@
 # ADR-0113: GA reads only what GA writes
 
 **Status:** accepted (2026-09-21). Supersedes in part the ADRs listed under *Superseded clauses*
-and ADR-0015, ADR-0016, ADR-0022, ADR-0023, ADR-0024, ADR-0043, ADR-0051 and ADR-0080 in full.
+and ADR-0015, ADR-0016, ADR-0022, ADR-0023, ADR-0024, ADR-0029, ADR-0030, ADR-0043, ADR-0051 and
+ADR-0080 in full. Records the acceptance of the ADRs listed under *Cutover acceptance*.
 
 Before GA, Afactory treated everything it had ever written as a permanent obligation.
 [ADR-0002](0002-event-payload-changes-bump-the-type-version.md) made every superseded event reader
@@ -76,6 +77,24 @@ GA reads only what GA writes. Compatibility obligations start at the GA release.
    deleted together with its index entry, and git history keeps it. Links to a deleted ADR are
    rewritten to point at the superseding ADR, or to plain text; this is the only edit allowed in
    another accepted ADR's body.
+7. **The Task-runtime cutover is finished, and its transition text is spent.** Every Campaign and
+   every Task runs on the common runtime; clause 1 removes the last reason to keep a second
+   executor. The ADRs that recorded the move, one increment at a time, keep their decisions and
+   lose the text that described work still to come: the *Compatibility and remaining work*,
+   *Verification and remaining integration*, *Compatibility and remaining integration* and
+   *Evidence and migration boundary* sections of ADR-0049, ADR-0065, ADR-0067, ADR-0069,
+   ADR-0070 and ADR-0071, the pending-cutover paragraphs in the consequences of ADR-0081 and
+   ADR-0083, and the frozen-tree gate logs of ADR-0083 and ADR-0084. None of them names anything
+   a reader must still do, and their bodies stay as they were.
+
+## Cutover acceptance
+
+The records below merged with the status `proposed`, and an ADR becomes binding when it merges as
+accepted. Each one is implemented, so its acceptance is recorded here and its status line now
+reads accepted: ADR-0017, ADR-0018, ADR-0019, ADR-0020, ADR-0025, ADR-0026, ADR-0082 through
+ADR-0093, and ADR-0100 through ADR-0103. Each is accepted as written, less the clauses this ADR
+supersedes; ADR-0084's acceptance therefore does not extend to the original executor for
+historical paid Campaigns, which clause 1 removes.
 
 ## Superseded clauses
 
@@ -140,22 +159,26 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
 - [ADR-0063](0063-require-goal-acceptance-alongside-embedded-review.md): persisted legacy
   contracts, the frozen v0.8.0 fixtures and the compatibility gate.
 - [ADR-0065](0065-persist-task-run-diagnostics-and-recover-domain-publication.md): readability of
-  older Tasks without run reports. Every run report is `af/TaskRunReport@2`; an Integration phase
-  report is the same contract with a `phase_id`.
+  older Tasks without run reports, and the business-adapter wiring its *Evidence and migration
+  boundary* section still required of the legacy Review CLI. Every run report is
+  `af/TaskRunReport@2`; an Integration phase report is the same contract with a `phase_id`.
 - [ADR-0066](0066-reserve-task-attempts-before-binding-exact-context.md): the historical combined
   `Prepared` record and its Store API.
 - [ADR-0067](0067-project-common-task-selections-into-canonical-review.md): the legacy Store's
-  selection from `AttemptAdmitted@1`.
+  selection from `AttemptAdmitted@1`, and its *Compatibility and remaining integration* section.
 - [ADR-0068](0068-retain-inflight-task-usage-in-the-common-budget.md): usage observations and
   settlements encoded with numeric charges. Every execution record is
   `af/TaskExecutionRecord@5`, and its charges are canonical decimal text.
 - [ADR-0069](0069-compile-captured-review-ports-with-explicit-artifact-codecs.md): the
   compatibility types that pipeline format 1 shorthand Generation outputs received by port name,
-  and the types opaque shorthand Gate, Gather and Ledger ports received by node kind.
+  the types opaque shorthand Gate, Gather and Ledger ports received by node kind, and the pending
+  connections its *Verification and remaining integration* section listed.
 - [ADR-0070](0070-separate-review-domain-operations-and-fence-task-dispatch-by-round.md): the
-  legacy Kernel that composed `ReviewDomainState` with its own execution and replay owner.
+  legacy Kernel that composed `ReviewDomainState` with its own execution and replay owner, and the
+  pending connections its *Verification and remaining integration* section listed.
 - [ADR-0071](0071-share-captured-review-authority-and-task-token-scopes.md): readability of
-  historical `.review/` captures.
+  historical `.review/` captures, and the pieces its *Verification and remaining integration*
+  section still required before the legacy CLI cutover.
 - [ADR-0075](0075-retain-exact-task-usage-with-versioned-decimal-counters.md): readers for
   unversioned and numeric-only usage, migration on write, and the execution-record, usage and
   inspection version ladders. Every Task inspection is `af/task-inspection@11`, whose sections
@@ -177,18 +200,20 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   u128 cumulative charge they motivated stays.
 - [ADR-0081](0081-register-owned-review-children-in-the-common-task-runtime.md): earlier execution
   and inspection generations, and the Review Task policy generations before
-  `LegacyReviewTaskPolicy@4` that compiled without owned children. The owned lifecycle is
-  ordinary `af/TaskExecutionRecord@5` data.
+  `LegacyReviewTaskPolicy@4` that compiled without owned children, and the specialist review,
+  legacy CLI cutover and performance pilot its consequences recorded as pending. The owned
+  lifecycle is ordinary `af/TaskExecutionRecord@5` data.
 - [ADR-0082](0082-continue-captured-review-rounds-within-the-original-task.md): earlier
   `TaskTransition` and `TaskReviewHandoff` generations, and inspection@6. A continuation is an
   ordinary change of `TaskTransition@5`, and a handoff is `af/TaskReviewHandoff@2`.
 - [ADR-0083](0083-run-post-round-integration-within-the-original-task.md): earlier inspection,
   transition, run-report and handoff generations. Selection and completion are ordinary changes
   of `TaskTransition@5`, a phase report is `af/TaskRunReport@2` carrying its `phase_id`, and an
-  integrated handoff is `af/TaskReviewHandoff@2`.
+  integrated handoff is `af/TaskReviewHandoff@2`. Its pending-cutover paragraph and frozen-tree
+  gate log are spent.
 - [ADR-0084](0084-route-new-review-commands-through-the-common-task.md): the original executor for
   historical paid Campaigns, and historical readers and output generations. `af review run --json`
-  always emits `af/review-outcome@3`.
+  always emits `af/review-outcome@3`. Its frozen-tree gate log is spent.
 - [ADR-0085](0085-retain-exact-native-task-usage-across-multiple-turns.md): the frozen Kernel's
   separate `AttemptEvidence`, whose name the exact Task Attempt evidence now carries, and the
   width-selected usage, provenance and output generations.
@@ -289,6 +314,17 @@ path that starts or ends with whitespace, or holds a space together with a `%` o
 gets a different digest than a pre-GA release gave it. A file created during a run, which a seal,
 warm workspace scan or Task delivery spelled in the old alphabet when the baseline was an ordinary
 tree, gets the spelling capture gives it.
+
+ADR-0029 and ADR-0030 are superseded in full. They fixed the pre-1.0 roadmap: a
+compatibility-backed dogfood of the candidate `af` over v0.2.0 state and `.review/` (0029), then
+the cut *minimal v1 local review, then v2 sequential implementation ending at a verified internal
+Snapshot, with delivery, scale and optional integrations in v3* (0030). Both are spent. Delivery
+([ADR-0031](0031-deliver-verified-tasks-to-new-local-worktrees.md)), Scatter, the Task runtime and
+warm layers all ship, this repository reviews and implements its own changes with `af`, and clauses
+1 and 2 retire the `.review/` layout the dogfood skeleton stood on. ADR-0030's permission to keep
+the frozen `.review/` and `review.kernel/*` contracts internal until a v3 migration is replaced by
+clause 4: the persisted names stay as they are, and no release phase governs them. ADR-0003 and
+ADR-0004, already fully superseded by ADR-0008 and ADR-0010, are deleted in the same change.
 
 ADR-0043 is superseded in full. `.review/` authority is neither migrated nor replayed, so that
 record is deleted together with `af onboard --migrate`.

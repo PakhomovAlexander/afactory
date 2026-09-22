@@ -1,7 +1,7 @@
 # ADR-0067: Project common Task selections into canonical Review
 
-Status: accepted for the authorized Task increment; unreleased compatibility implementation.
-Superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the legacy Store's
+Status: accepted, 2026-09-12; the Task-runtime cutover it was a compatibility checkpoint of is
+complete. Superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the legacy Store's
 selection from `AttemptAdmitted@1`. `TaskReviewResultSelected@1` is the only selection a receipt or
 Proposal accepts.
 

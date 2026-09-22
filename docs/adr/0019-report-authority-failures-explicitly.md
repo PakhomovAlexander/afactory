@@ -1,6 +1,6 @@
 # Report authority failures explicitly
 
-**Status:** proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
+**Status:** accepted (2026-09-23); superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
 permanent `RunReport@1` and `@2` readers, and `RunReport@3` itself; its `authority_unavailable`
 reason is part of `RunReport@6`.
 

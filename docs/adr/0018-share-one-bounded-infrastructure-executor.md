@@ -1,6 +1,7 @@
 # Share one bounded infrastructure executor
 
-**Status:** proposed
+**Status:** accepted (2026-09-23); acceptance recorded in
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md)
 
 Capture, materialization, sandbox cloning, permission changes, sealing, and cleanup can overlap
 when the scheduler runs several nodes. Giving every phase its own threads multiplies host

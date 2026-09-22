@@ -33,9 +33,9 @@ records a failed terminal, preserves the original branch/worktree, and permits a
 confirmed delivery to a new absent target after releasing only the internal ownership ref. Never
 remove a pre-existing path or branch.
 
-This decision extends, but does not supersede, [ADR-0030](0030-complete-minimal-v1-and-v2-before-dogfood.md):
-v2 still ends at an internal Snapshot, while this deliberately small delivery capability is the
-first v3 slice.
+This decision extends, but does not supersede, ADR-0030, the pre-1.0 release cut, which is
+deleted as fully superseded: v2 still ends at an internal Snapshot, while this deliberately small
+delivery capability is the first v3 slice.
 
 ## Considered options
 

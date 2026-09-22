@@ -250,8 +250,7 @@ model.
 | D15 | Git's roles | Configuration and versioning of `.af/`; source of Snapshots; delivery target. Never coordination. |
 | D16 | State location | Never in the repository — the Store, XDG state/cache/runtime dirs. `af init` writes no `.gitignore` beyond `.af/af.local.toml`. |
 | D17 | Value priority | **Wise token consumption first; minimum Worker context second; deterministic pre-last.** Model work is budgeted by expected information gain, Worker Inputs are exact and role-scoped, and existing deterministic contracts remain binding until explicitly superseded ([ADR-0028](../adr/0028-prioritize-wise-token-use-and-minimum-worker-context.md)). |
-| D18 | First implementation checkpoint (superseded) | Compatibility-backed dogfood before v1 completeness ([ADR-0029](../adr/0029-dogfood-the-candidate-af-before-v1-is-complete.md)). |
-| D19 | Minimal release cut | **v1 local review → v2 sequential implement → candidate dogfood.** v2 ends at a verified internal Snapshot; delivery, scale, optional integrations, and physical internal renaming are v3 ([ADR-0030](../adr/0030-complete-minimal-v1-and-v2-before-dogfood.md)). |
+| D19 | Minimal release cut | **v1 local review → v2 sequential implement → candidate dogfood.** v2 ends at a verified internal Snapshot; delivery, scale, optional integrations, and physical internal renaming are v3. Recorded in ADR-0030, which GA deletes as spent. |
 
 Open questions answered: `.af/af.toml`; no state tracked in git; the TUI is a plugin; crate
 re-layout as needed.

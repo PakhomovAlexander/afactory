@@ -1,7 +1,7 @@
 # ADR-0085: Retain exact native Task usage across multiple turns
 
 Date: 2026-09-12
-Status: Proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
+Status: Accepted (2026-09-23); superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the
 frozen Kernel's separate `AttemptEvidence`. The exact Task Attempt evidence now carries that name.
 Width no longer selects a generation: usage is always `TaskTokenUsage@3`, provenance always
 `TaskReviewAttemptProvenance@2`, and the outputs are always `af/review-outcome@3` and

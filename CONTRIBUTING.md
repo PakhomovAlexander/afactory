@@ -49,7 +49,7 @@ fail loudly there, never skip.
 
 A change to a contract, a wire shape, a gate, a budget, a sandbox boundary, or the release
 train is a design change and gets an ADR in `docs/adr/`. `docs/adr/README.md` is the
-authority on the shape; in short: take the next free number (`0100-…` follows `0099-…`),
+authority on the shape; in short: take the next free number after the highest in `docs/adr/`,
 name the file `NNNN-kebab-case-title.md` with a short imperative slug, open with a status line
 carrying the status and date (`**Status:** accepted (YYYY-MM-DD)` in most records), state the
 context, list the considered options with the reason each was rejected, record the decision,

@@ -1,6 +1,7 @@
 # Share process supervision through a leaf crate
 
-**Status:** proposed
+**Status:** accepted (2026-09-23); acceptance recorded in
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md)
 
 Git source capture, model reviewers, command reviewers, gate checks, and container-runtime probes
 all need the same bounded subprocess lifecycle: their own process group, an exact deadline,

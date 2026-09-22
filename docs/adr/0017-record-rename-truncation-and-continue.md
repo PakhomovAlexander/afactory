@@ -1,6 +1,7 @@
 # Record rename truncation and continue the diff Subject
 
-**Status:** proposed
+**Status:** accepted (2026-09-23); acceptance recorded in
+[ADR-0113](0113-ga-reads-only-what-ga-writes.md)
 
 Git bounds exhaustive rename detection because its unmatched add/delete search is quadratic. When
 the fixed limit is exceeded, Git still returns a complete patch and complete Add/Delete records,

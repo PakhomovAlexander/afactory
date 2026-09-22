@@ -1,7 +1,7 @@
 # ADR-0087: Control native Task invocations through the shared supervisor
 
 Date: 2026-09-12
-Status: Proposed; superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the entry
+Status: Accepted (2026-09-23); superseded in part by [ADR-0113](0113-ga-reads-only-what-ga-writes.md): the entry
 points without a control and the forwarding that kept their previous behavior. Controlled
 invocation is the only native Task path, and an adapter honors or refuses each supplied control.
 
