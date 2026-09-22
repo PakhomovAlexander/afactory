@@ -1,7 +1,7 @@
 # ADR-0113: GA reads only what GA writes
 
 **Status:** accepted (2026-09-21). Supersedes in part the ADRs listed under *Superseded clauses*
-and ADR-0043 and ADR-0051 in full.
+and ADR-0024, ADR-0043 and ADR-0051 in full.
 
 Before GA, Afactory treated everything it had ever written as a permanent obligation.
 [ADR-0002](0002-event-payload-changes-bump-the-type-version.md) made every superseded event reader
@@ -174,6 +174,16 @@ Each ADR below keeps its body and carries a status-line note; only the named cla
   legacy goal entry point; `task start` takes only a Task file.
 - [ADR-0106](0106-authorize-experimental-children-separately.md): earlier inspection and execution
   generations.
+
+ADR-0024 is superseded in full. It gave source Manifests a `path_encoding` generation so that
+Manifests written before `percent_v2` stayed readable and an unchanged tree kept its Snapshot
+digest. GA reads no such Manifest, so a Manifest has one path spelling, the former `percent_v2`
+spelling of `review_core::encode_path`, and carries no generation marker. Snapshot content identity
+hashes the stored spelling. Ordinary trees keep their Manifest bytes and digests; a tree with a
+path that starts or ends with whitespace, or holds a space beside a `%` or non-UTF-8 bytes, gets a
+different digest than a pre-GA release gave it. A file created during a run, which a seal, warm
+workspace scan or Task delivery spelled in the old alphabet when the baseline was an ordinary tree,
+gets the spelling capture gives it.
 
 ADR-0043 is superseded in full. `.review/` authority is neither migrated nor replayed, so that
 record is deleted together with `af onboard --migrate`.

@@ -23,7 +23,7 @@ pub use git::{
     manifest_diff,
 };
 pub use manifest::{
-    Entry, EntryKind, Manifest, ManifestError, PathEncoding, decode_path, digest_bytes,
+    Entry, EntryKind, Manifest, ManifestError, decode_path, digest_bytes,
     digest_reader_with_buffer, encode_path, fs_path,
 };
 pub use materialize::{MaterializeError, materialize};

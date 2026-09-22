@@ -19,7 +19,7 @@ use review_core::{
 };
 use review_pipeline::{Kernel, RoundAuthority};
 use review_sandbox::{RecordedPreparation, WorkspaceRoot, prepare_workspace, workspace_id};
-use review_source_git::{Entry, EntryKind, Manifest, PathEncoding, materialize, scan_tree};
+use review_source_git::{Entry, EntryKind, Manifest, materialize, scan_tree};
 use review_store::{Cas, ConvergencePolicy, EventStore, NewEvent};
 
 const WARM_WORKSPACE_PIPELINE: &str = r#"
@@ -389,7 +389,7 @@ fn run_round_one(
         Some(first.workspace_id.as_str())
     );
     let root = workspaces.join(&first.workspace_id).join("tree");
-    assert_eq!(scan_tree(root, PathEncoding::LegacyV1).unwrap(), *head);
+    assert_eq!(scan_tree(root).unwrap(), *head);
     (head_id, first)
 }
 
@@ -460,7 +460,7 @@ fn a_warm_workspace_is_materialized_once_then_rebased_and_reused_per_head() {
         tree_bytes(&fresh),
         "the re-based template is byte-identical to a full materialization"
     );
-    assert_eq!(scan_tree(&root, PathEncoding::LegacyV1).unwrap(), head_two);
+    assert_eq!(scan_tree(&root).unwrap(), head_two);
 
     // The resumed Round reads its recorded Warm Set back; the head is unchanged, so the
     // template is reused and nothing is materialized. The Attempt's sandbox is a fresh clone:
@@ -674,10 +674,7 @@ fn a_preparation_the_log_never_recorded_is_rebuilt_with_the_recorded_lineage() {
     );
     assert_eq!(second.to_snapshot_id, head_two_id);
     assert_eq!(second.entries_touched, 3);
-    assert_eq!(
-        scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
-        head_two
-    );
+    assert_eq!(scan_tree(root.tree()).unwrap(), head_two);
     let (mutations, _) = sealed_mutations(&cas, &store, &round_two.event_id, "reviewer");
     assert_eq!(
         mutations,

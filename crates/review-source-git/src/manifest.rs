@@ -12,55 +12,9 @@ use sha2::{Digest, Sha256};
 
 pub use review_core::{decode_path, encode_path};
 
-/// The lossless JSON spelling used for manifest entry paths.
-///
-/// Artifacts written before this field existed deserialize as `legacy_v1`. New captures emit
-/// `percent_v2`, whose percent alphabet can represent leading/trailing whitespace without
-/// colliding with the canonical live Report spelling.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PathEncoding {
-    #[default]
-    LegacyV1,
-    PercentV2,
-}
-
-impl PathEncoding {
-    fn is_legacy(&self) -> bool {
-        *self == Self::LegacyV1
-    }
-}
-
-pub(crate) fn encode_path_for(encoding: PathEncoding, bytes: &[u8]) -> String {
-    if encoding == PathEncoding::PercentV2 {
-        return encode_path(bytes);
-    }
-    match std::str::from_utf8(bytes) {
-        Ok(path) if !path.contains('%') => path.to_string(),
-        _ => {
-            let mut encoded = String::with_capacity(bytes.len());
-            for byte in bytes {
-                if byte.is_ascii_alphanumeric()
-                    || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'+' | b' ' | b'@')
-                {
-                    encoded.push(*byte as char);
-                } else {
-                    encoded.push_str(&format!("%{byte:02X}"));
-                }
-            }
-            encoded
-        }
-    }
-}
-
-pub(crate) fn is_canonical_path_encoding(
-    encoding: PathEncoding,
-    encoded: &str,
-    decoded: &[u8],
-) -> bool {
-    let valid_literal = std::str::from_utf8(decoded).is_ok_and(|path| {
-        encoding == PathEncoding::LegacyV1 || review_core::is_valid_repo_path(path)
-    });
+/// Whether `encoded` is the one spelling [`encode_path`] gives the raw bytes `decoded`.
+pub(crate) fn is_canonical_path_encoding(encoded: &str, decoded: &[u8]) -> bool {
+    let valid_literal = std::str::from_utf8(decoded).is_ok_and(review_core::is_valid_repo_path);
     if !encoded.as_bytes().contains(&b'%') {
         return valid_literal;
     }
@@ -69,9 +23,7 @@ pub(crate) fn is_canonical_path_encoding(
     }
     let bytes = encoded.as_bytes();
     let literal = |byte: u8| {
-        byte.is_ascii_alphanumeric()
-            || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'+' | b'@')
-            || encoding == PathEncoding::LegacyV1 && byte == b' '
+        byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'_' | b'+' | b'@')
     };
     let mut index = 0;
     while index < bytes.len() {
@@ -149,31 +101,22 @@ pub struct Entry {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Manifest {
-    #[serde(default, skip_serializing_if = "PathEncoding::is_legacy")]
-    pub path_encoding: PathEncoding,
     pub entries: Vec<Entry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestError {
-    NoncanonicalPath {
-        path: String,
-        encoding: PathEncoding,
-    },
+    NoncanonicalPath(String),
     DuplicatePath(String),
-    UnsortedPaths {
-        previous: String,
-        path: String,
-    },
+    UnsortedPaths { previous: String, path: String },
 }
 
 impl std::fmt::Display for ManifestError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoncanonicalPath { path, encoding } => write!(
-                formatter,
-                "manifest path `{path}` is not canonical for {encoding:?}"
-            ),
+            Self::NoncanonicalPath(path) => {
+                write!(formatter, "manifest path `{path}` is not canonical")
+            }
             Self::DuplicatePath(path) => write!(formatter, "manifest repeats path `{path}`"),
             Self::UnsortedPaths { previous, path } => write!(
                 formatter,
@@ -189,56 +132,21 @@ impl Manifest {
     pub fn new(mut entries: Vec<Entry>) -> Result<Manifest, ManifestError> {
         // Sorted by raw path bytes: the one ordering that does not depend on a locale.
         entries.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
-        // Keep the historical wire form when the two alphabets coincide. The generation marker
-        // is needed only when at least one v2 spelling would be rejected by the legacy alphabet,
-        // avoiding gratuitous CAS-id churn for ordinary trees.
-        let path_encoding = if entries.iter().all(|entry| {
-            !entry.path.contains('%')
-                || encode_path_for(PathEncoding::LegacyV1, &decode_path(&entry.path)) == entry.path
-        }) {
-            PathEncoding::LegacyV1
-        } else {
-            PathEncoding::PercentV2
-        };
-        let manifest = Manifest {
-            path_encoding,
-            entries,
-        };
+        let manifest = Manifest { entries };
         manifest.validate()?;
         Ok(manifest)
-    }
-
-    pub fn new_with_encoding(
-        mut entries: Vec<Entry>,
-        path_encoding: PathEncoding,
-    ) -> Result<Manifest, ManifestError> {
-        entries.sort_by(|a, b| a.path.as_bytes().cmp(b.path.as_bytes()));
-        let manifest = Manifest {
-            path_encoding,
-            entries,
-        };
-        manifest.validate()?;
-        Ok(manifest)
-    }
-
-    pub fn encode_key(&self, raw_path: &[u8]) -> String {
-        encode_path_for(self.path_encoding, raw_path)
     }
 
     /// Validate invariants required by parallel materialization and positional diffing.
     pub fn validate(&self) -> Result<(), ManifestError> {
         for entry in &self.entries {
             let valid = if entry.path.contains('%') {
-                let decoded = decode_path(&entry.path);
-                is_canonical_path_encoding(self.path_encoding, &entry.path, &decoded)
+                is_canonical_path_encoding(&entry.path, &decode_path(&entry.path))
             } else {
-                is_canonical_path_encoding(self.path_encoding, &entry.path, entry.path.as_bytes())
+                is_canonical_path_encoding(&entry.path, entry.path.as_bytes())
             };
             if !valid {
-                return Err(ManifestError::NoncanonicalPath {
-                    path: entry.path.clone(),
-                    encoding: self.path_encoding,
-                });
+                return Err(ManifestError::NoncanonicalPath(entry.path.clone()));
             }
         }
         for pair in self.entries.windows(2) {
@@ -268,39 +176,19 @@ impl Manifest {
     /// manifest with the same bytes — a manifest of one file named `a\nb` must not collide with
     /// a manifest of two files.
     pub fn content_digest(&self) -> String {
-        fn hash_entry(hasher: &mut Sha256, path: &[u8], entry: &Entry) {
-            for field in [path, entry.kind.mode().as_bytes(), entry.content.as_bytes()] {
+        let mut hasher = Sha256::new();
+        hasher.update(b"review.kernel/source-manifest/v1\0");
+        hasher.update((self.entries.len() as u64).to_be_bytes());
+        for entry in &self.entries {
+            for field in [
+                entry.path.as_bytes(),
+                entry.kind.mode().as_bytes(),
+                entry.content.as_bytes(),
+            ] {
                 hasher.update((field.len() as u64).to_be_bytes());
                 hasher.update(field);
             }
             hasher.update(entry.size.to_be_bytes());
-        }
-
-        let mut hasher = Sha256::new();
-        hasher.update(b"review.kernel/source-manifest/v1\0");
-        hasher.update((self.entries.len() as u64).to_be_bytes());
-        if self.path_encoding == PathEncoding::LegacyV1 {
-            for entry in &self.entries {
-                hash_entry(&mut hasher, entry.path.as_bytes(), entry);
-            }
-        } else {
-            // Snapshot content identity predates the explicit encoding generation. Normalize a
-            // v2 storage spelling back to the legacy spelling and order so the same raw tree
-            // retains its digest across the representation upgrade.
-            let mut entries: Vec<_> = self
-                .entries
-                .iter()
-                .map(|entry| {
-                    (
-                        encode_path_for(PathEncoding::LegacyV1, &decode_path(&entry.path)),
-                        entry,
-                    )
-                })
-                .collect();
-            entries.sort_by(|(left, _), (right, _)| left.as_bytes().cmp(right.as_bytes()));
-            for (identity_path, entry) in entries {
-                hash_entry(&mut hasher, identity_path.as_bytes(), entry);
-            }
         }
         format!("sha256:{}", review_core::hex::encode(&hasher.finalize()))
     }
@@ -377,32 +265,28 @@ mod tests {
     }
 
     #[test]
-    fn path_encoding_generation_preserves_raw_tree_identity() {
+    fn only_the_encode_path_spelling_is_canonical() {
         let content = b"same bytes";
-        let legacy = Manifest {
-            path_encoding: PathEncoding::LegacyV1,
-            entries: vec![entry("docs/50%25 off.md", EntryKind::File, content)],
-        };
-        let current =
-            Manifest::new(vec![entry("docs/50%25%20off.md", EntryKind::File, content)]).unwrap();
-
-        legacy.validate().unwrap();
-        assert_eq!(current.path_encoding, PathEncoding::PercentV2);
-        assert_eq!(legacy.content_digest(), current.content_digest());
-        let encoded = serde_json::to_value(&legacy).unwrap();
-        assert!(encoded.get("path_encoding").is_none());
-        assert_eq!(
-            serde_json::from_value::<Manifest>(encoded)
-                .unwrap()
-                .path_encoding,
-            PathEncoding::LegacyV1
-        );
+        for raw in [
+            &b" notes.md"[..],
+            b"docs/50% off.md",
+            b"a\xffb",
+            b"src/ok.rs",
+        ] {
+            Manifest::new(vec![entry(&encode_path(raw), EntryKind::File, content)]).unwrap();
+        }
+        for noncanonical in [" notes.md", "docs/50%25 off.md", "%61.md", "a%ffb"] {
+            assert_eq!(
+                Manifest::new(vec![entry(noncanonical, EntryKind::File, content)]),
+                Err(ManifestError::NoncanonicalPath(noncanonical.into())),
+                "{noncanonical:?}"
+            );
+        }
     }
 
     #[test]
     fn duplicate_paths_are_not_a_manifest() {
         let manifest = Manifest {
-            path_encoding: PathEncoding::LegacyV1,
             entries: vec![
                 entry("same", EntryKind::File, b"one"),
                 entry("same", EntryKind::File, b"two"),
@@ -421,7 +305,6 @@ mod tests {
     #[test]
     fn deserialized_manifests_must_retain_canonical_path_order() {
         let manifest = Manifest {
-            path_encoding: PathEncoding::LegacyV1,
             entries: vec![
                 entry("b", EntryKind::File, b"two"),
                 entry("a", EntryKind::File, b"one"),

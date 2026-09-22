@@ -15,15 +15,13 @@ use std::path::{Path, PathBuf};
 use review_store::Cas;
 
 use crate::manifest::{
-    Entry, EntryKind, Manifest, PathEncoding, decode_path, digest_bytes, digest_reader_with_buffer,
-    encode_path_for,
+    Entry, EntryKind, Manifest, digest_bytes, digest_reader_with_buffer, encode_path,
 };
 use crate::materialize::{
     MaterializeError, checked_relative_path, materialize, refuse_symlink_ancestors,
 };
 
-/// The entries that differ between two manifests. Paths are compared by their decoded bytes,
-/// so two manifests with different path spellings describe the same tree the same way.
+/// The entries that differ between two manifests, matched by path.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct ManifestChanges {
     /// Entries of `from` that `to` no longer has, as indexes into `from.entries`.
@@ -42,17 +40,18 @@ impl ManifestChanges {
     }
 }
 
-/// The difference between two manifests, by decoded path bytes.
+/// The difference between two manifests. Both spell every path canonically, so equal paths are
+/// equal raw bytes.
 fn manifest_changes(from: &Manifest, to: &Manifest) -> ManifestChanges {
-    let mut previous: BTreeMap<Vec<u8>, usize> = from
+    let mut previous: BTreeMap<&str, usize> = from
         .entries
         .iter()
         .enumerate()
-        .map(|(index, entry)| (decode_path(&entry.path), index))
+        .map(|(index, entry)| (entry.path.as_str(), index))
         .collect();
     let mut changes = ManifestChanges::default();
     for (index, entry) in to.entries.iter().enumerate() {
-        match previous.remove(&decode_path(&entry.path)) {
+        match previous.remove(entry.path.as_str()) {
             None => changes.added.push(index),
             Some(before) => {
                 let before = &from.entries[before];
@@ -94,7 +93,7 @@ pub fn apply_tree_diff(
         let decoded: Vec<PathBuf> = manifest
             .entries
             .iter()
-            .map(|entry| checked_relative_path(&entry.path, manifest.path_encoding))
+            .map(|entry| checked_relative_path(&entry.path))
             .collect::<Result<_, _>>()?;
         refuse_symlink_ancestors(manifest, &decoded)?;
     }
@@ -108,16 +107,11 @@ pub fn apply_tree_diff(
     let removals = changes
         .deleted
         .iter()
-        .map(|index| (&from.entries[*index], from.path_encoding))
-        .chain(
-            changes
-                .modified
-                .iter()
-                .map(|index| (&to.entries[*index], to.path_encoding)),
-        );
+        .map(|index| &from.entries[*index])
+        .chain(changes.modified.iter().map(|index| &to.entries[*index]));
     let mut parents: BTreeSet<PathBuf> = BTreeSet::new();
-    for (entry, encoding) in removals {
-        let relative = checked_relative_path(&entry.path, encoding)?;
+    for entry in removals {
+        let relative = checked_relative_path(&entry.path)?;
         remove_entry(root, &relative, &entry.path)?;
         let mut ancestor = relative.parent();
         while let Some(directory) = ancestor {
@@ -141,7 +135,7 @@ pub fn apply_tree_diff(
         .map(|index| to.entries[*index].clone())
         .collect();
     if !written.is_empty() {
-        let subset = Manifest::new_with_encoding(written, to.path_encoding)
+        let subset = Manifest::new(written)
             .map_err(|error| MaterializeError::Manifest(error.to_string()))?;
         materialize(&subset, cas, root)?;
     }
@@ -237,14 +231,10 @@ fn prune_directory(root: &Path, relative: &Path) {
     let _ = fs::remove_dir(root.join(relative));
 }
 
-/// Read the tree at `root` back into a manifest with the given path spelling, hashing every
-/// regular file and symlink target. Directories contribute nothing: an empty directory is
-/// invisible to a manifest exactly as it is to a capture. Anything that is neither a regular
-/// file, a directory nor a symlink is an error.
-pub fn scan_tree(
-    root: impl AsRef<Path>,
-    path_encoding: PathEncoding,
-) -> Result<Manifest, std::io::Error> {
+/// Read the tree at `root` back into a manifest, hashing every regular file and symlink target.
+/// Directories contribute nothing: an empty directory is invisible to a manifest exactly as it is
+/// to a capture. Anything that is neither a regular file, a directory nor a symlink is an error.
+pub fn scan_tree(root: impl AsRef<Path>) -> Result<Manifest, std::io::Error> {
     let root = root.as_ref();
     let mut level = vec![root.to_path_buf()];
     let mut found: Vec<(PathBuf, EntryKind)> = Vec::new();
@@ -272,14 +262,14 @@ pub fn scan_tree(
                 digest_reader_with_buffer(fs::File::open(&path)?, buffer.as_mut_slice())?
             };
             Ok::<_, std::io::Error>(Entry {
-                path: encode_path_for(path_encoding, &path_bytes(relative)),
+                path: encode_path(&path_bytes(relative)),
                 kind,
                 content,
                 size,
             })
         },
     )?;
-    Manifest::new_with_encoding(entries, path_encoding)
+    Manifest::new(entries)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
 }
 
@@ -423,10 +413,10 @@ mod tests {
         let fresh = dir.path().join("fresh");
         materialize(&to, &cas, &fresh).unwrap();
 
-        let scanned = scan_tree(&rebased, to.path_encoding).unwrap();
+        let scanned = scan_tree(&rebased).unwrap();
         assert_eq!(scanned, to);
         assert_eq!(scanned.content_digest(), to.content_digest());
-        assert_eq!(scan_tree(&fresh, to.path_encoding).unwrap(), to);
+        assert_eq!(scan_tree(&fresh).unwrap(), to);
         assert_eq!(tree_bytes(&rebased), tree_bytes(&fresh));
         assert!(
             !rebased.join("gone").exists(),
@@ -469,12 +459,12 @@ mod tests {
         let root = dir.path().join("tree");
         materialize(&to, &cas, &root).unwrap();
         assert_eq!(
-            scan_tree(&root, to.path_encoding).unwrap().content_digest(),
+            scan_tree(&root).unwrap().content_digest(),
             to.content_digest()
         );
         fs::write(root.join("new/stray.o"), b"left behind").unwrap();
         assert_ne!(
-            scan_tree(&root, to.path_encoding).unwrap().content_digest(),
+            scan_tree(&root).unwrap().content_digest(),
             to.content_digest()
         );
     }

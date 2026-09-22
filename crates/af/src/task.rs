@@ -10,7 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use review_process::{ExitPolicy, SupervisedOutput, run_supervised_with_policy};
 use review_source_git::{
-    Capture, Entry, EntryKind, Manifest, PathEncoding, Repo, decode_path, digest_bytes,
+    Capture, Entry, EntryKind, Manifest, Repo, decode_path, digest_bytes, encode_path,
 };
 use review_store::Cas;
 use rusqlite::Connection;
@@ -1330,8 +1330,8 @@ fn verify_existing_delivery(
     if !index_matches_head(&git)? {
         return Err("delivered worktree index no longer equals the Task source tree".into());
     }
-    let first = scan_delivery_manifest(worktree, assets.derived_manifest.path_encoding)?;
-    let actual = scan_delivery_manifest(worktree, assets.derived_manifest.path_encoding)?;
+    let first = scan_delivery_manifest(worktree)?;
+    let actual = scan_delivery_manifest(worktree)?;
     if first != actual
         || actual != assets.derived_manifest
         || actual.content_digest() != assets.derived.content_digest
@@ -1433,7 +1433,7 @@ fn rollback_owned_delivery(
             if !index_matches_head(&target_git)? && !index_is_empty(&target_git)? {
                 return Err("delivered worktree index changed; refusing rollback".into());
             }
-            let actual = scan_delivery_manifest(worktree, derived_manifest.path_encoding)?;
+            let actual = scan_delivery_manifest(worktree)?;
             let removable = actual.entries.is_empty()
                 || context == RollbackContext::CurrentAttempt
                     && manifest_is_subset(&actual, derived_manifest);
@@ -1483,13 +1483,12 @@ fn rollback_owned_delivery(
 }
 
 fn manifest_is_subset(actual: &Manifest, expected: &Manifest) -> bool {
-    actual.path_encoding == expected.path_encoding
-        && actual.entries.iter().all(|entry| {
-            expected
-                .entries
-                .binary_search_by(|candidate| candidate.path.as_bytes().cmp(entry.path.as_bytes()))
-                .is_ok_and(|index| expected.entries[index] == *entry)
-        })
+    actual.entries.iter().all(|entry| {
+        expected
+            .entries
+            .binary_search_by(|candidate| candidate.path.as_bytes().cmp(entry.path.as_bytes()))
+            .is_ok_and(|index| expected.entries[index] == *entry)
+    })
 }
 
 fn index_matches_head(git: &DeliveryGit) -> Result<bool, String> {
@@ -1648,16 +1647,15 @@ fn print_task_list(options: &InspectOptions, tasks: Vec<serde_json::Value>) -> R
     Ok(())
 }
 
-fn scan_delivery_manifest(root: &Path, encoding: PathEncoding) -> Result<Manifest, String> {
+fn scan_delivery_manifest(root: &Path) -> Result<Manifest, String> {
     let mut entries = Vec::new();
-    scan_delivery_directory(root, root, encoding, &mut entries)?;
-    Manifest::new_with_encoding(entries, encoding).map_err(|error| error.to_string())
+    scan_delivery_directory(root, root, &mut entries)?;
+    Manifest::new(entries).map_err(|error| error.to_string())
 }
 
 fn scan_delivery_directory(
     root: &Path,
     directory: &Path,
-    encoding: PathEncoding,
     entries: &mut Vec<Entry>,
 ) -> Result<(), String> {
     for child in std::fs::read_dir(directory).map_err(|error| error.to_string())? {
@@ -1668,7 +1666,7 @@ fn scan_delivery_directory(
         let path = child.path();
         let metadata = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
         if metadata.is_dir() && !metadata.file_type().is_symlink() {
-            scan_delivery_directory(root, &path, encoding, entries)?;
+            scan_delivery_directory(root, &path, entries)?;
             continue;
         }
         let relative = path
@@ -1681,11 +1679,7 @@ fn scan_delivery_directory(
             return Err("delivered path has an unsafe component".into());
         }
         let raw_path = os_path_bytes(relative)?;
-        let encoded = Manifest {
-            path_encoding: encoding,
-            entries: Vec::new(),
-        }
-        .encode_key(&raw_path);
+        let encoded = encode_path(&raw_path);
         let (kind, content, size) = if metadata.file_type().is_symlink() {
             let bytes = read_link_bytes(&path)?;
             let size = bytes.len() as u64;

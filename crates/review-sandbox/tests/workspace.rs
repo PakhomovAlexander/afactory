@@ -10,7 +10,7 @@ use review_sandbox::{
     Mode, RecordedPreparation, Sandbox, WorkspacePreparation, WorkspaceRoot, prepare_workspace,
     workspace_id,
 };
-use review_source_git::{Entry, EntryKind, Manifest, PathEncoding, materialize, scan_tree};
+use review_source_git::{Entry, EntryKind, Manifest, materialize, scan_tree};
 use review_store::Cas;
 
 fn snapshot(byte: char) -> String {
@@ -135,15 +135,9 @@ fn a_stable_root_is_materialized_once_rebased_per_head_and_reused_unchanged() {
         &head_one,
         "clones start from the verified head"
     );
-    assert_eq!(
-        scan_tree(clone.root(), PathEncoding::LegacyV1).unwrap(),
-        head_one
-    );
+    assert_eq!(scan_tree(clone.root()).unwrap(), head_one);
     drop(clone);
-    assert_eq!(
-        scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
-        head_one
-    );
+    assert_eq!(scan_tree(root.tree()).unwrap(), head_one);
 
     let record = recorded(&first, &snapshot('1'));
     let second = prepare_workspace(&root, &head_two, &snapshot('2'), &cas, Some(&record)).unwrap();
@@ -166,10 +160,7 @@ fn a_stable_root_is_materialized_once_rebased_per_head_and_reused_unchanged() {
         tree_bytes(&fresh),
         "the re-based template is byte-identical to a full materialization"
     );
-    assert_eq!(
-        scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
-        head_two
-    );
+    assert_eq!(scan_tree(root.tree()).unwrap(), head_two);
     assert!(!root.tree().join("b.rs").exists());
 
     // The same tree under a new Snapshot ID: nothing is materialized and nothing is touched,
@@ -294,10 +285,7 @@ fn an_untrusted_root_fails_closed_into_a_full_materialization_that_records_why()
         Some(&snapshot('5')),
         "a file replaced by a directory",
     );
-    assert_eq!(
-        scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
-        head_three
-    );
+    assert_eq!(scan_tree(root.tree()).unwrap(), head_three);
     assert!(!root.path().join("tree.next").exists());
     assert!(!root.path().join("tree.old").exists());
 }
@@ -349,11 +337,7 @@ fn an_unchanged_head_is_verified_before_it_is_reused() {
         );
         assert_eq!(rebuilt.entries_touched, 3, "{what}");
         assert_eq!(tree_bytes(&root.tree()), tree_bytes(&fresh), "{what}");
-        assert_eq!(
-            scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
-            head,
-            "{what}"
-        );
+        assert_eq!(scan_tree(root.tree()).unwrap(), head, "{what}");
         // Verified again, the same head is reused without a write.
         let record = recorded(&rebuilt, &snapshot(current));
         let next = char::from_digit(round + 1, 10).unwrap();
@@ -400,10 +384,7 @@ fn a_marker_the_log_never_recorded_is_rebuilt_and_supplies_no_lineage() {
         Some(snapshot('2').as_str()),
         "the record's head, never the marker's"
     );
-    assert_eq!(
-        scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
-        head_two
-    );
+    assert_eq!(scan_tree(root.tree()).unwrap(), head_two);
 
     // A marker claiming a digest the log never verified is a marker the log never recorded.
     let record = recorded(&rebased, &snapshot('3'));
@@ -477,10 +458,7 @@ fn a_drifted_symlink_can_reach_nothing_outside_the_root() {
         !root.path().join("tree.next").exists(),
         "the leftover symlink was unlinked, not traversed"
     );
-    assert_eq!(
-        scan_tree(root.tree(), PathEncoding::LegacyV1).unwrap(),
-        head_two
-    );
+    assert_eq!(scan_tree(root.tree()).unwrap(), head_two);
 }
 
 #[cfg(unix)]

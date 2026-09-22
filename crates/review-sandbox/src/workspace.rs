@@ -279,7 +279,7 @@ pub fn prepare_workspace(
         Ok(previous) if previous.content_digest == head_digest => {
             // Nothing is written, but the tree is read back in full: the marker vouches for
             // what was verified when it was written, not for what the tree holds now.
-            match scan_tree(root.tree(), head.path_encoding) {
+            match scan_tree(root.tree()) {
                 Ok(scanned) if scanned.content_digest() == head_digest => Outcome {
                     basis: WorkspaceBasisV1::Reused,
                     fallback: None,
@@ -351,15 +351,13 @@ fn rebase_into(
     // written. A template that drifted under its marker, a directory replaced by a symlink
     // included, is caught here while nothing outside the clone has been touched; the apply
     // below then removes entries only through real directories.
-    let cloned = scan_tree(next, previous.path_encoding)
-        .map_err(|_| WorkspaceFallbackReasonV1::TemplateCorrupt)?;
+    let cloned = scan_tree(next).map_err(|_| WorkspaceFallbackReasonV1::TemplateCorrupt)?;
     if cloned.content_digest() != previous.content_digest() {
         return Err(WorkspaceFallbackReasonV1::TemplateCorrupt);
     }
     let touched = apply_tree_diff(previous, head, cas, next)
         .map_err(|_| WorkspaceFallbackReasonV1::ApplyFailed)?;
-    let scanned =
-        scan_tree(next, head.path_encoding).map_err(|_| WorkspaceFallbackReasonV1::ApplyFailed)?;
+    let scanned = scan_tree(next).map_err(|_| WorkspaceFallbackReasonV1::ApplyFailed)?;
     if scanned.content_digest() != head.content_digest() {
         return Err(WorkspaceFallbackReasonV1::DigestMismatch);
     }

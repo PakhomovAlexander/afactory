@@ -5127,15 +5127,9 @@ fn manifest_entries(
     let object = value
         .as_object()
         .ok_or_else(|| StoreError::Conflict("Snapshot Manifest is not an object".into()))?;
-    if object
-        .keys()
-        .any(|key| key != "entries" && key != "path_encoding")
-        || object
-            .get("path_encoding")
-            .is_some_and(|encoding| !matches!(encoding.as_str(), Some("legacy_v1" | "percent_v2")))
-    {
+    if object.keys().any(|key| key != "entries") {
         return Err(StoreError::Conflict(
-            "Snapshot Manifest has an unsupported shape or path encoding".into(),
+            "Snapshot Manifest has an unsupported shape".into(),
         ));
     }
     let entries = object
@@ -5183,19 +5177,8 @@ fn manifest_entries(
     Ok(mapped)
 }
 
-fn manifest_value(
-    path_encoding: Option<Value>,
-    entries: std::collections::BTreeMap<String, Value>,
-) -> Value {
-    let mut object = serde_json::Map::new();
-    if let Some(path_encoding) = path_encoding {
-        object.insert("path_encoding".into(), path_encoding);
-    }
-    object.insert(
-        "entries".into(),
-        Value::Array(entries.into_values().collect()),
-    );
-    Value::Object(object)
+fn manifest_value(entries: std::collections::BTreeMap<String, Value>) -> Value {
+    serde_json::json!({ "entries": Value::Array(entries.into_values().collect()) })
 }
 
 fn validate_candidate_manifest(
@@ -5224,11 +5207,6 @@ fn validate_candidate_manifest(
         .map_err(|error| StoreError::Conflict(error.to_string()))?;
     let base_entries = manifest_entries(&base)?;
     let derived_entries = manifest_entries(&derived)?;
-    if base.get("path_encoding") != derived.get("path_encoding") {
-        return Err(StoreError::Conflict(
-            "Proposal candidate changed the Manifest path encoding".into(),
-        ));
-    }
     let changed = base_entries
         .keys()
         .chain(derived_entries.keys())
@@ -5595,7 +5573,6 @@ fn validate_integration_plan_authority(
     let base_manifest = cas
         .get_json(base_manifest_id)
         .map_err(|error| StoreError::Conflict(error.to_string()))?;
-    let path_encoding = base_manifest.get("path_encoding").cloned();
     let mut composed_entries = manifest_entries(&base_manifest)?;
 
     for candidate in &integration_plan.candidates {
@@ -5721,11 +5698,6 @@ fn validate_integration_plan_authority(
         let candidate_manifest = cas
             .get_json(&candidate.derived_manifest_artifact_id)
             .map_err(|error| StoreError::Conflict(error.to_string()))?;
-        if candidate_manifest.get("path_encoding") != path_encoding.as_ref() {
-            return Err(StoreError::Conflict(
-                "Integration candidate changed the Manifest path encoding".into(),
-            ));
-        }
         let candidate_entries = manifest_entries(&candidate_manifest)?;
         for path in &candidate.paths {
             match candidate_entries.get(path).cloned() {
@@ -5739,7 +5711,7 @@ fn validate_integration_plan_authority(
         }
     }
 
-    let expected_manifest = manifest_value(path_encoding, composed_entries);
+    let expected_manifest = manifest_value(composed_entries);
     let expected_manifest_id = crate::canonical::content_id(&expected_manifest)
         .map_err(|error| StoreError::Conflict(error.to_string()))?;
     let recorded_manifest = cas

@@ -306,11 +306,8 @@ impl ReviewDomainState<'_> {
                 }
             }
         }
-        let derived_manifest = Manifest::new_with_encoding(
-            entries.into_values().collect(),
-            self.snapshot.path_encoding,
-        )
-        .map_err(|error| error.to_string())?;
+        let derived_manifest =
+            Manifest::new(entries.into_values().collect()).map_err(|error| error.to_string())?;
         let derived_manifest_artifact_id = self
             .cas
             .put_json(&serde_json::to_value(&derived_manifest).map_err(|error| error.to_string())?)

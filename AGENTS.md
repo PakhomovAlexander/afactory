@@ -43,9 +43,9 @@ review corpora belong in consuming repositories, not here.
   retry prompt from process memory or diagnostic prose, or mutate a frozen dispatch event
   ([ADR-0022](docs/adr/0022-persist-retry-feedback-as-attempt-input.md),
   [ADR-0023](docs/adr/0023-separate-retry-feedback-from-terminal-diagnostics.md)).
-- Manifest path spellings declare their encoding generation; legacy artifacts remain readable,
-  and representation upgrades do not change raw-tree content identity
-  ([ADR-0024](docs/adr/0024-version-manifest-path-encoding.md)).
+- A source Manifest spells every path one way, with `review_core::encode_path`, and Snapshot
+  content identity hashes that stored spelling; never add a second path alphabet or a spelling
+  that differs by baseline ([ADR-0113](docs/adr/0113-ga-reads-only-what-ga-writes.md)).
 - Built-in Generation outputs are explicitly typed even in pipeline version 2; never restore an
   opaque output shape that the executor cannot dispatch
   ([ADR-0025](docs/adr/0025-require-typed-generation-outputs-in-version-2.md)).

@@ -367,10 +367,10 @@ pub(super) fn add_review_inputs(
     {
         return Err("Readable Review file changed its declared content, bytes or authority".into());
     }
-    let path = manifest.encode_key(scope.patch.path.as_bytes());
+    let path = review_source_git::encode_path(scope.patch.path.as_bytes());
     // Reserve this exact host-input directory: a source file, directory or symlink there
     // must not be overwritten or mistaken for host-provided context.
-    let directory = manifest.encode_key(b".af-review-inputs");
+    let directory = review_source_git::encode_path(b".af-review-inputs");
     if manifest
         .entries
         .iter()
@@ -385,7 +385,6 @@ pub(super) fn add_review_inputs(
         content: scope.patch.content_id.clone(),
         size: scope.patch.bytes,
     });
-    *manifest = review_source_git::Manifest::new_with_encoding(entries, manifest.path_encoding)
-        .map_err(|e| e.to_string())?;
+    *manifest = review_source_git::Manifest::new(entries).map_err(|e| e.to_string())?;
     Ok(())
 }

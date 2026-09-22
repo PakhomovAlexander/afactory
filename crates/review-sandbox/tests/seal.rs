@@ -5,7 +5,7 @@ mod common;
 use common::fixture_repo;
 use review_check::{Arg, CheckDefinition, CheckRunner, Command};
 use review_sandbox::{Mode, Sandbox};
-use review_source_git::{Capture, Entry, EntryKind, Manifest, PathEncoding};
+use review_source_git::{Capture, Entry, EntryKind, Manifest};
 
 fn sandbox_of(mode: Mode) -> (tempfile::TempDir, Sandbox, review_store::Cas) {
     let (dir, repo, cas) = fixture_repo();
@@ -74,35 +74,57 @@ fn a_node_that_changed_nothing_seals_clean() {
     );
 }
 
+/// Names a Report cannot spell literally keep their percent spelling through a seal, and a name
+/// the node creates gets the same spelling a capture would give it.
 #[test]
-fn a_legacy_encoded_baseline_seals_in_its_own_key_space() {
+fn odd_names_seal_in_the_canonical_spelling() {
     let directory = tempfile::tempdir().unwrap();
     let cas = review_store::Cas::open(directory.path().join("cas")).unwrap();
     let leading = cas.put(b"leading").unwrap();
     let percent_space = cas.put(b"percent and space").unwrap();
-    let manifest = Manifest {
-        path_encoding: PathEncoding::LegacyV1,
-        entries: vec![
-            Entry {
-                path: " notes.md".into(),
-                kind: EntryKind::File,
-                content: leading,
-                size: 7,
-            },
-            Entry {
-                path: "docs/50%25 off.md".into(),
-                kind: EntryKind::File,
-                content: percent_space,
-                size: 17,
-            },
-        ],
-    };
+    let manifest = Manifest::new(vec![
+        Entry {
+            path: "%20notes.md".into(),
+            kind: EntryKind::File,
+            content: leading,
+            size: 7,
+        },
+        Entry {
+            path: "docs/50%25%20off.md".into(),
+            kind: EntryKind::File,
+            content: percent_space,
+            size: 17,
+        },
+    ])
+    .unwrap();
     let sandbox = Sandbox::materialize(&manifest, &cas, Mode::EphemeralWrite).unwrap();
+    let runner = CheckRunner::new(&cas, sandbox.root());
+    let write = CheckDefinition::new(
+        "write-odd-name",
+        Command::new(
+            "/bin/sh",
+            vec![Arg::literal("-c"), Arg::literal("echo added > ' added.md'")],
+        ),
+    );
+    assert!(runner.run(&write).passed());
 
     let sealed = sandbox.seal().unwrap();
-    assert!(sealed.unchanged(), "{:?}", sealed.mutations);
-    assert_eq!(sealed.final_manifest.path_encoding, PathEncoding::LegacyV1);
-    assert_eq!(sealed.final_manifest, manifest);
+    assert_eq!(sealed.mutations.added, vec!["%20added.md"]);
+    assert!(
+        sealed.mutations.modified.is_empty(),
+        "{:?}",
+        sealed.mutations
+    );
+    assert!(
+        sealed.mutations.deleted.is_empty(),
+        "{:?}",
+        sealed.mutations
+    );
+    let mut unchanged = sealed.final_manifest.clone();
+    unchanged
+        .entries
+        .retain(|entry| entry.path != "%20added.md");
+    assert_eq!(unchanged, manifest);
 }
 
 /// A mutable node may leave a directory unreadable. Seal restores traversal permissions before

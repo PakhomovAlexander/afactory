@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use review_source_git::{
-    Entry, EntryKind, Manifest, digest_bytes, digest_reader_with_buffer, fs_path,
+    Entry, EntryKind, Manifest, digest_bytes, digest_reader_with_buffer, encode_path, fs_path,
 };
 use review_store::Cas;
 
@@ -106,8 +106,7 @@ impl SealedSandbox {
                 size,
             });
         }
-        Manifest::new_with_encoding(entries, self.final_manifest.path_encoding)
-            .map_err(std::io::Error::other)
+        Manifest::new(entries).map_err(std::io::Error::other)
     }
 }
 
@@ -202,7 +201,7 @@ fn scan_and_diff(
     mutations.added.sort();
     mutations.modified.sort();
     mutations.deleted.sort();
-    let manifest = Manifest::new_with_encoding(entries, baseline.path_encoding)
+    let manifest = Manifest::new(entries)
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
     Ok((manifest, mutations))
 }
@@ -265,7 +264,7 @@ fn classify_directory_entry<'a>(
         return Ok(ClassifiedEntry::Directory(path));
     }
     let relative_path = path.strip_prefix(root).expect("walked path is under root");
-    let relative = baseline.encode_key(path_bytes(relative_path));
+    let relative = encode_path(path_bytes(relative_path));
     let kind = if meta.file_type().is_symlink() {
         EntryKind::Symlink
     } else if is_executable(&meta) {
