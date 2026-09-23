@@ -82,35 +82,24 @@ impl SnapshotTaskEnvironment {
     }
 }
 
-/// The top-level name a Manifest path lives under: its first component.
-fn top_level(path: &str) -> &str {
-    path.split_once('/').map_or(path, |(first, _)| first)
-}
-
 /// Every path by which a Worker without a candidate port changed its declared source, sorted.
-/// A read-only Worker may change nothing at all. An execute-checks reviewer may leave build
-/// output and its own harness only beneath a new top-level directory the materialized tree did
-/// not have (an ignored `target/`, say): the clone is discarded, so those bytes never reach a
-/// candidate, a Proposal or a delivered tree. Every materialized entry, every top-level name
-/// holding one and every file added at the root remain the declared source.
+/// A read-only Worker may change nothing at all. An execute-checks reviewer may add anything:
+/// build output, its own harness, and the dotfiles the tools it runs write into `HOME`, which
+/// is the sandbox root (`.claude.json`, say). The clone is discarded, so an added byte never
+/// reaches a candidate, a Proposal or a delivered tree; what the declared source guarantees is
+/// that every materialized entry is still there and byte-identical, and that is what is checked.
 fn source_edits(access: WorkerAccess, sealed: &SealedSandbox) -> Vec<String> {
-    let owned: BTreeSet<&str> = sealed
-        .baseline
-        .entries
-        .iter()
-        .map(|entry| top_level(&entry.path))
-        .collect();
-    let scratch = |path: &&String| {
-        access == WorkerAccess::ExecuteChecks
-            && path.contains('/')
-            && !owned.contains(top_level(path))
+    let added = if access == WorkerAccess::ExecuteChecks {
+        &[][..]
+    } else {
+        &sealed.mutations.added[..]
     };
     let mut changed: Vec<String> = sealed
         .mutations
         .modified
         .iter()
         .chain(&sealed.mutations.deleted)
-        .chain(sealed.mutations.added.iter().filter(|path| !scratch(path)))
+        .chain(added)
         .cloned()
         .collect();
     changed.sort();
@@ -529,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn execute_checks_scratch_lives_only_beneath_a_new_top_level_directory() {
+    fn execute_checks_reviewer_may_add_but_never_change_or_remove_declared_source() {
         let directory = tempfile::tempdir().unwrap();
         let cas = Cas::open(directory.path().join("cas")).unwrap();
         let build = sealed_after(&cas, |root| {
@@ -551,7 +540,15 @@ mod tests {
         });
         assert_eq!(
             source_edits(WorkerAccess::ExecuteChecks, &edited),
-            ["NOTES.md", "lib.rs", "src/extra.rs", "src/main.rs"]
+            ["lib.rs", "src/main.rs"]
+        );
+        let dotfile = sealed_after(&cas, |root| {
+            std::fs::write(root.join(".claude.json"), "{}\n").unwrap();
+        });
+        assert!(source_edits(WorkerAccess::ExecuteChecks, &dotfile).is_empty());
+        assert_eq!(
+            source_edits(WorkerAccess::ReadOnly, &dotfile),
+            [".claude.json"]
         );
         let paths: Vec<String> = (0..25).map(|n| format!("p{n:02}")).collect();
         assert_eq!(

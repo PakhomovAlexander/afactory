@@ -38,9 +38,9 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   `--safe-mode --restricted --permission-mode dontAsk --strict-mcp-config`. Codex runs
   `-s workspace-write` rooted at the sandbox. The model process's whole group is killed when it
   exits, so a shell child cannot outlive the Attempt; wall-clock and token bounds are unchanged.
-  Nothing is sealed back. At `finish` every Snapshot entry must be byte-identical, and a file added
-  at the root or beneath a top-level name the Snapshot holds counts as a source edit. Only scratch
-  beneath a new top-level directory, such as an ignored `target/`, is discarded with the clone.
+  Nothing is sealed back. At `finish` every Snapshot entry must be byte-identical; anything the
+  reviewer added — build output, its harness, the dotfiles tools write into `HOME`, which is the
+  sandbox root — is discarded with the clone and is not a source edit.
   Any source edit fails the Attempt with a diagnostic naming the changed paths, and a read-only
   Worker's refusal names its paths the same way. The adapter's `writable: bool` became the
   kernel-derived `review_runner::task::WorkerAccess`, computed from the captured effects by

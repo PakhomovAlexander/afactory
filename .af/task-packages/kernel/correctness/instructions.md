@@ -22,8 +22,8 @@ a contract.
 
 ## Reply
 
-Return the reply envelope the request describes with one `result` payload:
-`verdict` (approve | request-changes | block), `summary`, `reports` (each with severity
-blocker | major | minor, file, line, title, body, fix, confidence), `benchmark_demands` and
-`dispositions` (exactly one per assigned prior Finding: corroborate | not_reproduced | dispute,
-with a reason). Every report needs an exact location, a reproducible path and a concrete fix.
+Return the reply envelope the request describes with one `result` payload holding exactly
+three keys: `reports` (each with severity blocker | major | minor, file, line, title, body, fix,
+confidence), `benchmark_demands` and `dispositions` (exactly one per assigned prior Finding:
+corroborate | not_reproduced | dispute, with a reason). No `verdict` and no `summary`: the
+kernel derives the round's verdict from the reports and the project's gate. Every report needs an exact location, a reproducible path and a concrete fix.

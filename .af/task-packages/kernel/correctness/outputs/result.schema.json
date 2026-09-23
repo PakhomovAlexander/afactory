@@ -1,25 +1,10 @@
 {
   "required": [
-    "verdict",
-    "summary",
     "reports",
     "benchmark_demands",
     "dispositions"
   ],
   "properties": {
-    "verdict": {
-      "enum": [
-        "approve",
-        "request-changes",
-        "block"
-      ]
-    },
-    "summary": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
     "reports": {
       "type": "array",
       "items": {

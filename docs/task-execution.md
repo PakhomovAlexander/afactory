@@ -74,14 +74,13 @@ What `execute-checks` grants a review Worker:
 - A shell. Claude gets `Bash` in the adapter-owned `--tools` and `--allowedTools` lists, still
   under `--safe-mode --restricted --permission-mode dontAsk --strict-mcp-config`. Codex runs
   `-s workspace-write`. Both are rooted at the sandbox root, which is also the working directory.
-- Scratch output beneath a new top-level directory that the Snapshot does not have, such as an
-  ignored `target/`. It is discarded with the clone.
+- Anything it adds: build output, its own harness, the dotfiles the tools it runs write into
+  `HOME` (the sandbox root). All of it is discarded with the clone.
 
 What it never grants:
 
-- Any change to the declared source. At `finish` every Snapshot entry must seal byte-identical,
-  and no file may be added at the root or under a top-level name the Snapshot holds. Any other
-  change fails the Attempt with `Execute-checks reviewer changed its declared source: <paths>`,
+- Any change to the declared source. At `finish` every Snapshot entry must seal byte-identical;
+  a modified or deleted entry fails the Attempt with `Execute-checks reviewer changed its declared source: <paths>`,
   naming up to 20 paths and counting the rest. No candidate, Proposal or derived Snapshot is ever
   produced from the clone.
 - Edit tools, MCP servers, a permission mode or any other flag. Package runner arguments stay
