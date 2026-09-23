@@ -115,11 +115,16 @@ impl WorkerModelAdapter for Uix {
         std::fs::write(harness.join("screen-100x30.txt"), "PROVIDERS\n").unwrap();
         let edited = match self.case {
             "edit" => Some(("lib.rs", "pub fn changed() {}\n")),
+            // Added anywhere, root dotfile included: the clone is discarded, never a source edit.
             "add" => Some(("src/extra.rs", "pub fn extra() {}\n")),
+            "dotfile" => Some((".claude.json", "{}\n")),
             _ => None,
         };
         if let Some((path, text)) = edited {
             std::fs::write(workdir.join(path), text).unwrap();
+        }
+        if self.case == "delete" {
+            std::fs::remove_file(workdir.join("lib.rs")).unwrap();
         }
         let reply = json!({"schema":"af.worker-reply/1",
             "outputs":{"result":[{"reports":[],"benchmark_demands":[],"dispositions":[]}]}});
@@ -584,18 +589,26 @@ fn adapter_flags_derive_from_the_captured_effects_alone() {
 
 #[test]
 fn execute_checks_reviewer_builds_in_an_ephemeral_clone_and_its_source_seals_unchanged() {
-    let outcome = run("scratch");
-    assert_eq!(outcome.calls, 1);
-    assert!(outcome.diagnostics.is_empty(), "{:?}", outcome.diagnostics);
-    assert_eq!(outcome.result.acceptance, TaskAcceptanceV1::Satisfied);
-    assert_eq!(outcome.review.conclusion, ReviewConclusionV1::Pass);
-    assert!(outcome.review.missing_reviewers.is_empty());
-    assert_eq!(outcome.review.selected_results.len(), 1);
+    // Scratch under a new `target/`, a file added beside the source, and a dotfile a tool wrote
+    // into `HOME` at the sandbox root are all discarded with the clone.
+    for case in ["scratch", "add", "dotfile"] {
+        let outcome = run(case);
+        assert_eq!(outcome.calls, 1, "{case}");
+        assert!(
+            outcome.diagnostics.is_empty(),
+            "{case}: {:?}",
+            outcome.diagnostics
+        );
+        assert_eq!(outcome.result.acceptance, TaskAcceptanceV1::Satisfied);
+        assert_eq!(outcome.review.conclusion, ReviewConclusionV1::Pass);
+        assert!(outcome.review.missing_reviewers.is_empty());
+        assert_eq!(outcome.review.selected_results.len(), 1);
+    }
 }
 
 #[test]
 fn a_source_edit_by_an_execute_checks_reviewer_fails_its_attempt_naming_the_paths() {
-    for (case, path) in [("edit", "lib.rs"), ("add", "src/extra.rs")] {
+    for (case, path) in [("edit", "lib.rs"), ("delete", "lib.rs")] {
         let outcome = run(case);
         assert_eq!(outcome.calls, 1, "{case}");
         assert_eq!(
