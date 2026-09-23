@@ -2,6 +2,7 @@
 //! the sandbox-local variables the kernel resolved for this exact Attempt.
 use super::*;
 use crate::ModelRunner;
+use crate::task::WorkerAccess;
 use review_core::Command;
 
 #[allow(clippy::too_many_arguments)]
@@ -15,6 +16,7 @@ pub fn invoke_command(
     timeout: Duration,
     cancellation: Option<&AtomicBool>,
     environment: &[(String, String)],
+    access: WorkerAccess,
 ) -> WorkerReturn {
     let returned = match contract.read_context(cas, context_id) {
         Ok((_, bytes)) => invoke_command_bytes(
@@ -26,6 +28,7 @@ pub fn invoke_command(
             timeout,
             cancellation,
             environment,
+            access,
         ),
         Err(error) => ModelWorkerReturn {
             message: Err(error),
@@ -66,8 +69,9 @@ pub fn invoke_command_bytes(
     timeout: Duration,
     cancellation: Option<&AtomicBool>,
     environment: &[(String, String)],
+    access: WorkerAccess,
 ) -> ModelWorkerReturn {
-    let runner = match command_runner(workdir, runtime_root, timeout, environment) {
+    let runner = match command_runner(workdir, runtime_root, timeout, environment, access) {
         Ok(runner) => runner,
         Err(error) => {
             let mut value = ModelWorkerReturn::failed(error);
@@ -104,6 +108,7 @@ fn command_runner(
     runtime_root: &Path,
     timeout: Duration,
     additional_environment: &[(String, String)],
+    access: WorkerAccess,
 ) -> Result<ModelRunner, RunnerError> {
     let deadline = std::time::Instant::now()
         .checked_add(timeout)
@@ -132,6 +137,11 @@ fn command_runner(
         });
     }
     let mut runner = ModelRunner::new(workdir, remaining);
+    if access == WorkerAccess::ExecuteChecks {
+        // A shell granted to run the candidate must not leave children behind: the same
+        // process-group policy the model adapters apply to an execute-checks Attempt.
+        runner = runner.killing_process_group_on_exit();
+    }
     for (key, value) in environment {
         runner = runner.with_env(key, value);
     }

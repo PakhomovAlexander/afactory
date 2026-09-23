@@ -32,7 +32,9 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   kernel-derived `review_runner::task::WorkerAccess`, computed from the captured effects by
   `review_pipeline::task::source::worker_access`, so no package or `.af/` policy can name a tool.
   Existing Workers derive exactly the access they had; fixtures and `--json` documents are
-  unchanged.
+  unchanged. A command Worker declaring the same effect runs under the process-group-killing
+  exit policy too, so a background child it starts cannot outlive its Attempt
+  (`crates/review-runner/tests/task_command_process_group.rs`).
 - Kill a supervised child's process group before reaping the child, not after: a reaped pid is
   free for reuse, so the late `SIGKILL` could land on an unrelated process that had just been
   spawned into its own group under the recycled id — on a loaded machine, a fresh `git rev-parse`
@@ -135,7 +137,7 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   leader's exit without reaping and ends the process group before waiting, so a same-group
   descendant cannot outlive it; every untrusted label a refusal echoes — destination port,
   Task ID, output port, artifact spelling and the bindable-port reason — goes through the
-  preview's display sanitizer; the `af/task-inspection@11` schema gains the optional `input_bindings` property.
+  preview's display sanitizer; the `af/task-inspection@11` schema gains the optional `input_bindings` property. A command Worker declaring the same effect runs under the process-group-killing exit policy too, so a background child it starts cannot outlive its Attempt (`crates/review-runner/tests/task_command_process_group.rs`).
 
 ## [0.9.0-rc.6] - 2026-09-21
 

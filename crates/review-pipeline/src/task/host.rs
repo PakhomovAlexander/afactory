@@ -915,6 +915,8 @@ impl<'a> CapturedTaskHost<'a> {
                         Duration::from_millis(remaining),
                         cancellation,
                         &command_environment,
+                        // The command transport's exit policy follows the same captured effects.
+                        super::source::worker_access(&worker.signature),
                     )
                 }
                 WorkerTransport::Model(adapter) => review_runner::task::invoke_model(
