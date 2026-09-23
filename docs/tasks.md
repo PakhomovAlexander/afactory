@@ -32,7 +32,8 @@ automatic Integration are outside this path.
 - an installed `af` release, verified against the release's `SHA256SUMS` and
   `SHA256SUMS.minisig` (the release's `install.sh` does this);
 - machine-local Provider authentication for every model Worker the Pipeline binds, checked with
-  `af provider status`; command Workers need none;
+  `af provider status` and established as [`providers.md`](providers.md) describes — an
+  interactive login is opt-in and happens only at your own terminal; command Workers need none;
 - every tool named by the code policy's checks, such as the repository's compiler and test
   runner;
 - a reviewed Task catalog committed in the repository: `.af/task-catalog.toml`, the Pipeline and
@@ -165,6 +166,6 @@ preserved target. Operator changes to an unsealed worktree are therefore never d
 | `worktree is not clean` or `staged changes` | Preserve or commit the operator's work elsewhere, then retry from an exact clean source. |
 | branch/path already exists | Choose a new absent target; Afactory never overwrites either one. |
 | incomplete rollback/recovery | Rerun the exact command once. If it reports a preserved terminal failure, retain the original branch/worktree and retry the confirmed Task with a new absent target. |
-| Worker authentication failure | Re-establish the named machine-local Provider login and confirm with `af provider status`. |
+| Worker authentication failure | Re-establish the named machine-local Provider login yourself with `af provider setup … --login` at a private terminal, then confirm with `af provider status`. |
 | missing check tool | Install the repository-approved toolchain; never remove or weaken the check. |
 | state or disk error | Preserve the external Task state directory, restore disk capacity/permissions, and retry the exact inspection or delivery command. |

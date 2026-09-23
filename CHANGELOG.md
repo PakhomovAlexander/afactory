@@ -47,6 +47,12 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   `--base REV` for a diff pipeline (a whole-tree pipeline still refuses `--base`), and drop
   `--light`, which only restated the default. The `af/review-plan@1` document no longer carries
   `selectors.compatibility_authority`, and the text plan drops its `compat` line.
+- `af provider setup` no longer starts an official Provider CLI login on its own — add
+  `--login`, and run it at an interactive terminal — and `af provider status` no longer probes
+  subscription and quota windows unless asked with `--usage`. Both print the command or flag to
+  use, so an existing habit fails loudly rather than silently. This is the machine-local
+  `af provider` surface, not repository authority: the machine-local registry stays version 1,
+  and its transaction, lock, publication and recovery protocol is unchanged.
 - Default Campaign state resolves only the opaque `c-<id>` directory under
   `$XDG_STATE_HOME/af/review/campaigns/`; a directory there named by the label (the layout af 0.4
   and earlier wrote) is no longer a fallback. `af review campaigns|gc --state-root` still list an
@@ -397,6 +403,32 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ### Changes
 
+- Make Provider onboarding safe for automated callers (ADR-0112): refuse to start an official CLI
+  login unless the operator opted in with `--login` *and* the process owns an interactive terminal
+  on stdin, stdout and stderr, returning the `human_action_required` result with the exact
+  private-terminal command instead; warn about OAuth URLs and authorization codes before handing
+  over the terminal; keep registering an already-authenticated context with no login at all; add
+  stable versioned `af/provider-status@1` and `af/provider-setup@1` documents under `--json` that
+  distinguish registration, authentication, usable-or-untested and usage without exposing account
+  email, organization identity, credentials, OAuth material or raw Provider output; make
+  `af provider status` a fast registry and authentication check with subscription and quota probes
+  behind `--usage`, where an unavailable probe exits 7 and leaves an authenticated Provider
+  authenticated; document exit codes 3 (human action required), 4 (Provider CLI missing), 5
+  (registry conflict), 6 (authentication failed) and 7 (usage unavailable) with results on stdout
+  and diagnostics on stderr; and keep `af provider doctor` the charged end-to-end usability check.
+- Remove the `task_planning` integration-test timing race: a Task deadline is absolute
+  wall-clock from creation, and the generated-plan tests hold one Task open across a long chain
+  of `af` invocations, Git commits, catalog operations, signing and Python Workers. Under the
+  four-thread full test gate those subprocesses consumed the fixtures' 60s budget, so valid
+  generated-plan and imported-catalog resumes were correctly but unhelpfully refused with `Task
+  deadline protects still-required verification`. The long-lived Tasks in
+  `crates/af/tests/task_planning.rs`, `task_catalog.rs` and the native-model cases in `task_file.rs`
+  now use a documented ten-minute wall budget, added to the total and taken from nothing:
+  per-Attempt walls, Attempt counts, token budgets and the verification reserve keep their fixture
+  values, and no production code changed. New tests pin both halves — only the total fixture wall
+  moves, and `TaskBudget::prepare` keeps its exact deadline boundary and refusal wording at both a
+  small and a large budget
+  ([ADR-0113](docs/adr/0113-budget-cli-task-fixtures-for-loaded-machines.md)).
 - The internal delivery records are out of `docs/`: the `P00`–`P14` package checklist, the product
   backlog, the release-timing and validation-cost measurement records, the self-optimizer plan and
   review record, and the pre-implementation design notes the shipped architecture was ported from

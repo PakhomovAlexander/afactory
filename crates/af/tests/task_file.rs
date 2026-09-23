@@ -11,6 +11,20 @@ mod wall_bounds;
 mod task_cli;
 use task_cli::{copy_tree, fixture_named};
 
+/// Native-model fixtures plan, reject one changed account, restore it, then resume the same Task.
+/// Keep that absolute deadline away from loaded-gate latency without changing any dispatch or
+/// verification bound (ADR-0113).
+const NATIVE_MODEL_TASK_WALL_MS: u64 = 600_000;
+
+fn native_model_limits() -> Value {
+    serde_json::json!({
+        "tokens": 10_000,
+        "max_attempts": 4,
+        "wall_ms": NATIVE_MODEL_TASK_WALL_MS,
+        "verification": {"tokens": 6_096, "attempts": 4, "wall_ms": 60_000}
+    })
+}
+
 fn fixture(root: &Path) -> (PathBuf, PathBuf) {
     fixture_named(root, "pagination")
 }
@@ -112,6 +126,17 @@ fn native_task_account_change_after_admission_refuses_private_worker_context() {
 #[test]
 fn native_task_account_change_between_workers_retains_original_spend() {
     native_model_drift_case(false, false, Some(2));
+}
+
+#[test]
+fn native_model_fixture_widens_only_its_total_task_wall() {
+    let limits = native_model_limits();
+    assert_eq!(limits["wall_ms"], NATIVE_MODEL_TASK_WALL_MS);
+    assert_eq!(limits["tokens"], 10_000);
+    assert_eq!(limits["max_attempts"], 4);
+    assert_eq!(limits["verification"]["tokens"], 6_096);
+    assert_eq!(limits["verification"]["attempts"], 4);
+    assert_eq!(limits["verification"]["wall_ms"], 60_000);
 }
 
 fn native_model_drift_case(wide: bool, codex: bool, switch_after: Option<usize>) {
@@ -222,7 +247,7 @@ print(json.dumps({'type':'turn.failed','error':{'message':'fixture failed after 
     std::fs::write(catalog_path, toml::to_string(&catalog).unwrap()).unwrap();
     let file_path = repo.join("review.json");
     let mut file: Value = serde_json::from_slice(&std::fs::read(&file_path).unwrap()).unwrap();
-    file["limits"] = serde_json::json!({"tokens":10000,"max_attempts":4,"wall_ms":90000,"verification":{"tokens":6096,"attempts":4,"wall_ms":60000}});
+    file["limits"] = native_model_limits();
     std::fs::write(file_path, serde_json::to_vec(&file).unwrap()).unwrap();
     for args in [vec!["add", "-A"], vec!["commit", "-qm", "model bindings"]] {
         assert!(

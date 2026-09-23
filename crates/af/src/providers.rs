@@ -2,12 +2,19 @@
 //!
 //! The registry names auth directories, never credentials, arbitrary commands, arguments, or
 //! environment variables. Explicit bindings are admitted by the common Task's Provider admission
-//! Attempts (see `task`). Status is obtained from the two fixed adapter CLIs with bounded output
-//! and wall time. Codex exposes its plan and quota windows through the official local app-server
-//! protocol. Claude has no headless usage-status command, so its fixed local `/usage` screen is
-//! opened in a bounded pseudo-terminal and only the weekly percentages are parsed. The probe
-//! neither reads credentials nor starts a billable model session. Accepted response shapes are
-//! pinned by fixtures.
+//! Attempts (see `task`). Authentication status is obtained from the two fixed adapter CLIs
+//! with bounded output and wall time, and is the only thing `af provider status` probes by
+//! default. Subscription and quota windows are opt-in behind `--usage`: Codex exposes them
+//! through the official local app-server protocol, while Claude has no headless usage-status
+//! command, so its fixed local `/usage` screen is opened in a bounded pseudo-terminal and only the
+//! weekly percentages are parsed. The probe neither reads credentials nor starts a billable
+//! model session. Accepted response shapes are pinned by fixtures.
+//!
+//! Interactive login belongs to the official Provider CLI and to a human at a private terminal.
+//! `setup` starts one only when the operator opted in with `--login` *and* this process owns an
+//! interactive terminal, so an OAuth URL or authorization code can never be emitted into an
+//! agent transcript, a captured pipe, or a log. Nothing here captures, parses, persists, or
+//! re-emits that login's output.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
@@ -41,12 +48,33 @@ const CLAUDE_USAGE_CACHE_TTL: Duration = Duration::from_secs(60);
 const MAX_ORPHANED_CLAUDE_READERS: usize = 2;
 const MAX_CLAUDE_READER_SLOTS: usize = MAX_CONCURRENT_PROBES + MAX_ORPHANED_CLAUDE_READERS;
 
+// The exit codes `af provider` promises, documented in `docs/providers.md` and ADR-0112.
+//
+// A classified outcome is the command's *result*, not a crash: it is printed on stdout as human
+// lines or as the versioned JSON document, and repeated as one diagnostic line on stderr when the
+// code is non-zero. `1` remains the unclassified failure and `2` remains clap's usage error, so
+// neither is reused here.
+pub const EXIT_OK: i32 = 0;
+pub const EXIT_HUMAN_ACTION_REQUIRED: i32 = 3;
+pub const EXIT_PROVIDER_CLI_MISSING: i32 = 4;
+pub const EXIT_REGISTRY_CONFLICT: i32 = 5;
+pub const EXIT_AUTHENTICATION_FAILED: i32 = 6;
+pub const EXIT_USAGE_UNAVAILABLE: i32 = 7;
+
+/// Printed before the official CLI takes over the terminal, never after: an operator who sees it
+/// only in a scrollback they later paste has already been told too late.
+const LOGIN_SECURITY_WARNING: &str = "\
+warning: the official Provider CLI login prints an OAuth URL and an authorization code.
+warning: both are credentials in transit. Keep them inside this private terminal.
+warning: never relay an OAuth URL or code through chat, an agent transcript, a ticket, or logs.";
+
 static CLAUDE_USAGE_CACHE: OnceLock<Mutex<BTreeMap<ClaudeUsageCacheKey, CachedClaudeUsage>>> =
     OnceLock::new();
 static CLAUDE_READER_SLOTS: AtomicUsize = AtomicUsize::new(0);
 
 pub struct ProviderInventory {
     pub providers: Vec<ProviderStatus>,
+    pub registry: Option<PathBuf>,
     pub warning: Option<String>,
 }
 
@@ -59,14 +87,60 @@ pub struct ProviderStatus {
     pub auth_type: String,
     pub subscription: String,
     pub limits: Vec<ProviderLimit>,
+    pub usage: UsageState,
     pub detail: String,
 }
 
 #[derive(Clone)]
 pub struct ProviderLimit {
     pub name: String,
+    /// The window this percentage covers, when the Provider states one. Carried separately from
+    /// `name` because the JSON surface must describe a window without echoing Provider-authored
+    /// labels.
+    pub window_minutes: Option<u64>,
     pub used_percent: u8,
     pub resets_at: Option<u64>,
+}
+
+/// Whether subscription and quota probing was asked for at all.
+///
+/// Status is a fast registry and authentication check by default; probing a plan costs a
+/// Provider process, a pseudo-terminal, or an app-server round trip, and can fail for reasons
+/// that say nothing about whether the Provider is authenticated.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UsageProbe {
+    Skip,
+    Probe,
+}
+
+/// What the optional usage probe concluded, kept strictly apart from authentication.
+///
+/// `Unavailable` means the probe was requested and did not answer — a timed-out or absent usage
+/// surface never demotes an authenticated Provider.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum UsageState {
+    /// `--usage` was not requested.
+    NotRequested,
+    /// The Provider is not authenticated, so there is no usage to report.
+    NotApplicable,
+    /// This authentication context exposes no machine-local usage surface.
+    Unsupported,
+    /// The probe answered.
+    Available,
+    /// The probe was requested, was applicable, and did not answer.
+    Unavailable,
+}
+
+impl UsageState {
+    fn name(self) -> &'static str {
+        match self {
+            Self::NotRequested => "not_requested",
+            Self::NotApplicable => "not_applicable",
+            Self::Unsupported => "unsupported",
+            Self::Available => "available",
+            Self::Unavailable => "unavailable",
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -106,17 +180,23 @@ struct ProviderSpec {
     source: String,
 }
 
-pub fn discover() -> ProviderInventory {
-    let (specs, warning) = load_specs();
+pub fn discover_with_cancel(cancelled: &AtomicBool, usage: UsageProbe) -> ProviderInventory {
+    let (specs, registry, warning) = load_specs();
     let mut providers = Vec::with_capacity(specs.len());
     for chunk in specs.chunks(MAX_CONCURRENT_PROBES) {
+        if cancelled.load(Ordering::Acquire) {
+            break;
+        }
         thread::scope(|scope| {
             let handles: Vec<_> = chunk
                 .iter()
                 .cloned()
                 .map(|spec| {
                     let fallback = spec.clone();
-                    (fallback, scope.spawn(move || probe_provider(spec)))
+                    (
+                        fallback,
+                        scope.spawn(move || probe_provider(spec, cancelled, usage)),
+                    )
                 })
                 .collect();
             providers.extend(handles.into_iter().map(|(spec, handle)| {
@@ -126,8 +206,15 @@ pub fn discover() -> ProviderInventory {
             }));
         });
     }
+    if cancelled.load(Ordering::Acquire) {
+        providers.extend(specs[providers.len()..].iter().map(unprobed_status));
+    }
     cross_reference_logged_in_siblings(&mut providers);
-    ProviderInventory { providers, warning }
+    ProviderInventory {
+        providers,
+        registry,
+        warning,
+    }
 }
 
 /// Point each logged-out context at the same-kind contexts on this machine that are logged in.
@@ -168,11 +255,40 @@ fn cross_reference_logged_in_siblings(providers: &mut [ProviderStatus]) {
     }
 }
 
-pub fn print_status() {
-    let inventory = discover();
-    if let Some(warning) = inventory.warning {
+/// The fast default: the registry plus one bounded authentication check per context.
+///
+/// Subscription and quota probing is opt-in because it is the slow, failure-prone half and
+/// proves nothing about authentication; end-to-end usability stays with `af provider doctor`,
+/// which is charged and explicit. Returns the documented exit code.
+pub fn print_status(json: bool, usage: UsageProbe) -> Result<i32, String> {
+    let cancelled = AtomicBool::new(false);
+    let inventory = discover_with_cancel(&cancelled, usage);
+    let unavailable_usage = inventory
+        .providers
+        .iter()
+        .any(|provider| provider.usage == UsageState::Unavailable);
+    let code = if unavailable_usage {
+        EXIT_USAGE_UNAVAILABLE
+    } else {
+        EXIT_OK
+    };
+    if let Some(warning) = inventory.warning.as_deref() {
         eprintln!("warning: {warning}");
     }
+    if json {
+        println!("{}", status_document(&inventory, usage, code));
+    } else {
+        print_status_table(&inventory, usage);
+    }
+    if code == EXIT_USAGE_UNAVAILABLE {
+        eprintln!(
+            "af provider status: optional usage probing did not answer for every authenticated provider; authentication is unaffected"
+        );
+    }
+    Ok(code)
+}
+
+fn print_status_table(inventory: &ProviderInventory, usage: UsageProbe) {
     if inventory.providers.is_empty() {
         println!("No supported provider CLI is installed and no provider registry entries exist");
         return;
@@ -183,7 +299,7 @@ pub fn print_status() {
     );
     let mut ambient = BTreeSet::new();
     let mut ids = BTreeSet::new();
-    for provider in inventory.providers {
+    for provider in &inventory.providers {
         ids.insert(provider.id.clone());
         if matches!(provider.id.as_str(), "claude-ambient" | "codex-ambient")
             && provider
@@ -203,13 +319,107 @@ pub fn print_status() {
             println!("  note   {}", provider.detail);
         }
     }
+    if usage == UsageProbe::Skip {
+        println!();
+        println!("Subscription and quota windows are not probed by default; add --usage.");
+    }
     if !ambient.is_empty() {
         println!();
         println!("Ambient IDs are discovered only and cannot be selected by --provider.");
         for kind in ambient {
             let id = available_provider_id(&kind, &ids);
-            println!("  set up {kind}: af provider setup {id} --kind {kind}");
+            println!("  set up {kind}: af provider setup {id} --kind {kind} --login");
         }
+    }
+}
+
+/// The versioned status document: stable states only.
+///
+/// It deliberately carries no account email, organization identity, plan-holder identity,
+/// credential, OAuth material, or Provider-authored text. Quota windows are reduced to the
+/// numbers `af` derived itself; the human table keeps the Provider's own window labels.
+fn status_document(
+    inventory: &ProviderInventory,
+    usage: UsageProbe,
+    exit_code: i32,
+) -> serde_json::Value {
+    let providers: Vec<serde_json::Value> =
+        inventory.providers.iter().map(status_provider).collect();
+    let registry = inventory
+        .registry
+        .as_ref()
+        .map(|path| path.display().to_string());
+    serde_json::json!({
+        "schema": "af/provider-status@1",
+        "exit_code": exit_code,
+        "usage_requested": usage == UsageProbe::Probe,
+        "registry": {
+            "path": registry,
+            "warning": inventory.warning,
+        },
+        "providers": providers,
+    })
+}
+
+fn status_provider(provider: &ProviderStatus) -> serde_json::Value {
+    let registered = !provider
+        .source
+        .starts_with("ambient CLI candidate; unstable local context label");
+    // The Provider CLI's own default directory has no path to report here.
+    let auth_context = match provider.auth_context.as_str() {
+        "CLI default" => None,
+        context => Some(context),
+    };
+    let mut windows = Vec::with_capacity(provider.limits.len());
+    for limit in &provider.limits {
+        windows.push(serde_json::json!({
+            "window_minutes": limit.window_minutes,
+            "used_percent": limit.used_percent,
+            "resets_at_unix": limit.resets_at,
+        }));
+    }
+    serde_json::json!({
+        "id": provider.id,
+        "kind": provider.kind,
+        "registered": registered,
+        "auth_context": auth_context,
+        "auth": auth_state_name(&provider.status),
+        "credential": credential_name(&provider.kind, &provider.auth_type),
+        "usability": usability_name(&provider.status),
+        "usage": {
+            "state": provider.usage.name(),
+            "windows": windows,
+        },
+    })
+}
+
+fn auth_state_name(status: &str) -> &'static str {
+    match status {
+        "authenticated" => "authenticated",
+        "not authenticated" => "not_authenticated",
+        "unavailable" => "unavailable",
+        "not probed" => "not_probed",
+        _ => "unknown",
+    }
+}
+
+/// What kind of capability the context holds, never which account holds it.
+fn credential_name(kind: &str, auth_type: &str) -> &'static str {
+    let method = auth_type.split('/').next().unwrap_or_default().trim();
+    match (kind, method) {
+        (_, "-" | "") => "none",
+        ("claude", "api_key") | ("codex", "API key") => "api_key",
+        ("claude", "claude.ai" | "oauth") | ("codex", "ChatGPT") => "subscription",
+        _ => "other",
+    }
+}
+
+/// Status never claims a Provider is usable: only a charged `af provider doctor` can.
+fn usability_name(status: &str) -> &'static str {
+    match status {
+        "authenticated" => "usable_or_untested",
+        "not authenticated" | "unavailable" => "unusable",
+        _ => "unknown",
     }
 }
 
@@ -226,12 +436,21 @@ fn available_provider_id(kind: &str, ids: &BTreeSet<String>) -> String {
 
 /// Add one explicit Provider without requiring the user to learn the registry's TOML shape.
 /// Existing entries and auth contexts are immutable through this absent-only command.
-pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String> {
+pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<i32, String> {
     validate_explicit_id(id)?;
     let kind = ProviderKind::parse(kind)?;
     let auth_dir = resolve_auth_dir(kind, auth_dir, false)?;
     let path = registry_path()?.ok_or("no provider registry path is available")?;
-    let preserved = add_to_registry(&path, id, kind, &auth_dir)?;
+    let preserved = match add_to_registry_inner(&path, id, kind, &auth_dir, false)? {
+        RegistryAdd::Added(preserved) => preserved,
+        RegistryAdd::AlreadyPresent => {
+            unreachable!("plain add never reports an exact entry as success")
+        }
+        RegistryAdd::Conflict(conflict) => {
+            eprintln!("af provider add: {conflict}");
+            return Ok(EXIT_REGISTRY_CONFLICT);
+        }
+    };
     println!(
         "provider {id} registered in {} ({}, {})",
         path.display(),
@@ -245,7 +464,58 @@ pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String> 
         );
     }
     println!("next: af provider status");
-    Ok(())
+    Ok(EXIT_OK)
+}
+
+/// What `af provider setup` concluded, as one closed vocabulary shared by both output shapes.
+enum SetupOutcome {
+    Registered { preserved: Option<PathBuf> },
+    AlreadyRegistered,
+    HumanActionRequired(NextAction),
+    ProviderCliMissing(String),
+    RegistryConflict(String),
+    AuthenticationFailed(String),
+}
+
+/// Why a human has to act, and the exact command only they can run.
+struct NextAction {
+    kind: &'static str,
+    reason: String,
+    command: String,
+}
+
+impl SetupOutcome {
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Registered { .. } => "registered",
+            Self::AlreadyRegistered => "already_registered",
+            Self::HumanActionRequired(_) => "human_action_required",
+            Self::ProviderCliMissing(_) => "provider_cli_missing",
+            Self::RegistryConflict(_) => "registry_conflict",
+            Self::AuthenticationFailed(_) => "authentication_failed",
+        }
+    }
+
+    fn exit_code(&self) -> i32 {
+        match self {
+            Self::Registered { .. } | Self::AlreadyRegistered => EXIT_OK,
+            Self::HumanActionRequired(_) => EXIT_HUMAN_ACTION_REQUIRED,
+            Self::ProviderCliMissing(_) => EXIT_PROVIDER_CLI_MISSING,
+            Self::RegistryConflict(_) => EXIT_REGISTRY_CONFLICT,
+            Self::AuthenticationFailed(_) => EXIT_AUTHENTICATION_FAILED,
+        }
+    }
+
+    /// `af`-authored diagnostics only. Provider stdout, OAuth URLs and codes never reach here.
+    fn diagnostic(&self) -> Option<&str> {
+        match self {
+            Self::ProviderCliMissing(detail)
+            | Self::RegistryConflict(detail)
+            | Self::AuthenticationFailed(detail) => Some(detail),
+            Self::Registered { .. } | Self::AlreadyRegistered => None,
+            Self::HumanActionRequired(action) => Some(&action.reason),
+        }
+    }
 }
 
 /// Own the complete first-run Provider flow while leaving credentials with the harness CLI.
@@ -253,74 +523,263 @@ pub fn add(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String> 
 /// The complete status/login/publication flow is serialized on the registry lock. The waiter
 /// rechecks authentication after acquiring the lock, so concurrent first-time setup never drives
 /// one Provider auth context from two interactive processes.
-pub fn setup(id: &str, kind: &str, auth_dir: Option<&Path>) -> Result<(), String> {
+///
+/// An official CLI login is started only when `login` is set *and* this process owns an
+/// interactive terminal. Every other path is non-interactive by construction: an authenticated
+/// context is registered without a login, and a context that needs one returns the
+/// human-action-required result instead of leaking an OAuth exchange into a pipe.
+pub fn setup(
+    id: &str,
+    kind: &str,
+    auth_dir: Option<&Path>,
+    login: bool,
+    json: bool,
+) -> Result<i32, String> {
     validate_explicit_id(id)?;
     let kind = ProviderKind::parse(kind)?;
     let path = registry_path()?.ok_or("no provider registry path is available")?;
     let auth_dir = resolve_auth_dir(kind, auth_dir, true)?;
+    let mut report = SetupReport {
+        id,
+        kind,
+        auth_dir: &auth_dir,
+        registry: &path,
+        registered: false,
+        auth: "not_probed",
+        json,
+    };
     // Registry paths are configurable, so the login lock lives in and is keyed by the canonical
     // auth context itself. A waiter rechecks authentication only after acquiring this lock.
     let auth_lock = auth_context_lock(kind, &auth_dir)?;
     let _registry_lock = registry_lock(&path)?;
     auth_lock.ensure_directory_current(&auth_dir, "auth directory")?;
-    let already_registered = inspect_registration(&path, id, kind, &auth_dir)?;
+    report.registered = match inspect_registration(&path, id, kind, &auth_dir)? {
+        Registration::Exact => true,
+        Registration::Absent => false,
+        Registration::Conflict(conflict) => {
+            return Ok(report.emit(&SetupOutcome::RegistryConflict(conflict)));
+        }
+    };
     let spec = ProviderSpec {
         id: id.to_string(),
         kind,
         auth_dir: Some(auth_dir.clone()),
         explicit_selector: true,
-        registry_declared: already_registered,
+        registry_declared: report.registered,
         source: path.display().to_string(),
     };
 
+    // The Provider CLI owns both the credential and the answer about it; without that binary
+    // there is nothing to verify and nothing an interactive login could fix here.
+    if resolve_program(kind.command()).is_none() {
+        let detail = format!(
+            "{} is not on PATH; install the official {} CLI, then rerun",
+            kind.command(),
+            kind.name()
+        );
+        report.auth = "unknown";
+        return Ok(report.emit(&SetupOutcome::ProviderCliMissing(detail)));
+    }
+
     auth_lock.ensure_directory_current(&auth_dir, "auth directory")?;
-    if !authentication_ready(&spec)? {
+    report.auth = "unknown";
+    let authenticated = match probe_authentication(&spec, &report) {
+        Ok(ready) => ready,
+        Err(code) => return Ok(code),
+    };
+    if !authenticated {
+        // Refusals before any child process: without `--login` the operator never asked for an
+        // OAuth exchange, and without a terminal on all three standard streams that exchange
+        // would be written into whatever is reading this process.
+        if !login || !interactive_terminal() {
+            let action = login_next_action(&spec, login);
+            report.auth = "not_authenticated";
+            return Ok(report.emit(&SetupOutcome::HumanActionRequired(action)));
+        }
         auth_lock.ensure_directory_current(&auth_dir, "auth directory")?;
-        run_interactive_login(&spec)?;
+        if let Err(error) = run_interactive_login(&spec) {
+            report.auth = "not_authenticated";
+            return Ok(report.emit(&SetupOutcome::AuthenticationFailed(error)));
+        }
         auth_lock.ensure_directory_current(&auth_dir, "auth directory")?;
-        if !authentication_ready(&spec)? {
-            return Err(format!(
+        report.auth = "unknown";
+        let verified = match probe_authentication(&spec, &report) {
+            Ok(ready) => ready,
+            Err(code) => return Ok(code),
+        };
+        if !verified {
+            let detail = format!(
                 "{} login completed without authenticating {}",
                 kind.name(),
                 auth_dir.display()
-            ));
+            );
+            report.auth = "not_authenticated";
+            return Ok(report.emit(&SetupOutcome::AuthenticationFailed(detail)));
         }
     }
     auth_lock.ensure_directory_current(&auth_dir, "auth directory")?;
+    report.auth = "authenticated";
 
-    if already_registered {
-        println!(
-            "provider {id} is authenticated and registered ({}, {})",
-            kind.name(),
-            auth_dir.display()
-        );
-        println!("next: af provider status");
-        return Ok(());
+    if report.registered {
+        return Ok(report.emit(&SetupOutcome::AlreadyRegistered));
     }
 
-    match add_to_registry_locked(&path, id, kind, &auth_dir, true)? {
-        RegistryAdd::Added(preserved) => {
-            println!(
-                "provider {id} authenticated and registered in {} ({}, {})",
-                path.display(),
-                kind.name(),
-                auth_dir.display()
+    let outcome = match add_to_registry_locked(&path, id, kind, &auth_dir, true)? {
+        RegistryAdd::Added(preserved) => SetupOutcome::Registered { preserved },
+        RegistryAdd::AlreadyPresent => SetupOutcome::AlreadyRegistered,
+        RegistryAdd::Conflict(conflict) => SetupOutcome::RegistryConflict(conflict),
+    };
+    report.registered = !matches!(outcome, SetupOutcome::RegistryConflict(_));
+    Ok(report.emit(&outcome))
+}
+
+/// `Ok(false)` means "no login here". `Err` carries the exit code of an already-printed
+/// authentication failure: a probe that could not answer is a classified outcome, not a crash.
+fn probe_authentication(spec: &ProviderSpec, report: &SetupReport<'_>) -> Result<bool, i32> {
+    authentication_ready(spec)
+        .map_err(|error| report.emit(&SetupOutcome::AuthenticationFailed(error)))
+}
+
+/// An interactive terminal on stdin, stdout *and* stderr.
+///
+/// Every one of the three is a channel the official CLI may print the OAuth URL and code on, so
+/// a single redirected stream is enough to make starting that login unsafe.
+fn interactive_terminal() -> bool {
+    use std::io::IsTerminal;
+
+    std::io::stdin().is_terminal()
+        && std::io::stdout().is_terminal()
+        && std::io::stderr().is_terminal()
+}
+
+fn login_next_action(spec: &ProviderSpec, login: bool) -> NextAction {
+    let command = setup_login_command(spec);
+    if login {
+        NextAction {
+            kind: "private_terminal",
+            reason: format!(
+                "af refuses to start the {} CLI login because this process is not attached to an interactive terminal on stdin, stdout and stderr; its OAuth URL and authorization code must never be relayed through a pipe, chat, an agent transcript, or logs",
+                spec.kind.name()
+            ),
+            command,
+        }
+    } else {
+        NextAction {
+            kind: "interactive_login",
+            reason: format!(
+                "provider {} has no {} login in this auth directory; starting the official CLI login is an explicit opt-in a human performs at a private terminal",
+                spec.id,
+                spec.kind.name()
+            ),
+            command,
+        }
+    }
+}
+
+/// Everything one classified setup result needs, printed once.
+///
+/// stdout carries the result — human lines or the versioned document — and stderr carries one
+/// diagnostic line whenever that result is not success, so a pipeline that discards stdout still
+/// shows the operator what happened.
+struct SetupReport<'a> {
+    id: &'a str,
+    kind: ProviderKind,
+    auth_dir: &'a Path,
+    registry: &'a Path,
+    registered: bool,
+    auth: &'a str,
+    json: bool,
+}
+
+impl SetupReport<'_> {
+    fn emit(&self, outcome: &SetupOutcome) -> i32 {
+        let code = outcome.exit_code();
+        if self.json {
+            println!("{}", self.document(outcome, code));
+        } else {
+            self.print_human(outcome);
+        }
+        if code != EXIT_OK {
+            eprintln!(
+                "af provider setup: {} ({})",
+                outcome.diagnostic().unwrap_or_else(|| outcome.name()),
+                outcome.name()
             );
-            if let Some(previous) = preserved {
+        }
+        code
+    }
+
+    /// The versioned document: closed states, one `af`-authored diagnostic, and never an
+    /// account identity, credential, OAuth URL or code, or raw Provider output.
+    fn document(&self, outcome: &SetupOutcome, code: i32) -> serde_json::Value {
+        let next_action = match outcome {
+            SetupOutcome::HumanActionRequired(action) => Some(serde_json::json!({
+                "kind": action.kind,
+                "command": action.command,
+            })),
+            _ => None,
+        };
+        let usability = match self.auth {
+            "authenticated" => "usable_or_untested",
+            "not_authenticated" => "unusable",
+            _ => "unknown",
+        };
+        let auth_context = self.auth_dir.display().to_string();
+        serde_json::json!({
+            "schema": "af/provider-setup@1",
+            "result": outcome.name(),
+            "exit_code": code,
+            "login_launched": false,
+            "provider": {
+                "id": self.id,
+                "kind": self.kind.name(),
+                "auth_context": auth_context,
+                "registered": self.registered,
+                "auth": self.auth,
+                "usability": usability,
+            },
+            "next_action": next_action,
+            "diagnostic": outcome.diagnostic(),
+        })
+    }
+
+    fn print_human(&self, outcome: &SetupOutcome) {
+        let (id, kind, auth_dir) = (self.id, self.kind.name(), self.auth_dir.display());
+        match outcome {
+            SetupOutcome::Registered { preserved } => {
                 println!(
-                    "previous provider registry preserved at {}",
-                    previous.display()
+                    "provider {id} authenticated and registered in {} ({kind}, {auth_dir})",
+                    self.registry.display()
+                );
+                if let Some(previous) = preserved {
+                    println!(
+                        "previous provider registry preserved at {}",
+                        previous.display()
+                    );
+                }
+                println!("next: af provider status");
+            }
+            SetupOutcome::AlreadyRegistered => {
+                println!("provider {id} is authenticated and registered ({kind}, {auth_dir})");
+                println!("next: af provider status");
+            }
+            SetupOutcome::HumanActionRequired(action) => {
+                println!("provider {id} is not authenticated ({kind}, {auth_dir})");
+                println!("human action required: {}", action.reason);
+                println!("next: run this yourself in a private interactive terminal:");
+                println!("  {}", action.command);
+                println!(
+                    "never relay the OAuth URL or authorization code it prints through chat, an agent transcript, a ticket, or logs"
                 );
             }
+            SetupOutcome::ProviderCliMissing(detail)
+            | SetupOutcome::RegistryConflict(detail)
+            | SetupOutcome::AuthenticationFailed(detail) => {
+                println!("provider {id} was not registered ({})", outcome.name());
+                println!("reason: {detail}");
+            }
         }
-        RegistryAdd::AlreadyPresent => println!(
-            "provider {id} is authenticated and registered ({}, {})",
-            kind.name(),
-            auth_dir.display()
-        ),
     }
-    println!("next: af provider status");
-    Ok(())
 }
 
 /// Resolve an interrupted registry publication without guessing which version committed.
@@ -936,44 +1395,55 @@ fn auth_context_lock_with_hook(
     })
 }
 
-/// Return true only when the requested ID already names this exact context. Conflicts are
-/// rejected before an interactive login; `add_to_registry` repeats these checks under its lock.
+/// What the registry already says about this exact `(id, kind, auth_dir)` triple.
+///
+/// A `Conflict` is a classified refusal that the operator resolves by choosing another ID or
+/// context; an unreadable or unfinished registry stays an error, because it says nothing about
+/// whether this entry conflicts.
+enum Registration {
+    Exact,
+    Absent,
+    Conflict(String),
+}
+
+/// Conflicts are rejected before an interactive login; `add_to_registry_locked` repeats these
+/// checks under its lock, which is the check that actually decides publication.
 fn inspect_registration(
     path: &Path,
     id: &str,
     kind: ProviderKind,
     auth_dir: &Path,
-) -> Result<bool, String> {
+) -> Result<Registration, String> {
     let Some(text) = read_registry(path)? else {
-        return Ok(false);
+        return Ok(Registration::Absent);
     };
     let specs = parse_registry(&text, path)?;
     if let Some(existing) = specs.iter().find(|spec| spec.id == id) {
         if existing.kind == kind && existing.auth_dir.as_deref() == Some(auth_dir) {
-            return Ok(true);
+            return Ok(Registration::Exact);
         }
-        return Err(format!(
+        return Ok(Registration::Conflict(format!(
             "provider `{id}` already names a different auth context"
-        ));
+        )));
     }
     if let Some(existing) = specs
         .iter()
         .find(|spec| spec.kind == kind && spec.auth_dir.as_deref() == Some(auth_dir))
     {
-        return Err(format!(
+        return Ok(Registration::Conflict(format!(
             "{} auth context {} is already registered as provider `{}`",
             kind.name(),
             auth_dir.display(),
             existing.id
-        ));
+        )));
     }
     if specs.len() >= MAX_PROVIDERS {
-        return Err(format!(
+        return Ok(Registration::Conflict(format!(
             "provider registry {} already has the limit of {MAX_PROVIDERS} entries",
             path.display()
-        ));
+        )));
     }
-    Ok(false)
+    Ok(Registration::Absent)
 }
 
 fn authentication_ready(spec: &ProviderSpec) -> Result<bool, String> {
@@ -982,7 +1452,7 @@ fn authentication_ready(spec: &ProviderSpec) -> Result<bool, String> {
     }
     let program = resolve_program(spec.kind.command())
         .ok_or_else(|| format!("{} is not on PATH", spec.kind.command()))?;
-    let output = run_probe(&program, spec, &sanitized_path())?;
+    let output = run_probe(&program, spec, &sanitized_path(), &AtomicBool::new(false))?;
     let (status, _, detail) = match spec.kind {
         ProviderKind::Claude => parse_claude_status(output.status.success(), &output.stdout),
         ProviderKind::Codex => parse_codex_status(output.status.success(), &output.stdout),
@@ -1002,6 +1472,11 @@ fn authentication_ready(spec: &ProviderSpec) -> Result<bool, String> {
     }
 }
 
+/// Hand this terminal to the official CLI, having first said what that terminal will show.
+///
+/// The warning precedes the handover deliberately: afterwards the Provider owns the screen. `af`
+/// neither reads, parses, stores nor re-emits anything that login prints — the child inherits
+/// these standard streams, which the caller has already proven are an interactive terminal.
 fn run_interactive_login(spec: &ProviderSpec) -> Result<(), String> {
     let program = resolve_program(spec.kind.command())
         .ok_or_else(|| format!("{} is not on PATH", spec.kind.command()))?;
@@ -1010,7 +1485,8 @@ fn run_interactive_login(spec: &ProviderSpec) -> Result<(), String> {
         .as_deref()
         .ok_or("provider setup requires an explicit auth directory")?;
     validate_private_auth_directory(auth_dir)?;
-    println!(
+    eprintln!("{LOGIN_SECURITY_WARNING}");
+    eprintln!(
         "starting interactive {} login for {}",
         spec.kind.name(),
         auth_dir.display()
@@ -1095,21 +1571,13 @@ fn default_auth_dir(kind: ProviderKind) -> Result<PathBuf, String> {
     }))
 }
 
-fn add_to_registry(
-    path: &Path,
-    id: &str,
-    kind: ProviderKind,
-    auth_dir: &Path,
-) -> Result<Option<PathBuf>, String> {
-    match add_to_registry_inner(path, id, kind, auth_dir, false)? {
-        RegistryAdd::Added(preserved) => Ok(preserved),
-        RegistryAdd::AlreadyPresent => unreachable!("plain add rejects existing providers"),
-    }
-}
-
+#[derive(Debug)]
 enum RegistryAdd {
     Added(Option<PathBuf>),
     AlreadyPresent,
+    /// Another entry already owns this ID or auth context, or the registry is full. The caller
+    /// reports it as the documented registry conflict rather than an unclassified failure.
+    Conflict(String),
 }
 
 fn add_to_registry_inner(
@@ -1164,24 +1632,26 @@ fn add_to_registry_locked(
                 {
                     return Ok(RegistryAdd::AlreadyPresent);
                 }
-                return Err(format!("provider `{id}` already exists"));
+                return Ok(RegistryAdd::Conflict(format!(
+                    "provider `{id}` already exists"
+                )));
             }
             if let Some(duplicate) = specs
                 .iter()
                 .find(|spec| spec.kind == kind && spec.auth_dir.as_deref() == Some(auth_dir))
             {
-                return Err(format!(
+                return Ok(RegistryAdd::Conflict(format!(
                     "{} auth context {} duplicates provider `{}`",
                     kind.name(),
                     auth_dir.display(),
                     duplicate.id
-                ));
+                )));
             }
             if specs.len() >= MAX_PROVIDERS {
-                return Err(format!(
+                return Ok(RegistryAdd::Conflict(format!(
                     "provider registry {} already has the limit of {MAX_PROVIDERS} entries",
                     path.display()
-                ));
+                )));
             }
             text.parse::<DocumentMut>()
                 .map_err(|error| format!("provider registry {}: {error}", path.display()))?
@@ -2311,7 +2781,7 @@ fn format_reset(resets_at: u64) -> String {
     }
 }
 
-fn load_specs() -> (Vec<ProviderSpec>, Option<String>) {
+fn load_specs() -> (Vec<ProviderSpec>, Option<PathBuf>, Option<String>) {
     let (registry, path_warning) = match registry_path() {
         Ok(path) => (path, None),
         Err(error) => (None, Some(error)),
@@ -2343,7 +2813,7 @@ fn load_specs() -> (Vec<ProviderSpec>, Option<String>) {
     }
     specs.sort_by(|left, right| (left.kind, &left.id).cmp(&(right.kind, &right.id)));
 
-    (specs, warning)
+    (specs, registry, warning)
 }
 
 fn registry_path() -> Result<Option<PathBuf>, String> {
@@ -2609,12 +3079,10 @@ fn context_path(path: &Path) -> PathBuf {
 }
 
 fn parse_registry(text: &str, path: &Path) -> Result<Vec<ProviderSpec>, String> {
-    let document: toml::Value = text
+    // A document parses as a Table; toml parses a bare `Value` as one inline value.
+    let root: toml::Table = text
         .parse()
         .map_err(|error| format!("provider registry {}: {error}", path.display()))?;
-    let root = document
-        .as_table()
-        .ok_or_else(|| format!("provider registry {} is not a table", path.display()))?;
     reject_unknown(
         root.keys().map(String::as_str),
         &["version", "providers"],
@@ -2759,7 +3227,7 @@ fn safe_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn probe_provider(spec: ProviderSpec) -> ProviderStatus {
+fn probe_provider(spec: ProviderSpec, cancelled: &AtomicBool, usage: UsageProbe) -> ProviderStatus {
     if spec
         .auth_dir
         .as_ref()
@@ -2777,7 +3245,7 @@ fn probe_provider(spec: ProviderSpec) -> ProviderStatus {
         return unavailable_status(&spec, &format!("{} is not on PATH", spec.kind.command()));
     };
     let probe_path = sanitized_path();
-    let output = match run_probe(&program, &spec, &probe_path) {
+    let output = match run_probe(&program, &spec, &probe_path, cancelled) {
         Ok(output) => output,
         Err(error) => return unavailable_status(&spec, &error),
     };
@@ -2795,16 +3263,28 @@ fn probe_provider(spec: ProviderSpec) -> ProviderStatus {
         ProviderKind::Codex => "-".to_string(),
     };
     let mut limits = Vec::new();
-    if spec.kind == ProviderKind::Claude
+    // An authenticated Provider stays authenticated whatever the optional probe concludes: the
+    // usage state is a separate axis, and a timeout on it is never evidence about a login.
+    let mut usage_state = match (status.as_str(), usage) {
+        ("authenticated", UsageProbe::Skip) => UsageState::NotRequested,
+        ("authenticated", UsageProbe::Probe) => UsageState::Unsupported,
+        _ => UsageState::NotApplicable,
+    };
+    if usage == UsageProbe::Probe
+        && spec.kind == ProviderKind::Claude
         && status == "authenticated"
         && claude_subscription_usage_supported(&output.stdout)
     {
         // Keep this sequential: only a fresh first-party subscription result authorizes opening
         // `/usage`. Speculatively starting the interactive probe would touch unsupported API-key
         // and third-party contexts merely to hide one provider-process startup.
-        match cached_claude_weekly_limits(&program, &spec, &probe_path) {
-            Ok(claude_limits) => limits.extend(claude_limits),
+        match cached_claude_weekly_limits(&program, &spec, &probe_path, cancelled) {
+            Ok(claude_limits) => {
+                limits.extend(claude_limits);
+                usage_state = UsageState::Available;
+            }
             Err(error) => {
+                usage_state = UsageState::Unavailable;
                 if !detail.is_empty() {
                     detail.push_str("; ");
                 }
@@ -2812,11 +3292,16 @@ fn probe_provider(spec: ProviderSpec) -> ProviderStatus {
             }
         }
     }
-    if spec.kind == ProviderKind::Codex && status == "authenticated" && auth_type == "ChatGPT" {
-        match probe_codex_subscription(&program, &spec, &probe_path) {
+    if usage == UsageProbe::Probe
+        && spec.kind == ProviderKind::Codex
+        && status == "authenticated"
+        && auth_type == "ChatGPT"
+    {
+        match probe_codex_subscription(&program, &spec, &probe_path, cancelled) {
             Ok(snapshot) => {
                 subscription = snapshot.subscription;
                 limits = snapshot.limits;
+                usage_state = UsageState::Available;
                 if let Some(warning) = snapshot.warning {
                     if !detail.is_empty() {
                         detail.push_str("; ");
@@ -2825,6 +3310,7 @@ fn probe_provider(spec: ProviderSpec) -> ProviderStatus {
                 }
             }
             Err(error) => {
+                usage_state = UsageState::Unavailable;
                 if !detail.is_empty() {
                     detail.push_str("; ");
                 }
@@ -2845,7 +3331,28 @@ fn probe_provider(spec: ProviderSpec) -> ProviderStatus {
         auth_type,
         subscription,
         limits,
+        usage: usage_state,
         detail,
+    }
+}
+
+/// The placeholder a cancelled refresh leaves behind: never probed, never a claim about auth.
+fn unprobed_status(spec: &ProviderSpec) -> ProviderStatus {
+    ProviderStatus {
+        id: spec.id.clone(),
+        kind: spec.kind.name().to_string(),
+        auth_context: spec
+            .auth_dir
+            .as_deref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "CLI default".to_string()),
+        source: spec.source.clone(),
+        status: "not probed".to_string(),
+        auth_type: "-".to_string(),
+        subscription: "-".to_string(),
+        limits: Vec::new(),
+        usage: UsageState::NotRequested,
+        detail: "Open PROVIDERS or press R to refresh status".to_string(),
     }
 }
 
@@ -2863,6 +3370,7 @@ fn unavailable_status(spec: &ProviderSpec, detail: &str) -> ProviderStatus {
         auth_type: "-".to_string(),
         subscription: "-".to_string(),
         limits: Vec::new(),
+        usage: UsageState::NotApplicable,
         detail: detail.to_string(),
     }
 }
@@ -2932,6 +3440,7 @@ fn cached_claude_weekly_limits(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
 ) -> Result<Vec<ProviderLimit>, String> {
     let key = ClaudeUsageCacheKey {
         program: program.to_path_buf(),
@@ -2947,7 +3456,7 @@ fn cached_claude_weekly_limits(
     {
         return Ok(cached.limits.clone());
     }
-    let limits = probe_claude_weekly_limits(program, spec, probe_path)?;
+    let limits = probe_claude_weekly_limits(program, spec, probe_path, cancelled)?;
     if let Ok(mut cache) = cache.lock() {
         cache.retain(|_, cached| cached.captured_at.elapsed() < CLAUDE_USAGE_CACHE_TTL);
         if cache.len() < MAX_PROVIDERS || cache.contains_key(&key) {
@@ -2967,6 +3476,7 @@ fn probe_claude_weekly_limits(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
 ) -> Result<Vec<ProviderLimit>, String> {
     use portable_pty::{CommandBuilder, PtySize, native_pty_system};
     use std::sync::mpsc::{RecvTimeoutError, sync_channel};
@@ -3077,6 +3587,9 @@ fn probe_claude_weekly_limits(
             Ok(None) => {}
             Err(error) => break Err(format!("Claude usage probe failed: {error}")),
         }
+        if cancelled.load(Ordering::Acquire) {
+            break Err("provider status refresh cancelled".to_string());
+        }
         if Instant::now() >= deadline {
             break Err(format!(
                 "Claude usage probe timed out after {} seconds",
@@ -3122,6 +3635,7 @@ fn parse_claude_weekly_limits(output: &[u8]) -> Result<ParsedClaudeUsage, String
         if let Some(used_percent) = percent_used_after(&screen, section) {
             limits.push(ProviderLimit {
                 name: name.to_string(),
+                window_minutes: Some(7 * 24 * 60),
                 used_percent,
                 // Claude renders a localized wall-clock string rather than an epoch. Do not
                 // guess a timestamp; the percentage is the stable compatibility surface.
@@ -3260,13 +3774,14 @@ fn probe_codex_subscription(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
 ) -> Result<SubscriptionSnapshot, String> {
-    // Status probes run to completion; only Task identity checks cancel the shared request.
+    // The bounded request is called directly: only Task identity checks add an Attempt deadline.
     parse_codex_subscription_response(&probe_codex_request_before(
         program,
         spec,
         probe_path,
-        &AtomicBool::new(false),
+        cancelled,
         &serde_json::json!({"method":"account/rateLimits/read","id":2}),
         None,
     )?)
@@ -3450,6 +3965,7 @@ fn parse_codex_subscription_response(
                     Some(minutes) => format!("{bucket} {}", format_window(minutes)),
                     None => bucket.clone(),
                 },
+                window_minutes,
                 used_percent,
                 resets_at: window.get("resetsAt").and_then(serde_json::Value::as_u64),
             });
@@ -3498,7 +4014,7 @@ fn normalize_codex_plan(value: &str) -> Option<&'static str> {
 }
 
 fn configured_spec(provider_id: &str) -> Result<ProviderSpec, String> {
-    let (specs, warning) = load_specs();
+    let (specs, _, warning) = load_specs();
     let spec = specs
         .into_iter()
         .find(|spec| spec.id == provider_id && spec.registry_declared)
@@ -3519,17 +4035,26 @@ fn configured_spec(provider_id: &str) -> Result<ProviderSpec, String> {
 }
 
 fn authentication_command(spec: &ProviderSpec) -> String {
-    if spec.registry_declared
-        && let Some(auth_dir) = spec.auth_dir.as_deref().and_then(Path::to_str)
-    {
-        return format!(
-            "af provider setup {} --kind {} --auth-dir {}",
+    if spec.registry_declared && spec.auth_dir.as_deref().and_then(Path::to_str).is_some() {
+        return setup_login_command(spec);
+    }
+    login_command(spec)
+}
+
+/// The `af provider setup … --login` invocation naming exactly this context.
+///
+/// `--login` is always spelled out: the command is only ever offered to a human who must then
+/// run it at a private terminal, and setup without it deliberately refuses to start a login.
+fn setup_login_command(spec: &ProviderSpec) -> String {
+    match spec.auth_dir.as_deref().and_then(Path::to_str) {
+        Some(auth_dir) => format!(
+            "af provider setup {} --kind {} --auth-dir {} --login",
             shell_words::quote(&spec.id),
             spec.kind.name(),
             shell_words::quote(auth_dir)
-        );
+        ),
+        None => login_command(spec),
     }
-    login_command(spec)
 }
 
 /// The harness login command that writes credentials into exactly the context `spec` probes.
@@ -3604,13 +4129,15 @@ pub fn format_window(minutes: u64) -> String {
     }
 }
 
-// Status probes run to completion; only Task identity checks cancel the shared probe.
+// Only Task identity checks bound the probe by an Attempt deadline; a status refresh bounds it by
+// its own cancellation flag.
 fn run_probe(
     program: &Path,
     spec: &ProviderSpec,
     probe_path: &std::ffi::OsStr,
+    cancelled: &AtomicBool,
 ) -> Result<ProbeOutput, String> {
-    run_probe_before(program, spec, probe_path, &AtomicBool::new(false), None)
+    run_probe_before(program, spec, probe_path, cancelled, None)
 }
 
 fn run_probe_before(
@@ -4538,7 +5065,8 @@ mod tests {
         fs::write(registry_transaction_path(&path), "version = 1\n").unwrap();
 
         let error =
-            add_to_registry(&path, "codex-main", ProviderKind::Codex, root.path()).unwrap_err();
+            add_to_registry_inner(&path, "codex-main", ProviderKind::Codex, root.path(), false)
+                .unwrap_err();
         assert!(
             error.contains("unfinished publication transaction"),
             "{error}"
@@ -4918,7 +5446,9 @@ auth_dir = "{}"
         };
 
         let probe_path = sanitized_path();
-        let limits = probe_claude_weekly_limits(&program, &spec, &probe_path).unwrap();
+        let limits =
+            probe_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
+                .unwrap();
         assert_eq!(limits.len(), 1);
         assert_eq!(limits[0].used_percent, 42);
         assert_eq!(limits[0].resets_at, None);
@@ -4948,8 +5478,12 @@ auth_dir = "{}"
         };
         let probe_path = sanitized_path();
 
-        let first = cached_claude_weekly_limits(&program, &spec, &probe_path).unwrap();
-        let second = cached_claude_weekly_limits(&program, &spec, &probe_path).unwrap();
+        let first =
+            cached_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
+                .unwrap();
+        let second =
+            cached_claude_weekly_limits(&program, &spec, &probe_path, &AtomicBool::new(false))
+                .unwrap();
 
         assert_eq!(first[0].used_percent, 42);
         assert_eq!(second[0].used_percent, 42);
@@ -5023,7 +5557,9 @@ auth_dir = "{}"
         };
 
         let probe_path = sanitized_path();
-        let Err(error) = probe_codex_subscription(&program, &spec, &probe_path) else {
+        let Err(error) =
+            probe_codex_subscription(&program, &spec, &probe_path, &AtomicBool::new(false))
+        else {
             panic!("early app-server exit unexpectedly returned subscription data");
         };
         assert!(error.contains("exited without a rate-limit response"));
@@ -5115,7 +5651,7 @@ auth_dir = "{}"
         };
         assert_eq!(
             logged_out_detail(&declared),
-            "no Claude login in /profiles/claude-personal; fix: af provider setup claude-personal --kind claude --auth-dir /profiles/claude-personal, or point auth_dir at the directory that holds the intended login"
+            "no Claude login in /profiles/claude-personal; fix: af provider setup claude-personal --kind claude --auth-dir /profiles/claude-personal --login, or point auth_dir at the directory that holds the intended login"
         );
         let ambient = ProviderSpec {
             id: "claude-ambient".to_string(),
@@ -5147,7 +5683,7 @@ auth_dir = "{}"
         };
         assert_eq!(
             authentication_command(&spaced),
-            "af provider setup claude-personal --kind claude --auth-dir '/profiles/claude personal;work'"
+            "af provider setup claude-personal --kind claude --auth-dir '/profiles/claude personal;work' --login"
         );
         assert_eq!(
             chmod_fix(Path::new("/profiles/claude personal;work"), "go-w"),
@@ -5167,6 +5703,7 @@ auth_dir = "{}"
                 auth_type: "-".to_string(),
                 subscription: plan.to_string(),
                 limits: Vec::new(),
+                usage: UsageState::NotRequested,
                 detail: if status == "not authenticated" {
                     "no login".to_string()
                 } else {

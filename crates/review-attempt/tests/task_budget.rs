@@ -240,6 +240,36 @@ fn deadline_protection_survives_waiting_and_backwards_clocks_fail_closed() {
     spend(&mut ledger, "review.verify", 800, 10);
 }
 
+/// A wider wall budget buys scheduling room, never a weaker reserve. The CLI planning fixtures
+/// run their Tasks with a large budget so a loaded machine cannot turn subprocess latency into
+/// a refusal; this pins what that margin may and may not change. The boundary is exact at every
+/// budget, the refusal keeps its exact wording, and only the verification the reserve was held
+/// for can release its wall.
+#[test]
+fn wider_wall_budgets_move_the_deadline_boundary_without_relaxing_the_reserve() {
+    for deadline in [1_000u64, 600_000] {
+        let mut ledger = budget(3, 200, deadline);
+        // One Attempt's own wall plus the whole still-required reserve must still fit.
+        let latest = deadline - 100 - 200;
+        assert_eq!(
+            ledger.prepare("implement", latest + 1).unwrap_err(),
+            "Task deadline protects still-required verification"
+        );
+        let held = ledger.prepare("implement", latest).unwrap();
+        assert_eq!(held.deadline_unix_ms, latest + 100);
+        ledger.begin(&held.id, latest).unwrap();
+        ledger.settle_exact(&held.id, 10).unwrap();
+        assert_eq!(
+            ledger.prepare("implement", latest + 1).unwrap_err(),
+            "Task deadline protects still-required verification",
+            "spending the reserve's wall on more implementation work"
+        );
+        spend(&mut ledger, "review.verify", deadline - 200, 10);
+        assert_eq!(ledger.begun_attempts(), 2);
+        assert_eq!(ledger.committed_tokens(), 20);
+    }
+}
+
 #[test]
 fn only_unstarted_work_can_release_capacity_and_duplicate_settlement_is_exact() {
     let mut ledger = budget(2, 100, 1000);

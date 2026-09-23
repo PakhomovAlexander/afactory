@@ -4,6 +4,18 @@ use std::process::Command;
 #[path = "support/task_cli.rs"]
 mod task_cli;
 
+/// Catalog integration exercises real Git and `af` subprocesses before a planned Task resumes.
+/// Keep its absolute Task deadline away from scheduler and filesystem latency; the per-Attempt
+/// walls and verification reserve remain the bounds on dispatched work (ADR-0113).
+const CATALOG_TASK_WALL_MS: u64 = 600_000;
+
+fn widen_catalog_task_wall(repo: &Path) {
+    let path = repo.join("ticket.json");
+    let mut task: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    task["limits"]["wall_ms"] = json!(CATALOG_TASK_WALL_MS);
+    std::fs::write(path, serde_json::to_vec(&task).unwrap()).unwrap();
+}
+
 fn commit(repo: &Path, message: &str) {
     for args in [vec!["add", "-A"], vec!["commit", "-qm", message]] {
         assert!(
@@ -69,6 +81,7 @@ fn git_catalog_sync_is_exact_transitive_absent_only_and_runs_offline_after_captu
     std::fs::create_dir(&consumer).unwrap();
     let (source, _) = task_cli::fixture_named(&producer, "embedded-review");
     let (repo, state) = task_cli::fixture_named(&consumer, "embedded-review");
+    widen_catalog_task_wall(&repo);
     shared(&source);
     let imported = success(af(
         &repo,
@@ -192,6 +205,21 @@ fn git_catalog_sync_is_exact_transitive_absent_only_and_runs_offline_after_captu
     );
     assert!(!rejected.status.success());
     assert!(String::from_utf8_lossy(&rejected.stderr).contains("changed since it was locked"));
+}
+
+#[test]
+fn catalog_task_keeps_only_its_total_wall_away_from_the_loaded_gate() {
+    let temp = tempfile::tempdir().unwrap();
+    let (repo, _) = task_cli::fixture_named(temp.path(), "embedded-review");
+    widen_catalog_task_wall(&repo);
+    let task: Value =
+        serde_json::from_slice(&std::fs::read(repo.join("ticket.json")).unwrap()).unwrap();
+    assert_eq!(task["limits"]["wall_ms"], CATALOG_TASK_WALL_MS);
+    assert_eq!(task["limits"]["tokens"], 1_000);
+    assert_eq!(task["limits"]["max_attempts"], 5);
+    assert_eq!(task["limits"]["verification"]["tokens"], 200);
+    assert_eq!(task["limits"]["verification"]["attempts"], 4);
+    assert_eq!(task["limits"]["verification"]["wall_ms"], 20_000);
 }
 
 #[test]

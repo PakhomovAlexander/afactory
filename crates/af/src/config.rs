@@ -404,7 +404,7 @@ fn record_origins(
 /// Dotted leaf key → 1-based line, from the document's spans.
 fn key_lines(text: &str) -> BTreeMap<String, usize> {
     let mut lines = BTreeMap::new();
-    let Ok(doc) = toml_edit::ImDocument::parse(text) else {
+    let Ok(doc) = toml_edit::Document::parse(text) else {
         return lines;
     };
     fn walk(

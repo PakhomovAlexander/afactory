@@ -1053,44 +1053,7 @@ fn main() {
     };
     let (prefix, outcome): (&str, Result<i32, String>) = match command {
         cli::Command::Review(namespace) => ("af review", review_command(namespace)),
-        cli::Command::Provider { command } => (
-            "af provider",
-            match command {
-                cli::ProviderCommand::Status => {
-                    providers::print_status();
-                    Ok(0)
-                }
-                cli::ProviderCommand::Setup { id, kind, auth_dir } => providers::setup(
-                    &id,
-                    match kind {
-                        cli::ProviderKindArg::Claude => "claude",
-                        cli::ProviderKindArg::Codex => "codex",
-                    },
-                    auth_dir.as_deref(),
-                )
-                .map(|()| 0),
-                cli::ProviderCommand::Add { id, kind, auth_dir } => providers::add(
-                    &id,
-                    match kind {
-                        cli::ProviderKindArg::Claude => "claude",
-                        cli::ProviderKindArg::Codex => "codex",
-                    },
-                    auth_dir.as_deref(),
-                )
-                .map(|()| 0),
-                cli::ProviderCommand::Recover => providers::recover().map(|()| 0),
-                cli::ProviderCommand::Doctor(args) => {
-                    if args.task_file.is_some() {
-                        Err(
-                            "Task Provider admission does not use the Campaign doctor adapter"
-                                .into(),
-                        )
-                    } else {
-                        provider_doctor(&run_options(args, "provider doctor"))
-                    }
-                }
-            },
-        ),
+        cli::Command::Provider { command } => ("af provider", provider_command(command)),
         cli::Command::Onboard(args) => ("af onboard", onboard::run_cli(args).map(|()| 0)),
         cli::Command::Catalog {
             command:
@@ -1435,6 +1398,55 @@ fn main() {
     selfmgmt::after_command(&argv);
     if code != 0 {
         std::process::exit(code);
+    }
+}
+
+/// Every `af provider` command returns its own documented exit code.
+///
+/// The classified Provider outcomes — human action required, missing CLI, registry conflict,
+/// authentication failure, unavailable optional usage — are results rather than crashes, so they
+/// print themselves and come back as `Ok(code)`. Only an unclassified failure takes the shared
+/// `Err` path and exits 1.
+fn provider_command(command: cli::ProviderCommand) -> Result<i32, String> {
+    match command {
+        cli::ProviderCommand::Status { json, usage } => {
+            let usage = if usage {
+                providers::UsageProbe::Probe
+            } else {
+                providers::UsageProbe::Skip
+            };
+            providers::print_status(json, usage)
+        }
+        cli::ProviderCommand::Setup {
+            id,
+            kind,
+            auth_dir,
+            login,
+            json,
+        } => {
+            let kind = provider_kind(kind);
+            providers::setup(&id, kind, auth_dir.as_deref(), login, json)
+        }
+        cli::ProviderCommand::Add { id, kind, auth_dir } => {
+            let kind = provider_kind(kind);
+            providers::add(&id, kind, auth_dir.as_deref())
+        }
+        cli::ProviderCommand::Recover => providers::recover().map(|()| 0),
+        cli::ProviderCommand::Doctor(args) => {
+            if args.task_file.is_some() {
+                let refusal = "Task Provider admission does not use the Campaign doctor adapter";
+                Err(refusal.into())
+            } else {
+                provider_doctor(&run_options(args, "provider doctor"))
+            }
+        }
+    }
+}
+
+fn provider_kind(kind: cli::ProviderKindArg) -> &'static str {
+    match kind {
+        cli::ProviderKindArg::Claude => "claude",
+        cli::ProviderKindArg::Codex => "codex",
     }
 }
 

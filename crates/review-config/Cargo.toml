@@ -18,7 +18,7 @@ review-source-git = { path = "../review-source-git" }
 semver = "1.0.27"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.149", features = ["preserve_order"] }
-toml = "0.8.23"
+toml = "1.1.6"
 
 [dev-dependencies]
 jsonschema = { version = "0.56.0", default-features = false }

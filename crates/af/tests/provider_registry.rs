@@ -43,6 +43,75 @@ fn fake_provider(root: &Path, name: &str, script: &str) -> std::path::PathBuf {
     bin
 }
 
+/// Run a command with all three standard streams on a real pseudo-terminal.
+///
+/// `af provider setup --login` refuses to start an official Provider login unless it owns an
+/// interactive terminal, so the interactive path can only be exercised by giving it one; an
+/// environment flag that bypassed the check would weaken exactly the boundary under test. A PTY
+/// merges stdout and stderr by construction, which is why stream placement is asserted on the
+/// piped, non-interactive paths in `provider_onboarding.rs` instead.
+fn in_terminal(
+    program: &std::ffi::OsStr,
+    args: &[&std::ffi::OsStr],
+    env: &[(&str, &std::ffi::OsStr)],
+) -> (u32, String) {
+    use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+    use std::io::Read as _;
+
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 40,
+            cols: 140,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .unwrap();
+    let mut command = CommandBuilder::new(program);
+    for argument in args {
+        command.arg(argument);
+    }
+    command.env_clear();
+    command.cwd("/");
+    for (name, value) in env {
+        command.env(name, value);
+    }
+    let mut child = pair.slave.spawn_command(command).unwrap();
+    drop(pair.slave);
+    let mut reader = pair.master.try_clone_reader().unwrap();
+    let drained = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let _ = reader.read_to_end(&mut bytes);
+        bytes
+    });
+    let status = child.wait().unwrap();
+    drop(pair.master);
+    let text = String::from_utf8_lossy(&drained.join().unwrap()).into_owned();
+    (status.exit_code(), text)
+}
+
+/// `af provider setup … --login` at an interactive terminal.
+fn setup_in_terminal(
+    home: &Path,
+    bin: &Path,
+    args: &[&str],
+    extra_env: &[(&str, &std::ffi::OsStr)],
+) -> (u32, String) {
+    use std::ffi::OsStr;
+
+    let config = home.join("config");
+    let mut arguments: Vec<&OsStr> = vec![OsStr::new("provider"), OsStr::new("setup")];
+    arguments.extend(args.iter().map(|argument| OsStr::new(*argument)));
+    arguments.push(OsStr::new("--login"));
+    let mut env: Vec<(&str, &OsStr)> = vec![
+        ("HOME", home.as_os_str()),
+        ("XDG_CONFIG_HOME", config.as_os_str()),
+        ("PATH", bin.as_os_str()),
+        ("AF_SELF_OFFLINE", OsStr::new("1")),
+    ];
+    env.extend_from_slice(extra_env);
+    in_terminal(OsStr::new(env!("CARGO_BIN_EXE_af")), &arguments, &env)
+}
+
 #[test]
 fn setup_owns_claude_login_registration_and_idempotent_recheck() {
     let root = tempfile::tempdir().unwrap();
@@ -70,27 +139,32 @@ exit 64
 "#,
     );
     let invoke = || {
-        Command::new(env!("CARGO_BIN_EXE_af"))
-            .args([
-                "provider",
-                "setup",
+        setup_in_terminal(
+            root.path(),
+            &bin,
+            &[
                 "claude-main",
                 "--kind",
                 "claude",
                 "--auth-dir",
                 auth.to_str().unwrap(),
-            ])
-            .env("HOME", root.path())
-            .env("XDG_CONFIG_HOME", root.path().join("config"))
-            .env("PATH", &bin)
-            .env("LEAK_ME", "must-not-reach-login")
-            .env("AF_SELF_OFFLINE", "1")
-            .output()
-            .unwrap()
+            ],
+            &[("LEAK_ME", std::ffi::OsStr::new("must-not-reach-login"))],
+        )
     };
 
-    let first = invoke();
-    assert!(first.status.success(), "{}", stderr(&first));
+    let (code, output) = invoke();
+    assert_eq!(code, 0, "{output}");
+    // The warning is the operator's only chance to hear it before the Provider CLI owns the
+    // screen, so it is part of the contract, not incidental prose.
+    assert!(
+        output.contains("OAuth URL") && output.contains("authorization code"),
+        "{output}"
+    );
+    assert!(
+        output.contains("never relay an OAuth URL or code through chat"),
+        "{output}"
+    );
     assert!(auth.join("logged-in").is_file());
     assert_eq!(
         std::fs::read_to_string(auth.join("login-log")).unwrap(),
@@ -108,16 +182,72 @@ exit 64
     assert!(registry.contains("claude-main"), "{registry}");
     assert!(registry.contains(auth.canonicalize().unwrap().to_str().unwrap()));
 
-    let second = invoke();
-    assert!(second.status.success(), "{}", stderr(&second));
+    let (code, output) = invoke();
+    assert_eq!(code, 0, "{output}");
     assert!(
-        String::from_utf8_lossy(&second.stdout).contains("is authenticated and registered"),
-        "{}",
-        String::from_utf8_lossy(&second.stdout)
+        output.contains("is authenticated and registered"),
+        "{output}"
     );
+    // An already-authenticated context is registered, and re-checked, without a second login.
+    assert!(!output.contains("OAuth URL"), "{output}");
     assert_eq!(
         std::fs::read_to_string(auth.join("login-log")).unwrap(),
         "auth login --claudeai\n"
+    );
+}
+
+/// The login child must land in the auth directory `af` was told to use, not an ambient one.
+#[test]
+fn interactive_login_selects_exactly_the_named_auth_directory() {
+    let root = tempfile::tempdir().unwrap();
+    let ambient = root.path().join("ambient-claude");
+    let chosen = root.path().join("chosen-claude");
+    std::fs::create_dir(&ambient).unwrap();
+    let bin = fake_provider(
+        root.path(),
+        "claude",
+        r#"#!/bin/sh
+if [ "$1" = auth ] && [ "$2" = status ] && [ "$3" = --json ]; then
+  if [ -f "$CLAUDE_CONFIG_DIR/logged-in" ]; then
+    printf '%s\n' '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty"}'
+    exit 0
+  fi
+  printf '%s\n' '{"loggedIn":false,"authMethod":"none","apiProvider":"firstParty"}'
+  exit 1
+fi
+if [ "$1" = auth ] && [ "$2" = login ]; then
+  printf '%s\n' "$CLAUDE_CONFIG_DIR" > "$CLAUDE_CONFIG_DIR/login-dir"
+  : > "$CLAUDE_CONFIG_DIR/logged-in"
+  exit 0
+fi
+exit 64
+"#,
+    );
+    let (code, output) = setup_in_terminal(
+        root.path(),
+        &bin,
+        &[
+            "claude-main",
+            "--kind",
+            "claude",
+            "--auth-dir",
+            chosen.to_str().unwrap(),
+        ],
+        &[("CLAUDE_CONFIG_DIR", ambient.as_os_str())],
+    );
+    assert_eq!(code, 0, "{output}");
+    assert_eq!(
+        std::fs::read_to_string(chosen.join("login-dir")).unwrap(),
+        format!("{}\n", chosen.canonicalize().unwrap().display())
+    );
+    assert!(
+        !ambient.join("logged-in").exists(),
+        "login reached the ambient directory instead of the named one"
+    );
+    let registry = std::fs::read_to_string(root.path().join("config/af/providers.toml")).unwrap();
+    assert!(
+        registry.contains(chosen.canonicalize().unwrap().to_str().unwrap()),
+        "{registry}"
     );
 }
 
@@ -144,23 +274,19 @@ fi
 exit 64
 "#,
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
-        .args([
-            "provider",
-            "setup",
+    let (code, output) = setup_in_terminal(
+        root.path(),
+        &bin,
+        &[
             "codex-main",
             "--kind",
             "codex",
             "--auth-dir",
             auth.to_str().unwrap(),
-        ])
-        .env("HOME", root.path())
-        .env("XDG_CONFIG_HOME", root.path().join("config"))
-        .env("PATH", bin)
-        .env("AF_SELF_OFFLINE", "1")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{}", stderr(&output));
+        ],
+        &[],
+    );
+    assert_eq!(code, 0, "{output}");
     assert!(auth.join("logged-in").is_file());
     let registry = std::fs::read_to_string(root.path().join("config/af/providers.toml")).unwrap();
     assert!(registry.contains("codex-main"), "{registry}");
@@ -168,6 +294,8 @@ exit 64
 
 #[test]
 fn setup_repairs_auth_directory_and_lock_modes_under_a_restrictive_umask() {
+    use std::ffi::OsStr;
+
     let root = tempfile::tempdir().unwrap();
     let auth = root.path().join("nested/codex-home");
     let bin = fake_provider(
@@ -189,21 +317,26 @@ fi
 exit 64
 "#,
     );
-    let output = Command::new("/bin/sh")
-        .args([
-            "-c",
-            "umask 0777; PATH=\"$3\" exec \"$1\" provider setup codex-main --kind codex --auth-dir \"$2\"",
-            "sh",
-        ])
-        .arg(env!("CARGO_BIN_EXE_af"))
-        .arg(&auth)
-        .arg(&bin)
-        .env("HOME", root.path())
-        .env("XDG_CONFIG_HOME", root.path().join("config"))
-        .env("AF_SELF_OFFLINE", "1")
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{}", stderr(&output));
+    let config = root.path().join("config");
+    let (code, output) = in_terminal(
+        OsStr::new("/bin/sh"),
+        &[
+            OsStr::new("-c"),
+            OsStr::new(
+                "umask 0777; PATH=\"$3\" exec \"$1\" provider setup codex-main --kind codex --auth-dir \"$2\" --login",
+            ),
+            OsStr::new("sh"),
+            OsStr::new(env!("CARGO_BIN_EXE_af")),
+            auth.as_os_str(),
+            bin.as_os_str(),
+        ],
+        &[
+            ("HOME", root.path().as_os_str()),
+            ("XDG_CONFIG_HOME", config.as_os_str()),
+            ("AF_SELF_OFFLINE", OsStr::new("1")),
+        ],
+    );
+    assert_eq!(code, 0, "{output}");
     assert_eq!(
         std::fs::metadata(&auth).unwrap().permissions().mode() & 0o777,
         0o700
@@ -236,24 +369,20 @@ fi
 exit 64
 "#,
     );
-    let output = Command::new(env!("CARGO_BIN_EXE_af"))
-        .args([
-            "provider",
-            "setup",
+    let (code, output) = setup_in_terminal(
+        root.path(),
+        &bin,
+        &[
             "claude-main",
             "--kind",
             "claude",
             "--auth-dir",
             auth.to_str().unwrap(),
-        ])
-        .env("HOME", root.path())
-        .env("XDG_CONFIG_HOME", root.path().join("config"))
-        .env("PATH", bin)
-        .env("AF_SELF_OFFLINE", "1")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(stderr(&output).contains("no provider was registered"));
+        ],
+        &[],
+    );
+    assert_eq!(code, 6, "{output}");
+    assert!(output.contains("no provider was registered"), "{output}");
     assert!(!root.path().join("config/af/providers.toml").exists());
 }
 
@@ -504,29 +633,24 @@ exit 64
         threads.push(std::thread::spawn(move || {
             barrier.wait();
             let registry = home.join(format!("registry-{index}.toml"));
-            Command::new(env!("CARGO_BIN_EXE_af"))
-                .args([
-                    "provider",
-                    "setup",
+            setup_in_terminal(
+                &home,
+                &bin,
+                &[
                     "codex-main",
                     "--kind",
                     "codex",
                     "--auth-dir",
                     auth.to_str().unwrap(),
-                ])
-                .env("HOME", &home)
-                .env("XDG_CONFIG_HOME", home.join("config"))
-                .env("AF_PROVIDERS_FILE", registry)
-                .env("PATH", &bin)
-                .env("AF_SELF_OFFLINE", "1")
-                .output()
-                .unwrap()
+                ],
+                &[("AF_PROVIDERS_FILE", registry.as_os_str())],
+            )
         }));
     }
     barrier.wait();
     for thread in threads {
-        let output = thread.join().unwrap();
-        assert!(output.status.success(), "{}", stderr(&output));
+        let (code, output) = thread.join().unwrap();
+        assert_eq!(code, 0, "{output}");
     }
     for index in 0..2 {
         let registry =

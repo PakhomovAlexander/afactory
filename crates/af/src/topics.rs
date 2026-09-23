@@ -87,12 +87,25 @@ const EXIT_CODES: &str = "\
   4    incomplete — the run ended without a verdict (budget, timeout, missing coverage)
   10   outdated — `af self update --check`: a newer release exists
 
+`af provider` classifies its own refusals, so 3 and above name a Provider condition there:
+
+  3    human action required — a login is needed; af prints the exact command a human runs at a
+       private interactive terminal and never starts the OAuth exchange itself
+  4    Provider CLI missing — the official `claude` or `codex` binary is not on PATH
+  5    registry conflict — the ID or the auth context already belongs to another entry
+  6    authentication failed — the Provider CLI answered, and not with a usable login
+  7    usage unavailable — `provider status --usage` only: an authenticated Provider's optional
+       subscription or quota probe did not answer. Authentication is unaffected
+
 Under --json the same codes apply and the document on stdout carries the typed outcome.";
 
 const JSON: &str = "\
 stdout is the result, stderr is progress. With --json every reading command prints exactly one
 JSON document on stdout — no banner, no trailing text — so `af … --json | jq` always works.
-Errors under --json are one document on stdout with an `error` field and the same exit code.
+Errors under --json are one document on stdout with an `error` field and the same exit code. A
+command that classifies its own outcomes — `af provider status` and `af provider setup` — prints
+its own versioned document instead, carrying that exit code and an af-authored `diagnostic`;
+stderr still gets one diagnostic line, so discarding stdout never hides a refusal.
 
 Documents carry `kind@version` identifiers where they describe persisted records; a payload shape
 change bumps the version rather than reinterpreting an old one. Nothing af prints under --json is

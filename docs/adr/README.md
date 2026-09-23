@@ -191,4 +191,8 @@ future readers need.
   cold](0110-capture-sessions-in-two-phases-and-confirm-clean-rounds-cold.md)
 - [0111 — Keep Provider bootstrap machine-local and cross-release
   safe](0111-keep-provider-bootstrap-machine-local-and-cross-release-safe.md)
+- [0112 — Refuse agent-mediated Provider logins and separate status from
+  usage](0112-refuse-agent-mediated-provider-logins.md)
+- [0113 — Budget CLI Task fixtures for loaded machines, never for a fast
+  one](0113-budget-cli-task-fixtures-for-loaded-machines.md)
 - [0113 — GA reads only what GA writes](0113-ga-reads-only-what-ga-writes.md)

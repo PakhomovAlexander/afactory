@@ -49,7 +49,7 @@ BSDs: a source build on any of them stops with a compile error.
 ```sh
 af onboard                          # preview .af/ and the exact apply command; spends no tokens
 af onboard --runner codex --gate 'check=make check' --apply  # use the real Gate for this repository
-af provider setup codex-main --kind codex  # authenticate and register one explicit Provider
+af provider setup codex-main --kind codex --login  # log in at YOUR terminal, then register
 af provider status                 # verify registered and ambient Claude / Codex contexts
 af review plan --policy-rev origin/main --base origin/main --uncommitted \
   --provider correctness=codex-main --provider architecture=codex-main
@@ -61,9 +61,13 @@ af review run --campaign pr-123 --policy-rev origin/main --base origin/main --un
 never executes a Gate or a model, reads a credential, or overwrites existing policy. Its preview
 prints a copyable apply command carrying the exact detected or explicit Gate; replace `make check`
 above when the repository uses another deterministic acceptance command. `af provider setup`
-runs the Provider CLI's official interactive login when needed, verifies it, then writes only an
-ID, Provider kind, and auth-directory path to the machine-local registry; credentials remain owned
-by that CLI. Login starts from an empty allowlisted environment in an owned auth directory that is
+verifies the named auth directory and writes only an ID, Provider kind, and auth-directory path to
+the machine-local registry; credentials remain owned by that CLI. An already authenticated context
+needs no login. Starting one is opt-in with `--login` and happens only at an interactive terminal,
+because the OAuth URL and authorization code it prints are credentials in transit that must never
+reach a pipe, chat, an agent transcript, or logs; without both, setup exits 3 and prints the exact
+command for a human to run ([ADR-0112](docs/adr/0112-refuse-agent-mediated-provider-logins.md)).
+Login starts from an empty allowlisted environment in an owned auth directory that is
 not writable by other users, and one canonical auth context admits only one setup/login at a time.
 `setup` is machine-local and therefore does not dispatch to a repository's older pinned `af`;
 registry publication remains atomic for those older readers. `af provider add` registers an already
@@ -71,7 +75,11 @@ authenticated context without opening a login and applies the same auth-director
 If a crash leaves publication fenced, `af provider recover` validates the marker plus the live,
 candidate, and prior hashes before archiving it; it reports which version is live and retains both
 preserved copies. Recovery is machine-local and also bypasses an older project pin.
-Ambient IDs shown by `status` are discovery labels and cannot be selected directly. `af review
+Ambient IDs shown by `status` are discovery labels and cannot be selected directly. `af provider
+status` is a fast registry and authentication check; `--usage` adds the optional subscription and
+quota probe, whose failure exits 7 and never demotes an authenticated Provider, and `af provider
+doctor` remains the charged end-to-end check. Both `status` and `setup` take `--json` for a stable
+versioned document; see [docs/providers.md](docs/providers.md). `af review
 plan` resolves policy, Base, candidate, the exact Change Set, the selected route, Gates, budgets,
 and required Provider bindings without Campaign state, external calls, or tokens — the route line
 reads like `route    route => .af/pipelines/docs.toml (docs); 3 changed path(s)`. `af review run`
@@ -119,9 +127,9 @@ af review gc --older-than 14 --keep 5 --apply  # remove those Campaign directori
 ## Requirements
 
 - Git, and a Rust toolchain at or above 1.88 for source builds (`rust-toolchain.toml` pins it).
-- The `claude` and/or `codex` CLIs for model Workers. `af provider setup` owns interactive login,
-  verification, and registration in one command without reading credentials; `af provider status`
-  shows what each context can do. Command Workers need neither.
+- The `claude` and/or `codex` CLIs for model Workers. `af provider setup` verifies and registers a
+  context without reading credentials, and with `--login` runs that CLI's official login at your
+  terminal; `af provider status` shows what each context can do. Command Workers need neither.
 - Optional: an OCI container runtime (Docker or compatible) for `provider = "container"` Gates.
   Detection runs the runtime's own `info`; an unusable runtime is refused, never silently downgraded.
 - Optional: `minisign`, for verifying release signatures at install time.

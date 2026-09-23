@@ -94,7 +94,11 @@ are shorthand for `af review run`.",
         long_about = "Inspect and preflight the configured model providers.\n\n\
 Providers are named in the user configuration (`~/.config/af/providers.toml`); `status` reads \
 that registry and the machine's harness logins without contacting any model. `doctor` runs a \
-bounded, charged preflight for the bindings you name.",
+bounded, charged preflight for the bindings you name.\n\n\
+Results go to stdout (add --json to `status` and `setup` for versioned documents); progress, \
+warnings and diagnostics go to stderr. Exit codes across this namespace: 0 success, 1 \
+unclassified failure, 2 usage error, 3 human action required, 4 Provider CLI missing, 5 \
+registry conflict, 6 authentication failed, 7 optional usage unavailable.",
         after_long_help = "Examples:\n  af provider status\n  af provider setup codex-main --kind codex\n  af provider doctor --provider correctness=claude-code"
     )]
     Provider {
@@ -712,14 +716,38 @@ pub(crate) enum ChallengeKindArg {
 #[allow(clippy::large_enum_variant)]
 pub(crate) enum ProviderCommand {
     /// Show the provider registry and each harness login, without a model call
-    Status,
-    /// Authenticate and register one named machine-local Provider
     #[command(
-        long_about = "Authenticate and register one named machine-local Provider.\n\n\
-Uses the selected Provider CLI's official interactive login, verifies that the chosen auth \
-directory is authenticated, then records only its kind and path in the machine-local registry. \
-Credentials remain owned by the Provider CLI. Re-running setup for the same binding is safe.",
-        after_long_help = "Examples:\n  af provider setup codex-main --kind codex\n  af provider setup claude-work --kind claude --auth-dir /secure/claude-work"
+        long_about = "Show the provider registry and each harness login, without a model call.\n\n\
+Fast by default: the registry plus one bounded authentication check per context. Subscription \
+and quota probes are opt-in behind --usage, and an unavailable usage probe never demotes an \
+authenticated Provider — it exits 7 and says so. End-to-end usability stays with the charged \
+`af provider doctor`.\n\n\
+Exit codes: 0 fine, 7 optional usage unavailable.",
+        after_long_help = "Examples:\n  af provider status\n  af provider status --json\n  af provider status --usage"
+    )]
+    Status {
+        /// Emit the versioned `af/provider-status@1` document instead of the table
+        #[arg(long)]
+        json: bool,
+        /// Also probe subscription and quota windows (slower, and may be unavailable)
+        #[arg(long)]
+        usage: bool,
+    },
+    /// Register one named machine-local Provider, optionally opting in to its official login
+    #[command(
+        long_about = "Register one named machine-local Provider, optionally opting in to its \
+official login.\n\n\
+Verifies that the chosen auth directory is authenticated and records only its kind and path in \
+the machine-local registry; credentials remain owned by the Provider CLI. An already \
+authenticated context is registered without starting any login.\n\n\
+Without --login, a context that has no login is never logged in for you: setup prints the \
+human-action-required result and the exact command to run. With --login, setup starts the \
+official Provider CLI login only when this process owns an interactive terminal on stdin, \
+stdout and stderr, because the OAuth URL and authorization code that login prints are \
+credentials in transit and must never reach a pipe, chat, an agent transcript, or logs.\n\n\
+Exit codes: 0 registered, 3 human action required, 4 Provider CLI missing, 5 registry conflict, \
+6 authentication failed. Re-running setup for the same binding is safe.",
+        after_long_help = "Examples:\n  af provider setup codex-main --kind codex\n  af provider setup codex-main --kind codex --json\n  af provider setup claude-work --kind claude --auth-dir /secure/claude-work --login"
     )]
     Setup {
         /// Stable ID used by --provider NODE=ID
@@ -730,13 +758,21 @@ Credentials remain owned by the Provider CLI. Re-running setup for the same bind
         /// Auth directory (defaults to the active CLI directory)
         #[arg(long, value_name = "DIR")]
         auth_dir: Option<PathBuf>,
+        /// Opt in to starting the official Provider CLI login in this private terminal
+        #[arg(long)]
+        login: bool,
+        /// Emit the versioned non-interactive `af/provider-setup@1` document
+        #[arg(long, conflicts_with = "login")]
+        json: bool,
     },
     /// Register one named machine-local Provider auth context
     #[command(
         long_about = "Register one named machine-local Provider auth context.\n\n\
 The registry stores only the Provider kind and auth directory, never credentials. When \
 --auth-dir is omitted, af uses the active CLI directory (CLAUDE_CONFIG_DIR or ~/.claude; \
-CODEX_HOME or ~/.codex). Existing entries and duplicate auth contexts are never overwritten.",
+CODEX_HOME or ~/.codex). Existing entries and duplicate auth contexts are never overwritten, \
+and no login is ever started.\n\n\
+Exit codes: 0 registered, 5 registry conflict.",
         after_long_help = "Examples:\n  af provider add codex-main --kind codex\n  af provider add claude-work --kind claude --auth-dir /secure/claude-work"
     )]
     Add {
