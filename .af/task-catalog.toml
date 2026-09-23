@@ -69,8 +69,8 @@ digest = "sha256:b09d6c1fa7ca454fb3cd72718209112a4257679c26aebc9f3560b9ff31ed106
 path = ".af/task-packages/kernel/correctness"
 
 [packages."kernel/bugs"]
-version = "1.1.0"
-digest = "sha256:3744c51c2fa51c941458e58c5b797f7010d40f5c75284a46cdea87e729f23f31"
+version = "1.2.0"
+digest = "sha256:a03e3db75ffac29d52f6a99a01e0d6c8a4349d6b457b2a6d6811edfe36becce0"
 path = ".af/task-packages/kernel/bugs"
 
 [packages."kernel/evaluator"]

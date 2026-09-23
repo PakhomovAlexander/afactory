@@ -1,6 +1,6 @@
 schema = "af.worker/1"
 name = "kernel/bugs"
-version = "1.1.0"
+version = "1.2.0"
 
 [signature]
 effects = ["read-source"]
@@ -87,5 +87,5 @@ wall_ms = 1800000
 [runner]
 kind = "model"
 provider_kind = "codex"
-model = "gpt-6-terra"
+model = "gpt-5.6-terra"
 effort = "high"
