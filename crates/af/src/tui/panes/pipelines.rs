@@ -127,20 +127,29 @@ impl PipelinesPane {
                 let title = format!("{heading}  [review pipeline]");
                 rows.push(Row::painted(title, Paint::Title));
                 rows.push(Row::blank());
-                let why = "A review Pipeline is planned against a diff, not a Task:";
-                rows.push(Row::plain(why));
-                rows.push(Row::plain(format!(
-                    "  af review plan --pipeline {}",
-                    entry.id
-                )));
+                let why = "A review Pipeline is planned against a diff selector the browser \
+                           does not hold; its declaration, as committed:";
+                rows.push(Row::painted(why, Paint::Muted));
+                rows.push(Row::painted(
+                    format!("  af review plan --pipeline {}", entry.id),
+                    Paint::Muted,
+                ));
+                rows.push(Row::blank());
+                let text = std::fs::read_to_string(&entry.path).unwrap_or_default();
+                rows.extend(text.lines().map(Row::plain));
             }
             (Source::Package { .. }, Some(Ok(preview))) => {
                 rows.extend(preview.text.lines().map(Row::plain));
             }
             (Source::Package { .. }, Some(Err(error))) => {
+                // The compiler refused the preview Task: a package with required facts or
+                // public inputs cannot be planned from an invented Task. Its public contract is
+                // what the browser can show without inventing business inputs.
                 rows.push(Row::painted(heading, Paint::Title));
                 rows.push(Row::blank());
                 rows.extend(error.lines().map(|line| Row::painted(line, Paint::Error)));
+                rows.push(Row::blank());
+                rows.extend(contract_rows(&declared(&entry.path)));
             }
             (Source::Package { .. }, None) => {
                 let spinner = SPINNER[self.spinner % SPINNER.len()];
@@ -275,7 +284,7 @@ fn discover(root: &Path) -> Vec<Entry> {
     }
     let packages = root.join(".af/task-packages");
     let mut found = Vec::new();
-    find_packages(&packages, 0, &mut found);
+    find_packages(&packages, &mut found);
     found.sort();
     for path in found {
         let value = declared(&path);
@@ -301,6 +310,60 @@ fn discover(root: &Path) -> Vec<Entry> {
     entries
 }
 
+/// The public contract a pipeline package declares: what it accepts, takes and produces.
+fn contract_rows(value: &Value) -> Vec<Row> {
+    let mut rows = vec![Row::painted(
+        "CONTRACT  declared by the package",
+        Paint::Title,
+    )];
+    let accepts = value.get("accepts");
+    let kinds: Vec<&str> = accepts
+        .and_then(|accepts| accepts.get("kinds"))
+        .and_then(Value::as_array)
+        .map(|kinds| kinds.iter().filter_map(Value::as_str).collect())
+        .unwrap_or_default();
+    rows.push(Row::plain(format!("accepts   kinds {}", kinds.join(", "))));
+    if let Some(facts) = accepts
+        .and_then(|accepts| accepts.get("required_facts"))
+        .and_then(Value::as_table)
+        && !facts.is_empty()
+    {
+        let names: Vec<&str> = facts.keys().map(String::as_str).collect();
+        rows.push(Row::plain(format!(
+            "          required facts {}",
+            names.join(", ")
+        )));
+    }
+    for (port, label) in [("inputs", "IN"), ("outputs", "OUT")] {
+        let Some(ports) = value
+            .get("contract")
+            .and_then(|contract| contract.get(port))
+            .and_then(Value::as_table)
+        else {
+            continue;
+        };
+        for (name, declared) in ports {
+            let artifact = declared
+                .get("artifact_type")
+                .and_then(Value::as_str)
+                .unwrap_or("?");
+            let optional = declared
+                .get("optional")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let cardinality = declared
+                .get("cardinality")
+                .and_then(Value::as_str)
+                .unwrap_or("one");
+            let note = if optional { "  optional" } else { "" };
+            rows.push(Row::plain(format!(
+                "{label:<4}      {name}: {artifact} ({cardinality}){note}"
+            )));
+        }
+    }
+    rows
+}
+
 /// A pipeline file read leniently: one that does not parse still lists, and its preview reports
 /// the compiler's own refusal.
 fn declared(path: &Path) -> Value {
@@ -321,8 +384,9 @@ fn toml_files(dir: &Path) -> Vec<PathBuf> {
     paths
 }
 
-/// Every `pipeline.toml` below `dir`, a few levels deep, without following symlinks.
-fn find_packages(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
+/// Every `pipeline.toml` below `dir`, however deep, without following symlinks. A directory
+/// that holds one is still walked: a package may nest another.
+fn find_packages(dir: &Path, found: &mut Vec<PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -334,13 +398,62 @@ fn find_packages(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
         let pipeline = path.join("pipeline.toml");
         if pipeline.is_file() {
             found.push(pipeline);
-        } else if depth < 4 {
-            find_packages(&path, depth + 1, found);
         }
+        find_packages(&path, found);
     }
 }
 
 fn relative(root: &Path, path: &Path) -> String {
     let relative = path.strip_prefix(root).unwrap_or(path);
     relative.display().to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_pipeline_package_is_found_however_nested() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let packages = root.join(".af/task-packages");
+        // A package nested inside another, and one seven directories deep.
+        for dir in ["a", "a/b", "d1/d2/d3/d4/d5/d6/d7"] {
+            let dir = packages.join(dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(
+                dir.join("pipeline.toml"),
+                "name = \"x\"\n[accepts]\nkinds = [\"implement\"]\n",
+            )
+            .unwrap();
+        }
+        let ids: Vec<String> = discover(root).into_iter().map(|entry| entry.id).collect();
+        assert_eq!(
+            ids,
+            [
+                ".af/task-packages/a/b/pipeline.toml",
+                ".af/task-packages/a/pipeline.toml",
+                ".af/task-packages/d1/d2/d3/d4/d5/d6/d7/pipeline.toml",
+            ]
+        );
+    }
+
+    #[test]
+    fn a_refused_preview_still_shows_the_declared_contract() {
+        let value: Value = toml::from_str(
+            "[accepts]\nkinds = [\"implement\"]\n[accepts.required_facts.standard]\n\
+             kind = \"boolean\"\n[contract.inputs.source]\nartifact_type = \"af/SourceTree@1\"\n\
+             cardinality = \"one\"\noptional = false\n[contract.outputs.snapshot]\n\
+             artifact_type = \"af/SourceTree@1\"\ncardinality = \"one\"\noptional = true\n",
+        )
+        .unwrap();
+        let rows: Vec<String> = contract_rows(&value).iter().map(Row::text).collect();
+        assert_eq!(rows[1], "accepts   kinds implement");
+        assert_eq!(rows[2], "          required facts standard");
+        assert_eq!(rows[3], "IN        source: af/SourceTree@1 (one)");
+        assert_eq!(
+            rows[4],
+            "OUT       snapshot: af/SourceTree@1 (one)  optional"
+        );
+    }
 }

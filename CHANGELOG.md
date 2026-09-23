@@ -29,7 +29,7 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   slot's Worker binding. The Workers and Tasks panes arrive in later packages. `:` lines are
   parsed by the CLI's own clap definition. The terminal runs through `rustix::termios`, an
   existing dependency, instead of the planned `crossterm`. No `--json` document, schema or
-  fixture changes.
+  fixture changes. Discovery under `.af/task-packages/` walks every real directory, however deep, and keeps walking below a package. Escape sequences split across terminal reads decode whole (`tui::keymap::Decoder`), and a lone `ESC` is Escape only after a read brought nothing. Outside a repository the user scope never opens a directory layer, so a broken `.af/af.toml` above a plain directory cannot block it. `af --repo DIR` with no subcommand is exempt from pin dispatch like bare `af`. A package the kernel refuses to plan shows its declared contract; a review Pipeline shows its committed declaration.
 - Let a review Worker that declares `execute-checks` build and drive the candidate (ADR-0118). A
   model Worker whose `roles` contain `review` and whose effects are
   `["read-source", "execute-checks"]` now runs in the same `Mode::EphemeralWrite` clone that

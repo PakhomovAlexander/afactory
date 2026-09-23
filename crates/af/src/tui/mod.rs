@@ -117,6 +117,7 @@ fn run(app: &mut App, session: &mut term::Session) -> Result<(), String> {
     let mut shown = Vec::new();
     let mut size = (0, 0);
     let mut buffer = [0_u8; 512];
+    let mut decoder = keymap::Decoder::default();
     loop {
         let now = session.size();
         if session.take_dirty() || now != size {
@@ -130,7 +131,12 @@ fn run(app: &mut App, session: &mut term::Session) -> Result<(), String> {
             return Ok(());
         }
         let count = session.read(&mut buffer)?;
-        for key in keymap::decode(&buffer[..count]) {
+        let keys = if count == 0 {
+            decoder.flush()
+        } else {
+            decoder.feed(&buffer[..count])
+        };
+        for key in keys {
             if let Some(effect) = app.key(key) {
                 app.apply(effect, session);
             }

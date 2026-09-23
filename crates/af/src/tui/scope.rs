@@ -29,6 +29,17 @@ impl Scope {
     /// `dir`, or the current directory, inside a repository is that project's scope; anywhere
     /// else is the user scope.
     pub(crate) fn resolve(dir: Option<&Path>) -> Result<Scope, String> {
+        // Outside a repository the user scope reads the machine-owned layers only, so a
+        // directory layer above the start, valid or not, is never opened for it.
+        let start = match dir {
+            Some(dir) => dir.to_path_buf(),
+            None => {
+                std::env::current_dir().map_err(|error| format!("current directory: {error}"))?
+            }
+        };
+        if config::git_toplevel(&start).is_none() {
+            return Scope::user();
+        }
         let config = config::load(dir)?;
         match config.toplevel.clone() {
             Some(toplevel) => Ok(Scope::project(toplevel, config)),
@@ -106,5 +117,23 @@ impl Scope {
             Some(relative) => format!("~/{}", relative.display()),
             None => path.display().to_string(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_broken_directory_layer_above_a_plain_directory_does_not_block_the_user_scope() {
+        let temp = tempfile::tempdir().unwrap();
+        let above = temp.path().join("above");
+        let plain = above.join("plain");
+        std::fs::create_dir_all(plain.join("deeper")).unwrap();
+        std::fs::create_dir_all(above.join(".af")).unwrap();
+        std::fs::write(above.join(".af/af.toml"), "this = is not [toml\n").unwrap();
+        let scope = Scope::resolve(Some(&plain.join("deeper"))).unwrap();
+        assert_eq!(scope.kind, ScopeKind::User);
+        assert!(scope.toplevel().is_none());
     }
 }

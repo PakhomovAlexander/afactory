@@ -179,10 +179,16 @@ PIPE  review@1.0.0 (.af/pipelines/review.toml)  [configured]
     '-- gates: checks/test.sh
 ```
 
-Selecting a pipeline with no captured Task compiles a plan the token-free way `af task plan`
-does and renders that; selecting a Task's pipeline from the Tasks pane shows the captured
-`ExecutionPlan`. `j`/`k` highlight a row; the status line shows its slot binding and provider.
-The ASCII DAG from the review TUI is not carried over; it can return as a `:set dag` view later.
+Selecting a pipeline package with no captured Task compiles a plan the token-free way `af task
+plan` does and renders that text; the two renders agree line for line except the identity lines
+(`PLAN`, `TIME`, `--confirm-plan`), which carry a fresh plan identity and deadline on every
+compilation. A package whose compilation the kernel refuses (required facts or public inputs
+the preview Task cannot invent) shows the refusal and the package's declared contract instead.
+A review Pipeline under `.af/pipelines/` is planned against a diff selector the browser does not
+hold, so its pane shows the committed declaration and the `af review plan` command, not a plan
+tree. Selecting a Task's pipeline from the Tasks pane shows the captured `ExecutionPlan`. `j`/`k`
+highlight a row; the status line shows its slot binding and provider. The ASCII DAG from the
+review TUI is not carried over; it can return as a `:set dag` view later.
 
 ### 5.5 Tasks
 
@@ -239,7 +245,8 @@ crates/af/src/tui/
   paint.rs      paint / paint_spans / Paint palette
 ```
 
-Rendering stays on plain `crossterm` (re-added to the `af` crate; PR #114 dropped it with the old TUI); a widget library is not
+Rendering needs no new crate: the terminal session is `rustix` termios (already a dependency
+of the `af` crate) on `/dev/tty`, with the escape sequences written by hand (ADR-0119); a widget library is not
 worth a new dependency for five list-and-detail panes. Each pane implements one trait:
 
 ```rust

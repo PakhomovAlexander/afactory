@@ -25,10 +25,50 @@ pub(crate) enum Key {
     PageDown,
 }
 
-/// Decode the bytes one terminal read returned. Escape sequences arrive whole in one read, so
-/// an `ESC` that ends the chunk is the Escape key. Bytes outside printable ASCII that name no
-/// key are dropped: nothing but printable ASCII ever reaches a prompt.
+/// Decode terminal bytes across reads. A terminal read does not promise a whole escape
+/// sequence: an Up arrow may arrive as `ESC` in one read and `[A` in the next, so an
+/// incomplete sequence at the end of a chunk waits for the next chunk, and a lone `ESC` is the
+/// Escape key only once a read returned nothing after it. Bytes outside printable ASCII that
+/// name no key are dropped: nothing but printable ASCII ever reaches a prompt.
+#[derive(Debug, Default)]
+pub(crate) struct Decoder {
+    /// An escape sequence the last chunk ended inside, `ESC` included.
+    pending: Vec<u8>,
+}
+
+impl Decoder {
+    /// The keys one read's bytes complete, with any earlier partial sequence in front.
+    pub(crate) fn feed(&mut self, bytes: &[u8]) -> Vec<Key> {
+        let mut input = std::mem::take(&mut self.pending);
+        input.extend_from_slice(bytes);
+        let (keys, rest) = decode_prefix(&input);
+        self.pending = rest;
+        keys
+    }
+
+    /// A read that returned nothing: a pending lone `ESC` was the Escape key; an unfinished
+    /// longer sequence named nothing.
+    pub(crate) fn flush(&mut self) -> Vec<Key> {
+        let pending = std::mem::take(&mut self.pending);
+        if pending == [0x1b] {
+            vec![Key::Esc]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// Decode one chunk that is known to be complete: a lone `ESC` at its end is Escape.
+#[cfg(test)]
 pub(crate) fn decode(bytes: &[u8]) -> Vec<Key> {
+    let mut decoder = Decoder::default();
+    let mut keys = decoder.feed(bytes);
+    keys.extend(decoder.flush());
+    keys
+}
+
+/// Every key the bytes complete, and the trailing bytes of a sequence they do not.
+fn decode_prefix(bytes: &[u8]) -> (Vec<Key>, Vec<u8>) {
     let mut keys = Vec::new();
     let mut index = 0;
     while index < bytes.len() {
@@ -36,14 +76,16 @@ pub(crate) fn decode(bytes: &[u8]) -> Vec<Key> {
         index += 1;
         let key = match byte {
             0x1b => match bytes.get(index).copied() {
+                None => return (keys, vec![0x1b]),
                 Some(intro) if intro == b'[' || intro == b'O' => {
+                    let sequence_start = index - 1;
                     index += 1;
                     let start = index;
                     while index < bytes.len() && !(0x40..=0x7e).contains(&bytes[index]) {
                         index += 1;
                     }
                     let Some(&last) = bytes.get(index) else {
-                        continue;
+                        return (keys, bytes[sequence_start..].to_vec());
                     };
                     index += 1;
                     let parameters = &bytes[start..index - 1];
@@ -63,7 +105,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Vec<Key> {
                         _ => continue,
                     }
                 }
-                _ => Key::Esc,
+                Some(_) => Key::Esc,
             },
             b'\r' | b'\n' => Key::Enter,
             b'\t' => Key::Tab,
@@ -74,7 +116,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Vec<Key> {
         };
         keys.push(key);
     }
-    keys
+    (keys, Vec::new())
 }
 
 /// What a NORMAL-mode key or key sequence asks for.
@@ -374,6 +416,25 @@ mod tests {
         // A lone ESC is the Escape key; non-ASCII bytes and unknown sequences name nothing.
         assert_eq!(decode(b"\x1b"), vec![Key::Esc]);
         assert_eq!(decode("\u{e9}\x1b[99x".as_bytes()), Vec::<Key>::new());
+    }
+
+    #[test]
+    fn escape_sequences_split_across_reads_still_decode() {
+        // `ESC` then `[A` in the next read is one Up arrow, not Escape and two characters.
+        let mut decoder = Decoder::default();
+        assert_eq!(decoder.feed(b"j\x1b"), vec![Key::Char('j')]);
+        assert_eq!(decoder.feed(b"[A"), vec![Key::Up]);
+        // A CSI split after its parameter bytes.
+        assert_eq!(decoder.feed(b"\x1b[5"), Vec::<Key>::new());
+        assert_eq!(decoder.feed(b"~k"), vec![Key::PageUp, Key::Char('k')]);
+        // A lone ESC is Escape only once a read brought nothing after it.
+        assert_eq!(decoder.feed(b"\x1b"), Vec::<Key>::new());
+        assert_eq!(decoder.flush(), vec![Key::Esc]);
+        // An unfinished longer sequence names nothing when the input stops.
+        assert_eq!(decoder.feed(b"\x1b["), Vec::<Key>::new());
+        assert_eq!(decoder.flush(), Vec::<Key>::new());
+        // ESC followed by an ordinary key in the same read is Escape, then that key.
+        assert_eq!(decoder.feed(b"\x1bq"), vec![Key::Esc, Key::Char('q')]);
     }
 
     #[test]
