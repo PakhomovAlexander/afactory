@@ -276,7 +276,7 @@ Tests: keymap sequences, tree folding and search, and one golden render per pane
 ## 7a. Review
 
 Every package is reviewed by `kernel/review-light`: `correctness` and `bugs` read the source, and
-`kernel/uix` (Claude, opus 5.5, high) builds `af`, writes its own pseudo-terminal harness under
+`kernel/uix` (Codex, gpt-6-sol, high; a reviewer cannot share the implementer's Claude principal) builds `af`, writes its own pseudo-terminal harness under
 `target/uix-harness/`, drives the shipped panes key by key at 100x30 and 80x24, and compares each
 captured screen with §3-§5 and with the CLI output the pane mirrors. Its findings quote the key
 sequence, the captured screen and the expected one; a refused build or shell is a `block`, never a
