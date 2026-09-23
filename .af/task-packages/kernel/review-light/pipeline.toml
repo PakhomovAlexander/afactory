@@ -1,7 +1,7 @@
 schema = "af.pipeline/1"
 name = "kernel/review-light"
 version = "1.1.0"
-max_attempts = 5
+max_attempts = 8
 max_parallel = 3
 
 [contract.inputs.base]

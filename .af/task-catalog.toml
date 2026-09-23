@@ -85,12 +85,12 @@ path = ".af/task-packages/kernel/uix"
 
 [packages."kernel/review-light"]
 version = "1.1.0"
-digest = "sha256:1b4428bcc877cdd554599e85e32a55e65df94bef4d509b7e0bed7e3d74a0d504"
+digest = "sha256:3c398924b6583adde3438b95530799776456d7c52c4e15d278ed56b68f7fe6cb"
 path = ".af/task-packages/kernel/review-light"
 
 [packages."kernel/implementation-reviewed"]
-version = "1.0.0"
-digest = "sha256:71eb5a492b410fecb97c5cc1eb002a3921ecaa106804961b200d210d7398250f"
+version = "1.1.0"
+digest = "sha256:a5c9033413d1a5307b7dd25b8a7ac53d65e3c07d9d7be058c228e9cf71d6268d"
 path = ".af/task-packages/kernel/implementation-reviewed"
 
 [packages."kernel/verification"]
