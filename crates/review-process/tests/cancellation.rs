@@ -30,12 +30,28 @@ fn gone(pid: i32) -> bool {
     nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None) == Err(nix::errno::Errno::ESRCH)
 }
 
+/// Exited, whether or not reaped yet. The supervisor deliberately leaves the leader a zombie
+/// until every group kill is done, so its pid stays reserved; `ps` reports that state as `Z`.
+fn exited(pid: i32) -> bool {
+    if gone(pid) {
+        return true;
+    }
+    Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .is_ok_and(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .trim_start()
+                .starts_with('Z')
+        })
+}
+
 fn dead(pid: i32) -> bool {
     if gone(pid) {
         return true;
     }
     // An orphan may briefly remain a zombie until init reaps it. It cannot execute or hold
-    // a pipe; the direct child, separately asserted gone, is reaped by the owned waiter.
+    // a pipe; the direct child, separately asserted gone, is reaped last by the supervisor.
     #[cfg(target_os = "linux")]
     if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) {
         return stat
@@ -107,7 +123,7 @@ fn cancellation_retains_prefixes_and_stops_running_stdin_and_each_held_drain() {
                             .filter_map(|n| n.parse::<i32>().ok())
                             .collect();
                     }
-                    if ids.len() == 2 && (mode == "running" || gone(ids[0])) {
+                    if ids.len() == 2 && (mode == "running" || exited(ids[0])) {
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(10));
@@ -118,7 +134,10 @@ fn cancellation_retains_prefixes_and_stops_running_stdin_and_each_held_drain() {
                     "fixture must execute before cancellation: {mode}"
                 );
                 if mode != "running" {
-                    assert!(gone(ids[0]), "must cancel after leader reaping: {mode}");
+                    assert!(
+                        exited(ids[0]),
+                        "must cancel after the leader exited: {mode}"
+                    );
                 }
                 assert!(
                     !dead(ids[1]),

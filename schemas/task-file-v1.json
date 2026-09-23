@@ -32,6 +32,47 @@
       "type": "object",
       "minProperties": 1
     },
+    "inputs": {
+      "$comment": "Optional root input bindings (ADR-0117). Absent by default; a Task file written before this decision compiles to the identical revision. The bindable ports are source, history and sources; requirements, base, continuation and any other name are refused by name at plan time, not here, so the refusal can say which Task and port asked for them.",
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "task",
+              "port"
+            ],
+            "properties": {
+              "task": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+              },
+              "port": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "artifact"
+            ],
+            "properties": {
+              "artifact": {
+                "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+              }
+            }
+          }
+        ]
+      }
+    },
     "document_sources": {
       "type": "string",
       "minLength": 1,

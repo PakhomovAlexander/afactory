@@ -21,6 +21,29 @@ pub(crate) fn find(name: &str) -> Option<&'static (&'static str, &'static str, &
     TOPICS.iter().find(|(topic, _, _)| *topic == name)
 }
 
+/// One topic's body. The configuration page ends with the declared `.af/` layout, rendered from
+/// `review_config::layout` rather than stored a second time here: that table, the one in
+/// the documentation and every classification are the same data.
+pub(crate) fn body(topic: &str, text: &str) -> String {
+    if topic != "config" {
+        return text.to_string();
+    }
+    format!(
+        "{text}\n\nWhat `.af/` holds\n\n{}\n{}\n\n{UNDECLARED}",
+        review_config::layout::render_table(),
+        review_config::layout::ELSEWHERE,
+    )
+}
+
+/// What the same table says about a captured Snapshot, and the one knob over it.
+const UNDECLARED: &str = "\
+`af task plan` and `af task start` classify the Snapshot they captured against that table and
+warn about any path under `.af/` no entry names, with the count, the byte total and up to ten
+paths; `--json` carries the whole list in `undeclared_af_paths`, and `af task deliver` records it
+in the receipt. Nothing is removed: not from the Snapshot, not from the delivered worktree. Set
+`[delivery] undeclared_af_paths = \"refuse\"` in `.af/af.toml` to make delivery stop instead,
+before it prepares a record or touches git. The value is captured when a Task is planned.";
+
 const CONFIG: &str = "\
 Everything a human writes is TOML; everything af writes goes to the Store, except `.af/af.lock`
 (machine-written TOML, committed, like Cargo.lock).

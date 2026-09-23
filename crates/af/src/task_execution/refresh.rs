@@ -166,11 +166,11 @@ pub(crate) fn refresh(
         .put_json(&json!({"schema":"af.task-file-adapter/1",
         "source_file_id":original.file_id,"source_capture_id":fresh.capture_id}))
         .map_err(|e| e.to_string())?;
-    revision.provenance.input_artifact_ids = revision
-        .inputs
-        .values()
-        .flat_map(|p| p.artifact_ids.iter().cloned())
-        .collect();
+    // Only the requirements artifact is replaced. Every other record the provenance carried that
+    // no port carries — the `af/TaskInputBindings@1` record of a bound Task above all — survives
+    // the new revision, and the Store's refresh validator derives the same list (ADR-0117).
+    let provenance = review_store::store::task::revision_provenance_inputs(&cas, &revision);
+    revision.provenance.input_artifact_ids = provenance;
     revision.validate()?;
     let lease = store
         .take_task_lease(&cas, id, &format!("cli-{}", std::process::id()), 15_000)

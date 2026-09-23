@@ -1,6 +1,7 @@
 //! Typed `.af/af.toml` policy shared by onboarding, review, and Task bootstrap.
 
 use review_config::Loaded;
+use review_config::layout::UndeclaredAfPathsPolicy;
 use review_config::lock::Lockfile;
 use semver::Version;
 use serde::Deserialize;
@@ -11,6 +12,11 @@ pub struct ProjectFile {
     version: u32,
     project: Project,
     defaults: Defaults,
+    /// What delivery does about paths the declared `.af/` layout does not name. Admitted here
+    /// so the full-file parse validates the table; capture reads it through `parse_delivery`.
+    #[serde(default)]
+    #[allow(dead_code)]
+    delivery: Delivery,
     /// How changed paths select a pipeline, and what happens when no route or too many match.
     #[serde(default)]
     routing: Option<Routing>,
@@ -107,7 +113,23 @@ struct Defaults {
     pipeline: String,
 }
 
+/// `[delivery]` — what an explicit local delivery does about the project's own authority tree.
+/// Optional in every direction: a project that says nothing keeps the advisory default.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Delivery {
+    #[serde(default)]
+    undeclared_af_paths: UndeclaredAfPathsPolicy,
+}
+
 impl ProjectFile {
+    /// The delivery policy the full-file parse admitted; the unit tests read it here, while
+    /// capture reads the same table through `parse_delivery`.
+    #[cfg(test)]
+    pub fn undeclared_af_paths(&self) -> UndeclaredAfPathsPolicy {
+        self.delivery.undeclared_af_paths
+    }
+
     pub fn parse(text: &str) -> Result<Self, String> {
         let project: Self = toml::from_str(text)
             .map_err(|error| format!("authority project `.af/af.toml`: {error}"))?;
@@ -227,6 +249,23 @@ impl ProjectFile {
                 )),
             },
         }
+    }
+
+    /// Read `[delivery]` on its own, out of a captured `.af/af.toml`.
+    ///
+    /// A Task captures this policy at plan time from its Authority Snapshot, before anything has
+    /// admitted the whole project file, and must not start requiring more of that file than it
+    /// did: unknown *tables* are ignored here, because [`ProjectFile::parse`] is what admits
+    /// them. An unknown key inside `[delivery]` is still an error, never a silent setting.
+    pub fn parse_delivery(text: &str) -> Result<UndeclaredAfPathsPolicy, String> {
+        #[derive(Deserialize)]
+        struct DeliveryOnly {
+            #[serde(default)]
+            delivery: Delivery,
+        }
+        let read: DeliveryOnly = toml::from_str(text)
+            .map_err(|error| format!("authority project `.af/af.toml` [delivery]: {error}"))?;
+        Ok(read.delivery.undeclared_af_paths)
     }
 
     pub fn review_pipeline(&self) -> &str {
@@ -403,6 +442,8 @@ pub(crate) fn max_simultaneous_reservation(loaded: &Loaded) -> Result<Option<u64
 
 #[cfg(test)]
 mod tests {
+    use review_config::layout::UndeclaredAfPathsPolicy;
+
     use super::{ProjectFile, glob_matches};
 
     fn project(extra: &str, min_af: &str) -> String {
@@ -427,6 +468,29 @@ mod tests {
         ] {
             let error = ProjectFile::parse(&project(extra, "0.6")).unwrap_err();
             assert!(error.contains("unknown field"), "{error}");
+        }
+    }
+
+    #[test]
+    fn the_delivery_policy_is_optional_and_a_typo_in_it_is_an_error() {
+        let silent = ProjectFile::parse(&project("", "0.6")).unwrap();
+        assert_eq!(silent.undeclared_af_paths(), UndeclaredAfPathsPolicy::Warn);
+        let table = "[delivery]\nundeclared_af_paths = \"refuse\"\n";
+        let strict = ProjectFile::parse(&project(table, "0.6")).unwrap();
+        let refuse = UndeclaredAfPathsPolicy::Refuse;
+        assert_eq!(strict.undeclared_af_paths(), refuse);
+        // The same value read on its own, the way a Task captures it: the rest of the file is
+        // somebody else's business, but this table is still admitted exactly.
+        assert_eq!(ProjectFile::parse_delivery(table).unwrap(), refuse);
+        assert_eq!(ProjectFile::parse_delivery("").unwrap().as_str(), "warn");
+        let alone = "[unrelated]\nkey = 1\n";
+        assert_eq!(ProjectFile::parse_delivery(alone).unwrap().as_str(), "warn");
+        for bad in [
+            "[delivery]\nundeclared_af_path = \"refuse\"\n",
+            "[delivery]\nundeclared_af_paths = \"strip\"\n",
+        ] {
+            assert!(ProjectFile::parse_delivery(bad).is_err(), "{bad}");
+            assert!(ProjectFile::parse(&project(bad, "0.6")).is_err(), "{bad}");
         }
     }
 

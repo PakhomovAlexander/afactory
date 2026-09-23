@@ -64,6 +64,7 @@ expanded tree, Claude/Codex workflow and the automation boundary.
 Start with the Task-file walkthrough, then follow the composition pages in order.
 
 - [Task file](task-execution/task-file.md) — plan, explain, run, show, list and deliver a captured Task; state outside the checkout; exit codes.
+- [Task input bindings](task-execution/task-inputs.md) — the `inputs` table that binds a root port to a recorded Task's output, its plan-time resolution, and where it is implemented.
 - [Model bindings](task-execution/model-bindings.md) — native Claude/Codex Workers, Provider registry labels, token-free identity capture, paid capability admission, usage retention and cancellation.
 - [Local bindings](task-execution/local-bindings.md) — per-developer `af.task-bindings/1` files that replace Workers without weakening policy.
 - [Selection](task-execution/selection.md) — choosing a captured Pipeline before any Planner call; fallback, ranking and persisted refusal reasons.

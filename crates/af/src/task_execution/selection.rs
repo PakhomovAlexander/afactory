@@ -42,6 +42,15 @@ struct SelectedAdapter {
     request_revision_id: String,
 }
 
+/// Every port's artifact identity, plus the one record no port carries that a revision must
+/// keep: the `af/TaskInputBindings@1` record of a Task file's `inputs` table (ADR-0117). The
+/// Store derives the same list when it validates a refreshed revision. A Task without bindings
+/// keeps byte for byte the list of port identities it has always had, whatever else its adapter
+/// recorded beside them.
+fn provenance_input_artifact_ids(cas: &Cas, revision: &TaskRevisionV1) -> Vec<String> {
+    review_store::store::task::revision_provenance_inputs(cas, revision)
+}
+
 pub(super) fn capture_revision(cas: &Cas, revision: &TaskRevisionV1) -> Result<String, String> {
     revision.validate()?;
     cas.put_artifact(
@@ -139,11 +148,7 @@ pub(super) fn assess(
     mut request: TaskRevisionV1,
     capacity: Option<&TaskLimitsV1>,
 ) -> Result<SelectionAssessment, String> {
-    request.provenance.input_artifact_ids = request
-        .inputs
-        .values()
-        .flat_map(|port| port.artifact_ids.iter().cloned())
-        .collect();
+    request.provenance.input_artifact_ids = provenance_input_artifact_ids(cas, &request);
     let request_id = capture_revision(cas, &request)?;
     let requested = request.pipeline.as_ref();
     let empty = BTreeMap::new();
@@ -167,11 +172,7 @@ pub(super) fn assess(
                     reason: resources.join("; "),
                 };
             }
-            revision.provenance.input_artifact_ids = revision
-                .inputs
-                .values()
-                .flat_map(|port| port.artifact_ids.iter().cloned())
-                .collect();
+            revision.provenance.input_artifact_ids = provenance_input_artifact_ids(cas, &revision);
             let revision_id = match capture_revision(cas, &revision) {
                 Ok(id) => id,
                 Err(reason) => return CandidateState::Invalid { reason },
@@ -319,6 +320,50 @@ pub(super) fn recorded(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Task whose adapter recorded an observation no port carries — ADR-0116's
+    /// `af/UndeclaredAfPaths@1`, written for a source-less profile — keeps the provenance list
+    /// it had before bindings existed, so its revision bytes, and with them its revision ID,
+    /// its plan and every inspection document, are exactly what they were. Only the binding
+    /// record is preserved beside the port identities.
+    #[test]
+    fn only_a_binding_record_is_preserved_beside_the_port_identities() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path()).unwrap();
+        let mut revision: TaskRevisionV1 = serde_json::from_str(include_str!(
+            "../../../../fixtures/task-contracts/v1/task-revision.json"
+        ))
+        .unwrap();
+        let put = |kind: &str| {
+            let payload = json!({"fixture": kind});
+            let stored = cas.put_artifact(kind, producer(), vec![], None, payload);
+            stored.unwrap().0
+        };
+        let ports: Vec<String> = revision
+            .inputs
+            .values()
+            .flat_map(|port| port.artifact_ids.iter().cloned())
+            .collect();
+        // Exactly what this adapter wrote before bindings existed: the port identities alone.
+        let mut unchanged = revision.clone();
+        unchanged.provenance.input_artifact_ids = ports.clone();
+        let expected = serde_json::to_vec(&unchanged).unwrap();
+
+        let undeclared = put(UNDECLARED_AF_PATHS_V1);
+        let blob = cas
+            .put(b"an opaque engine blob is not a typed record")
+            .unwrap();
+        let absent = format!("sha256:{}", "7".repeat(64));
+        revision.provenance.input_artifact_ids = vec![undeclared.clone(), blob, absent];
+        revision.provenance.input_artifact_ids = provenance_input_artifact_ids(&cas, &revision);
+        assert_eq!(revision.provenance.input_artifact_ids, ports);
+        assert_eq!(serde_json::to_vec(&revision).unwrap(), expected);
+
+        let record = put(review_core::task::input_bindings::TASK_INPUT_BINDINGS_V1);
+        revision.provenance.input_artifact_ids = vec![undeclared, record.clone()];
+        let kept = provenance_input_artifact_ids(&cas, &revision);
+        assert_eq!(kept, [ports, vec![record]].concat());
+    }
 
     #[test]
     fn optional_selection_preserves_opaque_provenance_and_rejects_invalid_selected_metadata() {

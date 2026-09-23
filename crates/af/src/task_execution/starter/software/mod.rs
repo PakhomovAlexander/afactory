@@ -1175,6 +1175,7 @@ pub(super) fn files(developer_key: Option<String>) -> Result<BTreeMap<String, Ve
     ] {
         let task = TaskFile {
         issue: None,
+            inputs: None,
             schema: "af.task-file/1".into(),
             task_id: name.into(),
             kind: kind.into(),

@@ -8,6 +8,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use review_config::layout;
 use review_process::{ExitPolicy, SupervisedOutput, run_supervised_with_policy};
 use review_source_git::{
     Capture, Entry, EntryKind, Manifest, Repo, decode_path, digest_bytes, encode_path,
@@ -144,6 +145,12 @@ struct DeliveryReceipt {
     /// Losslessly encoded Snapshot paths that the operator's ordinary `git add` will ignore in
     /// the delivered worktree.
     ignored_paths: Vec<String>,
+    /// The source Snapshot's paths under `.af/` that the declared layout does not name, with
+    /// their byte total. Recorded, never acted on: every one of them is in the delivered
+    /// worktree exactly as the Snapshot had it. Receipts written before this field existed, and
+    /// deliveries of a Snapshot whose authority tree is fully declared, carry no such group.
+    #[serde(default, skip_serializing_if = "layout::PathGroup::is_empty")]
+    undeclared_af_paths: layout::PathGroup,
     remote_actions: Vec<String>,
 }
 
@@ -377,6 +384,16 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
     let events = delivery_common::events(&task);
     let assets = delivery_common::assets(&cas, &task)?;
     let mut store = delivery_common::CommonDelivery::open(&state, &task)?;
+    // What the declared layout says about the Snapshot this delivery would place in a worktree.
+    // A pure function of the recorded manifest, so it is the same answer the plan gave. Nothing
+    // is removed either way: `warn` records the group in the receipt, `refuse` stops here —
+    // before the prepared record, before `validate_branch`, and before any Git mutation.
+    let undeclared = layout::classify_manifest(&assets.source_manifest).undeclared;
+    let recorded_policy = &task.revision.authority.policy_id;
+    let policy = crate::task_execution::captured_undeclared_af_paths(&cas, recorded_policy)?;
+    if policy == layout::UndeclaredAfPathsPolicy::Refuse && !undeclared.is_empty() {
+        return Err(crate::af_paths::refusal(&undeclared));
+    }
     let source_revision = assets.source.source_revision.clone();
     let target = DeliveryTarget {
         repository: repository_text,
@@ -425,7 +442,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
                     &DeliveryGit::new(&existing.target.worktree, &git_home),
                     &assets.derived_manifest,
                 )?;
-                let receipt = delivered_receipt(&existing, ignored_paths);
+                let receipt = delivered_receipt(&existing, ignored_paths, undeclared);
                 append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
                 print_delivery(&options, &receipt)?;
                 return Ok(());
@@ -476,7 +493,7 @@ pub(super) fn deliver(options: DeliveryOptions) -> Result<(), String> {
 
     match execute_delivery(&git, &git_home, &cas, &assets, &prepared) {
         Ok(ignored_paths) => {
-            let receipt = delivered_receipt(&prepared, ignored_paths);
+            let receipt = delivered_receipt(&prepared, ignored_paths, undeclared);
             append_delivery_receipt(&mut store, &cas, &receipt, "TaskDelivered@1")?;
             print_delivery(&options, &receipt)
         }
@@ -1565,7 +1582,11 @@ fn git_common_dir(git: &DeliveryGit) -> Result<PathBuf, String> {
         .map_err(|error| format!("opening Git common directory {}: {error}", path.display()))
 }
 
-fn delivered_receipt(prepared: &DeliveryPrepared, ignored_paths: Vec<String>) -> DeliveryReceipt {
+fn delivered_receipt(
+    prepared: &DeliveryPrepared,
+    ignored_paths: Vec<String>,
+    undeclared_af_paths: layout::PathGroup,
+) -> DeliveryReceipt {
     DeliveryReceipt {
         schema: "af/task-delivery@1".into(),
         delivery_id: prepared.delivery_id.clone(),
@@ -1576,16 +1597,19 @@ fn delivered_receipt(prepared: &DeliveryPrepared, ignored_paths: Vec<String>) ->
         target: prepared.target.clone(),
         outcome: DeliveryOutcome::Delivered,
         ignored_paths,
+        undeclared_af_paths,
         remote_actions: Vec::new(),
     }
 }
 
+/// A delivery that did not happen reports no paths of either kind: nothing was placed anywhere
+/// for the operator to inspect.
 fn failed_receipt(prepared: &DeliveryPrepared, reason: &str) -> DeliveryReceipt {
     DeliveryReceipt {
         outcome: DeliveryOutcome::Failed {
             reason: reason.to_string(),
         },
-        ..delivered_receipt(prepared, Vec::new())
+        ..delivered_receipt(prepared, Vec::new(), layout::PathGroup::default())
     }
 }
 
@@ -1614,6 +1638,15 @@ fn print_delivery(options: &DeliveryOptions, receipt: &DeliveryReceipt) -> Resul
         );
         for path in &receipt.ignored_paths {
             println!("ignored  {path}");
+        }
+        let undeclared = &receipt.undeclared_af_paths;
+        if !undeclared.is_empty() {
+            let count = undeclared.count();
+            let bytes = undeclared.bytes;
+            println!("undeclared {count} path(s) under .af/, {bytes} bytes");
+            for path in &undeclared.paths {
+                println!("  {path}");
+            }
         }
     }
     Ok(())

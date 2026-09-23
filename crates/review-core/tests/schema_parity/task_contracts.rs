@@ -93,6 +93,164 @@ fn optimization_economics_contracts_preserve_unknowns_and_pending_live_gates() {
 }
 
 #[test]
+fn task_input_bindings_record_provenance_and_close_every_form() {
+    use review_core::task::input_bindings::*;
+    let id = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let record = TaskInputBindingsV1 {
+        schema: "af.task-input-bindings/1".into(),
+        bindings: std::collections::BTreeMap::from([
+            (
+                "history".into(),
+                TaskInputBindingV1 {
+                    artifact_id: id('a'),
+                    resolved_artifact_id: None,
+                    snapshot_id: None,
+                    rerooted_snapshot_id: None,
+                    task: None,
+                },
+            ),
+            (
+                "source".into(),
+                TaskInputBindingV1 {
+                    artifact_id: id('b'),
+                    resolved_artifact_id: Some(id('c')),
+                    snapshot_id: Some(id('d')),
+                    rerooted_snapshot_id: Some(id('e')),
+                    task: Some(ReferencedTaskV1 {
+                        task_id: "layout-l3b".into(),
+                        task_revision_id: id('1'),
+                        result_id: id('2'),
+                        port: "snapshot".into(),
+                        acceptance: TaskAcceptanceV1::Unsatisfied,
+                        domain_conclusion: "changes_requested".into(),
+                    }),
+                },
+            ),
+        ]),
+    };
+    record.validate().unwrap();
+    let value = serde_json::to_value(&record).unwrap();
+    assert_valid("task-input-bindings-v1.json", &value);
+    assert_eq!(
+        serde_json::from_value::<TaskInputBindingsV1>(value.clone()).unwrap(),
+        record
+    );
+
+    let mut unknown = value.clone();
+    unknown["bindings"]["source"]["approved"] = json!(true);
+    assert_invalid(
+        "task-input-bindings-v1.json",
+        &unknown,
+        "a binding grants nothing beyond the identities it names",
+    );
+    assert!(serde_json::from_value::<TaskInputBindingsV1>(unknown).is_err());
+
+    let mut empty = value.clone();
+    empty["bindings"] = json!({});
+    assert_invalid(
+        "task-input-bindings-v1.json",
+        &empty,
+        "the record is written only when a port is bound",
+    );
+    assert!(
+        serde_json::from_value::<TaskInputBindingsV1>(empty)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+
+    let mut orphaned = value;
+    orphaned["bindings"]["history"]["rerooted_snapshot_id"] = json!(id('f'));
+    assert_invalid(
+        "task-input-bindings-v1.json",
+        &orphaned,
+        "a re-rooted binding keeps the Snapshot and artifact it came from",
+    );
+    assert!(
+        serde_json::from_value::<TaskInputBindingsV1>(orphaned)
+            .unwrap()
+            .validate()
+            .is_err()
+    );
+}
+
+/// Generation two of a Task source origin. The Rust reader lives in `review-source-git`, which
+/// depends on this crate, so the closure is checked here against the wire shape and there
+/// against the reader.
+#[test]
+fn task_source_origin_generation_two_never_claims_a_committed_revision() {
+    let id = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let bound = json!({"schema":"af.task-source-origin/2","repository_id":"example/hub",
+        "content_digest":id('a'),
+        "bound_from":{"artifact_id":id('b'),"snapshot_id":id('c'),
+            "task":{"task_id":"layout-l3b","task_revision_id":id('1'),"result_id":id('2'),
+                "port":"snapshot","acceptance":"unsatisfied",
+                "domain_conclusion":"changes_requested"}}});
+    assert_valid("task-source-origin-v2.json", &bound);
+
+    let mut exact = bound.clone();
+    exact["bound_from"].as_object_mut().unwrap().remove("task");
+    assert_valid("task-source-origin-v2.json", &exact);
+
+    let mut committed = bound.clone();
+    committed["source_revision"] = json!("bba24cb");
+    assert_invalid(
+        "task-source-origin-v2.json",
+        &committed,
+        "a re-rooted tree has no commit and must not claim one",
+    );
+
+    let mut unbound = bound;
+    unbound.as_object_mut().unwrap().remove("bound_from");
+    assert_invalid(
+        "task-source-origin-v2.json",
+        &unbound,
+        "generation two exists to say where the tree came from",
+    );
+}
+
+/// Every execution-record wrapper in the inspection document declares the generation its record
+/// is read against, and the two must agree. A payload shape several generations share stays
+/// admitted under each of them; a payload only one generation accepts is refused under every
+/// other — a generation-two settled record under an `af/TaskExecutionRecord@1` wrapper above all.
+#[test]
+fn task_inspection_12_pairs_each_execution_record_type_with_its_own_generation() {
+    let id = |byte: char| format!("sha256:{}", byte.to_string().repeat(64));
+    let attempt = "A".repeat(26);
+    let settled = |charged: Value| {
+        json!({"kind":"settled","attempt_id":attempt,"charged_tokens":charged,
+            "result":{"kind":"succeeded","output_id":id('4')},"raw_artifact_ids":[]})
+    };
+    // The one execution-record generation GA writes, under the one inspection document GA prints;
+    // a binding record rides beside it and is checked by its own schema.
+    let record = settled(json!("7"));
+    let document = |bindings: Value| {
+        json!({"schema":"af/task-inspection@11","task_id":"chain-history","revision_id":id('1'),
+            "phase":{"kind":"running"},"plan_id":id('2'),"chargeable_tokens":"7","attempts":1,
+            "history":[],"run_reports":[],
+            "execution_records":[{"artifact_id":id('3'),
+                "artifact_type":"af/TaskExecutionRecord@5","record":record}],
+            "input_bindings":bindings})
+    };
+    assert_valid(
+        "task-inspection-v11.json",
+        &document(json!({"schema":"af.task-input-bindings/1",
+            "bindings":{"history":{"artifact_id":id('a')}}})),
+    );
+    assert_invalid(
+        "task-inspection-v11.json",
+        &document(json!({"schema":"af.task-input-bindings/1","bindings":{}})),
+        "a binding record with no bindings",
+    );
+    assert_invalid(
+        "task-inspection-v11.json",
+        &document(json!({"schema":"af.task-input-bindings/1",
+            "bindings":{"history":{"artifact_id":id('a'),"surprise":true}}})),
+        "an unknown binding field",
+    );
+}
+
+#[test]
 fn document_contracts_keep_source_data_closed_and_never_use_code_snapshots() {
     use review_core::task::document::*;
     let sources = json!({"schema":"af.document-sources/1","sources":{"ticket":{"title":"Pagination","uri":"https://example.invalid/AF-42","revision":"42@1","text":"Add offset pagination."}}});

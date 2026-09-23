@@ -1,5 +1,6 @@
 //! Plain ASCII views of captured plans. Rendering never resolves live packages or Providers.
 use super::*;
+use review_core::task::input_bindings::TaskInputBindingV1;
 use review_core::task::pipeline::TaskOperatorV1;
 use review_core::task::plan::WorkerExecutionV1;
 use review_graph::task::{CompiledNode, CompiledOperator};
@@ -7,9 +8,10 @@ use std::fmt::Write;
 
 const WIDTH: usize = 96;
 
-// Task goals and model labels are untrusted display data: no terminal controls, newlines,
-// bidi controls or non-ASCII characters may impersonate another row or approval action.
-fn text(value: &str) -> String {
+// Task goals, model labels and referenced Task IDs are untrusted display data: no terminal
+// controls, newlines, bidi controls or non-ASCII characters may impersonate another row or
+// approval action.
+pub(super) fn text(value: &str) -> String {
     value
         .chars()
         .map(|c| {
@@ -21,7 +23,9 @@ fn text(value: &str) -> String {
         })
         .collect()
 }
-fn short(value: &str, limit: usize) -> String {
+/// The same sanitized text, bounded: every consumer of untrusted display data — including the
+/// refusals `input_bindings` writes for a Task file's `inputs` table — goes through it.
+pub(super) fn short(value: &str, limit: usize) -> String {
     let value = text(value);
     if value.len() <= limit {
         value
@@ -223,6 +227,71 @@ fn tree_rows(
     Ok(())
 }
 
+type BindingRows = std::collections::BTreeMap<String, TaskInputBindingV1>;
+
+/// `task <id>/<port>` or `artifact` — the untrusted half of every binding row, short enough
+/// that an exact artifact ID printed beside it still fits one line.
+fn binding_origin(binding: &TaskInputBindingV1) -> String {
+    let Some(task) = &binding.task else {
+        return "artifact".into();
+    };
+    let id = short(&task.task_id, 40);
+    let port = short(&task.port, 24);
+    format!("task {id}/{port}")
+}
+
+pub(super) fn acceptance_name(value: TaskAcceptanceV1) -> &'static str {
+    match value {
+        TaskAcceptanceV1::Satisfied => "satisfied",
+        TaskAcceptanceV1::Unsatisfied => "unsatisfied",
+        TaskAcceptanceV1::Inconclusive => "inconclusive",
+    }
+}
+
+/// The `IN` row: every planned input port, annotated where a binding replaced this adapter's
+/// construction of it.
+fn input_labels<'a>(ports: impl Iterator<Item = &'a String>, bound: &BindingRows) -> String {
+    let mut labels = Vec::new();
+    for name in ports {
+        let Some(binding) = bound.get(name) else {
+            labels.push(text(name));
+            continue;
+        };
+        let origin = match &binding.task {
+            Some(_) => binding_origin(binding),
+            None => format!("artifact {}", text(&binding.artifact_id)),
+        };
+        labels.push(format!("{} <- {origin}", text(name)));
+    }
+    labels.join(", ")
+}
+
+/// One `BOUND` group per bound port for `--tree`: the referenced Task, its output port, the
+/// acceptance and domain conclusion it had, and the exact artifact ID. An exact-artifact
+/// binding reads `artifact` in place of the Task and port and `-` where no Task supplied an
+/// acceptance or a conclusion. The digest gets its own row so no wrap can split it.
+fn binding_rows(bound: &BindingRows) -> Vec<String> {
+    let mut rows = Vec::new();
+    for (name, binding) in bound {
+        let mut acceptance = "-".to_owned();
+        let mut conclusion = "-".to_owned();
+        if let Some(task) = &binding.task {
+            acceptance = acceptance_name(task.acceptance).to_owned();
+            conclusion = short(&task.domain_conclusion, 24);
+        }
+        rows.push(format!(
+            "BOUND {} <- {} ({acceptance}/{conclusion})",
+            text(name),
+            binding_origin(binding)
+        ));
+        rows.push(format!("      {}", text(&binding.artifact_id)));
+        if let Some(resolved) = &binding.resolved_artifact_id {
+            rows.push(format!("      re-rooted {}", text(resolved)));
+        }
+    }
+    rows
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn render(
     cas: &Cas,
@@ -365,13 +434,17 @@ pub(super) fn render(
         }
     }
     out.push('\n');
-    line(
-        &mut out,
-        &format!(
-            "IN    {}",
-            plan.inputs.keys().cloned().collect::<Vec<_>>().join(", ")
-        ),
-    );
+    // A bound port is annotated where its name is already printed, so an operator reading the
+    // plan sees that `source` came from another Task rather than from this checkout.
+    let recorded = super::input_bindings::recorded(cas, revision)?;
+    let bound = recorded.map_or_else(BindingRows::new, |r| r.bindings);
+    let labels = input_labels(plan.inputs.keys(), &bound);
+    line(&mut out, &format!("IN    {labels}"));
+    if tree {
+        for row in binding_rows(&bound) {
+            line(&mut out, &row);
+        }
+    }
     line(
         &mut out,
         &format!(
@@ -524,5 +597,74 @@ mod tests {
         let mut out = String::new();
         line(&mut out, &"x".repeat(250));
         assert!(out.lines().all(|s| s.len() <= WIDTH));
+    }
+
+    fn digest(byte: char) -> String {
+        format!("sha256:{}", byte.to_string().repeat(64))
+    }
+
+    /// One exact-artifact binding and one Task binding whose Task ID is hostile display data
+    /// and whose derived source had to be re-rooted.
+    fn bound() -> BindingRows {
+        use review_core::task::input_bindings::ReferencedTaskV1;
+        let exact = TaskInputBindingV1 {
+            artifact_id: digest('a'),
+            resolved_artifact_id: None,
+            snapshot_id: None,
+            rerooted_snapshot_id: None,
+            task: None,
+        };
+        let referenced = TaskInputBindingV1 {
+            artifact_id: digest('b'),
+            resolved_artifact_id: Some(digest('c')),
+            snapshot_id: Some(digest('d')),
+            rerooted_snapshot_id: Some(digest('e')),
+            task: Some(ReferencedTaskV1 {
+                task_id: "l3b\nOK\u{1b}[2J\u{202e}x".into(),
+                task_revision_id: digest('1'),
+                result_id: digest('2'),
+                port: "snapshot".into(),
+                acceptance: TaskAcceptanceV1::Unsatisfied,
+                domain_conclusion: "changes_requested".into(),
+            }),
+        };
+        BindingRows::from([
+            ("history".to_owned(), exact),
+            ("source".to_owned(), referenced),
+        ])
+    }
+
+    #[test]
+    fn bound_ports_are_annotated_and_sanitized_in_text_and_tree() {
+        let bound = bound();
+        let ports = ["history", "requirements", "source"].map(str::to_owned);
+        let labels = input_labels(ports.iter(), &bound);
+        let hostile = "l3b?OK?[2J?x";
+        let a = digest('a');
+        let tail = format!("source <- task {hostile}/snapshot");
+        let want = format!("history <- artifact {a}, requirements, {tail}");
+        assert_eq!(labels, want);
+
+        let rows = binding_rows(&bound);
+        let row = format!("BOUND source <- task {hostile}/snapshot");
+        let expected = vec![
+            "BOUND history <- artifact (-/-)".to_owned(),
+            format!("      {}", digest('a')),
+            format!("{row} (unsatisfied/changes_requested)"),
+            format!("      {}", digest('b')),
+            format!("      re-rooted {}", digest('c')),
+        ];
+        assert_eq!(rows, expected);
+
+        // Every row still goes through the sanitizer and the wrap bound.
+        let mut out = String::new();
+        line(&mut out, &labels);
+        for row in &rows {
+            line(&mut out, row);
+        }
+        assert!(out.is_ascii() && !out.contains('\u{1b}'));
+        assert!(out.lines().all(|row| row.len() <= WIDTH));
+        // The exact artifact ID is never split across the wrap boundary.
+        assert!(out.lines().any(|row| row.trim() == digest('b')));
     }
 }

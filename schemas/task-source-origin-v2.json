@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-source-origin:2",
+  "title": "task-source-origin@2",
+  "$comment": "The origin of a Snapshot re-rooted from a recorded Task output rather than captured from a checkout (ADR-0117). It deliberately has no top-level source_revision: a derived tree has no commit, and inventing one would let delivery compare a target repository against a different tree. Generation 1 is written unchanged for every ordinary capture and is the only generation any pre-existing Snapshot carries.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "repository_id",
+    "content_digest",
+    "bound_from"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.task-source-origin/2"
+    },
+    "repository_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 512
+    },
+    "content_digest": {
+      "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+    },
+    "bound_from": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id",
+        "snapshot_id"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "snapshot_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "task": {
+          "$ref": "urn:af:schema:task-input-bindings:1#/$defs/referencedTask"
+        }
+      }
+    }
+  }
+}

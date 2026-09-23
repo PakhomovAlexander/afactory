@@ -30,7 +30,9 @@ use review_core::{
 };
 use serde_json::{Value, json};
 
-const SCHEMAS: [&str; 155] = [
+const SCHEMAS: [&str; 157] = [
+    "task-input-bindings-v1.json",
+    "task-source-origin-v2.json",
     "provider-status-v1.json",
     "provider-setup-v1.json",
     "session-snapshot-v1.json",

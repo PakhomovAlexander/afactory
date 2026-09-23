@@ -161,11 +161,11 @@ fn validate_revision(
         .inputs
         .insert("requirements".into(), new_input.clone());
     expected.provenance.adapter_id = next.provenance.adapter_id.clone();
-    expected.provenance.input_artifact_ids = expected
-        .inputs
-        .values()
-        .flat_map(|p| p.artifact_ids.iter().cloned())
-        .collect();
+    // A refreshed revision replaces its requirements artifact and keeps every other record its
+    // provenance carried — the `af/TaskInputBindings@1` record above all, which no port carries
+    // and which a refresh has no reason to drop (ADR-0117). `expected` still holds the previous
+    // revision's provenance here, so the adapter and this validator derive the same list.
+    expected.provenance.input_artifact_ids = super::revision_provenance_inputs(cas, &expected);
     if &expected != next {
         return Err(conflict(
             "Issue refresh must retain Task policy, limits, source Snapshot, verification and selection facts",

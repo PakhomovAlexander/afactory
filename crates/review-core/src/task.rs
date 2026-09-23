@@ -9,6 +9,7 @@ pub mod document;
 pub mod event;
 pub mod execution;
 pub mod feedback;
+pub mod input_bindings;
 pub mod optimization;
 pub mod optimization_experiment;
 pub mod optimization_light;
