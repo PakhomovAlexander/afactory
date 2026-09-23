@@ -74,7 +74,7 @@ Minimum size 80x24; below it the screen shows one line naming the minimum.
 The TUI is a modal, vim-shaped application. Keys are the same in every pane; a pane may add a
 few pane-local verbs, listed in its section and in the status line.
 
-**Motion (NORMAL, any region)**
+### Motion (NORMAL, any region)
 
 | key | effect |
 |---|---|
