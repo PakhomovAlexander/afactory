@@ -16,6 +16,7 @@ allow_targeted_repairs = false
 [review.reviewers]
 bugs = "required"
 correctness = "required"
+uix = "required"
 
 [packages."warm/implementer"]
 version = "1.2.0"
