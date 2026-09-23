@@ -3352,7 +3352,7 @@ fn unprobed_status(spec: &ProviderSpec) -> ProviderStatus {
         subscription: "-".to_string(),
         limits: Vec::new(),
         usage: UsageState::NotRequested,
-        detail: "Open PROVIDERS or press R to refresh status".to_string(),
+        detail: "run `af provider status` again to probe this context".to_string(),
     }
 }
 

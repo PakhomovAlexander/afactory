@@ -428,7 +428,7 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
   values, and no production code changed. New tests pin both halves — only the total fixture wall
   moves, and `TaskBudget::prepare` keeps its exact deadline boundary and refusal wording at both a
   small and a large budget
-  ([ADR-0113](docs/adr/0113-budget-cli-task-fixtures-for-loaded-machines.md)).
+  ([ADR-0114](docs/adr/0114-budget-cli-task-fixtures-for-loaded-machines.md)).
 - The internal delivery records are out of `docs/`: the `P00`–`P14` package checklist, the product
   backlog, the release-timing and validation-cost measurement records, the self-optimizer plan and
   review record, and the pre-implementation design notes the shipped architecture was ported from

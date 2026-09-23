@@ -1,4 +1,4 @@
-# ADR-0113: Budget CLI Task fixtures for loaded machines, never for a fast one
+# ADR-0114: Budget CLI Task fixtures for loaded machines, never for a fast one
 
 **Status:** accepted (2026-09-22)
 

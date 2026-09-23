@@ -22,7 +22,7 @@ mod task_cli;
 /// and the verification reserve are untouched and still bind exactly as before, and the
 /// deadline's own fail-closed refusal keeps its coverage in
 /// `crates/review-attempt/tests/task_budget.rs`. Do not collapse it back toward the elapsed time
-/// of a fast local run (ADR-0113).
+/// of a fast local run (ADR-0114).
 const PLANNING_WALL_MS: u64 = 600_000;
 /// Every fixture Worker manifest and the fixture code policy bound one Attempt at five seconds.
 const FIXTURE_ATTEMPT_WALL_MS: u64 = 5_000;

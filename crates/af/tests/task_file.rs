@@ -13,7 +13,7 @@ use task_cli::{copy_tree, fixture_named};
 
 /// Native-model fixtures plan, reject one changed account, restore it, then resume the same Task.
 /// Keep that absolute deadline away from loaded-gate latency without changing any dispatch or
-/// verification bound (ADR-0113).
+/// verification bound (ADR-0114).
 const NATIVE_MODEL_TASK_WALL_MS: u64 = 600_000;
 
 fn native_model_limits() -> Value {
