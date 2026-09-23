@@ -1,6 +1,6 @@
 schema = "af.pipeline/1"
 name = "kernel/verification-reviewed"
-version = "1.0.0"
+version = "1.1.0"
 max_attempts = 16
 max_parallel = 2
 
@@ -89,16 +89,27 @@ allow_local_replacement = true
 independent_from = []
 
 
+[slots.uix]
+worker = "kernel/uix"
+role = "review"
+input_type = "af/ReviewInput@1"
+output_type = "review.kernel/ReviewerResult@2"
+min_attempts = 1
+max_attempts = 1
+allow_local_replacement = true
+independent_from = []
+
 [[nodes]]
 id = "review"
 
 [nodes.operator]
 op = "call"
-pipeline = "kernel/review-code"
+pipeline = "kernel/review-light"
 
 [nodes.operator.bindings]
 bugs = "bugs"
 correctness = "correctness"
+uix = "uix"
 
 [nodes.inputs.history]
 kind = "input"

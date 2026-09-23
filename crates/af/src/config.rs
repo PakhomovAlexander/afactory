@@ -224,7 +224,34 @@ pub(crate) fn load_machine() -> Result<Config, String> {
     load_with(None, true)
 }
 
+/// The machine-owned inputs of a load: the system and user directories and the environment.
+/// Every command reads the machine's own; a test pins them, so a render of the ladder cannot
+/// depend on the machine running it.
+pub(crate) struct MachineRoots {
+    pub(crate) system: PathBuf,
+    pub(crate) user: PathBuf,
+    pub(crate) environment: Vec<(String, String)>,
+}
+
+impl MachineRoots {
+    fn current() -> Result<Self, String> {
+        Ok(Self {
+            system: PathBuf::from("/etc/af"),
+            user: config_home()?.join("af"),
+            environment: std::env::vars().collect(),
+        })
+    }
+}
+
 fn load_with(repo: Option<&Path>, machine_scope: bool) -> Result<Config, String> {
+    load_rooted(repo, machine_scope, &MachineRoots::current()?)
+}
+
+pub(crate) fn load_rooted(
+    repo: Option<&Path>,
+    machine_scope: bool,
+    roots: &MachineRoots,
+) -> Result<Config, String> {
     let start = match repo {
         Some(repo) => repo.to_path_buf(),
         None => std::env::current_dir().map_err(|error| format!("current directory: {error}"))?,
@@ -243,12 +270,12 @@ fn load_with(repo: Option<&Path>, machine_scope: bool) -> Result<Config, String>
     );
 
     let mut planned: Vec<(&'static str, PathBuf)> = Vec::new();
-    let system = PathBuf::from("/etc/af");
+    let system = &roots.system;
     planned.push(("system", system.join("config.toml")));
-    planned.extend(conf_d(&system).into_iter().map(|path| ("system", path)));
-    let user = config_home()?.join("af");
+    planned.extend(conf_d(system).into_iter().map(|path| ("system", path)));
+    let user = &roots.user;
     planned.push(("user", user.join("config.toml")));
-    planned.extend(conf_d(&user).into_iter().map(|path| ("user", path)));
+    planned.extend(conf_d(user).into_iter().map(|path| ("user", path)));
     let directory_root = toplevel
         .clone()
         .unwrap_or_else(|| std::fs::canonicalize(&start).unwrap_or(start.clone()));
@@ -296,7 +323,7 @@ fn load_with(repo: Option<&Path>, machine_scope: bool) -> Result<Config, String>
         });
     }
 
-    for (name, raw) in std::env::vars() {
+    for (name, raw) in roots.environment.iter().cloned() {
         let Some(rest) = name.strip_prefix("AF_") else {
             continue;
         };
@@ -494,7 +521,7 @@ pub(crate) fn show(repo: Option<&Path>, origin: bool, json: bool) -> Result<(), 
     Ok(())
 }
 
-fn flatten(value: &Value, prefix: &str, out: &mut Vec<(String, String)>) {
+pub(crate) fn flatten(value: &Value, prefix: &str, out: &mut Vec<(String, String)>) {
     match value {
         Value::Table(table) => {
             for (key, value) in table {
@@ -561,6 +588,11 @@ pub(crate) fn edit(layer: LayerArg, repo: Option<&Path>) -> Result<(), String> {
         std::fs::write(&path, "version = 1\n")
             .map_err(|error| format!("creating {}: {error}", path.display()))?;
     }
+    open_in_editor(&path)
+}
+
+/// Run `$EDITOR` on one file and wait for it. `af config edit` and the browser's `gf` share it.
+pub(crate) fn open_in_editor(path: &Path) -> Result<(), String> {
     let editor = std::env::var("EDITOR")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -571,7 +603,7 @@ pub(crate) fn edit(layer: LayerArg, repo: Option<&Path>) -> Result<(), String> {
         .ok_or("EDITOR is empty — fix: export EDITOR=vim")?;
     let status = std::process::Command::new(program)
         .args(args)
-        .arg(&path)
+        .arg(path)
         .status()
         .map_err(|error| format!("running {program}: {error}"))?;
     if !status.success() {

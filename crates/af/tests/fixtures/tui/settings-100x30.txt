@@ -1,0 +1,30 @@
+~/hub                      |SETTINGS  project: hub
+v hub  (project)           |layer      file                                 state
+  v providers/             |built-in   (binary)                             -
+      claude-main          |system     ~/etc/af/config.toml                 absent
+      codex-ambient        |user       ~/config/af/config.toml              absent
+  v workers/               |directory  ~/.af/af.toml                        absent
+  v pipelines/             |project    .af/af.toml                          present  <- edit with e
+      review               |local      .af/af.local.toml                    absent
+      fixture/implementatio|
+  v tasks/                 |version = 1                             project .af/af.toml:1
+                           |[defaults]
+                           |pipeline = "review"                     project .af/af.toml:8
+                           |[project]
+                           |min_af = "0.9"                          project .af/af.toml:5
+                           |name = "hub"                            project .af/af.toml:4
+                           |[self]
+                           |auto_update = "notify"                  built-in
+                           |channel = "stable"                      built-in
+                           |check_every = "24h"                     built-in
+                           |install_pins = true                     built-in
+                           |keep_versions = 3                       built-in
+                           |source = "PakhomovAlexander/afactory"   built-in
+                           |update_check = true                     built-in
+                           |
+                           |
+                           |
+                           |
+                           |
+                           |
+NORMAL  hub                                 j/k move  Enter open  zo/zc fold  / search  :cmd  q quit

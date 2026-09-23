@@ -1,9 +1,9 @@
 //! The `af` command tree: one clap definition feeds parsing, `--help`, `af help <topic>`, shell
 //! completions, and the man pages, so none of them can drift from the others.
 //!
-//! Help follows three rules. `af` alone shows the namespaces; `af <namespace>` shows only that
-//! namespace; `af <command> --help` says what the command does, what it never does, its options
-//! grouped by role, and examples.
+//! Help follows three rules. `af` alone shows the namespaces (on a terminal it opens the browser
+//! instead, see `tui`); `af <namespace>` shows only that namespace; `af <command> --help` says
+//! what the command does, what it never does, its options grouped by role, and examples.
 
 use std::path::PathBuf;
 
@@ -30,7 +30,8 @@ Namespaces:
   config     show the effective configuration and where each value came from
   self       optimize the current project, or manage af installations
 
-`af help <topic>` explains config, layers, environment, exit-codes, json, and self.";
+`af help <topic>` explains config, layers, environment, exit-codes, json, and self. `af` alone \
+at a terminal opens a read-first browser over this scope's settings, providers and pipelines.";
 
 const AF_AFTER_HELP: &str = "\
 Exit codes:
@@ -51,7 +52,6 @@ Examples:
     after_long_help = AF_AFTER_HELP,
     disable_help_subcommand = true,
     disable_version_flag = true,
-    arg_required_else_help = true,
     max_term_width = 100
 )]
 pub(crate) struct Af {
@@ -61,6 +61,9 @@ pub(crate) struct Af {
     /// With --version: one JSON document instead of a line
     #[arg(long, requires = "version")]
     pub(crate) json: bool,
+    /// With no command on a terminal: the repository the browser opens [default: .]
+    #[arg(long, value_name = "DIR")]
+    pub(crate) repo: Option<PathBuf>,
     #[command(subcommand)]
     pub(crate) command: Option<Command>,
 }

@@ -89,6 +89,14 @@ fn binding(plan: &ExecutionPlanV1, slot: &str) -> String {
         .map(|b| execution_label(&b.execution))
         .unwrap_or_else(|| "binding unavailable (inspect JSON)".into())
 }
+/// A slot's Worker package and binding, as the browser's status line names a highlighted row.
+fn slot_binding(plan: &ExecutionPlanV1, graph: &CompiledTask, slot: &str) -> String {
+    let name = text(slot.strip_prefix("root.slots.").unwrap_or(slot));
+    let worker = graph.slots.get(slot).map(|slot| slot.worker.as_str());
+    let worker = text(worker.unwrap_or("?"));
+    let bound = binding(plan, slot);
+    format!("{name}: {worker} -> {bound}")
+}
 fn compact_visible(node: &CompiledNode) -> bool {
     !matches!(
         node.operator,
@@ -188,6 +196,10 @@ fn children(graph: &CompiledTask, parent: &str) -> Vec<String> {
     }
     result
 }
+/// Line index of every row that names a Worker slot, and that slot's binding.
+pub(super) type SlotMarks = Vec<(usize, String)>;
+
+#[allow(clippy::too_many_arguments)]
 fn tree_rows(
     out: &mut String,
     cas: &Cas,
@@ -195,6 +207,7 @@ fn tree_rows(
     graph: &CompiledTask,
     parent: &str,
     prefix: &str,
+    marks: &mut SlotMarks,
 ) -> Result<(), String> {
     let rows = children(graph, parent);
     for (i, id) in rows.iter().enumerate() {
@@ -216,8 +229,13 @@ fn tree_rows(
                 graph,
                 id,
                 &format!("{prefix}{}", if last { "    " } else { "|   " }),
+                marks,
             )?;
         } else {
+            if let Some(slot) = worker(&graph.nodes[id]) {
+                let at = out.matches('\n').count();
+                marks.push((at, slot_binding(plan, graph, slot)));
+            }
             line(
                 out,
                 &format!("{prefix}{branch}{}", node_label(id, &graph.nodes[id], plan)),
@@ -302,6 +320,21 @@ pub(super) fn render(
     status: &str,
     tree: bool,
 ) -> Result<String, String> {
+    render_marked(cas, revision, plan_id, plan, graph, status, tree).map(|(text, _)| text)
+}
+
+/// The preview, and the lines of its tree that name a Worker slot.
+#[allow(clippy::too_many_arguments)]
+fn render_marked(
+    cas: &Cas,
+    revision: &TaskRevisionV1,
+    plan_id: &str,
+    plan: &ExecutionPlanV1,
+    graph: &CompiledTask,
+    status: &str,
+    tree: bool,
+) -> Result<(String, SlotMarks), String> {
+    let mut marks = SlotMarks::new();
     if graph.order.iter().any(|id| !graph.nodes.contains_key(id)) {
         return Err("Captured graph order references a missing node".into());
     }
@@ -337,7 +370,7 @@ pub(super) fn render(
     line(&mut out, &format!("STATE {status}"));
     out.push('\n');
     if tree {
-        tree_rows(&mut out, cas, plan, graph, "root", "")?;
+        tree_rows(&mut out, cas, plan, graph, "root", "", &mut marks)?;
     } else {
         let all_rows = children(graph, "root");
         let rows: Vec<_> = all_rows
@@ -538,10 +571,19 @@ pub(super) fn render(
             text(&revision.task_id)
         ),
     );
-    Ok(out)
+    Ok((out, marks))
 }
 
 pub(super) fn current(cas: &Cas, state: &TaskProjection, tree: bool) -> Result<String, String> {
+    current_marked(cas, state, tree).map(|(text, _)| text)
+}
+
+/// The current plan's preview, and the lines of its tree that name a Worker slot.
+pub(super) fn current_marked(
+    cas: &Cas,
+    state: &TaskProjection,
+    tree: bool,
+) -> Result<(String, SlotMarks), String> {
     let id = state
         .plan_id
         .as_deref()
@@ -561,7 +603,7 @@ pub(super) fn current(cas: &Cas, state: &TaskProjection, tree: bool) -> Result<S
     } else {
         "confirmation required; no new Worker dispatched"
     };
-    render(cas, &state.revision, id, &plan, &graph, status, tree)
+    render_marked(cas, &state.revision, id, &plan, &graph, status, tree)
 }
 
 #[cfg(test)]

@@ -847,12 +847,64 @@ fn model_bindings<'a>(
         .collect()
 }
 
+/// How a started Task is reported: printed, as every CLI command does, or not at all, for the
+/// browser's Pipelines pane, which renders the recorded plan itself.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Presentation {
+    Print,
+    Silent,
+}
+
 pub(super) fn start(options: StartOptions) -> Result<i32, String> {
-    start_kind(options, None)
+    start_kind(options, None, Presentation::Print)
 }
 
 pub(super) fn start_review(options: StartOptions) -> Result<i32, String> {
-    start_kind(options, Some("review"))
+    start_kind(options, Some("review"), Presentation::Print)
+}
+
+/// A plan preview as `af task explain --tree` prints it, and the Worker binding of every line
+/// that names a slot, keyed by line index.
+pub(crate) struct TreePreview {
+    pub(crate) text: String,
+    pub(crate) slots: BTreeMap<usize, String>,
+}
+
+/// The `--tree` preview of the plan `af task plan --file FILE` captures, compiled the same way
+/// into a scratch Store that is discarded on return. No `--state` or XDG Store is written,
+/// nothing is admitted, no Worker runs, and nothing is printed; the policy comes from the
+/// committed `HEAD`, exactly as `af task plan` takes it.
+pub(crate) fn plan_tree_preview(file: &Path, repo: &Path) -> Result<TreePreview, String> {
+    let bytes = input_file::read(file, 16 * 1024 * 1024)?;
+    let task: TaskFile = parse(file, &bytes)?;
+    let scratch = tempfile::tempdir().map_err(|e| e.to_string())?;
+    let state = scratch.path().join("state");
+    let options = StartOptions {
+        file: file.to_path_buf(),
+        bindings: None,
+        source_bindings: None,
+        repo: repo.to_path_buf(),
+        state: Some(state.clone()),
+        authority: "HEAD".into(),
+        uncommitted: false,
+        json: false,
+        plan_only: true,
+        timeout_secs: None,
+        optimization_history: None,
+    };
+    start_kind(options, None, Presentation::Silent)?;
+    let cas = Cas::open_existing(state.join("cas")).map_err(|e| e.to_string())?;
+    let store =
+        EventStore::open_read_only(state.join("events.sqlite")).map_err(|e| e.to_string())?;
+    let projection = store
+        .task_projection(&cas, &task.task_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("The preview recorded no Task")?;
+    let (text, slots) = preview::current_marked(&cas, &projection, true)?;
+    Ok(TreePreview {
+        text,
+        slots: slots.into_iter().collect(),
+    })
 }
 
 fn effective_task_wall_ms(file_wall_ms: u64, timeout_secs: Option<u64>) -> Result<u64, String> {
@@ -865,7 +917,11 @@ fn effective_task_wall_ms(file_wall_ms: u64, timeout_secs: Option<u64>) -> Resul
     Ok(timeout_ms.map_or(file_wall_ms, |limit| limit.min(file_wall_ms)))
 }
 
-fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32, String> {
+fn start_kind(
+    options: StartOptions,
+    expected_kind: Option<&str>,
+    presentation: Presentation,
+) -> Result<i32, String> {
     let started = clock()?;
     let bytes = input_file::read(&options.file, 16 * 1024 * 1024)?;
     let file: TaskFile = parse(&options.file, &bytes)?;
@@ -940,7 +996,17 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
     } else {
         policy_source
     };
-    start_captured(options, file, bytes, started, cas, store, source, authority)
+    start_captured(
+        options,
+        file,
+        bytes,
+        started,
+        cas,
+        store,
+        source,
+        authority,
+        presentation,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -953,6 +1019,7 @@ fn start_captured(
     mut store: EventStore,
     source: review_source_git::Snapshot,
     (authority_id, authority, mut compiler): (String, RunAuthority, TaskPlanCompiler),
+    presentation: Presentation,
 ) -> Result<i32, String> {
     let profile = selected_profile(&compiler, &authority, &file.kind, file.verification)?;
     // Resolved once, here, from the `--state` Store alone, before any Worker is dispatched or
@@ -984,7 +1051,9 @@ fn start_captured(
         None => &source.manifest,
     };
     let undeclared = review_config::layout::classify_manifest(read).undeclared;
-    super::af_paths::warn(&undeclared);
+    if presentation == Presentation::Print {
+        super::af_paths::warn(&undeclared);
+    }
     let origin=cas.put_json(&json!({"schema":"af.task-source-origin/1","repository_id":source.repository_id,"source_revision":source.source_revision,"content_digest":source.content_digest})).map_err(|e|e.to_string())?;
     let source_port = if matches!(
         profile,
@@ -1325,12 +1394,22 @@ fn start_captured(
         ids.sort();
         ids.dedup();
     }
-    let Some(selected) = selection::prepare(&cas, &authority, &compiler, revision, options.json)?
-    else {
+    let prepared = match presentation {
+        Presentation::Print => {
+            selection::prepare(&cas, &authority, &compiler, revision, options.json)?
+        }
+        Presentation::Silent => silent_selection(&cas, &authority, &compiler, revision)?,
+    };
+    let Some(selected) = prepared else {
         return Ok(1);
     };
     let selected = match selected {
         selection::PreparedSelection::Selected(selected) => selected,
+        selection::PreparedSelection::Generation { .. } if presentation == Presentation::Silent => {
+            return Err(
+                "A generated plan needs developer review; preview it with af task plan".into(),
+            );
+        }
         selection::PreparedSelection::Generation {
             revision,
             revision_id,
@@ -1426,6 +1505,9 @@ fn start_captured(
         Ok(())
     })();
     release(&cas, &mut store, &lease, outcome)?;
+    if presentation == Presentation::Silent {
+        return Ok(0);
+    }
     let presented = present_with_advisory(
         &cas,
         &store,
@@ -1440,6 +1522,23 @@ fn start_captured(
     // remaining wall nor change the exit code or the `--json` document already written.
     task_file_home::warn_if_captured_from_the_repository(&options.file, &options.repo);
     presented
+}
+
+/// Selection for a silent preview: a refused selection is an error to show, not a document to
+/// print.
+fn silent_selection(
+    cas: &Cas,
+    authority: &RunAuthority,
+    compiler: &TaskPlanCompiler,
+    revision: TaskRevisionV1,
+) -> Result<Option<selection::PreparedSelection>, String> {
+    match selection::assess(cas, authority, compiler, revision, None)? {
+        selection::SelectionAssessment::Prepared(prepared) => Ok(Some(prepared)),
+        selection::SelectionAssessment::Refused { decision, .. } => {
+            let decision = serde_json::to_string(&decision).map_err(|e| e.to_string())?;
+            Err(format!("No Pipeline selected: {decision}"))
+        }
+    }
 }
 
 fn release(
@@ -2474,6 +2573,58 @@ mod review_generation_tests {
                     .and_then(|v| v.check_generation())
                     .is_err()
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod tree_preview_tests {
+    use super::*;
+    use crate::tui::panes::pipelines::{PREVIEW_TASK_ID, preview_task};
+    use crate::tui::tests::{hub_repo, stable_lines};
+
+    #[test]
+    fn the_silent_tree_preview_is_what_task_explain_tree_prints() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let repo = hub_repo(&root);
+        let task = preview_task("fixture/implementation", "implement", 3);
+        let file = root.join("preview.json");
+        std::fs::write(&file, serde_json::to_vec_pretty(&task).unwrap()).unwrap();
+        // `af task plan --file` records the Task, and `af task explain --tree` prints this.
+        let state = root.join("state");
+        let options = StartOptions {
+            file: file.clone(),
+            bindings: None,
+            source_bindings: None,
+            repo: repo.clone(),
+            state: Some(state.clone()),
+            authority: "HEAD".into(),
+            uncommitted: false,
+            json: false,
+            plan_only: true,
+            timeout_secs: None,
+            optimization_history: None,
+        };
+        start(options).unwrap();
+        let cas = Cas::open_existing(state.join("cas")).unwrap();
+        let store = EventStore::open_read_only(state.join("events.sqlite")).unwrap();
+        let projection = store.task_projection(&cas, PREVIEW_TASK_ID).unwrap();
+        let printed = preview::current(&cas, &projection.unwrap(), true).unwrap();
+        let silent = plan_tree_preview(&file, &repo).unwrap();
+        assert_eq!(stable_lines(&silent.text), stable_lines(&printed));
+        let text = &silent.text;
+        assert!(
+            text.contains("PIPE  fixture/implementation@1.0.0  [configured]"),
+            "{text}"
+        );
+        // Every Worker row carries its slot's binding, keyed by the row's line.
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(!silent.slots.is_empty(), "{text}");
+        for (line, binding) in &silent.slots {
+            assert!(binding.contains(" -> command Worker"), "{binding}");
+            let row = lines[*line];
+            assert!(row.contains("command Worker"), "{row}");
         }
     }
 }

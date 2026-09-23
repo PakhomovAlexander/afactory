@@ -265,8 +265,10 @@ Tests: keymap sequences, tree folding and search, and one golden render per pane
    reviewer below can build the candidate and drive it in a pseudo-terminal. Until this ships, a
    model reviewer has `Read,Glob,Grep` only and a read-only sandbox.
 1. Shell: scope resolution, left bar with the four folders, settings pane, `af` no-arg dispatch,
-   `q`/`:q`.
+   `q`/`:q`. **Delivered** (package M1, ADR-0119).
 2. Providers and Pipelines panes (both reuse existing loaders and renderers directly).
+   **Delivered** (package M1, ADR-0119). The terminal runs on `rustix::termios` rather than
+   `crossterm`, whose lock entries the package could not add under `--locked`; see the ADR.
 3. Tasks pane: list, detail, progress, tokens, time, history; running-Task poll.
 4. Workers pane: identity, prompt, then the State section once Attempt records are indexed by
    Worker in the Store.

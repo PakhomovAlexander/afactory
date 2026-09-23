@@ -16,6 +16,20 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
+- Bare `af` at a terminal opens a read-first, vim-shaped browser (ADR-0119,
+  `docs/design/tui.md` package M1). On a pipe, bare `af` still prints help to stderr and exits
+  2. The scope comes from `config::load`: the user scope outside a repository, the project scope
+  inside one, or `af --repo DIR`. A 28-column folding bar holds `providers/`, `workers/`,
+  `pipelines/` and `tasks/`. Beside it, the Settings pane shows the layer table and the effective
+  values with their origins, as `af config paths` and `af config show --origin` print them, and
+  `e` opens a layer with `af config edit`. The Providers pane shows the `af provider status`
+  columns with a bar per quota window, and `R` runs the bounded usage probe off the key loop. The
+  Pipelines pane shows, verbatim, the `af task explain --tree` text of a token-free plan compiled
+  as `af task plan` compiles one, into a scratch Store; the status line shows the highlighted
+  slot's Worker binding. The Workers and Tasks panes arrive in later packages. `:` lines are
+  parsed by the CLI's own clap definition. The terminal runs through `rustix::termios`, an
+  existing dependency, instead of the planned `crossterm`. No `--json` document, schema or
+  fixture changes.
 - Let a review Worker that declares `execute-checks` build and drive the candidate (ADR-0118). A
   model Worker whose `roles` contain `review` and whose effects are
   `["read-source", "execute-checks"]` now runs in the same `Mode::EphemeralWrite` clone that

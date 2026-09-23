@@ -204,3 +204,4 @@ future readers need.
   output](0117-bind-task-inputs-to-recorded-task-outputs.md)
 - [0118 — Let a review Worker that declares `execute-checks` run in an ephemeral
   clone](0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md)
+- [0119 — Open a read-first browser on bare `af`](0119-open-a-read-first-browser-on-bare-af.md)
