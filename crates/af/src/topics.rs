@@ -181,5 +181,8 @@ Updates — `[self]` in ~/.config/af/config.toml
 Commands
   af self status | update [--check] | rollback | install V | remove V | prune
   af self setup-shell [--write] | uninstall [--purge]
-  af self refuses to touch a binary it did not install (brew, cargo install, a launcher).
+  Update, rollback, remove, prune, and uninstall refuse to touch a binary af did not install.
+  From a cargo/source-installed af at the default path, `af self install V` explicitly replaces
+  that running executable with the verified release and adopts the self-managed layout. An
+  unrelated file at the default path is never replaced.
   remove and prune keep the default and every version a project seen on this machine pins.";

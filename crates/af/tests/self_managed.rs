@@ -126,6 +126,79 @@ fn self_install_update_rollback_and_remove_against_a_directory_source() {
 }
 
 #[test]
+fn a_source_installed_binary_reports_and_adopts_its_default_path() {
+    let keys = tempfile::tempdir().unwrap();
+    let signer = Signer::new(keys.path());
+    let sandbox = Sandbox::new().with_key(&signer);
+    sandbox.publish("0.8.1", false);
+    sandbox.sign("0.8.1", &signer, None);
+    let source_install = sandbox.path("bin/af");
+    std::fs::copy(AF, &source_install).unwrap();
+
+    let status = sandbox
+        .command(&source_install)
+        .args(["self", "status"])
+        .output()
+        .unwrap();
+    assert!(status.status.success(), "{}", err(&status));
+    assert!(
+        out(&status).contains("unmanaged running binary")
+            && out(&status).contains("af self install"),
+        "{}",
+        out(&status)
+    );
+    let json: serde_json::Value = serde_json::from_slice(
+        &sandbox
+            .command(&source_install)
+            .args(["self", "status", "--json"])
+            .output()
+            .unwrap()
+            .stdout,
+    )
+    .unwrap();
+    assert!(json["default"].is_null());
+    assert_eq!(json["default_status"], "unmanaged-file");
+
+    let install = sandbox
+        .command(&source_install)
+        .args(["self", "install", "0.8.1"])
+        .output()
+        .unwrap();
+    assert!(install.status.success(), "{}", err(&install));
+    assert_eq!(sandbox.default_target().as_deref(), Some("0.8.1"));
+    assert!(
+        std::fs::symlink_metadata(&source_install)
+            .unwrap()
+            .file_type()
+            .is_symlink()
+    );
+    assert!(sandbox.versions().join("0.8.1/receipt.toml").is_file());
+}
+
+#[test]
+fn self_install_does_not_replace_an_unrelated_default_file() {
+    let keys = tempfile::tempdir().unwrap();
+    let signer = Signer::new(keys.path());
+    let sandbox = Sandbox::new().with_key(&signer);
+    sandbox.publish("0.8.1", false);
+    sandbox.sign("0.8.1", &signer, None);
+    let unrelated = sandbox.path("bin/af");
+    write(&unrelated, "leave me alone\n");
+
+    let install = sandbox
+        .command(Path::new(AF))
+        .args(["self", "install", "0.8.1"])
+        .output()
+        .unwrap();
+    assert!(!install.status.success());
+    assert!(err(&install).contains("move it aside"), "{}", err(&install));
+    assert_eq!(
+        std::fs::read_to_string(unrelated).unwrap(),
+        "leave me alone\n"
+    );
+}
+
+#[test]
 fn nothing_older_than_the_oldest_supported_release_is_activated_or_dispatched_to() {
     let sandbox = Sandbox::new();
     sandbox.publish("0.7.1", false);

@@ -175,8 +175,11 @@ is run by that version: `af` execs it, installing it on demand when the archive 
 digest the lock records. Outside a lock, releases are verified against their signed \
 `SHA256SUMS`. Updates are checked by a detached, rate-limited child and applied by the policy \
 in `[self]` (see `af help self`).\n\n\
-Never: touches a binary it did not install, stores a token, changes the version a pinned \
-project runs, or activates a release older than 0.8.0 (the oldest supported release).",
+An explicit `af self install V` run from a cargo/source-installed af at the default path replaces \
+that running executable with the verified release and adopts the self-managed layout. Other \
+binary-management commands never touch an unmanaged binary, and install never replaces an \
+unrelated file at that path. It never stores a token, changes the version a pinned project runs, \
+or activates a release older than 0.8.0 (the oldest supported release).",
         after_long_help = "Examples:\n  af self status\n  af self update --check\n  af self update\n  af self rollback\n  af self setup-shell --write"
     )]
     SelfCmd {
@@ -1258,7 +1261,7 @@ token.",
     },
     /// Make the previously active version the default again
     Rollback,
-    /// Install an exact version without making it the default
+    /// Install an exact version, making it the default when no managed default exists
     Install {
         /// Version to install (e.g. 0.8.0)
         version: String,
