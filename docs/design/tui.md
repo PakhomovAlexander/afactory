@@ -261,6 +261,10 @@ Tests: keymap sequences, tree folding and search, and one golden render per pane
 
 ## 7. Delivery order
 
+0. Kernel: a review Worker may declare `execute-checks` and then runs in an ephemeral-write
+   sandbox with a shell (Claude adapter adds `Bash`; Codex runs `workspace-write`), so the UIX
+   reviewer below can build the candidate and drive it in a pseudo-terminal. Until this ships, a
+   model reviewer has `Read,Glob,Grep` only and a read-only sandbox.
 1. Shell: scope resolution, left bar with the four folders, settings pane, `af` no-arg dispatch,
    `q`/`:q`. Remove `af review tui`.
 2. Providers and Pipelines panes (both reuse existing loaders and renderers directly).
@@ -268,6 +272,15 @@ Tests: keymap sequences, tree folding and search, and one golden render per pane
 4. Workers pane: identity, prompt, then the State section once Attempt records are indexed by
    Worker in the Store.
 5. Command line and the run/deliver hand-off; `gf`; yank.
+
+## 7a. Review
+
+Every package is reviewed by `kernel/review-light`: `correctness` and `bugs` read the source, and
+`kernel/uix` (Claude, opus 5.5, high) builds `af`, writes its own pseudo-terminal harness under
+`target/uix-harness/`, drives the shipped panes key by key at 100x30 and 80x24, and compares each
+captured screen with §3-§5 and with the CLI output the pane mirrors. Its findings quote the key
+sequence, the captured screen and the expected one; a refused build or shell is a `block`, never a
+source-only review.
 
 ## 8. Open questions
 
