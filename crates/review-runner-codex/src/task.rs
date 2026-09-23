@@ -1,8 +1,18 @@
 //! Codex framing for generic typed Task Workers, preserving failed and malformed usage.
 use super::*;
-use review_runner::task::{MAX_WORKER_BYTES, ModelWorkerReturn, WorkerModelAdapter};
+use review_runner::task::{MAX_WORKER_BYTES, ModelWorkerReturn, WorkerAccess, WorkerModelAdapter};
 use rustix::fs::{Mode, OFlags, open, openat};
 use std::io::Read;
+
+/// The native sandbox one Attempt runs under, derived from its access alone. Both writable
+/// modes are rooted at the sandbox by `-C`; a package cannot supply `-s` or any other flag.
+pub fn task_sandbox_mode(access: WorkerAccess) -> &'static str {
+    if access.writes_sandbox() {
+        "workspace-write"
+    } else {
+        "read-only"
+    }
+}
 
 pub struct CodexTaskAdapter {
     program: String,
@@ -51,7 +61,7 @@ impl WorkerModelAdapter for CodexTaskAdapter {
         workdir: &Path,
         input: Vec<u8>,
         timeout: Duration,
-        writable: bool,
+        access: WorkerAccess,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
@@ -88,14 +98,14 @@ impl WorkerModelAdapter for CodexTaskAdapter {
             &self.program,
             &self.model_flags,
             workdir,
-            if writable {
-                "workspace-write"
-            } else {
-                "read-only"
-            },
+            task_sandbox_mode(access),
             &last_message,
         );
         let mut runner = ModelRunner::new(workdir, timeout);
+        if access == WorkerAccess::ExecuteChecks {
+            // A shell child must not outlive the Attempt that started it.
+            runner = runner.killing_process_group_on_exit();
+        }
         if let Some(home) = &self.codex_home {
             runner = runner.with_grant("CODEX_HOME", home);
         }

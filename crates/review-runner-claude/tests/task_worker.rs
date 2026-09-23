@@ -1,9 +1,9 @@
 use review_core::{Arg, Command};
-use review_runner::task::{WorkerContract, WorkerModelAdapter};
+use review_runner::task::{WorkerAccess, WorkerContract, WorkerModelAdapter};
 use review_runner_claude::task::ClaudeTaskAdapter;
 use review_store::Cas;
 use std::os::unix::fs::PermissionsExt;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// A Task adapter for `program`, with the explicit model restriction every Task binding carries.
 fn task_adapter(program: &str) -> ClaudeTaskAdapter {
@@ -45,7 +45,7 @@ fn review_role_keeps_the_legacy_read_only_tool_grant() {
         temp.path(),
         b"review".to_vec(),
         Duration::from_secs(5),
-        false,
+        WorkerAccess::ReadOnly,
         None,
         &[],
     );
@@ -67,6 +67,69 @@ fn review_role_keeps_the_legacy_read_only_tool_grant() {
         flag.split(',')
             .any(|tool| matches!(tool, "Edit" | "Write" | "Bash"))
     }));
+}
+
+/// Whether `pid` still names a live process. A Linux zombie is dead and holds nothing.
+fn alive(pid: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        && stat
+            .rsplit_once(')')
+            .is_some_and(|(_, rest)| rest.trim_start().starts_with('Z'))
+    {
+        return false;
+    }
+    std::process::Command::new("/bin/sh")
+        .args(["-c", "kill -0 \"$1\" 2>/dev/null", "fixture", pid])
+        .status()
+        .unwrap()
+        .success()
+}
+
+#[test]
+fn execute_checks_grants_bash_and_ends_shell_children_with_the_attempt() {
+    let temp = tempfile::tempdir().unwrap();
+    let cas = Cas::open(temp.path().join("cas")).unwrap();
+    let program = temp.path().join("fake-claude");
+    // The background sleep stands in for a shell command the model left running: it holds no
+    // pipe, so only the process-group kill on exit can end it.
+    std::fs::write(&program, "#!/bin/sh\ncat >/dev/null\nsleep 30 </dev/null >/dev/null 2>&1 &\nprintf '%s' $! >child\nprintf '%s\\n' \"$@\" >&2\nprintf '%s' '{\"is_error\":false,\"result\":\"OK\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}'\n").unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let adapter = task_adapter(program.to_str().unwrap());
+    let returned = adapter.invoke(
+        &cas,
+        temp.path(),
+        b"review".to_vec(),
+        Duration::from_secs(5),
+        WorkerAccess::ExecuteChecks,
+        None,
+        &[],
+    );
+    assert_eq!(returned.message.unwrap(), b"OK");
+    let child = std::fs::read_to_string(temp.path().join("child")).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while alive(&child) {
+        assert!(
+            Instant::now() < deadline,
+            "a shell child outlived its execute-checks Attempt"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let flags = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
+    let flags: Vec<_> = flags.lines().collect();
+    for required in ["--safe-mode", "--restricted", "--strict-mcp-config"] {
+        assert!(flags.contains(&required), "{flags:?}");
+    }
+    for (flag, expected) in [
+        ("--permission-mode", "dontAsk"),
+        ("--tools", "Read,Glob,Grep,Bash"),
+        ("--allowedTools", "Read,Glob,Grep,Bash"),
+    ] {
+        let index = flags.iter().position(|value| *value == flag).unwrap();
+        assert_eq!(flags[index + 1], expected);
+    }
+    let tools: Vec<_> = flags.iter().flat_map(|flag| flag.split(',')).collect();
+    assert!(!tools.contains(&"Edit") && !tools.contains(&"Write"));
 }
 
 #[test]
@@ -109,7 +172,7 @@ fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_messa
             } else {
                 Duration::from_secs(5)
             },
-            false,
+            WorkerAccess::ReadOnly,
             None,
             &[],
         );
@@ -189,7 +252,7 @@ fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage
             &workdir,
             b"{\"declared\":\"input\"}".to_vec(),
             Duration::from_secs(5),
-            false,
+            WorkerAccess::ReadOnly,
             None,
             &[],
         );
@@ -245,7 +308,7 @@ fn malformed_native_usage_refuses_message_and_survives_raw_capture_outage() {
             temp.path(),
             b"input".to_vec(),
             Duration::from_secs(5),
-            false,
+            WorkerAccess::ReadOnly,
             None,
             &[],
         );

@@ -202,3 +202,5 @@ future readers need.
   delivery](0116-report-undeclared-af-paths-and-let-a-project-refuse-them.md)
 - [0117 — Bind a Task input port to a recorded Task's
   output](0117-bind-task-inputs-to-recorded-task-outputs.md)
+- [0118 — Let a review Worker that declares `execute-checks` run in an ephemeral
+  clone](0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md)

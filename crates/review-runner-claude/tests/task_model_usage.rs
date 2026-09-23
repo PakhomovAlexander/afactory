@@ -1,6 +1,6 @@
 use review_core::{Arg, Command, Producer, task::usage::TASK_TOKEN_USAGE_V3};
 use review_runner::task::{
-    WorkerModelAdapter,
+    WorkerAccess, WorkerModelAdapter,
     usage::{persist_task_usage_exact, read_task_usage_exact},
 };
 use review_runner_claude::task::ClaudeTaskAdapter;
@@ -38,7 +38,7 @@ printf '%s' '{"is_error":false,"result":"OK","usage":{"input_tokens":0,"output_t
         temp.path(),
         b"public input".to_vec(),
         Duration::from_secs(5),
-        false,
+        WorkerAccess::ReadOnly,
         None,
         &[],
     );
@@ -112,7 +112,7 @@ fn synthetic_native_multi_model_usage_survives_refusal_timeout_and_cas_outage() 
             } else {
                 Duration::from_secs(5)
             },
-            false,
+            WorkerAccess::ReadOnly,
             None,
             &[],
         );
@@ -196,7 +196,7 @@ fn top_level_and_model_usage_charges_persist_and_reopen_exact() {
             temp.path(),
             b"input".to_vec(),
             Duration::from_secs(5),
-            false,
+            WorkerAccess::ReadOnly,
             None,
             &[],
         );

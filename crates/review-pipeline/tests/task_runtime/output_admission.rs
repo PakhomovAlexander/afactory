@@ -83,11 +83,11 @@ impl WorkerModelAdapter for DomainModel {
         _: &std::path::Path,
         bytes: Vec<u8>,
         _: std::time::Duration,
-        writable: bool,
+        access: review_runner::task::WorkerAccess,
         _: Option<&std::sync::atomic::AtomicBool>,
         _: &[(String, String)],
     ) -> ModelWorkerReturn {
-        assert!(!writable);
+        assert_eq!(access, review_runner::task::WorkerAccess::ReadOnly);
         let count = self.calls.fetch_add(1, Ordering::SeqCst);
         assert!(count < 2, "The original two-Attempt limit must hold");
         let request: serde_json::Value = serde_json::from_slice(&bytes).unwrap();

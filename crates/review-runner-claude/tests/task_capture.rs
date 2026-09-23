@@ -31,7 +31,7 @@ fn held_output_retains_reported_overrun_without_admitting_the_message() {
         temp.path(),
         b"input".to_vec(),
         Duration::from_secs(5),
-        false,
+        review_runner::task::WorkerAccess::ReadOnly,
         None,
         &[],
     );

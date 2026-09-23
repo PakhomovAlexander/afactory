@@ -47,6 +47,52 @@ expanded tree, Claude/Codex workflow and the automation boundary.
   allowance, and native identity is rechecked before every private send
   ([ADR-0090](adr/0090-recheck-native-task-provider-identity-before-private-invocation.md),
   [ADR-0091](adr/0091-capture-explicit-task-provider-admission-costs.md)).
+- A Worker's sandbox and a model Worker's tools derive from its captured effects alone. A review
+  Worker that declares `execute-checks` gets a shell in an ephemeral-write clone that seals
+  nothing back ([ADR-0118](adr/0118-let-review-workers-execute-checks-in-an-ephemeral-clone.md)).
+
+## Worker effects: what `execute-checks` grants a reviewer
+
+A Worker package declares its effects in `[signature] effects`. The Task's authority must allow
+each one before the plan compiler admits the Worker. One function,
+`review_pipeline::task::source::worker_access`, then turns the captured signature into a
+`review_runner::task::WorkerAccess`. The source environment picks the sandbox mode from it, and
+the native adapter picks its tool and sandbox flags from it. The two cannot disagree.
+
+| Declared effects | Access | Sandbox | Claude tools | Codex `-s` |
+|---|---|---|---|---|
+| `read-source`, or `execute-checks` on a Worker without the `review` role | `ReadOnly` | read-only materialization | `Read,Glob,Grep` | `read-only` |
+| `execute-checks` on a Worker with `roles` containing `review` (no `write-source`) | `ExecuteChecks` | ephemeral-write clone, nothing sealed back | `Read,Glob,Grep,Bash` | `workspace-write` |
+| `write-source` with a kernel-captured `candidate` port | `WriteSource` | ephemeral-write clone, captured as the candidate | `Read,Glob,Grep,Edit,Write` | `workspace-write` |
+
+What `execute-checks` grants a review Worker:
+
+- A writable clone of the exact source Snapshot. It is the same `Mode::EphemeralWrite` clone that
+  AF-owned preparation uses, and its declared Review inputs sit in the same place as in a
+  read-only run. The reviewer can build the candidate (`cargo build -p af`) and write its own
+  harness, for example a Python pseudo-terminal script under `target/uix-harness/`.
+- A shell. Claude gets `Bash` in the adapter-owned `--tools` and `--allowedTools` lists, still
+  under `--safe-mode --restricted --permission-mode dontAsk --strict-mcp-config`. Codex runs
+  `-s workspace-write`. Both are rooted at the sandbox root, which is also the working directory.
+- Scratch output beneath a new top-level directory that the Snapshot does not have, such as an
+  ignored `target/`. It is discarded with the clone.
+
+What it never grants:
+
+- Any change to the declared source. At `finish` every Snapshot entry must seal byte-identical,
+  and no file may be added at the root or under a top-level name the Snapshot holds. Any other
+  change fails the Attempt with `Execute-checks reviewer changed its declared source: <paths>`,
+  naming up to 20 paths and counting the rest. No candidate, Proposal or derived Snapshot is ever
+  produced from the clone.
+- Edit tools, MCP servers, a permission mode or any other flag. Package runner arguments stay
+  limited to one model and one effort, so no package, local binding or `.af/` policy can name a
+  tool that the declared effects do not derive.
+- Any shell for a Worker without the `review` role. It keeps its read-only source.
+- More time or tokens. The Attempt's wall clock and token reservation apply unchanged. With this
+  access the adapter ends the whole process group when the model process exits, through the
+  supervised process-group path in `review-process`, so a shell child cannot outlive the Attempt.
+- Isolation beyond what the installed sandbox provider gives. The `trusted_local` provider is still
+  not security isolation; the Task's captured isolation requirement still decides admission.
 
 ## Where the contracts live
 

@@ -9,7 +9,8 @@ use review_core::task::plan::ExecutionPlanV1;
 use review_core::task::{ArtifactInputV1, TaskRevisionV1};
 use review_core::{PortCardinality, Producer};
 use review_graph::task::OperatorSignature;
-use review_sandbox::{Mode, Policy, Sandbox};
+use review_runner::task::WorkerAccess;
+use review_sandbox::{Mode, Policy, Sandbox, SealedSandbox};
 use review_source_git::task::{
     CANDIDATE_TREE_V1, CandidateTree, SOURCE_TREE_V1, SourceTree, TaskSnapshot, derive_source_tree,
     read_manifest, read_snapshot,
@@ -23,6 +24,20 @@ use super::host::TaskEnvironment;
 
 pub struct SnapshotTaskEnvironment {
     pub policy: Policy,
+}
+
+/// The sandbox access a Worker's captured signature derives. The source environment's mode and
+/// the model adapter's tools both come from this one function, so they cannot disagree, and no
+/// package, runner argument or `.af/` policy can name a tool outside it. Only a review Worker
+/// turns `execute-checks` into a shell; any other Worker keeps its read-only source.
+pub fn worker_access(signature: &OperatorSignature) -> WorkerAccess {
+    if signature.effects.contains("write-source") {
+        WorkerAccess::WriteSource
+    } else if signature.effects.contains("execute-checks") && signature.roles.contains("review") {
+        WorkerAccess::ExecuteChecks
+    } else {
+        WorkerAccess::ReadOnly
+    }
 }
 
 impl SnapshotTaskEnvironment {
@@ -43,7 +58,7 @@ impl SnapshotTaskEnvironment {
         {
             return Err("AF-owned preparation requires a non-source-writing Worker".into());
         }
-        self.materialize_mode(cas, invocation, Mode::EphemeralWrite)
+        self.materialize_mode(cas, invocation, Mode::EphemeralWrite, false)
     }
 
     fn materialize_mode(
@@ -51,6 +66,7 @@ impl SnapshotTaskEnvironment {
         cas: &Cas,
         invocation: &TaskInvocationV1,
         mode: Mode,
+        captures_candidate: bool,
     ) -> Result<Sandbox, String> {
         let (id, _, mut manifest) = source_snapshot(
             cas,
@@ -59,11 +75,61 @@ impl SnapshotTaskEnvironment {
                 .get("source")
                 .ok_or("Source Worker has no source port")?,
         )?;
-        add_review_inputs(cas, invocation, mode, &id, &mut manifest)?;
+        add_review_inputs(cas, invocation, captures_candidate, &id, &mut manifest)?;
         let sandbox = Sandbox::materialize(&manifest, cas, mode).map_err(|e| e.to_string())?;
         review_sandbox::admit(self.policy, &sandbox).map_err(|e| e.to_string())?;
         Ok(sandbox)
     }
+}
+
+/// The top-level name a Manifest path lives under: its first component.
+fn top_level(path: &str) -> &str {
+    path.split_once('/').map_or(path, |(first, _)| first)
+}
+
+/// Every path by which a Worker without a candidate port changed its declared source, sorted.
+/// A read-only Worker may change nothing at all. An execute-checks reviewer may leave build
+/// output and its own harness only beneath a new top-level directory the materialized tree did
+/// not have (an ignored `target/`, say): the clone is discarded, so those bytes never reach a
+/// candidate, a Proposal or a delivered tree. Every materialized entry, every top-level name
+/// holding one and every file added at the root remain the declared source.
+fn source_edits(access: WorkerAccess, sealed: &SealedSandbox) -> Vec<String> {
+    let owned: BTreeSet<&str> = sealed
+        .baseline
+        .entries
+        .iter()
+        .map(|entry| top_level(&entry.path))
+        .collect();
+    let scratch = |path: &&String| {
+        access == WorkerAccess::ExecuteChecks
+            && path.contains('/')
+            && !owned.contains(top_level(path))
+    };
+    let mut changed: Vec<String> = sealed
+        .mutations
+        .modified
+        .iter()
+        .chain(&sealed.mutations.deleted)
+        .chain(sealed.mutations.added.iter().filter(|path| !scratch(path)))
+        .cloned()
+        .collect();
+    changed.sort();
+    changed
+}
+
+/// A bounded diagnostic naming changed paths: a build in the wrong place can touch thousands.
+fn name_paths(paths: &[String]) -> String {
+    const SHOWN: usize = 20;
+    let mut named = paths
+        .iter()
+        .take(SHOWN)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    if paths.len() > SHOWN {
+        named.push_str(&format!(" and {} more", paths.len() - SHOWN));
+    }
+    named
 }
 
 pub fn invocation_producer(
@@ -161,12 +227,13 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
                 "Source-writing Worker must expose a kernel-captured candidate port".into(),
             );
         }
-        let mode = if candidate_port(signature) {
-            Mode::EphemeralWrite
-        } else {
-            Mode::ReadOnly
+        // An execute-checks reviewer gets the same ephemeral clone as AF-owned preparation:
+        // writable so it can build and run the candidate, sealed back never.
+        let mode = match worker_access(signature) {
+            WorkerAccess::ReadOnly => Mode::ReadOnly,
+            WorkerAccess::ExecuteChecks | WorkerAccess::WriteSource => Mode::EphemeralWrite,
         };
-        self.materialize_mode(cas, invocation, mode)
+        self.materialize_mode(cas, invocation, mode, candidate_port(signature))
     }
 
     fn finish(
@@ -180,8 +247,15 @@ impl TaskEnvironment for SnapshotTaskEnvironment {
     ) -> Result<BTreeMap<String, ArtifactInputV1>, String> {
         let sealed = sandbox.seal().map_err(|e| e.to_string())?;
         if !candidate_port(signature) {
-            if !sealed.unchanged() {
-                return Err("Read-only Worker mutated its source Snapshot".into());
+            let access = worker_access(signature);
+            let changed = source_edits(access, &sealed);
+            if !changed.is_empty() {
+                let what = if access == WorkerAccess::ExecuteChecks {
+                    "Execute-checks reviewer changed its declared source"
+                } else {
+                    "Read-only Worker mutated its source Snapshot"
+                };
+                return Err(format!("{what}: {}", name_paths(&changed)));
             }
             return Ok(outputs);
         }
@@ -301,12 +375,13 @@ pub fn validate_seal(
     Ok(())
 }
 
-/// Host input files belong only to the disposable read-only baseline. They are not source
-/// Snapshot entries and can never flow through the candidate-tree capture path.
+/// Host input files belong only to the disposable baseline. They are not source Snapshot
+/// entries and can never flow through the candidate-tree capture path; an execute-checks clone
+/// seals them back unchanged or fails like any other declared source.
 pub(super) fn add_review_inputs(
     cas: &Cas,
     invocation: &TaskInvocationV1,
-    mode: Mode,
+    captures_candidate: bool,
     source: &str,
     manifest: &mut review_source_git::Manifest,
 ) -> Result<(), String> {
@@ -319,8 +394,8 @@ pub(super) fn add_review_inputs(
         return Ok(());
     };
     port.validate()?;
-    if mode != Mode::ReadOnly || port.cardinality != PortCardinality::One {
-        return Err("Readable Review inputs require a read-only source Worker".into());
+    if captures_candidate || port.cardinality != PortCardinality::One {
+        return Err("Readable Review inputs require a Worker whose tree is never captured".into());
     }
     let artifact = envelope(cas, &port.artifact_ids[0])?;
     let subject: TaskReviewSubjectV2 =
@@ -387,4 +462,101 @@ pub(super) fn add_review_inputs(
     });
     *manifest = review_source_git::Manifest::new(entries).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use review_core::task::pipeline::PipelineContractV1;
+    use review_source_git::{Entry, EntryKind, Manifest};
+
+    fn signature(effects: &str, roles: &str) -> OperatorSignature {
+        OperatorSignature {
+            contract: PipelineContractV1 {
+                inputs: BTreeMap::new(),
+                outputs: BTreeMap::new(),
+            },
+            effects: effects.split_whitespace().map(str::to_owned).collect(),
+            evidence: BTreeMap::new(),
+            retains: BTreeMap::new(),
+            roles: roles.split_whitespace().map(str::to_owned).collect(),
+            worker_input_type: None,
+            worker_output_type: None,
+            outcome_port: None,
+            attempt: None,
+        }
+    }
+
+    #[test]
+    fn only_a_review_worker_turns_execute_checks_into_a_shell() {
+        use WorkerAccess::{ExecuteChecks, ReadOnly, WriteSource};
+        for (effects, roles, access) in [
+            ("read-source", "review", ReadOnly),
+            ("", "review", ReadOnly),
+            ("read-source execute-checks", "review", ExecuteChecks),
+            ("execute-checks", "author review", ExecuteChecks),
+            ("read-source execute-checks", "author", ReadOnly),
+            ("read-source execute-checks", "", ReadOnly),
+            ("write-source", "author", WriteSource),
+            ("write-source execute-checks", "review", WriteSource),
+        ] {
+            assert_eq!(
+                worker_access(&signature(effects, roles)),
+                access,
+                "effects `{effects}`, roles `{roles}`"
+            );
+        }
+    }
+
+    /// Seal an ephemeral-write clone of a two-file source after `edit` ran in it.
+    fn sealed_after(cas: &Cas, edit: impl FnOnce(&std::path::Path)) -> SealedSandbox {
+        let entries: Vec<Entry> = [
+            ("lib.rs", "pub fn a() {}\n"),
+            ("src/main.rs", "fn main() {}\n"),
+        ]
+        .into_iter()
+        .map(|(path, text)| Entry {
+            path: path.into(),
+            kind: EntryKind::File,
+            content: cas.put(text.as_bytes()).unwrap(),
+            size: text.len() as u64,
+        })
+        .collect();
+        let manifest = Manifest::new(entries).unwrap();
+        let sandbox = Sandbox::materialize(&manifest, cas, Mode::EphemeralWrite).unwrap();
+        edit(sandbox.root());
+        sandbox.seal().unwrap()
+    }
+
+    #[test]
+    fn execute_checks_scratch_lives_only_beneath_a_new_top_level_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let cas = Cas::open(directory.path().join("cas")).unwrap();
+        let build = sealed_after(&cas, |root| {
+            std::fs::create_dir_all(root.join("target/uix-harness")).unwrap();
+            std::fs::write(root.join("target/uix-harness/drive.py"), "import pty\n").unwrap();
+        });
+        assert!(source_edits(WorkerAccess::ExecuteChecks, &build).is_empty());
+        assert_eq!(
+            source_edits(WorkerAccess::ReadOnly, &build),
+            ["target/uix-harness/drive.py"]
+        );
+        let edited = sealed_after(&cas, |root| {
+            std::fs::create_dir_all(root.join("target")).unwrap();
+            std::fs::write(root.join("target/out"), "build output\n").unwrap();
+            std::fs::write(root.join("lib.rs"), "pub fn b() {}\n").unwrap();
+            std::fs::remove_file(root.join("src/main.rs")).unwrap();
+            std::fs::write(root.join("src/extra.rs"), "pub fn c() {}\n").unwrap();
+            std::fs::write(root.join("NOTES.md"), "root file\n").unwrap();
+        });
+        assert_eq!(
+            source_edits(WorkerAccess::ExecuteChecks, &edited),
+            ["NOTES.md", "lib.rs", "src/extra.rs", "src/main.rs"]
+        );
+        let paths: Vec<String> = (0..25).map(|n| format!("p{n:02}")).collect();
+        assert_eq!(
+            name_paths(&paths),
+            format!("{} and 5 more", paths[..20].join(", "))
+        );
+    }
 }

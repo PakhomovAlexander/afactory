@@ -1,9 +1,22 @@
 //! Claude framing for generic typed Task Workers. No review-result parser or retry loop.
 use super::*;
-use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
+use review_runner::task::{ModelWorkerReturn, WorkerAccess, WorkerModelAdapter};
 
 mod model_usage;
 mod structured;
+
+/// The adapter-owned tool grant for one Attempt, derived from its access alone. The same list
+/// fills `--tools` and `--allowedTools`; a package cannot add Bash, MCP or permission flags.
+pub fn task_tools(access: WorkerAccess) -> &'static str {
+    match access {
+        WorkerAccess::ReadOnly => "Read,Glob,Grep",
+        // Build and drive the candidate from a shell. The sandbox is an ephemeral clone whose
+        // declared source the kernel requires unchanged at seal; there are no edit tools.
+        WorkerAccess::ExecuteChecks => "Read,Glob,Grep,Bash",
+        // Native file edits only; the kernel captures the sealed tree as the candidate.
+        WorkerAccess::WriteSource => "Read,Glob,Grep,Edit,Write",
+    }
+}
 
 pub struct ClaudeTaskAdapter {
     program: String,
@@ -61,7 +74,7 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
         workdir: &Path,
         input: Vec<u8>,
         timeout: Duration,
-        writable: bool,
+        access: WorkerAccess,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
@@ -92,21 +105,25 @@ impl WorkerModelAdapter for ClaudeTaskAdapter {
                 .args
                 .extend([Arg::literal("--json-schema"), Arg::literal(schema)]);
         }
-        if writable {
-            // The same restricted root and customization isolation as review. The write role
-            // adds only native file edits; a package cannot supply Bash, MCP or permission flags.
-            for arg in &mut command.args {
-                if arg.value == "Read,Glob,Grep" {
-                    *arg = Arg::literal("Read,Glob,Grep,Edit,Write");
-                }
+        // The same restricted root and customization isolation as review; only the tool list
+        // widens, and only as far as the kernel-derived access.
+        let tools = task_tools(access);
+        for arg in &mut command.args {
+            if arg.value == "Read,Glob,Grep" {
+                *arg = Arg::literal(tools);
             }
         }
         // Native 2.1.272 uses these guards to latch automatic title generation before its
         // auxiliary inference. They preserve OAuth/auth grants, unlike --bare. This is a
         // bounded client mitigation, not proof that every internal model request is disabled.
+        // The working directory is the sandbox root the kernel materialized.
         let mut runner = ModelRunner::new(workdir, timeout)
             .with_env("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
             .with_env("CLAUDE_CODE_DISABLE_TERMINAL_TITLE", "1");
+        if access == WorkerAccess::ExecuteChecks {
+            // A shell child must not outlive the Attempt that started it.
+            runner = runner.killing_process_group_on_exit();
+        }
         for (name, value) in &self.grants {
             runner = runner.with_env(name, value);
         }

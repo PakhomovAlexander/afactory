@@ -1,6 +1,6 @@
-use review_core::Command;
-use review_runner::task::{WorkerContract, WorkerModelAdapter};
-use review_runner_codex::task::CodexTaskAdapter;
+use review_core::{Arg, Command};
+use review_runner::task::{WorkerAccess, WorkerContract, WorkerModelAdapter};
+use review_runner_codex::task::{CodexTaskAdapter, task_sandbox_mode};
 use review_store::Cas;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
@@ -36,7 +36,7 @@ fn review_role_keeps_the_legacy_workspace_write_sandbox() {
         temp.path(),
         b"review".to_vec(),
         Duration::from_secs(5),
-        true,
+        WorkerAccess::WriteSource,
         None,
         &[],
     );
@@ -47,6 +47,81 @@ fn review_role_keeps_the_legacy_workspace_write_sandbox() {
     assert_eq!(flags[index + 1], "workspace-write");
     assert!(!flags.contains(&"read-only"));
     assert!(!flags.iter().any(|flag| flag.contains("dangerously-bypass")));
+}
+
+#[test]
+fn execute_checks_runs_workspace_write_rooted_at_the_sandbox() {
+    // Package runner args are restricted to one model and one reasoning effort; sandbox,
+    // approval and configuration flags are refused before a command exists.
+    for (option, value) in [
+        ("-s", "danger-full-access"),
+        ("--sandbox", "workspace-write"),
+        ("-C", "/"),
+        ("-c", "sandbox_mode=\"danger-full-access\""),
+        ("--dangerously-bypass-approvals-and-sandbox", "true"),
+    ] {
+        assert!(
+            CodexTaskAdapter::new(&Command::new(
+                "codex",
+                vec![Arg::literal(option), Arg::literal(value)],
+            ))
+            .is_err(),
+            "{option} is package-supplied authority"
+        );
+    }
+    for (access, mode) in [
+        (WorkerAccess::ReadOnly, "read-only"),
+        (WorkerAccess::ExecuteChecks, "workspace-write"),
+        (WorkerAccess::WriteSource, "workspace-write"),
+    ] {
+        assert_eq!(task_sandbox_mode(access), mode);
+        let temp = tempfile::tempdir().unwrap();
+        let cas = Cas::open(temp.path().join("cas")).unwrap();
+        let sandbox = temp.path().join("sandbox");
+        std::fs::create_dir(&sandbox).unwrap();
+        let program = temp.path().join("fake-codex");
+        std::fs::write(&program, format!("#!/bin/sh\ncat >/dev/null\npwd >&2\nprintf '%s\\n' \"$@\" >&2\n{}printf '%s\\n' '{{\"type\":\"turn.completed\",\"usage\":{{\"input_tokens\":1,\"output_tokens\":1}}}}'\n", write_reply("OK"))).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let adapter = CodexTaskAdapter::new(&Command::new(
+            program.to_str().unwrap(),
+            ["--model", "gpt-x", "-c", "model_reasoning_effort=high"]
+                .into_iter()
+                .map(Arg::literal)
+                .collect(),
+        ))
+        .unwrap();
+        let returned = adapter.invoke(
+            &cas,
+            &sandbox,
+            b"review".to_vec(),
+            Duration::from_secs(5),
+            access,
+            None,
+            &[],
+        );
+        assert_eq!(returned.message.unwrap(), b"OK");
+        let lines = String::from_utf8(cas.get(&returned.raw_artifact_ids[1]).unwrap()).unwrap();
+        let lines: Vec<_> = lines.lines().collect();
+        // The process starts in the sandbox root, and `-C` names that same root.
+        let root = std::fs::canonicalize(&sandbox).unwrap();
+        assert_eq!(std::fs::canonicalize(lines[0]).unwrap(), root);
+        let flags = &lines[1..];
+        let at = |flag: &str| flags.iter().position(|value| *value == flag).unwrap();
+        assert_eq!(
+            std::fs::canonicalize(flags[at("-C") + 1]).unwrap(),
+            root,
+            "{flags:?}"
+        );
+        assert_eq!(flags[at("-s") + 1], mode);
+        assert_eq!(flags.iter().filter(|value| **value == "-s").count(), 1);
+        // Nothing but the package's own model flags follows the adapter-owned prefix.
+        let output = at("-o");
+        assert_eq!(
+            &flags[output + 2..],
+            ["--model", "gpt-x", "-c", "model_reasoning_effort=high", "-",]
+        );
+        assert!(!flags.iter().any(|flag| flag.contains("dangerously")));
+    }
 }
 
 #[test]
@@ -95,7 +170,7 @@ fn timeout_and_cas_failure_preserve_reported_overrun_without_admitting_the_messa
             } else {
                 Duration::from_secs(5)
             },
-            false,
+            WorkerAccess::ReadOnly,
             None,
             &[],
         );
@@ -181,7 +256,7 @@ fn typed_document_and_malformed_or_failed_results_retain_the_same_provider_usage
             &workdir,
             b"{\"declared\":\"input\"}".to_vec(),
             Duration::from_secs(5),
-            false,
+            WorkerAccess::ReadOnly,
             None,
             &[],
         );
@@ -235,7 +310,7 @@ fn multiple_native_turns_retain_exact_components_and_uncached_charge() {
         temp.path(),
         b"input".to_vec(),
         Duration::from_secs(5),
-        false,
+        WorkerAccess::ReadOnly,
         None,
         &[],
     );
@@ -289,7 +364,7 @@ fn malformed_native_usage_refuses_message_and_survives_raw_capture_outage() {
             temp.path(),
             b"input".to_vec(),
             Duration::from_secs(5),
-            false,
+            WorkerAccess::ReadOnly,
             None,
             &[],
         );

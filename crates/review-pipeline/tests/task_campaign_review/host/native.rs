@@ -2,7 +2,7 @@ use super::super::capture::captured_fixture;
 use super::*;
 use review_core::task::plan::{ExecutionPlanV1, WorkerExecutionV1};
 use review_pipeline::task::host::TaskModelBinding;
-use review_runner::task::{ModelWorkerReturn, WorkerModelAdapter};
+use review_runner::task::{ModelWorkerReturn, WorkerAccess, WorkerModelAdapter};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Model {
@@ -25,18 +25,25 @@ impl WorkerModelAdapter for Model {
         _: &std::path::Path,
         input: Vec<u8>,
         _: std::time::Duration,
-        writable: bool,
+        access: WorkerAccess,
         _: Option<&std::sync::atomic::AtomicBool>,
         _: &[(String, String)],
     ) -> ModelWorkerReturn {
         let n = self.calls.fetch_add(1, Ordering::SeqCst);
         let (message, usage) = if n == 0 {
-            assert!(!writable);
+            assert_eq!(access, WorkerAccess::ReadOnly);
             assert_eq!(input, b"Reply with exactly: OK\n");
             (if self.admitted { "OK" } else { "unavailable" }, 1)
         } else {
             assert!(self.admitted);
-            assert_eq!(writable, self.provider_kind == "codex");
+            assert_eq!(
+                access,
+                if self.provider_kind == "codex" {
+                    WorkerAccess::WriteSource
+                } else {
+                    WorkerAccess::ReadOnly
+                }
+            );
             assert!(
                 n <= if self.retry { 2 } else { 1 },
                 "replay must reuse the selected Attempt"
@@ -479,7 +486,7 @@ impl WorkerModelAdapter for Substituted<'_> {
         workdir: &std::path::Path,
         input: Vec<u8>,
         timeout: std::time::Duration,
-        writable: bool,
+        access: WorkerAccess,
         cancellation: Option<&std::sync::atomic::AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn {
@@ -488,7 +495,7 @@ impl WorkerModelAdapter for Substituted<'_> {
             workdir,
             input,
             timeout,
-            writable,
+            access,
             cancellation,
             environment,
         )
@@ -1085,11 +1092,11 @@ fn incomplete_billing_on_captured_reviewers_never_publishes_a_selected_result() 
             _: &std::path::Path,
             input: Vec<u8>,
             _: std::time::Duration,
-            writable: bool,
+            access: WorkerAccess,
             _: Option<&std::sync::atomic::AtomicBool>,
             _: &[(String, String)],
         ) -> ModelWorkerReturn {
-            assert!(!writable);
+            assert_eq!(access, WorkerAccess::ReadOnly);
             let call = self.0.fetch_add(1, Ordering::SeqCst);
             assert!(call <= 2);
             if call == 0 {

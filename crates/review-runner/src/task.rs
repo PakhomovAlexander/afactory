@@ -394,6 +394,27 @@ pub struct ModelWorkerReturn {
     pub raw_artifact_ids: Vec<String>,
 }
 
+/// The sandbox authority one model Attempt runs with. The host derives it from the Worker's
+/// captured effects alone; each adapter maps it onto its own tool and sandbox flags, so a
+/// package can never name a tool, a permission mode or an MCP server.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerAccess {
+    /// Read the materialized source; no shell and no edits.
+    ReadOnly,
+    /// Read the source and run a shell inside an ephemeral-write clone. Nothing is sealed
+    /// back: the kernel refuses the Attempt if the declared source changed.
+    ExecuteChecks,
+    /// Edit files inside the sandbox; the kernel captures the sealed tree as the candidate.
+    WriteSource,
+}
+
+impl WorkerAccess {
+    /// Whether the adapter must let the process write inside its sandbox root.
+    pub fn writes_sandbox(self) -> bool {
+        !matches!(self, Self::ReadOnly)
+    }
+}
+
 pub trait WorkerModelAdapter: Send + Sync {
     /// Credential boundary this adapter actually provides. Model transports run trusted and
     /// may hold ambient Provider credentials.
@@ -406,7 +427,8 @@ pub trait WorkerModelAdapter: Send + Sync {
     /// a plan binding; provider defaults or aliases must be resolved during host admission.
     fn model_settings(&self) -> Option<(String, String)>;
     /// Called only by the host after common Task Attempt admission. The adapter owns security
-    /// flags; writable grants only edits inside the supplied source sandbox. An adapter honors
+    /// flags and derives its tools from `access` alone; no access grants anything outside the
+    /// supplied source sandbox. An adapter honors
     /// both controls or refuses before it spawns: `cancellation` must stop an in-flight
     /// process (a preflight flag check alone is not support), and `environment` carries the
     /// sandbox-local, non-secret variables the kernel resolved for this exact Attempt, such as
@@ -418,7 +440,7 @@ pub trait WorkerModelAdapter: Send + Sync {
         workdir: &Path,
         input: Vec<u8>,
         timeout: Duration,
-        writable: bool,
+        access: WorkerAccess,
         cancellation: Option<&AtomicBool>,
         environment: &[(String, String)],
     ) -> ModelWorkerReturn;
@@ -446,7 +468,7 @@ pub fn invoke_model(
     contract: &WorkerContract,
     context_id: &str,
     timeout: Duration,
-    writable: bool,
+    access: WorkerAccess,
     cancellation: Option<&AtomicBool>,
 ) -> WorkerReturn {
     let bytes = match contract.read_context(cas, context_id) {
@@ -461,7 +483,7 @@ pub fn invoke_model(
             };
         }
     };
-    let returned = adapter.invoke(cas, workdir, bytes, timeout, writable, cancellation, &[]);
+    let returned = adapter.invoke(cas, workdir, bytes, timeout, access, cancellation, &[]);
     let (reply, feedback_code) = match returned.message {
         Ok(bytes) => {
             let reply = contract.validate_reply(&bytes);

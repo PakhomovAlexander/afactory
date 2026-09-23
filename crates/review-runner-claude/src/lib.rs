@@ -7,8 +7,10 @@
 //! the prompt is streamed on stdin so Change Sets are not constrained by the argv ceiling. The
 //! adapter appends `--safe-mode --restricted` and an explicit read-only tool grant after package
 //! model flags, so repository settings, Hooks, plugins, MCP servers, and package arguments cannot
-//! widen Worker authority. [`ClaudeAdapter`] renders a package's input for `af review render`;
-//! [`task::ClaudeTaskAdapter`] runs it.
+//! widen Worker authority. A Task Attempt widens that grant only as far as the kernel-derived
+//! [`WorkerAccess`](review_runner::task::WorkerAccess) allows ([`task::task_tools`]).
+//! [`ClaudeAdapter`] renders a package's input for `af review render`; [`task::ClaudeTaskAdapter`]
+//! runs it.
 //!
 //! **Auth is explicit grants, discovered by bisection against the real CLI.** Keychain auth
 //! needs `USER` (the keychain account) and the real `HOME` (the keychain search path). An

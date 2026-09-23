@@ -924,7 +924,8 @@ impl<'a> CapturedTaskHost<'a> {
                     &worker.contract,
                     attempt.context_id(),
                     Duration::from_millis(remaining),
-                    worker.signature.effects.contains("write-source"),
+                    // The adapter's tools follow the same captured effects as the sandbox mode.
+                    super::source::worker_access(&worker.signature),
                     cancellation,
                 ),
             };

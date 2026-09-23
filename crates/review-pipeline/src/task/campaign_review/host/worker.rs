@@ -343,7 +343,11 @@ impl CampaignReviewTaskHost<'_, '_> {
                         sandbox.root(),
                         bytes,
                         timeout,
-                        provider_kind == "codex",
+                        if provider_kind == "codex" {
+                            review_runner::task::WorkerAccess::WriteSource
+                        } else {
+                            review_runner::task::WorkerAccess::ReadOnly
+                        },
                         cancellation,
                         &environment,
                     )

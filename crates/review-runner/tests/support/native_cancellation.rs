@@ -1,5 +1,5 @@
 //! Actual native framing plus cooperative cancellation; no model or network calls.
-use review_runner::task::WorkerModelAdapter;
+use review_runner::task::{WorkerAccess, WorkerModelAdapter};
 use review_store::Cas;
 use std::os::unix::fs::PermissionsExt;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -53,7 +53,7 @@ pub fn check(
             directory.path(),
             b"exact context".to_vec(),
             Duration::from_secs(10),
-            false,
+            WorkerAccess::ReadOnly,
             Some(&flag),
             &[],
         );
@@ -103,7 +103,7 @@ pub fn check(
                 directory.path(),
                 b"exact context".to_vec(),
                 Duration::from_secs(10),
-                false,
+                WorkerAccess::ReadOnly,
                 Some(&flag),
                 &[],
             );

@@ -127,7 +127,7 @@ impl WorkerModelAdapter for Recording {
         _workdir: &Path,
         _input: Vec<u8>,
         _timeout: Duration,
-        _writable: bool,
+        _access: review_runner::task::WorkerAccess,
         _cancellation: Option<&AtomicBool>,
         _environment: &[(String, String)],
     ) -> ModelWorkerReturn {
@@ -171,7 +171,7 @@ fn sandbox_environment_passes_the_identity_recheck_before_it_can_reach_the_nativ
         directory.path(),
         b"{}".to_vec(),
         Duration::from_secs(5),
-        false,
+        review_runner::task::WorkerAccess::ReadOnly,
         None,
         &environment,
     );
