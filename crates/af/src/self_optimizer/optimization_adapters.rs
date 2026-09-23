@@ -1123,6 +1123,43 @@ mod tests {
         assert!(parse_af_inspection(&mut adapter, &corrupt).is_err());
     }
 
+    /// A Task whose file bound a root input port carries an `input_bindings` record in the same
+    /// `af/task-inspection@11` document. The adapter admits it, and its accounting reads exactly
+    /// as the same receipt without the record (ADR-0117). The receipt is a real
+    /// `af task plan --json` document from the `bound-inputs` fixture, written by
+    /// `crates/af/tests/task_input_bindings.rs` under `AF_WRITE_INSPECTION_FIXTURE=1`.
+    #[test]
+    fn a_bound_tasks_inspection_receipt_reads_exactly_as_an_unbound_one() {
+        let real =
+            include_str!("../../../../fixtures/task-runtime/bound-inputs/inspection-bound.json");
+        let mut receipt: serde_json::Value = serde_json::from_str(real).unwrap();
+        assert_eq!(receipt["schema"], "af/task-inspection@11");
+        assert!(receipt["input_bindings"]["bindings"]["history"].is_object());
+        // The adapter admits a receipt only for the execution it declared: this Task.
+        let task_id = receipt["task_id"].as_str().unwrap().to_owned();
+        let declared = |root: &Path| {
+            let digest = format!("sha256:{}", "1".repeat(64));
+            AdapterState::new("af", &digest, &task_id, root, 2_000_000_000_000, false)
+        };
+
+        let bound_dir = tempfile::tempdir().unwrap();
+        let mut adapter = declared(bound_dir.path());
+        adapter.attest_project = true;
+        let bound = parse_af_inspection(&mut adapter, &receipt).unwrap();
+        let bound = serde_json::to_value(&bound).unwrap();
+
+        receipt.as_object_mut().unwrap().remove("input_bindings");
+        let dir = tempfile::tempdir().unwrap();
+        let mut adapter = declared(dir.path());
+        adapter.attest_project = true;
+        let baseline = parse_af_inspection(&mut adapter, &receipt).unwrap();
+        assert_eq!(
+            bound,
+            serde_json::to_value(&baseline).unwrap(),
+            "a binding record is provenance and changes no counter"
+        );
+    }
+
     #[test]
     fn experimental_inspection_counts_children_failed_arms_and_updates_once() {
         let dir = tempfile::tempdir().unwrap();

@@ -508,6 +508,29 @@
     "delivery": {
       "$ref": "#/$defs/deliveryReceipt"
     },
+    "undeclared_af_paths": {
+      "$comment": "Paths under .af/ of one captured Snapshot that the declared layout does not name, with their byte total. Advisory: classification reports, it never removes a path from a Snapshot or from a delivered worktree. Present only when there is at least one such path, so a document or receipt with a fully declared authority tree carries no field at all.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "paths",
+        "bytes"
+      ],
+      "properties": {
+        "paths": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string"
+          }
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        }
+      }
+    },
     "result": {
       "$ref": "urn:af:schema:task-contracts:1#/$defs/taskResult"
     },
@@ -944,6 +967,10 @@
           }
         }
       }
+    },
+    "input_bindings": {
+      "$comment": "The af/TaskInputBindings@1 record of a Task whose file bound a root input port to a recorded Task's output or an exact artifact (ADR-0117). Present only when there is a binding; it is provenance and changes no counter.",
+      "$ref": "urn:af:schema:task-input-bindings:1"
     }
   },
   "$defs": {
@@ -1111,6 +1138,9 @@
               "items": {
                 "type": "string"
               }
+            },
+            "undeclared_af_paths": {
+              "$ref": "#/properties/undeclared_af_paths"
             }
           }
         }

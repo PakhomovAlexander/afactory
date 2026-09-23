@@ -1,8 +1,8 @@
 use crate::control::{ReceiveError, cancelled, receive};
 use crate::drain::{Drain, Drained, collect_after_kill_until, collect_cancellable, drain_async};
 use crate::{
-    ExitPolicy, SupervisedError, SupervisedOutput, SupervisedStreamError, kill_process_group,
-    stdin_writer_wait, wait_exact, wait_exact_cancellable,
+    ExitPolicy, Leader, SupervisedError, SupervisedOutput, SupervisedStreamError,
+    stdin_writer_wait, wait_exact_cancellable,
 };
 use std::io::Write;
 use std::process::{Command, ExitStatus, Stdio};
@@ -144,15 +144,19 @@ fn failed<E>(
     error: SupervisedStreamError<E>,
     stdout: Drain,
     stderr: Drain,
-    pid: u32,
+    leader: &Leader,
 ) -> StreamCapture<E> {
-    // Close the entire owned group before waiting for either drain or the scoped writer.
+    // Close the entire owned group before waiting for either drain or the scoped writer, then
+    // reap the leader last, once nothing will signal its pid again.
     let deadline = Instant::now() + crate::OUTPUT_DRAIN_GRACE;
-    kill_process_group(pid);
+    leader.kill_group();
+    let stdout = collect_after_kill_until(stdout, deadline);
+    let stderr = collect_after_kill_until(stderr, deadline);
+    let _ = leader.reap();
     StreamCapture {
         status: Err(error),
-        stdout: collect_after_kill_until(stdout, deadline),
-        stderr: collect_after_kill_until(stderr, deadline),
+        stdout,
+        stderr,
         stderr_held: false,
     }
 }
@@ -214,10 +218,13 @@ where
         Ok(child) => child,
         Err(error) => return StreamCapture::empty(SupervisedError::Spawn(error)),
     };
-    let pid = child.id();
+    let stdin_pipe = child.stdin.take();
+    let stdout_pipe = child.stdout.take().expect("stdout was piped");
+    let stderr_pipe = child.stderr.take().expect("stderr was piped");
+    let leader = Leader::new(child);
     std::thread::scope(|scope| {
         let stdin_result = writer.map(|writer| {
-            let mut stdin = child.stdin.take().expect("stdin was piped");
+            let mut stdin = stdin_pipe.expect("stdin was piped");
             let (send, receive) = std::sync::mpsc::channel();
             scope.spawn(move || {
                 let result =
@@ -226,21 +233,19 @@ where
             });
             receive
         });
-        let stdout = drain_async(child.stdout.take().expect("stdout was piped"));
-        let stderr = drain_async(child.stderr.take().expect("stderr was piped"));
+        let stdout = drain_async(stdout_pipe);
+        let stderr = drain_async(stderr_pipe);
         let deadline = Instant::now() + timeout;
-        let waited = match cancellation {
-            Some(flag) => wait_exact_cancellable(child, deadline, Some(flag)),
-            None => wait_exact(child, deadline),
-        };
-        let status = match waited {
-            Ok(status) => status,
-            Err(error) => {
-                return failed(SupervisedStreamError::Process(error), stdout, stderr, pid);
-            }
-        };
-        if exit_policy == ExitPolicy::KillProcessGroup {
-            kill_process_group(pid);
+        let kill_group_on_exit = exit_policy == ExitPolicy::KillProcessGroup;
+        if let Err(error) =
+            wait_exact_cancellable(deadline, cancellation, &leader, kill_group_on_exit)
+        {
+            return failed(
+                SupervisedStreamError::Process(error),
+                stdout,
+                stderr,
+                &leader,
+            );
         }
         if let Some(receiver) = stdin_result {
             let error = match receive(&receiver, stdin_writer_wait(deadline), cancellation) {
@@ -265,22 +270,34 @@ where
                 }
             };
             if let Some(error) = error {
-                return failed(error, stdout, stderr, pid);
+                return failed(error, stdout, stderr, &leader);
             }
         }
         let mut cleanup = None;
-        let stdout = collect_cancellable(stdout, "stdout", pid, &mut cleanup, cancellation);
+        let stdout = collect_cancellable(stdout, "stdout", &leader, &mut cleanup, cancellation);
         if stdout.status.is_err() {
             cleanup.get_or_insert_with(|| Instant::now() + crate::OUTPUT_DRAIN_GRACE);
-            kill_process_group(pid);
+            leader.kill_group();
         }
-        let stderr = collect_cancellable(stderr, "stderr", pid, &mut cleanup, cancellation);
+        let stderr = collect_cancellable(stderr, "stderr", &leader, &mut cleanup, cancellation);
         if stderr.status.is_err() {
-            kill_process_group(pid);
+            leader.kill_group();
         }
-        let mut capture = completed(status, stdout, stderr);
-        if capture.status.is_ok() && cancelled(cancellation) {
-            kill_process_group(pid);
+        let cancelled_now = cancelled(cancellation);
+        if cancelled_now {
+            leader.kill_group();
+        }
+        // Reaping is the final operation: every kill above ran while the pid was reserved.
+        let mut capture = match leader.reap() {
+            Ok(status) => completed(status, stdout, stderr),
+            Err(error) => StreamCapture {
+                status: Err(SupervisedStreamError::Process(SupervisedError::Wait(error))),
+                stdout: stdout.bytes,
+                stderr: stderr.bytes,
+                stderr_held: false,
+            },
+        };
+        if capture.status.is_ok() && cancelled_now {
             capture.status = Err(SupervisedStreamError::Process(SupervisedError::Cancelled));
         }
         capture

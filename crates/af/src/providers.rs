@@ -1306,6 +1306,35 @@ fn bound_directory_is_current(path: &Path, directory: &File) -> std::io::Result<
         && path.ino() == directory.ino())
 }
 
+/// Create-or-open a lock file beneath an already bound directory.
+///
+/// APFS can answer a concurrent `openat(O_CREAT)` of the same name with a spurious `ENOENT`
+/// while another process is creating that very file. The directory itself is bound and
+/// verified current by the caller, so `ENOENT` here is that race, not a missing parent; retry
+/// a bounded number of times before reporting it. A genuinely absent directory still fails
+/// after the retries with the same error.
+#[cfg(unix)]
+fn open_lock_at(
+    directory: &impl std::os::fd::AsFd,
+    name: &std::ffi::OsStr,
+) -> Result<File, rustix::io::Errno> {
+    use rustix::fs::{Mode, OFlags, openat};
+
+    let flags = OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW;
+    let mode = Mode::RUSR | Mode::WUSR;
+    let mut attempts = 0;
+    loop {
+        match openat(directory, name, flags, mode) {
+            Ok(fd) => return Ok(fd.into()),
+            Err(rustix::io::Errno::NOENT) if attempts < 32 => {
+                attempts += 1;
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn auth_context_lock(kind: ProviderKind, auth_dir: &Path) -> Result<BoundDirectoryLock, String> {
     auth_context_lock_with_hook(kind, auth_dir, || {})
 }
@@ -1318,15 +1347,11 @@ fn auth_context_lock_with_hook(
     let directory = bind_directory(auth_dir, "auth directory")?;
     let lock_path = auth_dir.join(format!(".af-{}-setup.lock", kind.name()));
     let file: File = {
-        use rustix::fs::{Mode, OFlags, openat};
-
-        openat(
+        open_lock_at(
             &directory,
             lock_path.file_name().ok_or_else(|| {
                 format!("auth-context lock {} has no file name", lock_path.display())
             })?,
-            OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::RUSR | Mode::WUSR,
         )
         .map_err(|error| {
             format!(
@@ -1335,7 +1360,6 @@ fn auth_context_lock_with_hook(
                 lock_path.display()
             )
         })?
-        .into()
     };
     let metadata = file.metadata().map_err(|error| {
         format!(
@@ -1731,9 +1755,7 @@ fn registry_lock(path: &Path) -> Result<BoundDirectoryLock, String> {
     lock_name.push(".lock");
     let lock_path = PathBuf::from(lock_name);
     let file: File = {
-        use rustix::fs::{Mode, OFlags, openat};
-
-        openat(
+        open_lock_at(
             &directory,
             lock_path.file_name().ok_or_else(|| {
                 format!(
@@ -1741,8 +1763,6 @@ fn registry_lock(path: &Path) -> Result<BoundDirectoryLock, String> {
                     lock_path.display()
                 )
             })?,
-            OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW,
-            Mode::RUSR | Mode::WUSR,
         )
         .map_err(|error| {
             format!(
@@ -1750,7 +1770,6 @@ fn registry_lock(path: &Path) -> Result<BoundDirectoryLock, String> {
                 lock_path.display()
             )
         })?
-        .into()
     };
     let metadata = file.metadata().map_err(|error| {
         format!(
@@ -3521,6 +3540,11 @@ fn probe_claude_weekly_limits(
         .spawn_command(command)
         .map_err(|error| format!("cannot start Claude usage probe: {error}"))?;
     let process_group = child.process_id();
+    // `try_wait` reaps, and a reaped pid may already name a stranger, so the leader's exit is
+    // observed without reaping and the group is ended first (ADR-0026). Where the platform
+    // cannot observe an exit without reaping, nothing is polled: PTY closure or the deadline
+    // reaches the cleanup below, which still kills the group while the leader is ours to signal.
+    let mut exit_watch = process_group.map(review_process::ExitWatch::new);
     drop(pair.slave);
 
     // Backpressure bounds unread PTY data even if the renderer outpaces the inventory worker.
@@ -3580,12 +3604,10 @@ fn probe_claude_weekly_limits(
             dirty = false;
             next_parse = Instant::now() + Duration::from_millis(250);
         }
-        match child.try_wait() {
-            Ok(Some(_)) => {
-                break Err("Claude usage screen exited without a weekly limit".to_string());
-            }
-            Ok(None) => {}
-            Err(error) => break Err(format!("Claude usage probe failed: {error}")),
+        if let Some(watch) = exit_watch.as_mut()
+            && watch.exited() == Some(true)
+        {
+            break Err("Claude usage screen exited without a weekly limit".to_string());
         }
         if cancelled.load(Ordering::Acquire) {
             break Err("provider status refresh cancelled".to_string());
@@ -3597,6 +3619,9 @@ fn probe_claude_weekly_limits(
             ));
         }
     };
+    // Once the leader is reaped its process-group id may already belong to a stranger, so the
+    // group is ended while the leader is still ours to signal — nothing above reaps it, so a
+    // descendant that outlived an exited leader is still in the group this kill reaches.
     if let Some(process_group) = process_group {
         terminate_probe_group(process_group);
     }
@@ -3806,6 +3831,8 @@ fn probe_codex_request_before(
     command.process_group(0);
     let mut child = review_process::spawn(&mut command)
         .map_err(|error| format!("cannot start Codex app-server probe: {error}"))?;
+    let mut watch = review_process::ExitWatch::new(child.id());
+    let mut reaped = false;
     let mut stdin = child.stdin.take().expect("provider stdin was piped");
     let mut stdout = child.stdout.take().expect("provider stdout was piped");
     if let Err(error) = set_nonblocking(&stdout) {
@@ -3856,8 +3883,9 @@ fn probe_codex_request_before(
         if requested_limits && let Some(response) = response_for_id(&captured, 2) {
             break Ok(response);
         }
-        match child.try_wait() {
+        match review_process::try_reap_killing_group(&mut child, &mut watch) {
             Ok(Some(_)) => {
+                reaped = true;
                 break Err("Codex app-server probe exited without a rate-limit response".into());
             }
             Ok(None) => {}
@@ -3876,7 +3904,11 @@ fn probe_codex_request_before(
         }
         thread::sleep(Duration::from_millis(25));
     };
-    stop_probe(&mut child);
+    // A reaped child was already killed with its group before the reap; killing again would
+    // target a pid the kernel may have reused.
+    if !reaped {
+        stop_probe(&mut child);
+    }
     result
 }
 
@@ -4165,6 +4197,7 @@ fn run_probe_before(
     command.process_group(0);
     let mut child = review_process::spawn(&mut command)
         .map_err(|error| format!("cannot start provider status probe: {error}"))?;
+    let mut watch = review_process::ExitWatch::new(child.id());
     let mut stdout = child.stdout.take().expect("provider stdout was piped");
     let mut stderr = child.stderr.take().expect("provider stderr was piped");
     if let Err(error) = set_nonblocking(&stdout).and_then(|()| set_nonblocking(&stderr)) {
@@ -4198,7 +4231,7 @@ fn run_probe_before(
                 "provider status output exceeds {MAX_PROBE_OUTPUT} bytes"
             ));
         }
-        match child.try_wait() {
+        match review_process::try_reap_killing_group(&mut child, &mut watch) {
             Ok(Some(status)) => break status,
             Ok(None) => {}
             Err(error) => {
@@ -4219,7 +4252,7 @@ fn run_probe_before(
         }
         thread::sleep(Duration::from_millis(25));
     };
-    terminate_probe_group(child.id());
+    // The group was ended before the reap, inside `try_reap_killing_group`.
     while drain_probe_streams(
         spec.kind,
         &mut stdout,

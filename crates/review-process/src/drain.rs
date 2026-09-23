@@ -1,5 +1,5 @@
 use crate::control::{ReceiveError, receive};
-use crate::{OUTPUT_DRAIN_GRACE, SupervisedError, kill_process_group};
+use crate::{Leader, OUTPUT_DRAIN_GRACE, SupervisedError};
 use std::io::Read;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, mpsc};
@@ -58,26 +58,26 @@ pub(crate) fn collect_after_kill_until(drain: Drain, deadline: Instant) -> Vec<u
 pub(crate) fn collect(
     drain: Drain,
     stream: &'static str,
-    pid: u32,
+    leader: &Leader,
     cleanup: &mut Option<Instant>,
 ) -> Drained {
-    collect_cancellable(drain, stream, pid, cleanup, None)
+    collect_cancellable(drain, stream, leader, cleanup, None)
 }
 
 pub(crate) fn collect_cancellable(
     drain: Drain,
     stream: &'static str,
-    pid: u32,
+    leader: &Leader,
     cleanup: &mut Option<Instant>,
     cancellation: Option<&AtomicBool>,
 ) -> Drained {
     collect_with(
         drain,
         stream,
-        pid,
+        leader.pid(),
         cleanup,
         OUTPUT_DRAIN_GRACE,
-        kill_process_group,
+        |_| leader.kill_group(),
         cancellation,
     )
 }
@@ -125,8 +125,11 @@ fn collect_with(
     }
 }
 
-pub(crate) fn collect_stderr(drain: Drain, pid: u32) -> Result<(Vec<u8>, bool), SupervisedError> {
-    let drained = collect(drain, "stderr", pid, &mut None);
+pub(crate) fn collect_stderr(
+    drain: Drain,
+    leader: &Leader,
+) -> Result<(Vec<u8>, bool), SupervisedError> {
+    let drained = collect(drain, "stderr", leader, &mut None);
     drained.status.map(|held| (drained.bytes, held))
 }
 

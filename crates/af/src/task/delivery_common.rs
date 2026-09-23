@@ -305,6 +305,45 @@ pub(super) fn events(task: &TaskProjection) -> Vec<TaskEvent> {
         .collect()
 }
 
+/// Where *this* Task's source was bound from, for the one sentence a re-rooted source earns.
+///
+/// The current revision's `af/TaskInputBindings@1` record answers it, because a parentless
+/// generation-2 Snapshot is carried verbatim when it is re-bound: its origin still names the
+/// Task that re-rooted it first, which is not what this Task's file referenced. The origin's
+/// `bound_from` remains the answer for a revision that records no binding — a Task planned
+/// before the record existed, or one whose source came from somewhere this Store no longer
+/// projects (ADR-0114).
+fn bound_source(
+    cas: &Cas,
+    task: &TaskProjection,
+    origin: &review_source_git::task::TaskSourceOrigin,
+) -> Result<Option<review_source_git::task::TaskSourceBoundFromV1>, String> {
+    let recorded = crate::task_execution::recorded_input_bindings(cas, &task.revision)?;
+    let current = recorded.as_ref().and_then(|r| r.bindings.get("source"));
+    if let Some(binding) = current
+        && let Some(snapshot_id) = binding.snapshot_id.clone()
+    {
+        return Ok(Some(review_source_git::task::TaskSourceBoundFromV1 {
+            artifact_id: binding.artifact_id.clone(),
+            snapshot_id,
+            task: binding.task.clone(),
+        }));
+    }
+    Ok(origin.bound_from().cloned())
+}
+
+/// The one sentence a re-rooted source earns: what it was bound to, and what to do about it.
+fn bound_source_refusal(bound: &review_source_git::task::TaskSourceBoundFromV1) -> String {
+    let origin = match &bound.task {
+        Some(task) => format!("task {}/{}", task.task_id, task.port),
+        None => format!("artifact {}", bound.artifact_id),
+    };
+    let reason = "the tree has no commit for the target repository's HEAD";
+    let remedy = "commit the tree and plan this Task from the commit";
+    let head = format!("source was bound to {origin}; {reason} to equal");
+    format!("{head}, so {remedy}")
+}
+
 pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets, String> {
     let TaskPhaseV1::Finished { result_id } = &task.phase else {
         return Err("Task has no completed outcome".into());
@@ -344,20 +383,28 @@ pub(super) fn assets(cas: &Cas, task: &TaskProjection) -> Result<DeliveryAssets,
     {
         return Err("Task delivery requires exact source ancestry".into());
     }
-    let origin = cas.get_json(&source.origin_id).map_err(|e| e.to_string())?;
-    if origin["schema"] != "af.task-source-origin/1"
-        || origin["content_digest"] != source.content_digest
-    {
+    // Either recorded generation reads here. Generation two describes a re-rooted source and
+    // deliberately carries no `source_revision`, so the existing rule "delivery requires a
+    // committed source Snapshot" fires on its own — `deliver` turns it into one sentence
+    // naming the referenced Task, before the prepared record and any Git mutation (ADR-0114).
+    let origin = review_source_git::task::read_origin(cas, &source.origin_id)?;
+    if origin.content_digest() != source.content_digest {
         return Err("Unsupported Task source origin".into());
     }
-    let repository_id = origin["repository_id"]
-        .as_str()
-        .ok_or("Task origin has no repository")?
-        .to_owned();
-    let source_revision = origin["source_revision"]
-        .as_str()
-        .ok_or("delivery requires a committed source Snapshot")?
-        .to_owned();
+    let repository_id = origin.repository_id().to_owned();
+    if repository_id.trim().is_empty() {
+        return Err("Task origin has no repository".into());
+    }
+    // A generation-two origin describes a re-rooted source and deliberately carries no
+    // `source_revision`, so "delivery requires a committed source Snapshot" fires here, before
+    // any prepared record and any Git mutation, as one sentence naming what the source was
+    // bound to (ADR-0117).
+    let Some(source_revision) = origin.source_revision().map(str::to_owned) else {
+        return Err(match bound_source(cas, task, &origin)? {
+            Some(bound) => bound_source_refusal(&bound),
+            None => "delivery requires a committed source Snapshot".to_owned(),
+        });
+    };
     let convert = |snapshot: review_source_git::task::TaskSnapshot| SnapshotReceipt {
         content_digest: snapshot.content_digest,
         manifest_artifact_id: snapshot.manifest_id,

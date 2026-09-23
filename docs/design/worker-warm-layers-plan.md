@@ -7,6 +7,12 @@
 compiled and run through the campaign Pipeline `warm/implementation-reviewed` from
 `.af/task-catalog.toml`. Package IDs are local planning IDs, not issue or PR numbers.
 
+**Where those Task files live now:** the commands below are the historical record and are kept as
+they were run, but a Task file is a request rather than authority, so the kernel no longer keeps
+its own under the checkout — these are captured in the Store and their working copies belong under
+`$XDG_STATE_HOME/af`, as [ADR-0115](../adr/0115-declare-the-af-layout-and-keep-task-files-out-of-git.md)
+records.
+
 ## 1. Outcome and fixed requirements
 
 Ship warm Attempts: a Round N+1 Worker starts from declared, content-addressed layers carried

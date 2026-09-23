@@ -15,6 +15,7 @@
 //! silently does nothing — the same rule the contracts use, for the same reason.
 
 pub mod captured_review;
+pub mod layout;
 pub mod lock;
 pub mod task;
 

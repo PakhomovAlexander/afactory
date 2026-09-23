@@ -213,6 +213,22 @@ pub struct Repo {
     timeout: Duration,
 }
 
+/// What a failed git command left behind. Its stderr, normally; when there is none, the exit
+/// status instead, so a git that was killed by a signal is diagnosable as exactly that rather
+/// than as a silent failure.
+fn failure_detail(output: &Output) -> String {
+    failure_text(&output.stderr, output.status)
+}
+
+fn failure_text(stderr: &[u8], status: std::process::ExitStatus) -> String {
+    let stderr = String::from_utf8_lossy(stderr);
+    if stderr.trim().is_empty() {
+        format!("(no stderr; {status})")
+    } else {
+        stderr.into_owned()
+    }
+}
+
 impl Repo {
     /// `home` must be a directory this process controls and git may read; it is deliberately
     /// empty, so `GIT_CONFIG_GLOBAL` has nothing to find even if a future git ignores the
@@ -347,7 +363,7 @@ impl Repo {
         if !output.status.success() {
             return Err(GitError::Failed {
                 args,
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                stderr: failure_detail(&output),
             });
         }
         Ok(output)
@@ -376,7 +392,7 @@ impl Repo {
         if !version_output.status.success() {
             return Err(GitError::Failed {
                 args: version_args,
-                stderr: String::from_utf8_lossy(&version_output.stderr).into_owned(),
+                stderr: failure_detail(&version_output),
             });
         }
         let git_version = String::from_utf8(version_output.stdout)
@@ -406,7 +422,7 @@ impl Repo {
         if !output.status.success() {
             return Err(GitError::Failed {
                 args,
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                stderr: failure_detail(&output),
             });
         }
         let rename_detection_truncated = rename_detection_was_truncated(&output.stderr);
@@ -440,7 +456,7 @@ impl Repo {
         if !output.status.success() {
             return Err(GitError::Failed {
                 args: display_args,
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                stderr: failure_detail(&output),
             });
         }
         Ok(output.stdout)
@@ -610,7 +626,7 @@ impl Repo {
         if !output.status.success() {
             return Err(GitError::Failed {
                 args: display_args,
-                stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+                stderr: failure_text(&output.stderr, output.status),
             });
         }
         let output = self.run_isolated_with_input(

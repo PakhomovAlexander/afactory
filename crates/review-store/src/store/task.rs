@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use review_core::task::event::{TaskChangeV1, TaskTransitionV1};
+use review_core::task::input_bindings::TASK_INPUT_BINDINGS_V1;
 use review_core::task::plan::{
     ExecutionPlanV1, GeneratedOriginV1, PlanDecisionKindV1, PlanDecisionV1,
 };
@@ -55,6 +56,33 @@ fn now() -> Result<u64, StoreError> {
         .filter(|value| (1..=1_000).contains(value))
         .map_or(millis, |quantum| millis / quantum * quantum);
     Ok(millis)
+}
+
+/// Every port's artifact identity, then the one provenance record no port carries that a Task
+/// revision keeps across selection and source refresh: the `af/TaskInputBindings@1` record a
+/// Task file's `inputs` table produced (ADR-0117). Nothing else is preserved, so a revision
+/// whose adapter recorded some other observation keeps byte for byte the list it had.
+///
+/// Both the adapter that writes a revision and the Store that validates a refreshed one derive
+/// the list here, so they cannot disagree. An entry that is absent, unreadable or a raw blob is
+/// not a typed binding record and never claims to be one.
+pub fn revision_provenance_inputs(cas: &Cas, revision: &TaskRevisionV1) -> Vec<String> {
+    let mut ids: Vec<String> = revision
+        .inputs
+        .values()
+        .flat_map(|port| port.artifact_ids.iter().cloned())
+        .collect();
+    for id in &revision.provenance.input_artifact_ids {
+        if ids.contains(id) {
+            continue;
+        }
+        let found = cas.get_optional_artifact(id).ok().flatten();
+        let record = found.is_some_and(|e| e.artifact_type == TASK_INPUT_BINDINGS_V1);
+        if record {
+            ids.push(id.clone());
+        }
+    }
+    ids
 }
 
 pub fn task_run_id(task_id: &str) -> Result<String, StoreError> {

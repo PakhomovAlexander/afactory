@@ -92,6 +92,7 @@ pub(super) fn start(
     compiler: TaskPlanCompiler,
     revision: TaskRevisionV1,
     revision_id: String,
+    undeclared: review_config::layout::PathGroup,
 ) -> Result<i32, String> {
     let selection::SelectedTask {
         revision,
@@ -134,7 +135,14 @@ pub(super) fn start(
         )
     })();
     release(&cas, &mut store, &lease, outcome)?;
-    present(&cas, &store, &revision.task_id, options.json, true)
+    present_with_advisory(
+        &cas,
+        &store,
+        &revision.task_id,
+        options.json,
+        true,
+        &undeclared,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

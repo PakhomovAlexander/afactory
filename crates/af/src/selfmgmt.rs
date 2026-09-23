@@ -1587,9 +1587,10 @@ pub(crate) fn man(out_dir: &Path) -> Result<(), String> {
     let mut count = 0;
     render_man(&root, "af", out_dir, &mut count)?;
     for (topic, about, text) in crate::topics::TOPICS {
+        let body = crate::topics::body(topic, text);
         let command = clap::Command::new(format!("af-{topic}"))
             .about(*about)
-            .long_about(*text);
+            .long_about(body);
         let page = clap_mangen::Man::new(command).section("7");
         let mut buf = Vec::new();
         page.render(&mut buf).map_err(|error| error.to_string())?;

@@ -41,6 +41,7 @@ pub(crate) mod catalog;
 pub(super) mod developer;
 pub(crate) mod domain;
 pub(super) mod export;
+mod input_bindings;
 mod input_file;
 mod inspection;
 mod issue;
@@ -50,6 +51,7 @@ mod provider_admission;
 pub(super) mod refresh;
 mod selection;
 pub(crate) mod starter;
+mod task_file_home;
 
 pub(super) struct StartOptions {
     pub file: PathBuf,
@@ -81,6 +83,16 @@ struct TaskFile {
         deserialize_with = "present_option"
     )]
     requirements: Option<serde_json::Map<String, serde_json::Value>>,
+    /// Root input ports bound to a recorded Task's output or to an exact artifact in the same
+    /// Store, instead of being constructed by this adapter (ADR-0117). Absent by default, and
+    /// absent on round-trip, so a Task file written before this decision keeps its exact
+    /// revision, plan and `--json` documents.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_option"
+    )]
+    inputs: Option<BTreeMap<String, input_bindings::TaskInputRefV1>>,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
@@ -286,6 +298,44 @@ struct RunAuthority {
     kind_package: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     import_locks: BTreeSet<String>,
+    /// What delivery does about `.af/` paths the declared layout does not name, as the project
+    /// declared it at plan time. Part of the captured project policy identity, so editing
+    /// `.af/af.toml` afterwards cannot change what an admitted plan agreed to. The default is
+    /// not written down: a project that never heard of the knob keeps its exact policy ID.
+    #[serde(
+        default,
+        skip_serializing_if = "review_config::layout::UndeclaredAfPathsPolicy::is_default"
+    )]
+    delivery_undeclared_af_paths: review_config::layout::UndeclaredAfPathsPolicy,
+}
+
+/// The captured delivery policy for undeclared `.af/` paths, read back from one recorded project
+/// policy artifact — never from `.af/af.toml` on disk, which is what makes a later edit unable to
+/// change an admitted plan. Records written before the policy existed, and every project that
+/// keeps the default, declare nothing and get the default.
+pub(crate) fn captured_undeclared_af_paths(
+    cas: &Cas,
+    policy_id: &str,
+) -> Result<review_config::layout::UndeclaredAfPathsPolicy, String> {
+    let recorded = cas.get_json(policy_id).map_err(|e| e.to_string())?;
+    let declared = recorded.get("delivery_undeclared_af_paths").is_some();
+    match serde_json::from_value::<RunAuthority>(recorded) {
+        Ok(authority) => Ok(authority.delivery_undeclared_af_paths),
+        // A recorded policy that is not this kernel's run authority declares no delivery
+        // policy at all; one that names the field has to be readable exactly.
+        Err(error) if declared => Err(format!("captured delivery policy: {error}")),
+        Err(_) => Ok(Default::default()),
+    }
+}
+
+/// The bindings a recorded Task revision kept, for the one consumer outside this module:
+/// delivery names where this Task's source came from, and only the current revision's record
+/// says that (ADR-0117).
+pub(crate) fn recorded_input_bindings(
+    cas: &Cas,
+    revision: &TaskRevisionV1,
+) -> Result<Option<review_core::task::input_bindings::TaskInputBindingsV1>, String> {
+    input_bindings::recorded(cas, revision)
 }
 
 impl RunAuthority {
@@ -308,6 +358,9 @@ fn clock() -> Result<u64, String> {
         .map_err(|e| e.to_string())?
         .as_millis() as u64)
 }
+/// The recorded undeclared `.af/` paths of a Task whose profile has no `source` port.
+const UNDECLARED_AF_PATHS_V1: &str = "af/UndeclaredAfPaths@1";
+
 fn producer() -> Producer {
     Producer::KernelOperation {
         run_id: "task-file-adapter-v1".into(),
@@ -396,11 +449,26 @@ fn artifact<T: serde::de::DeserializeOwned>(cas: &Cas, id: &str, kind: &str) -> 
     serde_json::from_value(value.payload).map_err(|e| e.to_string())
 }
 
+/// The project's delivery policy for undeclared `.af/` paths, read out of the Authority
+/// Snapshot. A project without `.af/af.toml`, or without the table, keeps the default.
+fn captured_delivery_policy(
+    cas: &Cas,
+    manifest: &Manifest,
+) -> Result<review_config::layout::UndeclaredAfPathsPolicy, String> {
+    if manifest.get(".af/af.toml").is_none() {
+        return Ok(Default::default());
+    }
+    let bytes = captured_file(cas, manifest, ".af/af.toml")?;
+    let text = std::str::from_utf8(&bytes).map_err(|e| format!(".af/af.toml: {e}"))?;
+    crate::project::ProjectFile::parse_delivery(text)
+}
+
 fn capture_authority(
     cas: &Cas,
     manifest: &Manifest,
     local: Option<&Path>,
     task_kind: &str,
+    delivery_undeclared_af_paths: review_config::layout::UndeclaredAfPathsPolicy,
 ) -> Result<(String, RunAuthority, TaskPlanCompiler), String> {
     let bytes = captured_file(cas, manifest, ".af/task-catalog.toml")?;
     let mut catalog: TaskCatalog = parse(Path::new(".af/task-catalog.toml"), &bytes)?;
@@ -596,6 +664,7 @@ fn capture_authority(
         slot_workers,
         kind_package: catalog.kinds.get(task_kind).cloned(),
         import_locks,
+        delivery_undeclared_af_paths,
     };
     let id = cas
         .put_json(&serde_json::to_value(&authority).map_err(|e| e.to_string())?)
@@ -839,17 +908,30 @@ fn start_kind(options: StartOptions, expected_kind: Option<&str>) -> Result<i32,
     let policy_source = Capture::new(&source_repo, &cas)
         .committed(&options.authority)
         .map_err(|e| e.to_string())?;
+    let delivery = captured_delivery_policy(&cas, &policy_source.manifest)?;
     let authority = capture_authority(
         &cas,
         &policy_source.manifest,
         options.bindings.as_deref(),
         &file.kind,
+        delivery,
     )?;
     if expected_kind.is_some()
         && selected_profile(&authority.2, &authority.1, &file.kind, file.verification)?
             != TaskKindProfile::Review
     {
         return Err("af review --file requires a Review Task profile".into());
+    }
+    let binds_source = file
+        .inputs
+        .as_ref()
+        .is_some_and(|inputs| inputs.contains_key("source"));
+    if options.uncommitted && binds_source {
+        return Err(
+            "--uncommitted captures the invoking checkout, which a bound `source` \
+                    replaces; plan from the checkout or drop the binding"
+                .into(),
+        );
     }
     let source = if options.uncommitted {
         Capture::new(&source_repo, &cas)
@@ -873,6 +955,36 @@ fn start_captured(
     (authority_id, authority, mut compiler): (String, RunAuthority, TaskPlanCompiler),
 ) -> Result<i32, String> {
     let profile = selected_profile(&compiler, &authority, &file.kind, file.verification)?;
+    // Resolved once, here, from the `--state` Store alone, before any Worker is dispatched or
+    // any Provider admitted. A bound port replaces this adapter's construction of it and
+    // nothing else changes (ADR-0117).
+    let bound = file
+        .inputs
+        .as_ref()
+        .map(|references| input_bindings::resolve(&cas, &store, profile, references))
+        .transpose()?;
+    let bound_ports = bound
+        .as_ref()
+        .map(|bound| bound.ports.clone())
+        .unwrap_or_default();
+    if bound_ports.contains_key("sources") && file.document_sources.is_some() {
+        return Err("A bound sources port and document_sources claim one input".into());
+    }
+    if bound_ports.contains_key("history")
+        && (file.optimization_history.is_some() || options.optimization_history.is_some())
+    {
+        return Err("A bound history port and a history file claim one port".into());
+    }
+    // What the declared layout says about the Snapshot this Task will read. A pure function of
+    // a recorded manifest: no working tree is walked, nothing is removed, and Snapshot identity
+    // is whatever the capture already made it. The result is advice here and a receipt field
+    // later. A bound `source` reads the bound tree, so that is the tree classified.
+    let read = match bound.as_ref() {
+        Some(bound) => bound.source_manifest.as_ref().unwrap_or(&source.manifest),
+        None => &source.manifest,
+    };
+    let undeclared = review_config::layout::classify_manifest(read).undeclared;
+    super::af_paths::warn(&undeclared);
     let origin=cas.put_json(&json!({"schema":"af.task-source-origin/1","repository_id":source.repository_id,"source_revision":source.source_revision,"content_digest":source.content_digest})).map_err(|e|e.to_string())?;
     let source_port = if matches!(
         profile,
@@ -883,13 +995,37 @@ fn start_captured(
         if file.document_sources.is_some() {
             return Err("Document source input is only valid for a document Task".into());
         }
-        let snapshot = capture_snapshot(&cas, &source.manifest, &origin, None)?;
-        Some(source_tree(
-            &cas,
-            producer(),
-            &snapshot,
-            vec![origin.clone()],
-        )?)
+        // A bound `source` captures no Git tree from the invoking checkout.
+        match bound_ports.get("source") {
+            Some(port) => Some(port.clone()),
+            None => {
+                let snapshot = capture_snapshot(&cas, &source.manifest, &origin, None)?;
+                Some(source_tree(
+                    &cas,
+                    producer(),
+                    &snapshot,
+                    vec![origin.clone()],
+                )?)
+            }
+        }
+    };
+    // A profile without a `source` port records nothing a later presentation could classify
+    // again, so the observation itself is kept: one typed artifact, referenced from the
+    // revision's provenance, and only when there is something to report, so a Task over a
+    // fully declared tree keeps the revision identity it always had.
+    let undeclared_record = if source_port.is_none() && !undeclared.is_empty() {
+        let (id, _) = cas
+            .put_artifact(
+                UNDECLARED_AF_PATHS_V1,
+                producer(),
+                vec![],
+                None,
+                serde_json::to_value(&undeclared).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        Some(id)
+    } else {
+        None
     };
     let input_file = cas.put(&bytes).map_err(|e| e.to_string())?;
     let wall = effective_task_wall_ms(file.limits.wall_ms, options.timeout_secs)?;
@@ -943,7 +1079,7 @@ fn start_captured(
         inputs:BTreeMap::from([("requirements".into(),ArtifactInputV1 {artifact_ids:vec![requirements.clone()],artifact_type:"af/Requirements@1".into(),cardinality:PortCardinality::One,snapshot_id:None})]),
         required_outputs:serde_json::from_value(json!({"snapshot":{"artifact_type":SOURCE_TREE_V1,"cardinality":"one"},"verification":{"artifact_type":VERIFICATION_RESULT_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?,
         acceptance:BTreeMap::from([("verified".into(),AcceptanceObligationV1 {evidence_type:VERIFICATION_RESULT_V1.into(),verifier_policy:authority.invocation_policy_id()?.into()})]),
-        provenance:TaskProvenanceV1 {adapter_id:adapter,input_artifact_ids:vec![requirements]},
+        provenance:TaskProvenanceV1 {adapter_id:adapter,input_artifact_ids:std::iter::once(requirements).chain(undeclared_record).collect()},
         authority:TaskAuthorityV1 {policy_id:authority_id,allowed_effects:BTreeSet::from(["read-source".into(),"write-source".into(),"execute-checks".into()]),data_destinations:BTreeSet::new()},
         limits:TaskLimitsV1 {tokens:file.limits.tokens,max_attempts:file.limits.max_attempts,deadline_unix_ms:deadline,verification:file.limits.verification},
         strategy:file.strategy,pipeline:file.pipeline,facts:file.facts,
@@ -953,38 +1089,41 @@ fn start_captured(
     }
     if profile == TaskKindProfile::Document {
         use review_core::task::document::*;
-        let path = file
-            .document_sources
-            .as_deref()
-            .ok_or("Document Task needs a captured document_sources file")?;
-        if !review_config::task::shared::safe_relative_path(path) {
-            return Err("Document source path must be project-relative".into());
+        // A bound `sources` port replaces this construction, which is what makes
+        // `document_sources` — and the exported file it names — unnecessary.
+        if !bound_ports.contains_key("sources") {
+            let declared = file.document_sources.as_deref();
+            let path =
+                declared.ok_or("Document Task needs document_sources or a bound sources port")?;
+            if !review_config::task::shared::safe_relative_path(path) {
+                return Err("Document source path must be project-relative".into());
+            }
+            let bytes = captured_file(&cas, &source.manifest, path)?;
+            let sources: DocumentSourcesV1 = parse(Path::new(path), &bytes)?;
+            sources.validate()?;
+            let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
+            let id = cas
+                .put_artifact(
+                    DOCUMENT_SOURCES_V1,
+                    producer(),
+                    vec![raw, origin.clone()],
+                    None,
+                    serde_json::to_value(sources).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?
+                .0;
+            revision.inputs.insert(
+                "sources".into(),
+                ArtifactInputV1 {
+                    artifact_ids: vec![id.clone()],
+                    artifact_type: DOCUMENT_SOURCES_V1.into(),
+                    cardinality: PortCardinality::One,
+                    snapshot_id: None,
+                },
+            );
+            revision.provenance.input_artifact_ids.push(id);
+            revision.provenance.input_artifact_ids.sort();
         }
-        let bytes = captured_file(&cas, &source.manifest, path)?;
-        let sources: DocumentSourcesV1 = parse(Path::new(path), &bytes)?;
-        sources.validate()?;
-        let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
-        let id = cas
-            .put_artifact(
-                DOCUMENT_SOURCES_V1,
-                producer(),
-                vec![raw, origin.clone()],
-                None,
-                serde_json::to_value(sources).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?
-            .0;
-        revision.inputs.insert(
-            "sources".into(),
-            ArtifactInputV1 {
-                artifact_ids: vec![id.clone()],
-                artifact_type: DOCUMENT_SOURCES_V1.into(),
-                cardinality: PortCardinality::One,
-                snapshot_id: None,
-            },
-        );
-        revision.provenance.input_artifact_ids.push(id);
-        revision.provenance.input_artifact_ids.sort();
         revision.authority.allowed_effects.clear();
         revision.required_outputs = serde_json::from_value(json!({"document":{"artifact_type":DOCUMENT_V1,"cardinality":"one"},"verification":{"artifact_type":DOCUMENT_VERIFICATION_V1,"cardinality":"one"}})).map_err(|e|e.to_string())?;
         revision.acceptance = BTreeMap::from([(
@@ -1003,53 +1142,61 @@ fn start_captured(
         if file.document_sources.is_some() {
             return Err("Document source input is not valid for an Optimization Task".into());
         }
-        let (history, raw) = if let Some(history) = options.optimization_history.clone() {
-            let bytes = serde_json::to_vec(&history).map_err(|e| e.to_string())?;
-            let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
-            (history, raw)
+        // A bound `history` replaces the captured or pre-captured construction below; the
+        // bound port itself is installed with every other binding, after this block.
+        let history_port = if bound_ports.contains_key("history") {
+            None
         } else {
-            let path = file.optimization_history.as_deref().ok_or(
-                "Optimization Task needs captured history or an optimization_history fixture",
-            )?;
-            if !review_config::task::shared::safe_relative_path(path) {
-                return Err("Optimization history path must be project-relative".into());
+            let (history, raw) = if let Some(history) = options.optimization_history.clone() {
+                let bytes = serde_json::to_vec(&history).map_err(|e| e.to_string())?;
+                let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
+                (history, raw)
+            } else {
+                let path = file.optimization_history.as_deref().ok_or(
+                    "Optimization Task needs captured history or an optimization_history fixture",
+                )?;
+                if !review_config::task::shared::safe_relative_path(path) {
+                    return Err("Optimization history path must be project-relative".into());
+                }
+                let bytes = captured_file(&cas, &source.manifest, path)?;
+                let history: OptimizationHistoryV1 = parse(Path::new(path), &bytes)?;
+                let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
+                (history, raw)
+            };
+            history.validate()?;
+            let mut refs = vec![raw, origin.clone()];
+            if let Some(previous) = &history.previous_capture_id {
+                cas.verify(previous).map_err(|_| {
+                    "Optimization history predecessor is not retained in this Task Store"
+                        .to_string()
+                })?;
+                refs.push(previous.clone());
             }
-            let bytes = captured_file(&cas, &source.manifest, path)?;
-            let history: OptimizationHistoryV1 = parse(Path::new(path), &bytes)?;
-            let raw = cas.put(&bytes).map_err(|e| e.to_string())?;
-            (history, raw)
-        };
-        history.validate()?;
-        let mut refs = vec![raw, origin.clone()];
-        if let Some(previous) = &history.previous_capture_id {
-            cas.verify(previous).map_err(|_| {
-                "Optimization history predecessor is not retained in this Task Store".to_string()
-            })?;
-            refs.push(previous.clone());
-        }
-        let id = cas
-            .put_artifact(
-                OPTIMIZATION_HISTORY_V1,
-                producer(),
-                refs,
-                None,
-                serde_json::to_value(history).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?
-            .0;
-        let history_port = ArtifactInputV1 {
-            artifact_ids: vec![id.clone()],
-            artifact_type: OPTIMIZATION_HISTORY_V1.into(),
-            cardinality: PortCardinality::One,
-            snapshot_id: None,
+            let id = cas
+                .put_artifact(
+                    OPTIMIZATION_HISTORY_V1,
+                    producer(),
+                    refs,
+                    None,
+                    serde_json::to_value(history).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?
+                .0;
+            revision.provenance.input_artifact_ids.push(id.clone());
+            revision.provenance.input_artifact_ids.sort();
+            Some(ArtifactInputV1 {
+                artifact_ids: vec![id],
+                artifact_type: OPTIMIZATION_HISTORY_V1.into(),
+                cardinality: PortCardinality::One,
+                snapshot_id: None,
+            })
         };
         if profile == TaskKindProfile::OptimizationAnalysis {
-            revision.inputs = BTreeMap::from([("history".into(), history_port)]);
-        } else {
+            revision.inputs.clear();
+        }
+        if let Some(history_port) = history_port {
             revision.inputs.insert("history".into(), history_port);
         }
-        revision.provenance.input_artifact_ids.push(id);
-        revision.provenance.input_artifact_ids.sort();
         revision.authority.allowed_effects.clear();
         revision.required_outputs = if profile == TaskKindProfile::OptimizationAnalysis {
             serde_json::from_value(json!({
@@ -1165,6 +1312,19 @@ fn start_captured(
             },
         );
     }
+    // Installed last, so a profile that rebuilds its own input set cannot drop a bound port,
+    // and recorded once as `af/TaskInputBindings@1` in the revision's provenance — written only
+    // when the Task file carried an `inputs` table, so a Task without bindings keeps the exact
+    // revision identity it has today.
+    for (port, input) in &bound_ports {
+        revision.inputs.insert(port.clone(), input.clone());
+    }
+    if let Some(bound) = &bound {
+        let ids = &mut revision.provenance.input_artifact_ids;
+        ids.push(bound.record_id.clone());
+        ids.sort();
+        ids.dedup();
+    }
     let Some(selected) = selection::prepare(&cas, &authority, &compiler, revision, options.json)?
     else {
         return Ok(1);
@@ -1183,6 +1343,7 @@ fn start_captured(
                 compiler,
                 *revision,
                 revision_id,
+                undeclared,
             );
         }
     };
@@ -1265,13 +1426,20 @@ fn start_captured(
         Ok(())
     })();
     release(&cas, &mut store, &lease, outcome)?;
-    present(
+    let presented = present_with_advisory(
         &cas,
         &store,
         &revision.task_id,
         options.json,
         options.plan_only,
-    )
+        &undeclared,
+    );
+    // The request is in the Store, so a copy the repository would carry is redundant. Advice
+    // only, and given last: the Task deadline was derived and the plan compiled, recorded and
+    // presented before this runs, so a slow `git check-ignore` can neither shorten the Task's
+    // remaining wall nor change the exit code or the `--json` document already written.
+    task_file_home::warn_if_captured_from_the_repository(&options.file, &options.repo);
+    presented
 }
 
 fn release(
@@ -1747,7 +1915,7 @@ pub(super) fn explain(
     if let Some(plan_id) = plan {
         return inspection::explain_plan(&cas, &store, id, plan_id, json, tree);
     }
-    present_with_format(&cas, &store, id, json, true, tree)
+    present_with_format(&cas, &store, id, json, true, tree, None)
 }
 
 pub(super) fn show_if_common(id: &str, state: &Path, json: bool) -> Result<bool, String> {
@@ -1795,9 +1963,69 @@ fn present(
     json_output: bool,
     explain: bool,
 ) -> Result<i32, String> {
-    present_with_format(cas, store, id, json_output, explain, false)
+    present_with_format(cas, store, id, json_output, explain, false, None)
 }
 
+/// Present a Task that was just planned or started, carrying the undeclared `.af/` paths of the
+/// Snapshot it captured. Inspection commands derive the same group from the recorded source
+/// Snapshot, so every document of one Task carries the same field.
+fn present_with_advisory(
+    cas: &Cas,
+    store: &EventStore,
+    id: &str,
+    json: bool,
+    explain: bool,
+    undeclared: &review_config::layout::PathGroup,
+) -> Result<i32, String> {
+    let group = Some(undeclared);
+    present_with_format(cas, store, id, json, explain, false, group)
+}
+
+/// The undeclared `.af/` paths of a recorded Task's source Snapshot, read back from the Store:
+/// the `source` input's Snapshot receipt names its Manifest, and the Manifest is classified
+/// exactly as it was at capture. `None` for a Task without a source Snapshot (a Document
+/// Task) or one whose source predates Snapshot receipts.
+fn recorded_undeclared_af_paths(
+    cas: &Cas,
+    revision: &TaskRevisionV1,
+) -> Result<Option<review_config::layout::PathGroup>, String> {
+    let Some(source) = revision.inputs.get("source") else {
+        // A source-less profile kept the observation as a typed artifact in its provenance.
+        for id in &revision.provenance.input_artifact_ids {
+            let envelope = cas.get_json(id).map_err(|e| e.to_string())?;
+            if envelope.get("type").and_then(serde_json::Value::as_str)
+                == Some(UNDECLARED_AF_PATHS_V1)
+                && let Some(payload) = envelope.get("payload")
+            {
+                let group: review_config::layout::PathGroup =
+                    serde_json::from_value(payload.clone()).map_err(|e| e.to_string())?;
+                return Ok(Some(group));
+            }
+        }
+        return Ok(None);
+    };
+    let port = serde_json::to_value(source).map_err(|e| e.to_string())?;
+    let Some(snapshot_id) = port.get("snapshot_id").and_then(serde_json::Value::as_str) else {
+        return Ok(None);
+    };
+    let receipt = cas.get_json(snapshot_id).map_err(|e| e.to_string())?;
+    // A Task source Snapshot (`af.task-snapshot/1`) names its Manifest as `manifest_id`; a
+    // Review Snapshot receipt (`af/snapshot@1`) as `manifest_artifact_id`.
+    let Some(manifest_id) = ["manifest_id", "manifest_artifact_id"]
+        .into_iter()
+        .find_map(|key| receipt.get(key).and_then(serde_json::Value::as_str))
+    else {
+        return Ok(None);
+    };
+    let manifest: Manifest =
+        serde_json::from_value(cas.get_json(manifest_id).map_err(|e| e.to_string())?)
+            .map_err(|e| format!("reading source Snapshot Manifest: {e}"))?;
+    Ok(Some(
+        review_config::layout::classify_manifest(&manifest).undeclared,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
 fn present_with_format(
     cas: &Cas,
     store: &EventStore,
@@ -1805,6 +2033,7 @@ fn present_with_format(
     json_output: bool,
     explain: bool,
     tree: bool,
+    undeclared: Option<&review_config::layout::PathGroup>,
 ) -> Result<i32, String> {
     let state: TaskProjection = store
         .task_projection(cas, id)
@@ -2035,6 +2264,12 @@ fn present_with_format(
         }
         value["adoption_observations"] = json!(observations);
     }
+    // Present only when the Task file carried an `inputs` table, so a Task without bindings
+    // emits neither the field nor the new generation and keeps the document it has today.
+    let bindings = input_bindings::recorded(cas, &state.revision)?;
+    if let Some(record) = &bindings {
+        value["input_bindings"] = serde_json::to_value(record).map_err(|e| e.to_string())?;
+    }
     if let Some(delivery) = delivery_view(cas, &state)? {
         value["delivery"] = delivery;
     }
@@ -2083,6 +2318,18 @@ fn present_with_format(
             }
         }
     }
+    // The whole list the one-line advisory could only summarize. A presentation that did not
+    // just classify the captured manifest derives the same group from the recorded source
+    // Snapshot, so `start`, `run` and `show` documents of one Task agree. Present only when
+    // the Snapshot actually carries undeclared paths, so a document that had no such field
+    // still has none.
+    let derived = match undeclared {
+        Some(group) => Some(group.clone()),
+        None => recorded_undeclared_af_paths(cas, &state.revision)?,
+    };
+    if let Some(group) = derived.filter(|group| !group.is_empty()) {
+        value["undeclared_af_paths"] = serde_json::to_value(group).map_err(|e| e.to_string())?;
+    }
     if explain && let Some(id) = &state.plan_id {
         let plan: ExecutionPlanV1 = artifact(cas, id, EXECUTION_PLAN_V1)?;
         value["graph"] = serde_json::to_value(artifact::<CompiledTask>(
@@ -2119,6 +2366,24 @@ fn present_with_format(
         );
         if let Some(id) = state.plan_id {
             println!("Plan {id}");
+        }
+        // One line per bound port, through the same sanitizer the preview uses: a referenced
+        // Task ID is untrusted display data wherever it is printed.
+        for (port, binding) in bindings.iter().flat_map(|record| &record.bindings) {
+            match &binding.task {
+                Some(task) => println!(
+                    "bound {} <- task {}/{} ({})",
+                    preview::text(port),
+                    preview::text(&task.task_id),
+                    preview::text(&task.port),
+                    preview::acceptance_name(task.acceptance)
+                ),
+                None => println!(
+                    "bound {} <- artifact {}",
+                    preview::text(port),
+                    preview::text(&binding.artifact_id)
+                ),
+            }
         }
         if let Some(last) = reports.last().and_then(|r| r["diagnostics"].as_object()) {
             for (node, diagnostic) in last {

@@ -1,6 +1,7 @@
 schema = "af.task-catalog/2"
-# Campaign catalog for the Worker warm layers implementation: every package of the plan runs
-# through warm/implementation-reviewed with the same four native Workers. Provider labels here
+# Campaign catalog for the kernel's own campaigns. warm/* served the Worker warm layers plan;
+# kernel/* is the generic family later plans use. Every package of a plan runs through one
+# implementation-reviewed Pipeline with the same four native Workers. Provider labels here
 # are neutral; a developer's local bindings file maps them to admitted machine-local accounts.
 code_policy = ".af/code-policy.toml"
 no_match = "refuse"
@@ -56,6 +57,41 @@ version = "1.0.0"
 digest = "sha256:1356e5cfe8f8444f0244b4a74686536d9340aefd8b0d7f289222fe66cbcf9f32"
 path = ".af/task-packages/warm/verification-kind"
 
+[packages."kernel/implementer"]
+version = "1.2.0"
+digest = "sha256:462d9240c776f0ba7b4d9edcb32f114245851faac9dcd16fd3d83112183d7289"
+path = ".af/task-packages/kernel/implementer"
+
+[packages."kernel/correctness"]
+version = "1.0.0"
+digest = "sha256:dd757e49fe07d3528181e2037beb76bdb149242715dd187a34ea8ce67c8f5fc0"
+path = ".af/task-packages/kernel/correctness"
+
+[packages."kernel/bugs"]
+version = "1.0.0"
+digest = "sha256:03f750a8e297b2f8ae8fa4a667d59614b52a7656f408981d09a7418a322295e1"
+path = ".af/task-packages/kernel/bugs"
+
+[packages."kernel/evaluator"]
+version = "1.0.0"
+digest = "sha256:0b7f03304268510af2a0ee4dd8c6574fff7265223684a175c87d57ff3777e2df"
+path = ".af/task-packages/kernel/evaluator"
+
+[packages."kernel/review-light"]
+version = "1.0.0"
+digest = "sha256:2d5725ceaa062e42a551fda327fdcc6569f36179b6bc8b09a3b7551ebfa4a2be"
+path = ".af/task-packages/kernel/review-light"
+
+[packages."kernel/implementation-reviewed"]
+version = "1.0.0"
+digest = "sha256:71eb5a492b410fecb97c5cc1eb002a3921ecaa106804961b200d210d7398250f"
+path = ".af/task-packages/kernel/implementation-reviewed"
+
+[packages."kernel/verification"]
+version = "1.0.0"
+digest = "sha256:a410f4e80545b4d1a7295746f4a3d66f5438fe6129df15956d5a823722cc5a4f"
+path = ".af/task-packages/kernel/verification"
+
 [kinds]
 verification = "warm/verification-kind"
 
@@ -70,6 +106,10 @@ distinct_models = false
 "warm/correctness" = "codex-main"
 "warm/bugs" = "codex-main"
 "warm/evaluator" = "codex-main"
+"kernel/implementer" = "claude-main"
+"kernel/correctness" = "codex-main"
+"kernel/bugs" = "codex-main"
+"kernel/evaluator" = "codex-main"
 
 [provider_admission]
 tokens = 32768

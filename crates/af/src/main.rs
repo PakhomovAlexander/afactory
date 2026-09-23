@@ -31,6 +31,7 @@ use review_source_git::Repo;
 use review_store::{Cas, EventStore, Ingest, Ledger, LedgerProjection, Status, Verdict};
 use sha2::{Digest, Sha256};
 
+mod af_paths;
 mod authority;
 mod caches;
 mod cli;
@@ -993,7 +994,8 @@ fn help_command(words: &[String]) -> Result<i32, String> {
     if words.len() == 1
         && let Some((topic, about, text)) = topics::find(&words[0])
     {
-        println!("af help {topic} — {about}\n\n{text}");
+        let body = topics::body(topic, text);
+        println!("af help {topic} — {about}\n\n{body}");
         return Ok(0);
     }
     let mut current = &mut root;

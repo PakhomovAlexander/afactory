@@ -548,6 +548,8 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
         "extra_outcome",
         "invalid_ignored_paths",
         "missing_ignored_paths",
+        "invalid_undeclared_af_paths",
+        "empty_undeclared_af_paths",
     ]
     .into_iter()
     .enumerate()
@@ -569,6 +571,12 @@ fn inspection_and_list_schemas_preserve_actual_output_and_exact_record_types() {
             "invalid_ignored_paths" => raw["ignored_paths"] = json!([7]),
             "missing_ignored_paths" => {
                 raw.as_object_mut().unwrap().remove("ignored_paths");
+            }
+            "invalid_undeclared_af_paths" => raw["undeclared_af_paths"] = json!([7]),
+            // An empty group is never written: the typed receipt skips it entirely, so a
+            // receipt that spells one out did not come from this kernel.
+            "empty_undeclared_af_paths" => {
+                raw["undeclared_af_paths"] = json!({"paths": [], "bytes": 0});
             }
             _ => unreachable!(),
         }

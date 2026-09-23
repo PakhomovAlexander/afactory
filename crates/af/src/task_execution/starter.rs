@@ -409,6 +409,7 @@ pub(super) fn document_files() -> Result<BTreeMap<String, Vec<u8>>, String> {
     let task = TaskFile {
         issue: None,
         requirements: None,
+        inputs: None,
         schema: "af.task-file/1".into(),
         task_id: "release-notes".into(),
         kind: "release-note".into(),

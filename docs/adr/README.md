@@ -196,3 +196,9 @@ future readers need.
 - [0113 — GA reads only what GA writes](0113-ga-reads-only-what-ga-writes.md)
 - [0114 — Budget CLI Task fixtures for loaded machines, never for a fast
   one](0114-budget-cli-task-fixtures-for-loaded-machines.md)
+- [0115 — Declare the `.af/` layout once and keep Task files out of
+  git](0115-declare-the-af-layout-and-keep-task-files-out-of-git.md)
+- [0116 — Report undeclared `.af/` paths from the manifest, and let a project refuse
+  delivery](0116-report-undeclared-af-paths-and-let-a-project-refuse-them.md)
+- [0117 — Bind a Task input port to a recorded Task's
+  output](0117-bind-task-inputs-to-recorded-task-outputs.md)

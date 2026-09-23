@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:af:schema:task-input-bindings:1",
+  "title": "TaskInputBindings af/TaskInputBindings@1",
+  "$comment": "The durable record of a Task file's `inputs` table, referenced from TaskRevisionV1.provenance.input_artifact_ids and written only when the Task file carried one. Provenance and display data: the referenced Task's acceptance and domain conclusion cross no Task boundary as authority (ADR-0117). Only a re-rooted `source` carries resolved_artifact_id and rerooted_snapshot_id.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "bindings"
+  ],
+  "properties": {
+    "schema": {
+      "const": "af.task-input-bindings/1"
+    },
+    "bindings": {
+      "type": "object",
+      "minProperties": 1,
+      "maxProperties": 16,
+      "propertyNames": {
+        "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/binding"
+      }
+    }
+  },
+  "$defs": {
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "artifact_id"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "resolved_artifact_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "snapshot_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "rerooted_snapshot_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "task": {
+          "$ref": "#/$defs/referencedTask"
+        }
+      },
+      "dependentRequired": {
+        "rerooted_snapshot_id": [
+          "snapshot_id",
+          "resolved_artifact_id"
+        ]
+      }
+    },
+    "referencedTask": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "task_id",
+        "task_revision_id",
+        "result_id",
+        "port",
+        "acceptance",
+        "domain_conclusion"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "task_revision_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "result_id": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/digest"
+        },
+        "port": {
+          "$ref": "urn:af:schema:task-contracts:1#/$defs/name"
+        },
+        "acceptance": {
+          "enum": [
+            "satisfied",
+            "unsatisfied",
+            "inconclusive"
+          ]
+        },
+        "domain_conclusion": {
+          "type": "string",
+          "pattern": "\\S",
+          "maxLength": 256
+        }
+      }
+    }
+  }
+}

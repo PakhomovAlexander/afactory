@@ -16,6 +16,112 @@ publish step — so everything it carried shipped in `0.9.0-rc.6`, the last pre-
 
 ## [Unreleased]
 
+- Kill a supervised child's process group before reaping the child, not after: a reaped pid is
+  free for reuse, so the late `SIGKILL` could land on an unrelated process that had just been
+  spawned into its own group under the recycled id — on a loaded machine, a fresh `git rev-parse`
+  dying with an empty stderr. `review-process` now observes the exit without reaping
+  (`waitid(WNOWAIT)` on Linux, kqueue `NOTE_EXIT` on macOS and the BSDs), routes every group
+  kill through the unreaped leader, and reaps last on every path — deadline, cancellation and
+  held-pipe cleanup included; the provider probes poll the same way, ending a probe's group
+  before reaping it. A failed git command with no stderr now reports its exit status, so a
+  signalled git reads as signalled. The two provider lock files are opened with a
+  bounded retry on the spurious `ENOENT` APFS returns to a concurrent `openat(O_CREAT)`.
+- Declare the `.af/` layout once and keep Task files out of git (ADR-0115): every canonical entry
+  under `.af/` — its kind, its writer of record, whether git versions it and what it holds — is
+  now one table in `review_config::layout`, and `layout::classify` answers whether any
+  repository-relative path is declared or undeclared. `af help config` renders that table and one
+  paragraph saying what never belongs under `.af/` and where it lives instead, and the old claim that `af init`
+  gitignores `af.local.toml` is gone — there is no `af init`, and no command writes a `.gitignore`. A test walks every production source under `crates/*/src` and
+  fails on any `.af/` path the table does not declare, which added `document-policy.toml`,
+  `packages/`, `artifact-reuse/`, `cache/` and the in-memory-only `task-compat/` to the declared
+  set. `af task plan`, `af task start --file`, `af review plan --file` and `af review run --file`
+  now warn on stderr, after capture, when the Task file resolves inside the repository and `git
+  check-ignore` does not ignore it, naming the file and `$XDG_STATE_HOME/af/tasks/`. The warning
+  is advisory: exit codes, stdout and every `--json` document are unchanged, and a Task file that
+  is gitignored or outside the repository draws no warning.
+- Report undeclared `.af/` paths and let a project refuse to deliver them (ADR-0116):
+  `review_config::layout::classify_manifest` groups every `.af/` path of a captured Snapshot
+  manifest into declared and undeclared, with a path count and a byte total for each. It is a
+  pure function of the manifest and the L1 table — it reads recorded entries, never a working
+  tree or a sandbox, and judges a path by its decoded bytes while keeping the manifest spelling —
+  so the same Snapshot answers the same on every machine. `af task plan` and `af task start` now
+  print one advisory line naming the count, the byte total and up to ten paths, and carry the
+  whole group in a typed `undeclared_af_paths` field of the `--json` document; `af task deliver`
+  records it in `af/task-delivery@1` beside `ignored_paths` and prints it in the delivery
+  summary. A new project policy `[delivery] undeclared_af_paths = "warn" | "refuse"` in
+  `.af/af.toml` defaults to `warn`; under `refuse`, delivery fails before the prepared record and
+  before any Git mutation, naming every undeclared path and leaving no branch, no worktree and no
+  record. The policy is captured into the Task's project policy identity at plan time and read
+  back from that record at delivery, so editing `.af/af.toml` afterwards cannot change an
+  admitted plan, while the default is not written down and moves no existing policy identity.
+  Nothing is removed: Snapshot identity, the delivered tree and `ignored_paths` are exactly what
+  they were, receipts written before the field deserialize with an empty group, and a repository
+  whose authority tree is fully declared reports nothing at all.
+- Decide how a Task file binds a root input port to a recorded Task's output (ADR-0117, proposed;
+  documentation only, no behaviour changes yet). A Task file gains one optional `inputs` table
+  mapping `source`, `history` or `sources` to `{ "task": "<task_id>", "port": "<output port>" }`
+  or to an exact `{ "artifact": "sha256:…" }`, so chaining implementation to repair to review no
+  longer means exporting a candidate tree and reviewer results to files that then ride along in
+  every later Snapshot. References resolve once, at plan time, from the `--state` Store into exact
+  artifact IDs in the compiled plan, so resume, retry and replay never read the referencing Task
+  file again; type and cardinality are checked against the port before any Worker or Provider
+  admission, and the compiler's existing root-input check remains the one that cannot be
+  bypassed. The referenced Task must be recorded and finished with the named port in its result,
+  but need not be verified — the reference carries provenance only, and no acceptance,
+  verification, plan approval, delivery or budget authority crosses. A bound `source` that is
+  already a root capture is carried verbatim and delivers as usual; a derived one — what a
+  `snapshot` output is — is republished as a root Snapshot over the identical Manifest with a new
+  `af.task-source-origin/2` origin that names the referenced Task, result and port and carries no
+  `source_revision`, so `af task deliver` refuses it for the one honest reason: a derived tree has
+  no commit for the target's `HEAD` to equal. ADR-0031's exact comparison is unchanged. The Task-file shape,
+  the display in `af task explain` and `af task show`, and the implementing package's crates,
+  types and tests are written up in `docs/task-execution/task-inputs.md`, linked from
+  `docs/README.md`.
+- Bind a Task input port to a recorded Task's output (ADR-0117, accepted; the behaviour the
+  entry above decided). A Task file's optional `inputs` table now resolves at plan time, from
+  the `--state` Store only, into ordinary root ports: the referenced Task must be recorded and
+  `Finished`, its result must read and validate, the named port must be in `result.outputs` and
+  every artifact it names must verify in the CAS, and the recorded type and cardinality must
+  equal the destination port's exactly — a `many` output never binds a `one` port however many
+  artifacts it holds. `requirements`, `base`, `continuation` and any other name are refused by
+  name. Every refusal is an ordinary Task-file input error naming the Task and the port, exit 1
+  with `af/error@1` under `--json`, raised while the revision is still being built and therefore
+  before any Worker dispatch or Provider admission. A bound `source` that is already a root
+  capture is carried verbatim; a derived one is republished as a root Snapshot over the
+  identical Manifest with a new `af.task-source-origin/2` origin and a new `af/SourceTree@1`
+  envelope, and a parentless generation-2 Snapshot referenced again is carried verbatim, so
+  nothing is re-rooted twice. `history` and `sources` carry the referenced artifact ID verbatim;
+  a bound `history` suppresses the `empty_review_history` root default and a bound `sources`
+  makes `document_sources` unnecessary. One `af/TaskInputBindings@1` artifact records the
+  binding from `TaskRevisionV1.provenance.input_artifact_ids`, written only when the Task file
+  carried an `inputs` table; `af/TaskRevision@1` is unchanged and a Task without bindings keeps
+  its exact revision, plan and `--json` documents. `af task explain` annotates the `IN` line and
+  `--tree` adds `BOUND` rows, `af task show` prints one `bound <port> <- …` line and advances
+  its `--json` document gains an `input_bindings` field only when a binding exists, which the
+  self-optimizer's AF history adapter admits without changing how accounting is read. `af task
+  deliver` reads either origin generation and refuses a re-rooted source before the prepared
+  record and any Git mutation, naming the referenced Task and port or the artifact ID: a derived
+  tree has no commit for the target's `HEAD` to equal. ADR-0031's exact comparison is unchanged,
+  and no acceptance, verification, plan approval, delivery or budget authority crosses a Task
+  boundary. One limit is recorded rather than worked around: a bound `history` feeds a Pipeline
+  that *reads* the ledger, not one whose Review would continue the predecessor's Round, because
+  restoring a Round recomputes it and that recomputation requires every reviewer result to
+  retain the current Task's `af/Requirements@1` — a rule this change does not relax.
+  `docs/task-execution/task-inputs.md` says so and the fixture is built that way. Seven review
+  findings were then repaired in place, each with the regression its reviewer asked for: a bound
+  `source` is admitted only when the referenced envelope's payload, its `subject_snapshot_id` and
+  the recorded port name one Snapshot whose origin belongs to the tree it describes; a refreshed
+  revision keeps the `af/TaskInputBindings@1` record while replacing only its requirements
+  artifact, and the Store's refresh validator derives the same expected list; selection preserves
+  that record alone, so a Task with other non-port provenance and no `inputs` table keeps
+  byte-identical revision, plan and inspection documents; the Claude usage probe observes its
+  leader's exit without reaping and ends the process group before waiting, so a same-group
+  descendant cannot outlive it; every untrusted label a refusal echoes — destination port,
+  Task ID, output port, artifact spelling and the bindable-port reason — goes through the
+  preview's display sanitizer; the `af/task-inspection@11` schema gains the optional `input_bindings` property.
+
+## [0.9.0-rc.6] - 2026-09-21
+
 ### Upgrading from 0.x
 
 - GA reads only what GA writes
