@@ -99,7 +99,7 @@ path = ".af/task-packages/kernel/review-code"
 
 [packages."kernel/verification-reviewed"]
 version = "1.0.0"
-digest = "sha256:4f034666263d19fba5c2bb3e3cd1dfb2804238ccd9cf421e3fe01ac6d22a4984"
+digest = "sha256:1f3258933c5c1325095a496e08957afabf26a4008dedaafce60cfc1e9c17071c"
 path = ".af/task-packages/kernel/verification-reviewed"
 
 [packages."kernel/verification"]

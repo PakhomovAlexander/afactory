@@ -32,16 +32,6 @@ covers = []
 [contract.inputs.source.affinity]
 kind = "unbound"
 
-[contract.outputs.evaluation]
-artifact_type = "af/VerificationResult@1"
-cardinality = "one"
-optional = false
-covers = ["goal"]
-
-[contract.outputs.evaluation.affinity]
-kind = "derived_from"
-input = "source"
-
 [contract.outputs.snapshot]
 artifact_type = "af/SourceTree@1"
 cardinality = "one"
@@ -49,17 +39,17 @@ optional = false
 covers = []
 
 [contract.outputs.snapshot.affinity]
-kind = "derived_from"
+kind = "same_as"
 input = "source"
 
 [contract.outputs.verification]
-artifact_type = "af/ReviewedImplementation@1"
+artifact_type = "af/VerificationResult@1"
 cardinality = "one"
 optional = false
 covers = ["verified"]
 
 [contract.outputs.verification.affinity]
-kind = "derived_from"
+kind = "same_as"
 input = "source"
 
 [accepts]
@@ -214,11 +204,6 @@ kind = "node"
 node = "accept"
 port = "snapshot"
 
-[outputs.evaluation]
-kind = "node"
-node = "accept_goal"
-port = "result"
-
 [outputs.snapshot]
 kind = "node"
 node = "accept"
@@ -226,15 +211,10 @@ port = "snapshot"
 
 [outputs.verification]
 kind = "node"
-node = "accept"
-port = "result"
-
-[coverage.goal]
-kind = "node"
 node = "accept_goal"
 port = "result"
 
 [coverage.verified]
 kind = "node"
-node = "accept"
+node = "accept_goal"
 port = "result"
