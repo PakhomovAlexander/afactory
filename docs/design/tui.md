@@ -239,7 +239,7 @@ crates/af/src/tui/
   paint.rs      paint / paint_spans / Paint palette
 ```
 
-Rendering stays on plain `crossterm` (already a dependency of the `af` crate); a widget library is not
+Rendering stays on plain `crossterm` (re-added to the `af` crate; PR #114 dropped it with the old TUI); a widget library is not
 worth a new dependency for five list-and-detail panes. Each pane implements one trait:
 
 ```rust
