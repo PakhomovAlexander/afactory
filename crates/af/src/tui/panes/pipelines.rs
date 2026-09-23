@@ -1,4 +1,6 @@
-//! Pipelines: `.af/pipelines/*.toml` and every `pipeline.toml` under `.af/task-packages/`.
+//! Pipelines: `.af/pipelines/*.toml` and every `pipeline.toml` under `.af/task-packages/`, as
+//! committed at `HEAD`. The plan preview compiles committed authority, so the bar names what
+//! `HEAD` holds; a working-tree file that differs is marked, and `gf` still opens it.
 //!
 //! A package's main pane is, verbatim, the text `af task explain --tree` prints for a plan of
 //! it that `af task plan` would capture: the same token-free compilation of the committed
@@ -7,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
 use toml::Value;
@@ -58,7 +61,12 @@ struct Entry {
     /// The repository-relative path of the TOML file.
     id: String,
     label: String,
+    /// The working-tree file, for `gf`.
     path: PathBuf,
+    /// The file as committed at `HEAD`: what every preview and declaration is read from.
+    declaration: String,
+    /// The working-tree file differs from `HEAD` or is gone.
+    modified: bool,
     source: Source,
 }
 
@@ -122,6 +130,10 @@ impl PipelinesPane {
     fn entry_rows(&self, entry: &Entry) -> Vec<Row> {
         let heading = format!("PIPE  {} ({})", entry.label, entry.id);
         let mut rows = Vec::new();
+        if entry.modified {
+            let note = "working tree differs from HEAD: shown as committed; gf opens the file";
+            rows.push(Row::painted(note, Paint::Muted));
+        }
         match (&entry.source, self.previews.get(&entry.id)) {
             (Source::Review, _) => {
                 let title = format!("{heading}  [review pipeline]");
@@ -135,8 +147,7 @@ impl PipelinesPane {
                     Paint::Muted,
                 ));
                 rows.push(Row::blank());
-                let text = std::fs::read_to_string(&entry.path).unwrap_or_default();
-                rows.extend(text.lines().map(Row::plain));
+                rows.extend(entry.declaration.lines().map(Row::plain));
             }
             (Source::Package { .. }, Some(Ok(preview))) => {
                 rows.extend(preview.text.lines().map(Row::plain));
@@ -149,7 +160,7 @@ impl PipelinesPane {
                 rows.push(Row::blank());
                 rows.extend(error.lines().map(|line| Row::painted(line, Paint::Error)));
                 rows.push(Row::blank());
-                rows.extend(contract_rows(&declared(&entry.path)));
+                rows.extend(contract_rows(&declared(&entry.declaration)));
             }
             (Source::Package { .. }, None) => {
                 let spinner = SPINNER[self.spinner % SPINNER.len()];
@@ -169,12 +180,13 @@ impl PipelinesPane {
                 "Pipelines belong to a project; :cd into a repository.",
             ));
         } else if self.entries.is_empty() {
-            let none = "No Pipeline under .af/pipelines/ or .af/task-packages/.";
+            let none = "No Pipeline committed under .af/pipelines/ or .af/task-packages/.";
             rows.push(Row::plain(none));
         }
         for entry in &self.entries {
             let (label, id) = (&entry.label, &entry.id);
-            rows.push(Row::plain(format!("{label:<28} {id}")));
+            let mark = if entry.modified { " *" } else { "" };
+            rows.push(Row::plain(format!("{label:<28} {id}{mark}")));
         }
         rows
     }
@@ -200,7 +212,7 @@ impl Pane for PipelinesPane {
             items.push(Item {
                 id: entry.id.clone(),
                 label: entry.label.clone(),
-                muted: false,
+                muted: entry.modified,
             });
         }
         items
@@ -270,26 +282,51 @@ fn plan(root: &Path, task: &serde_json::Value) -> Compiled {
     task_execution::plan_tree_preview(&file, root)
 }
 
-/// Review Pipelines first, then pipeline packages, each sorted by path.
+/// Review Pipelines first, then pipeline packages, each sorted by path, all as `HEAD` commits
+/// them. A repository without a `HEAD` lists nothing.
 fn discover(root: &Path) -> Vec<Entry> {
     let mut entries = Vec::new();
-    for path in toml_files(&root.join(".af/pipelines")) {
-        let stem = path.file_stem().unwrap_or_default();
+    let Ok(listing) = git(root, &["ls-tree", "-r", "-z", "--name-only", "HEAD", "--"]) else {
+        return entries;
+    };
+    let mut reviews = Vec::new();
+    let mut packages = Vec::new();
+    for path in listing.split(|byte| *byte == 0) {
+        let Ok(path) = std::str::from_utf8(path) else {
+            continue;
+        };
+        if let Some(rest) = path.strip_prefix(".af/pipelines/")
+            && !rest.contains('/')
+            && rest.ends_with(".toml")
+        {
+            reviews.push(path.to_owned());
+        } else if path.starts_with(".af/task-packages/") && path.ends_with("/pipeline.toml") {
+            packages.push(path.to_owned());
+        }
+    }
+    reviews.sort();
+    packages.sort();
+    for id in reviews {
+        let Ok(declaration) = committed(root, &id) else {
+            continue;
+        };
+        let stem = Path::new(&id).file_stem().unwrap_or_default();
         entries.push(Entry {
-            id: relative(root, &path),
             label: stem.to_string_lossy().into_owned(),
-            path,
+            path: root.join(&id),
+            modified: differs(root, &id, &declaration),
+            declaration,
+            id,
             source: Source::Review,
         });
     }
-    let packages = root.join(".af/task-packages");
-    let mut found = Vec::new();
-    find_packages(&packages, &mut found);
-    found.sort();
-    for path in found {
-        let value = declared(&path);
-        let directory = path.parent().unwrap_or(root);
-        let fallback = relative(&packages, directory);
+    for id in packages {
+        let Ok(declaration) = committed(root, &id) else {
+            continue;
+        };
+        let value = declared(&declaration);
+        let directory = Path::new(&id).parent().unwrap_or(Path::new(""));
+        let fallback = relative(Path::new(".af/task-packages"), directory);
         let name = value.get("name").and_then(Value::as_str);
         let accepts = value.get("accepts");
         let kinds = accepts.and_then(|accepts| accepts.get("kinds"));
@@ -298,9 +335,11 @@ fn discover(root: &Path) -> Vec<Entry> {
         let attempts = value.get("max_attempts").and_then(Value::as_integer);
         let max_attempts = attempts.and_then(|n| u64::try_from(n).ok()).unwrap_or(3);
         entries.push(Entry {
-            id: relative(root, &path),
             label: name.map_or(fallback, str::to_owned),
-            path,
+            path: root.join(&id),
+            modified: differs(root, &id, &declaration),
+            declaration,
+            id,
             source: Source::Package {
                 kind: kind.unwrap_or("implement").to_owned(),
                 max_attempts: max_attempts.max(1),
@@ -364,43 +403,37 @@ fn contract_rows(value: &Value) -> Vec<Row> {
     rows
 }
 
-/// A pipeline file read leniently: one that does not parse still lists, and its preview reports
-/// the compiler's own refusal.
-fn declared(path: &Path) -> Value {
-    let text = std::fs::read_to_string(path).unwrap_or_default();
-    toml::from_str(&text).unwrap_or_else(|_| Value::Table(toml::map::Map::new()))
+/// The bytes `HEAD` holds at a repository-relative path.
+fn committed(root: &Path, path: &str) -> Result<String, String> {
+    let bytes = git(root, &["show", &format!("HEAD:{path}")])?;
+    String::from_utf8(bytes).map_err(|error| error.to_string())
 }
 
-fn toml_files(dir: &Path) -> Vec<PathBuf> {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return Vec::new();
-    };
-    let mut paths: Vec<PathBuf> = entries
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| path.extension().is_some_and(|ext| ext == "toml") && path.is_file())
-        .collect();
-    paths.sort();
-    paths
+/// Whether the working-tree file differs from the committed text, or is gone.
+fn differs(root: &Path, path: &str, committed: &str) -> bool {
+    std::fs::read(root.join(path)).ok().as_deref() != Some(committed.as_bytes())
 }
 
-/// Every `pipeline.toml` below `dir`, however deep, without following symlinks. A directory
-/// that holds one is still walked: a package may nest another.
-fn find_packages(dir: &Path, found: &mut Vec<PathBuf>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.filter_map(Result::ok) {
-        if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-            continue;
-        }
-        let path = entry.path();
-        let pipeline = path.join("pipeline.toml");
-        if pipeline.is_file() {
-            found.push(pipeline);
-        }
-        find_packages(&path, found);
+/// One git command against the repository, with the user's global configuration kept out.
+fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .args(args)
+        .output()
+        .map_err(|error| format!("running git: {error}"))?;
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
     }
+}
+
+/// A pipeline declaration read leniently: one that does not parse still lists, and its preview
+/// reports the compiler's own refusal.
+fn declared(text: &str) -> Value {
+    toml::from_str(text).unwrap_or_else(|_| Value::Table(toml::map::Map::new()))
 }
 
 fn relative(root: &Path, path: &Path) -> String {
@@ -412,8 +445,20 @@ fn relative(root: &Path, path: &Path) -> String {
 mod tests {
     use super::*;
 
+    fn commit_all(root: &Path) {
+        for args in [
+            vec!["init", "-q", "-b", "main"],
+            vec!["config", "user.name", "Fixture"],
+            vec!["config", "user.email", "fixture@example.invalid"],
+            vec!["add", "-A"],
+            vec!["commit", "-qm", "pipelines"],
+        ] {
+            git(root, &args).unwrap();
+        }
+    }
+
     #[test]
-    fn every_pipeline_package_is_found_however_nested() {
+    fn every_committed_pipeline_package_is_found_however_nested() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
         let packages = root.join(".af/task-packages");
@@ -421,20 +466,69 @@ mod tests {
         for dir in ["a", "a/b", "d1/d2/d3/d4/d5/d6/d7"] {
             let dir = packages.join(dir);
             std::fs::create_dir_all(&dir).unwrap();
-            std::fs::write(
-                dir.join("pipeline.toml"),
-                "name = \"x\"\n[accepts]\nkinds = [\"implement\"]\n",
-            )
-            .unwrap();
+            let name = dir.file_name().unwrap().to_string_lossy().into_owned();
+            let text = format!("name = \"{name}\"\n[accepts]\nkinds = [\"implement\"]\n");
+            std::fs::write(dir.join("pipeline.toml"), text).unwrap();
         }
-        let ids: Vec<String> = discover(root).into_iter().map(|entry| entry.id).collect();
+        std::fs::create_dir_all(root.join(".af/pipelines")).unwrap();
+        std::fs::write(root.join(".af/pipelines/review.toml"), "version = 1\n").unwrap();
+        // Nothing is listed before a commit exists.
+        assert!(discover(root).is_empty());
+        commit_all(root);
+        let ids: Vec<(String, String, bool)> = discover(root)
+            .into_iter()
+            .map(|entry| (entry.id, entry.label, entry.modified))
+            .collect();
         assert_eq!(
             ids,
             [
-                ".af/task-packages/a/b/pipeline.toml",
-                ".af/task-packages/a/pipeline.toml",
-                ".af/task-packages/d1/d2/d3/d4/d5/d6/d7/pipeline.toml",
+                (".af/pipelines/review.toml".into(), "review".into(), false),
+                (
+                    ".af/task-packages/a/b/pipeline.toml".into(),
+                    "b".into(),
+                    false
+                ),
+                (
+                    ".af/task-packages/a/pipeline.toml".into(),
+                    "a".into(),
+                    false
+                ),
+                (
+                    ".af/task-packages/d1/d2/d3/d4/d5/d6/d7/pipeline.toml".into(),
+                    "d7".into(),
+                    false
+                ),
             ]
+        );
+    }
+
+    #[test]
+    fn the_bar_names_what_head_commits_and_marks_a_changed_working_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let package = root.join(".af/task-packages/p");
+        std::fs::create_dir_all(&package).unwrap();
+        let committed = "name = \"fixture/p\"\n[accepts]\nkinds = [\"implement\"]\n";
+        std::fs::write(package.join("pipeline.toml"), committed).unwrap();
+        commit_all(root);
+        // A rename in the working tree changes neither the identity nor the declaration; an
+        // untracked package beside it is not listed at all.
+        let dirty = committed.replace("fixture/p", "dirty/p");
+        std::fs::write(package.join("pipeline.toml"), &dirty).unwrap();
+        std::fs::create_dir_all(root.join(".af/task-packages/shadow")).unwrap();
+        std::fs::write(
+            root.join(".af/task-packages/shadow/pipeline.toml"),
+            committed,
+        )
+        .unwrap();
+        let entries = discover(root);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].label, "fixture/p");
+        assert_eq!(entries[0].declaration, committed);
+        assert!(entries[0].modified);
+        assert_eq!(
+            entries[0].path,
+            root.join(".af/task-packages/p/pipeline.toml")
         );
     }
 

@@ -179,8 +179,10 @@ PIPE  review@1.0.0 (.af/pipelines/review.toml)  [configured]
     '-- gates: checks/test.sh
 ```
 
-Selecting a pipeline package with no captured Task compiles a plan the token-free way `af task
-plan` does and renders that text; the two renders agree line for line except the identity lines
+The bar lists what `HEAD` commits under `.af/pipelines/` and `.af/task-packages/`, because that
+is the authority a plan compiles; a working-tree file that differs from `HEAD` is marked `*` and
+its pane says so, while `gf` still opens the working-tree file. Selecting a pipeline package with
+no captured Task compiles a plan the token-free way `af task plan` does and renders that text; the two renders agree line for line except the identity lines
 (`PLAN`, `TIME`, `--confirm-plan`), which carry a fresh plan identity and deadline on every
 compilation. A package whose compilation the kernel refuses (required facts or public inputs
 the preview Task cannot invent) shows the refusal and the package's declared contract instead.

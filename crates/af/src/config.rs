@@ -551,9 +551,28 @@ pub(crate) fn paths(repo: Option<&Path>) -> Result<(), String> {
 }
 
 pub(crate) fn edit(layer: LayerArg, repo: Option<&Path>) -> Result<(), String> {
+    let path = layer_path(layer, repo)?;
+    if !path.exists() {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|error| format!("creating {}: {error}", parent.display()))?;
+        }
+        std::fs::write(&path, "version = 1\n")
+            .map_err(|error| format!("creating {}: {error}", path.display()))?;
+    }
+    open_in_editor(&path)
+}
+
+/// The file one layer lives in. The user layer is machine-owned and named without reading
+/// the ladder, so a directory or project layer that does not parse cannot stand in its way;
+/// the other layers need the ladder to know where they are.
+pub(crate) fn layer_path(layer: LayerArg, repo: Option<&Path>) -> Result<PathBuf, String> {
+    if layer == LayerArg::User {
+        return Ok(config_home()?.join("af/config.toml"));
+    }
     let config = load(repo)?;
-    let path = match layer {
-        LayerArg::User => config_home()?.join("af/config.toml"),
+    Ok(match layer {
+        LayerArg::User => unreachable!("named above"),
         LayerArg::Directory => {
             let candidates: Vec<&LayerFile> = config
                 .files
@@ -579,16 +598,7 @@ pub(crate) fn edit(layer: LayerArg, repo: Option<&Path>) -> Result<(), String> {
                 ".af/af.local.toml"
             })
         }
-    };
-    if !path.exists() {
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| format!("creating {}: {error}", parent.display()))?;
-        }
-        std::fs::write(&path, "version = 1\n")
-            .map_err(|error| format!("creating {}: {error}", path.display()))?;
-    }
-    open_in_editor(&path)
+    })
 }
 
 /// Run `$EDITOR` on one file and wait for it. `af config edit` and the browser's `gf` share it.
@@ -655,5 +665,18 @@ mod tests {
         let policy = config.self_policy().unwrap();
         assert_eq!(policy.auto_update, AutoUpdate::Notify);
         assert_eq!(policy.keep_versions, 3);
+    }
+
+    #[test]
+    fn the_user_layer_path_ignores_a_broken_directory_layer() {
+        let temp = tempfile::tempdir().unwrap();
+        let above = temp.path().join("above");
+        let plain = above.join("plain");
+        std::fs::create_dir_all(&plain).unwrap();
+        std::fs::create_dir_all(above.join(".af")).unwrap();
+        std::fs::write(above.join(".af/af.toml"), "this = is not [toml\n").unwrap();
+        let user = layer_path(LayerArg::User, Some(&plain)).unwrap();
+        assert!(user.ends_with("af/config.toml"), "{}", user.display());
+        assert!(layer_path(LayerArg::Directory, Some(&plain)).is_err());
     }
 }
