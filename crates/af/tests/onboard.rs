@@ -265,12 +265,21 @@ fn apply_creates_valid_authority_and_never_overwrites_it() {
         std::fs::read_to_string(repo.join(".af/workers/architecture/reviewer.toml")).unwrap();
     assert!(architecture_manifest.contains("program = \"codex\""));
     let architecture_manifest: toml::Value = toml::from_str(&architecture_manifest).unwrap();
+    let architecture_args = architecture_manifest["runner"]["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|arg| arg["value"].as_str().unwrap())
+        .collect::<Vec<_>>();
     assert_eq!(
-        architecture_manifest["runner"]["args"]
-            .as_array()
-            .map(Vec::len),
-        Some(0),
-        "the Codex adapter owns the exec/sandbox/stdin flags"
+        architecture_args,
+        [
+            "--model",
+            "gpt-6-sol",
+            "-c",
+            "model_reasoning_effort=\"high\""
+        ],
+        "generated Codex authority must select an admissible model explicitly"
     );
 
     let validate = af(&repo, &["--json"]);

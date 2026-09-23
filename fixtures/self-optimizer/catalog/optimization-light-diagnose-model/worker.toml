@@ -61,5 +61,5 @@ wall_ms = 600000
 [runner]
 kind = "model"
 provider_kind = "codex"
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 effort = "high"

@@ -101,8 +101,8 @@ impl RunnerKind {
 
     fn model(self) -> &'static str {
         match self {
-            Self::Claude => "opus (high effort)",
-            Self::Codex => "machine-configured Codex model",
+            Self::Claude => "claude-opus-5-5 (high effort)",
+            Self::Codex => "gpt-6-sol (high effort)",
         }
     }
 }
@@ -972,11 +972,15 @@ fn worker_manifest(name: &str, runner: RunnerKind) -> String {
     }
 
     let values: &[&str] = match runner {
-        RunnerKind::Claude => &["--model", "opus", "--effort", "high"],
+        RunnerKind::Claude => &["--model", "claude-opus-5-5", "--effort", "high"],
         // The Codex adapter owns the `exec` invocation, sandbox, output, and stdin flags.
-        // Package args are model flags only; an empty list deliberately inherits the
-        // machine-configured model.
-        RunnerKind::Codex => &[],
+        // Package args are model flags only.
+        RunnerKind::Codex => &[
+            "--model",
+            "gpt-6-sol",
+            "-c",
+            "model_reasoning_effort=\"high\"",
+        ],
     };
     let manifest = Manifest {
         name,
@@ -1591,7 +1595,9 @@ fn atomic_replace_authority(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_definition, runner_model, validate_budget_arithmetic};
+    use super::{
+        RunnerKind, build_definition, runner_model, validate_budget_arithmetic, worker_manifest,
+    };
     use review_core::{Arg, Command};
 
     #[test]
@@ -1606,6 +1612,20 @@ mod tests {
             ],
         );
         assert_eq!(runner_model(&command), "gpt-5.6-terra (xhigh effort)");
+    }
+
+    #[test]
+    fn generated_workers_pin_current_default_models() {
+        let claude = worker_manifest("correctness", RunnerKind::Claude);
+        assert!(claude.contains("value = \"claude-opus-5-5\""), "{claude}");
+        assert!(claude.contains("value = \"high\""), "{claude}");
+
+        let codex = worker_manifest("architecture", RunnerKind::Codex);
+        assert!(codex.contains("value = \"gpt-6-sol\""), "{codex}");
+        assert!(
+            codex.contains("value = 'model_reasoning_effort=\"high\"'"),
+            "{codex}"
+        );
     }
 
     #[test]

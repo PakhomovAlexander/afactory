@@ -1,4 +1,4 @@
-# Design-note review: one bug-bounty reviewer (GPT-5.6-Sol/xhigh) over a diff Subject, with the
+# Design-note review: one bug-bounty reviewer (GPT-6-Sol/xhigh) over a diff Subject, with the
 # markdown Gate only. This is the documented cheap-iteration path (docs/non-goals.md): a separate
 # pipeline with one reviewer, its own budgets, its own Campaign and its own Ledger. Bind at run
 # time, for example `--provider design=codex-main`.

@@ -125,7 +125,7 @@ stages of that Campaign or Task. Afactory does not ask for per-call confirmation
 Review Campaigns are light by default: one closed Round, then fix concrete Findings and run the \
 deterministic project gate. Do not start another Campaign. Use `--heavy` only when a human \
 explicitly requests convergence review, and repeat that explicit mode when resuming it.",
-        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus/high; architecture = machine-configured Codex (default)\n  claude  both Workers = Claude Opus/high\n  codex   both Workers = machine-configured Codex\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  af onboard\n  af onboard --gate 'check=make check' --apply\n  af onboard --runner mixed --apply\n  af onboard --refresh-lock\n  af onboard --refresh-lock --af 0.9.0     move the pin to 0.9.0"
+        after_long_help = "Runner profiles:\n  mixed   correctness = Claude Opus 5.5/high; architecture = GPT-6 Sol/high (default)\n  claude  both Workers = Claude Opus 5.5/high\n  codex   both Workers = GPT-6 Sol/high\n\nGate discovery prefers `make check`, then `scripts/verify.sh`, Rust, Go, or a package-manager test script. If none is unambiguous, pass a trusted literal.\n\nExamples:\n  af onboard\n  af onboard --gate 'check=make check' --apply\n  af onboard --runner mixed --apply\n  af onboard --refresh-lock\n  af onboard --refresh-lock --af 0.9.0     move the pin to 0.9.0"
     )]
     Onboard(OnboardArgs),
     /// Start, inspect, and deliver an implement Task

@@ -19,22 +19,22 @@ correctness = "required"
 
 [packages."warm/implementer"]
 version = "1.2.0"
-digest = "sha256:d466c9eec40868c07027860373ab096fdf62e59f06e117273d383e724b7878f3"
+digest = "sha256:41859cec49d6dafb5b28ac09f481b23f38f8d4b859cd4b672fc7160acfbaacb5"
 path = ".af/task-packages/warm/implementer"
 
 [packages."warm/correctness"]
 version = "1.0.0"
-digest = "sha256:2a9d68a37d88fc284b1b0fd2ec5e38a1f301f4f2f344976d31b272c447365498"
+digest = "sha256:abd803546bde2b5a9ebe2920ae161ec2488568d4749d742403c818301604331d"
 path = ".af/task-packages/warm/correctness"
 
 [packages."warm/bugs"]
 version = "1.0.0"
-digest = "sha256:14398c40dc4f356a6fdcc985594ebabfaf587f1bf7895de1f27219b4b2b3dc81"
+digest = "sha256:83821fae727188bc212ebeb94bf2804739761d1824d59c99900b0467ca5f65ef"
 path = ".af/task-packages/warm/bugs"
 
 [packages."warm/evaluator"]
 version = "1.0.0"
-digest = "sha256:346caf4b211a07ed1b0efcacf079ebeb7bec0b01846243f823eb1cba8acdc8cf"
+digest = "sha256:c15968ac1f8fe2b6985417bf8f0ecf16eb8d6f17f66641a92307cae87836dd25"
 path = ".af/task-packages/warm/evaluator"
 
 [packages."warm/review-light"]
@@ -59,22 +59,22 @@ path = ".af/task-packages/warm/verification-kind"
 
 [packages."kernel/implementer"]
 version = "1.2.0"
-digest = "sha256:462d9240c776f0ba7b4d9edcb32f114245851faac9dcd16fd3d83112183d7289"
+digest = "sha256:8ea86adf656d629309c365b5e4c22c404dc2b981c00bb08a393760cb17d323ac"
 path = ".af/task-packages/kernel/implementer"
 
 [packages."kernel/correctness"]
 version = "1.0.0"
-digest = "sha256:dd757e49fe07d3528181e2037beb76bdb149242715dd187a34ea8ce67c8f5fc0"
+digest = "sha256:30b6a294bea442c776fad7cdf73cdba2388a716e6e73b6bc50d711c5d4dd7be7"
 path = ".af/task-packages/kernel/correctness"
 
 [packages."kernel/bugs"]
 version = "1.0.0"
-digest = "sha256:03f750a8e297b2f8ae8fa4a667d59614b52a7656f408981d09a7418a322295e1"
+digest = "sha256:fbdee0ee967058a79f7908dd45059c17eea3ba11388a6a34e3083ece06773e39"
 path = ".af/task-packages/kernel/bugs"
 
 [packages."kernel/evaluator"]
 version = "1.0.0"
-digest = "sha256:0b7f03304268510af2a0ee4dd8c6574fff7265223684a175c87d57ff3777e2df"
+digest = "sha256:705974594a9c8efde4c1978ee4c16cdb3cb1fa4c26e05b2c62619ee42a015062"
 path = ".af/task-packages/kernel/evaluator"
 
 [packages."kernel/review-light"]
