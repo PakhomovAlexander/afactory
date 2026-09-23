@@ -9,7 +9,7 @@ Terms follow `CONTEXT.md`; the layout of `.af/` follows `docs/design/config.md` 
 the place it was started in. It is a **read-first** surface: every pane is a projection of data
 the CLI already prints, and every mutation goes through the same path the CLI uses (a subcommand,
 or `$EDITOR` on a declared file). The TUI never turns working-tree bytes into execution
-authority; that invariant is inherited unchanged from the review TUI.
+authority; that invariant is kept from the removed review TUI.
 
 Non-goals for the first cut: in-TUI editing of TOML, live transcripts, a pipeline DAG editor,
 mouse support.
@@ -28,8 +28,7 @@ still shows project Tasks — grouped by repository — because the Store is use
 scope filters the same Store by repository identity. `arg_required_else_help` on `Af` goes away;
 `Option<Command>::None` dispatches to `tui::launch(scope)`.
 
-`af review tui` is removed with the rest of the `review` namespace. `af task tui` is not added:
-the Task pane covers it.
+`af review tui` no longer exists (PR #114). `af task tui` is not added: the Task pane covers it.
 
 ## 3. Layout
 
@@ -68,7 +67,7 @@ Glyphs are printable ASCII only (`v`/`>` for folds, `+--`/`'--` for tree branche
 bars). This keeps the existing `terminal_data_is_printable_ascii` test meaningful and matches the
 CLI's own tree output.
 
-Minimum size 80x24, same refusal message pattern as today.
+Minimum size 80x24; below it the screen shows one line naming the minimum.
 
 ## 4. Key model
 
@@ -145,8 +144,8 @@ The main pane shows the same columns as the CLI table for the selected provider,
 `ProviderLimit` as a bar with `used_percent` and `format_limit`'s reset text, then `detail` as
 `note`. Ambient candidates render greyed with the `af provider setup` hint the CLI prints.
 
-`R` runs `start_provider_refresh` (the bounded, possibly charged probe) with a spinner in the bar
-row; the existing `finish_provider_refresh` poll keeps working.
+`R` runs the provider probe (the bounded, possibly charged probe in `providers`) with a spinner in the bar
+row, polled from the event loop without blocking key handling.
 
 ### 5.3 Workers
 
@@ -227,20 +226,20 @@ as described in §4.
 
 ## 6. Architecture
 
-`crates/af/src/tui.rs` (2.9k lines, review-specific) is replaced by a module tree:
+The TUI is a new module tree under `crates/af/src/tui/`:
 
 ```
 crates/af/src/tui/
-  mod.rs        launch(scope), event loop, terminal session (kept from today)
+  mod.rs        launch(scope), event loop, terminal session (raw mode, alternate screen)
   keymap.rs     mode + key sequence parser (gg, zo, ]], <C-w>l), one table, unit-tested
   tree.rs       the left bar: Node { kind, label, children, folded }, fold/search/motion
   scope.rs      user vs project resolution, path roots
   panes/
     settings.rs providers.rs workers.rs pipelines.rs tasks.rs
-  paint.rs      paint / paint_spans / Paint palette (kept from today)
+  paint.rs      paint / paint_spans / Paint palette
 ```
 
-Rendering stays on plain `crossterm` with the existing paint helpers; a widget library is not
+Rendering stays on plain `crossterm` (already a dependency of the `af` crate); a widget library is not
 worth a new dependency for five list-and-detail panes. Each pane implements one trait:
 
 ```rust
@@ -266,7 +265,7 @@ Tests: keymap sequences, tree folding and search, and one golden render per pane
    reviewer below can build the candidate and drive it in a pseudo-terminal. Until this ships, a
    model reviewer has `Read,Glob,Grep` only and a read-only sandbox.
 1. Shell: scope resolution, left bar with the four folders, settings pane, `af` no-arg dispatch,
-   `q`/`:q`. Remove `af review tui`.
+   `q`/`:q`.
 2. Providers and Pipelines panes (both reuse existing loaders and renderers directly).
 3. Tasks pane: list, detail, progress, tokens, time, history; running-Task poll.
 4. Workers pane: identity, prompt, then the State section once Attempt records are indexed by
